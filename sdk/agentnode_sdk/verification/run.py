@@ -363,7 +363,7 @@ def crossings():
     # The launcher this run uses, not the one the transport module would reach for: a run whose
     # process starting is under test has to be the same process starting all the way down.
     ask = transport.OverSsh(SETTINGS, launcher=launch).ask
-    ledger = channels.TheGatewaysOwnRecord(ask, GW, STATE, GATEWAY_USER)
+    ledger = channels.TheGatewaysOwnRecord(ask, GW, STATE, GATEWAY_USER, conn.token)
 
     made_here = sentinels.a_fresh_value()
     payload = WORK / "crossing.py"
@@ -373,7 +373,9 @@ def crossings():
     # What it prints now is a value the client has never seen.
     source = ("import os\n"
               "print('SENT-FROM-HERE " + made_here + "')\n"
-              "print('" + ch.ECHO + " ' + os.environ.get('" + ch.INSIDE_THE_SANDBOX + "', ''))\n")
+              "print('" + ch.ECHO + " ' + os.environ.get('" + ch.INSIDE_THE_SANDBOX + "', ''))\n"
+              "print('" + ch.ECHO_INSTANCE + " ' + os.environ.get('"
+              + ch.INSTANCE_INSIDE_THE_SANDBOX + "', ''))\n")
     payload.write_text(source, encoding="utf-8")
     sent = source.encode("utf-8")
 

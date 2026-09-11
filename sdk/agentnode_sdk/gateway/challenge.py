@@ -23,6 +23,14 @@ originated on this side rather than being assembled by whoever asked.
 It does NOT identify the physical machine. That is what pairing and the authenticated tunnel are
 for, and they are unchanged.
 
+The binding also names the executing INSTANCE -- which gateway process, behind which sandbox --
+and the job says back the instance it found itself in, so the document and the thing the document
+is about have to agree. `EM3C-CROSSING-0001`, F-C2-INSTANCE-NOT-VERIFIED: before that, the field
+was written down and held against nothing, so a binding naming another instance was credited as
+long as its other fields agreed. What this adds is that the two halves of one run agree across two
+channels; like everything else here it rests on the signature, and a gateway willing to sign a
+false answer can make them agree.
+
 It does NOT protect against a gateway that lies. The signature over the answer is the trust anchor
 of the whole arrangement; a gateway willing to sign a false answer can sign one that includes its
 own challenge, and nothing on the client's side recovers from that. What this separates is a client
@@ -55,9 +63,17 @@ CLOCK_SLACK_SECONDS = 300.0
 #: never an argument to one. `EM3C-CROSSING-DECISION-0001`, F-A-ARGV-EXPOSURE.
 INSIDE_THE_SANDBOX = "AGENTNODE_RUN_CHALLENGE"
 
+#: What the bootstrap calls the executing instance, inside the container. Not secret -- it names
+#: which gateway process and which sandbox ran this, and it is here so the client can compare what
+#: the binding SAYS ran it with what the thing that ran it said its own name was.
+INSTANCE_INSIDE_THE_SANDBOX = "AGENTNODE_RUN_INSTANCE"
+
 #: What a job prints to send it back. A marker rather than a bare value, so that finding it in the
 #: output is finding something that was put there deliberately.
 ECHO = "RETURNED-FROM-THE-FAR-SIDE"
+
+#: And what it prints to say which instance it found itself in.
+ECHO_INSTANCE = "RAN-IN-INSTANCE"
 
 #: Why a run has no challenge to carry. A job that brings its own command is not given one: its
 #: standard input is its own, and changing what it reads there to carry this would be altering the
@@ -139,7 +155,7 @@ def read(document: Any) -> Binding:
 
 
 def why_it_does_not_hold(binding: Binding, *, run_id: str, gateway_id: str,
-                         effective_policy_sha256: str, value: str,
+                         effective_policy_sha256: str, value: str, backend_instance: str,
                          now: float | None = None) -> str:
     """Empty when this value is the one that gateway issued for that run. Otherwise, why not.
 
@@ -172,6 +188,18 @@ def why_it_does_not_hold(binding: Binding, *, run_id: str, gateway_id: str,
     if binding.expires_at and at > binding.expires_at + CLOCK_SLACK_SECONDS:
         return ("this binding expired at %.0f and it is now %.0f. A challenge that outlives its "
                 "run is one somebody kept" % (binding.expires_at, at))
+    # `EM3C-CROSSING-0001`, F-C2-INSTANCE-NOT-VERIFIED: this was written down and never
+    # compared, so a binding naming another executing instance could be credited as long as
+    # everything else agreed. What it is compared against is what the JOB said about where it
+    # found itself -- which arrives on the signed answer, not from the place the binding came
+    # from. A document agreeing only with itself establishes nothing.
+    if not backend_instance:
+        return ("what ran did not say which instance it ran in, so the instance this binding "
+                "names is not something anybody checked")
+    if binding.backend_instance != str(backend_instance):
+        return ("this binding says the run was to be executed by "
+                + (binding.backend_instance or "nobody") + " and what ran said it was in "
+                + str(backend_instance))
     if digest_of(value) != binding.challenge_sha256:
         return ("what came back is not what this gateway issued: it hashes to "
                 + digest_of(value)[:16] + "... and the binding records "
@@ -194,9 +222,10 @@ def bootstrap(command_was_given: bool) -> list[str]:
     return ["python", "-c",
             "import base64,os,sys;"
             "os.environ[" + repr(INSIDE_THE_SANDBOX) + "]=sys.stdin.readline().strip();"
+            "os.environ[" + repr(INSTANCE_INSIDE_THE_SANDBOX) + "]=sys.stdin.readline().strip();"
             "exec(base64.b64decode(sys.stdin.read()).decode())"]
 
 
-def on_stdin(value: str, payload: str) -> str:
-    """What the sandbox process reads: the challenge, then the job, and nothing else."""
-    return value + "\n" + payload
+def on_stdin(value: str, instance: str, payload: str) -> str:
+    """What the sandbox process reads: the challenge, the instance, the job, and nothing else."""
+    return value + "\n" + instance + "\n" + payload

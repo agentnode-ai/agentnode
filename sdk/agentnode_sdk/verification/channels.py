@@ -167,31 +167,48 @@ class TheGatewaysOwnRecord(Channel):
 
     name = "the gateway's own record, over ssh"
 
-    def __init__(self, ask, gateway_bin: str, state_dir: str, as_user: str) -> None:
+    def __init__(self, ask, gateway_bin: str, state_dir: str, as_user: str,
+                 token: str) -> None:
         self.ask = ask
         self.gateway_bin = gateway_bin
         self.state_dir = state_dir
         self.as_user = as_user
+        #: Who is asking. The command answers to the client that submitted the run and to nobody
+        #: else, and it takes this on the far side's STANDARD INPUT -- never as an argument.
+        self.token = token
 
     def for_run(self, run_id: str) -> Answer:
         """The binding this gateway wrote down for one run, as it wrote it."""
         import json
 
-        command = ("sudo -u %s %s gateway challenge --dir %s --run %s"
-                   % (self.as_user, self.gateway_bin, self.state_dir, run_id))
+        # Who is asking goes on the far side's STANDARD INPUT, because the command line of a
+        # process is readable by anybody on that host. `printf` is a shell builtin, so the token
+        # never becomes a process of its own either. And what is WRITTEN DOWN is `shown`, with a
+        # word where the value is: an evidence file that carried a live credential would be a
+        # worse thing than the one it is evidence of.
+        # A token this gateway issues is `secrets.token_urlsafe`: letters, digits, a dash and
+        # an underscore, and nothing a shell reads. Anything else is not put in a command at
+        # all, rather than quoted and hoped about.
+        plain = self.token.replace('-', '').replace('_', '')
+        if not plain.isascii() or not plain.isalnum():
+            return self.said("(a token this channel will not put in a command)", None, False,
+                             "this token is not the shape this gateway issues, so it is not sent")
+        shown = ("printf '%%s' <the client's own token> | sudo -u %s %s gateway challenge "
+                 "--dir %s --run %s" % (self.as_user, self.gateway_bin, self.state_dir, run_id))
+        command = shown.replace("<the client's own token>", "'" + self.token + "'")
         try:
             ran, code, out, err = self.ask(command)
         except Exception as exc:                              # noqa: BLE001
-            return self.said(command, None, False, f"{type(exc).__name__}: {exc}")
+            return self.said(shown, None, False, f"{type(exc).__name__}: {exc}")
         if not ran:
-            return self.said(command, None, False, err or "the command did not run")
+            return self.said(shown, None, False, err or "the command did not run")
         if code != 0:
-            return self.said(command, None, False,
+            return self.said(shown, None, False,
                              f"exit {code}: {(err or out).strip()[:200]}")
         try:
-            return self.said(command, json.loads(out))
+            return self.said(shown, json.loads(out))
         except ValueError as exc:
-            return self.said(command, None, False, f"what came back is not readable: {exc}")
+            return self.said(shown, None, False, f"what came back is not readable: {exc}")
 
 
 class ThisMachine(Channel):

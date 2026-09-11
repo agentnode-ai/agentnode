@@ -191,6 +191,11 @@ def what_the_gateway_issued(gateway, ledger, run_id: str, payload: bytes,
     carried = str(record.get(wire.STDOUT_FIELD) or "")
     found = re.search(ch.ECHO + r"\s+([0-9a-f]{8,})", carried)
     value = found.group(1) if found else ""
+    # And where it found itself. `EM3C-CROSSING-0001`, F-C2-INSTANCE-NOT-VERIFIED: the binding
+    # named an executing instance that nothing compared with anything. What it is compared with
+    # is this -- which came back on the SIGNED ANSWER, not from where the binding came from.
+    ran_in = re.search(ch.ECHO_INSTANCE + r"\s+(\S+)", carried)
+    instance = ran_in.group(1) if ran_in else ""
 
     # The half that makes it a crossing at all: a value the client could have written into its own
     # payload establishes nothing about the far side. This one must NOT be in what was sent.
@@ -206,7 +211,7 @@ def what_the_gateway_issued(gateway, ledger, run_id: str, payload: bytes,
     why = ch.why_it_does_not_hold(
         binding, run_id=run_id, gateway_id=gateway_id,
         effective_policy_sha256=str(record.get("effective_policy_sha256") or ""),
-        value=value, now=now)
+        value=value, backend_instance=instance, now=now)
     return Crossing(**base, value=value, confirmed_by=both, holds=not why, decidable=True,
                     why=(why or ("what came back is the value this gateway wrote down the digest "
                                  "of before the job started, and the client never had it")))

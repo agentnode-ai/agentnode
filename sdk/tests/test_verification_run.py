@@ -206,10 +206,13 @@ class World:
         def what_the_sandbox_prints(spec, arriving):
             if self.crossing_prints:
                 return 0, self.crossing_prints, ""
-            issued = str(arriving or "").split(chr(10))[0].strip()
+            lines = str(arriving or "").split(chr(10))
+            issued = lines[0].strip() if lines else ""
+            where = lines[1].strip() if len(lines) > 1 else ""
             self.gateway_sentinel = issued
-            return 0, ("SENT-FROM-HERE %s%s%s %s%s"
-                       % (self.client_sentinel, chr(10), ch.ECHO, issued, chr(10))), ""
+            return 0, ("SENT-FROM-HERE %s%s%s %s%s%s %s%s"
+                       % (self.client_sentinel, chr(10), ch.ECHO, issued, chr(10),
+                          ch.ECHO_INSTANCE, where, chr(10))), ""
 
         self.gateway.backend.answers = what_the_sandbox_prints
         try:
@@ -234,8 +237,12 @@ class World:
         for bad in self.fail:
             if bad in command:
                 return None, "", "ssh: connect failed", "OSError"
+        self.command_code = None
         body = self._answer(command)
-        code = next((c for k, c in self.exit_codes.items() if k in command), 0)
+        # A command that really ran says what it exited with. Only the ones this world models
+        # take their status from the table.
+        code = (self.command_code if self.command_code is not None
+                else next((c for k, c in self.exit_codes.items() if k in command), 0))
         marker = "" if any(t in command for t in self.truncate) else driver.MARKER + chr(10)
         # The script takes the command's status BEFORE printing the marker and exits with it,
         # so the marker appears even when the command failed.
@@ -245,16 +252,30 @@ class World:
         if command.startswith("hostname"):
             return GATEWAY_HOST + "\n"
         if "gateway challenge" in command:
-            # The gateway's own durable record, read by its own read-only command. The
-            # world stands in for the TRANSPORT; what comes back is what the real ledger
-            # holds, and nothing here writes any part of it.
-            import json
+            # The gateway's own read-only command -- the REAL one. The world stands in for the
+            # TRANSPORT and for nothing else: what the far side would do with this command is
+            # what `cmd_challenge` does, including deciding whether the client that is asking is
+            # the one that submitted the run. Modelling that here would be a second copy of the
+            # rule, and a second copy is a thing that can disagree with the first.
+            import contextlib
+            import io as _io
+            import sys as _sys
+            import types
+
+            from agentnode_sdk.cli import gateway_commands
 
             asked = command.rsplit("--run", 1)[-1].strip()
-            written = self.gateway.service.ledger.challenge_for(asked)
-            if written is None:
-                return ""
-            return json.dumps(written, sort_keys=True, indent=2) + chr(10)
+            token = command.split("printf '%s' '", 1)[-1].split("'", 1)[0]
+            printed = _io.StringIO()
+            was = _sys.stdin
+            _sys.stdin = _io.StringIO(token)
+            try:
+                with contextlib.redirect_stdout(printed):
+                    self.command_code = gateway_commands.cmd_challenge(
+                        types.SimpleNamespace(dir=str(self.gateway.state.root), run=asked))
+            finally:
+                _sys.stdin = was
+            return printed.getvalue()
         if "machine-id" in command:
             return "9c5c1e0a11d24f0b8b6f2e2f8a3c4d5e\n"
         if command.startswith("uname"):

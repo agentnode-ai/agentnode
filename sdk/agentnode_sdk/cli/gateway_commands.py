@@ -574,8 +574,16 @@ def cmd_challenge(args) -> int:
 
     Read-only in the strongest sense available: it opens the ledger, takes one entry, prints it,
     and writes nothing. `EM3C-CROSSING-DECISION-0001`, F-A-READ-SURFACE -- so it answers about the
-    run it is asked about and about nothing else. There is no listing, no way to ask for every
-    run, and no field of another client's work in what it prints.
+    run it is asked about and about nothing else. There is no listing and no way to ask for every
+    run.
+
+    And it answers to the client that SUBMITTED that run. `EM3C-CROSSING-0001`,
+    F-C5-CROSS-CLIENT-READ: holding a run id used to be enough, whoever was holding it, so one
+    client could read what this gateway wrote down about another client's work. Who is asking
+    arrives on standard input, never as an argument, because a credential on a command line is one
+    anybody listing processes can read. A run belonging to somebody else is answered exactly like
+    a run that does not exist -- same words, same status -- because telling those apart would let
+    anybody holding a token learn which run ids are real.
 
     What it CANNOT print is the challenge itself. The value is not in the ledger: only its digest
     was ever written there, and the value is dropped when the run ends. That is what makes this a
@@ -583,8 +591,12 @@ def cmd_challenge(args) -> int:
     produce the value, they can only be told whether a value they already hold is the right one.
     """
     import json
+    import sys as _sys
 
+    from agentnode_sdk.gateway.identity import GatewayState
     from agentnode_sdk.gateway.ledger import Ledger
+
+    from agentnode_sdk import __version__ as version
 
     root = _root(args)
     run_id = str(getattr(args, "run", "") or "")
@@ -592,8 +604,26 @@ def cmd_challenge(args) -> int:
         print()
         print("  Which run? Pass --run <id>. This answers about one run and never lists them.")
         return 2
+
+    # Who is asking. `EM3C-CROSSING-0001`, F-C5-CROSS-CLIENT-READ: holding a run id was enough to
+    # read that run's binding, so anybody who could run this command could read about a run that
+    # was not theirs. The token arrives on STANDARD INPUT and never as an argument -- a credential
+    # on a command line is one anybody listing processes can read, which is the same objection
+    # that put the challenge on stdin.
+    token = (_sys.stdin.read() if not _sys.stdin.isatty() else "").strip()
+    if not token:
+        print()
+        print("  Who is asking? This answers to the client that submitted the run. Send its")
+        print("  token on standard input -- never as an argument.")
+        return 2
+
+    entry = Ledger(root / "ledger.json").run_entry(run_id) or {}
+    asking = GatewayState(root, version=str(version)).client_id_for(token)
+    owner = str(entry.get("owner_client_id") or "")
     binding = Ledger(root / "ledger.json").challenge_for(run_id)
-    if binding is None:
+    # A run belonging to somebody else is answered exactly like a run that does not exist. Telling
+    # them apart would let anyone with a token find out which run ids are real.
+    if binding is None or not asking or not owner or asking != owner:
         print()
         print(f"  This gateway has nothing written down for a run {run_id}.")
         return 1

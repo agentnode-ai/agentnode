@@ -14,7 +14,9 @@ starts, and forgets the value when the run ends.
 from __future__ import annotations
 
 import inspect
+import io
 import json
+import sys
 import time
 
 import pytest
@@ -95,7 +97,7 @@ class TestWhatIsWrittenDownAndWhatIsNot:
 class TestWhatMakesItHoldAndWhatDoesNot:
 
     ASKED = dict(run_id="r" * 32, gateway_id="gw-1", effective_policy_sha256="p" * 64,
-                 value="a1b2c3d4e5f60718")
+                 value="a1b2c3d4e5f60718", backend_instance="StandInBackend:abcd")
 
     def test_the_one_that_was_issued_holds(self):
         assert ch.why_it_does_not_hold(a_binding(), **self.ASKED) == ""
@@ -130,6 +132,25 @@ class TestWhatMakesItHoldAndWhatDoesNot:
         why = ch.why_it_does_not_hold(binding, **{**self.ASKED, "value": ""})
         assert "brought its own command" in why
 
+    def test_another_instance(self):
+        """`EM3C-CROSSING-0001`, F-C2-INSTANCE-NOT-VERIFIED. The binding names one executing
+        instance and the thing that ran said it was in another. Everything else agrees."""
+        why = ch.why_it_does_not_hold(a_binding(backend_instance="StandInBackend:9999"),
+                                      **self.ASKED)
+        assert "was to be executed by" in why and "StandInBackend:9999" in why
+
+    def test_what_ran_did_not_say_which_instance(self):
+        """Then the instance in the binding is a field nobody checked, and saying it holds would
+        be crediting a document that agrees only with itself."""
+        why = ch.why_it_does_not_hold(a_binding(), **{**self.ASKED, "backend_instance": ""})
+        assert "not something anybody checked" in why
+
+    def test_the_instance_is_not_something_a_caller_can_leave_out(self):
+        """Not a default that quietly passes: leaving it out is a TypeError at the call."""
+        import inspect as _inspect
+        parameter = _inspect.signature(ch.why_it_does_not_hold).parameters["backend_instance"]
+        assert parameter.default is _inspect.Parameter.empty
+
     def test_nothing_came_back(self):
         why = ch.why_it_does_not_hold(a_binding(), **{**self.ASKED, "value": ""})
         assert "nothing came back" in why
@@ -144,14 +165,16 @@ class TestWhereTheValueTravels:
         joined = " ".join(command)
         assert "sys.stdin.readline()" in joined
         assert ch.INSIDE_THE_SANDBOX in joined
-        # The NAME is on the command line, which is what a name is for. No value is.
+        assert ch.INSTANCE_INSIDE_THE_SANDBOX in joined
+        # The NAMES are on the command line, which is what a name is for. No value is.
         assert "AGENTNODE_RUN_CHALLENGE" in joined
 
     def test_a_job_that_brought_its_own_command_gets_no_bootstrap(self):
         assert ch.bootstrap(command_was_given=True) == []
 
-    def test_what_the_sandbox_reads_is_the_value_then_the_job(self):
-        assert ch.on_stdin("abcd", "cGF5bG9hZA==") == "abcd\ncGF5bG9hZA==".replace("\\n", "\n")
+    def test_what_the_sandbox_reads_is_the_value_then_where_it_ran_then_the_job(self):
+        read = ch.on_stdin("abcd", "Backend:9f", "cGF5bG9hZA==")
+        assert read.split(chr(10)) == ["abcd", "Backend:9f", "cGF5bG9hZA=="]
 
     def test_the_bootstrap_really_does_what_it_says(self):
         """Run it, for real, as a child process -- with the challenge on its standard input and
@@ -161,14 +184,17 @@ class TestWhereTheValueTravels:
         import sys
 
         job = base64.b64encode(
-            b"import os;print('SAW', os.environ['" + ch.INSIDE_THE_SANDBOX.encode() + b"'])"
+            b"import os;print('SAW', os.environ['" + ch.INSIDE_THE_SANDBOX.encode() + b"']);"
+            b"print('IN', os.environ['" + ch.INSTANCE_INSIDE_THE_SANDBOX.encode() + b"'])"
         ).decode("ascii")
         command = ch.bootstrap(command_was_given=False)
         done = subprocess.run([sys.executable] + command[1:], capture_output=True, timeout=120,
-                              input=ch.on_stdin("a1b2c3d4", job).encode("utf-8"))
+                              input=ch.on_stdin("a1b2c3d4", "Backend:9f",
+                                                job).encode("utf-8"))
         out = done.stdout.decode("utf-8", "replace")
         assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
         assert "SAW a1b2c3d4" in out
+        assert "IN Backend:9f" in out
 
     def test_the_gateway_puts_no_value_in_the_spec(self, a_gateway):
         """The spec is what becomes the runtime's command line. Nothing of the challenge is in
@@ -279,33 +305,96 @@ class TestWhatTheGatewayDoes:
 class TestTheReadOnlySurface:
     """`EM3C-CROSSING-DECISION-0001`, F-A-READ-SURFACE."""
 
-    def command(self, root, **kw):
+    def command(self, root, token="", **kw):
+        """The read-only command, with who is asking on ITS STANDARD INPUT.
+
+        `EM3C-CROSSING-0001`, F-C5-CROSS-CLIENT-READ: holding a run id used to be enough to read
+        that run's binding. The token goes here rather than in `kw` because a credential on a
+        command line is one anybody listing processes can read.
+        """
         import types
 
         from agentnode_sdk.cli import gateway_commands
 
-        return gateway_commands.cmd_challenge(
-            types.SimpleNamespace(dir=str(root), **kw))
+        was = sys.stdin
+        sys.stdin = io.StringIO(token)
+        try:
+            return gateway_commands.cmd_challenge(
+                types.SimpleNamespace(dir=str(root), **kw))
+        finally:
+            sys.stdin = was
 
     def test_it_answers_about_the_run_it_is_asked_about(self, a_gateway, capsys):
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
         gc.submit(conn, b"print('x')", granted=_granted(service), run_id="asked-about")
         gc.wait_for(conn, "asked-about", timeout=20)
-        assert self.command(state.root, run="asked-about") == 0
+        assert self.command(state.root, token=conn.token, run="asked-about") == 0
         printed = json.loads(capsys.readouterr().out)
         assert printed["run_id"] == "asked-about"
         assert set(printed) == set(ch.FIELD_NAMES)
 
     def test_it_refuses_to_answer_about_no_run_in_particular(self, a_gateway, capsys):
         base, state, _service, _backend = a_gateway
-        assert self.command(state.root, run="") == 2
+        assert self.command(state.root, token="anything", run="") == 2
         assert "one run" in capsys.readouterr().out
 
     def test_a_run_it_has_nothing_for(self, a_gateway, capsys):
         base, state, _service, _backend = a_gateway
-        assert self.command(state.root, run="never-heard-of-it") == 1
+        conn = _paired(base, state)
+        assert self.command(state.root, token=conn.token, run="never-heard-of-it") == 1
         assert "nothing written down" in capsys.readouterr().out
+
+    def test_another_client_is_told_exactly_what_a_stranger_is_told(self, a_gateway, capsys):
+        """`EM3C-CROSSING-0001`, F-C5-CROSS-CLIENT-READ. One client submits, another asks. The
+        answer is the one a run that does not exist gets, word for word and code for code --
+        telling the two apart would let anybody with a token find out which run ids are real."""
+        base, state, service, backend = a_gateway
+        mine = _paired(base, state)
+        yours = _paired(base, state)
+        gc.submit(mine, b"print('x')", granted=_granted(service), run_id="mine-alone")
+        gc.wait_for(mine, "mine-alone", timeout=20)
+
+        assert self.command(state.root, token=yours.token, run="mine-alone") == 1
+        about_mine = capsys.readouterr().out
+        assert self.command(state.root, token=yours.token, run="no-such-run") == 1
+        about_nothing = capsys.readouterr().out
+        assert about_mine == about_nothing.replace("no-such-run", "mine-alone")
+        assert "challenge_sha256" not in about_mine
+
+        # And the client that did submit it is still answered.
+        assert self.command(state.root, token=mine.token, run="mine-alone") == 0
+        assert json.loads(capsys.readouterr().out)["run_id"] == "mine-alone"
+
+    def test_a_token_this_gateway_never_issued(self, a_gateway, capsys):
+        base, state, service, backend = a_gateway
+        conn = _paired(base, state)
+        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="not-for-you")
+        gc.wait_for(conn, "not-for-you", timeout=20)
+        assert self.command(state.root, token="made-up-token", run="not-for-you") == 1
+        assert "nothing written down" in capsys.readouterr().out
+
+    def test_it_refuses_to_answer_nobody_in_particular(self, a_gateway, capsys):
+        base, state, service, backend = a_gateway
+        conn = _paired(base, state)
+        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="who-is-asking")
+        gc.wait_for(conn, "who-is-asking", timeout=20)
+        assert self.command(state.root, token="", run="who-is-asking") == 2
+        assert "Who is asking" in capsys.readouterr().out
+
+    def test_who_is_asking_is_never_an_argument(self):
+        """A credential on a command line is one anybody listing processes can read."""
+        import inspect as look
+
+        from agentnode_sdk.cli import gateway_commands, main
+
+        source = look.getsource(gateway_commands.cmd_challenge)
+        assert "stdin" in source
+        for shape in ('args, "token"', "args.token", '"--token"'):
+            assert shape not in source, shape
+        built = look.getsource(main.main)
+        adding = built.split('gw_challenge = ')[1].split("gw_egress = ")[0]
+        assert "--run" in adding and "--token" not in adding
 
     def test_it_cannot_be_asked_to_list(self):
         import inspect as look
@@ -317,29 +406,55 @@ class TestTheReadOnlySurface:
             assert shape not in source, shape
 
     def test_it_changes_nothing(self, a_gateway):
+        """Everything under the state directory, not just the ledger.
+
+        Answering who is asking means this command opens the gateway's own state, so what has to
+        be established is that nothing under that directory came out different -- not that one
+        file in it did not."""
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
         gc.submit(conn, b"print('x')", granted=_granted(service), run_id="unchanged")
         gc.wait_for(conn, "unchanged", timeout=20)
-        ledger = state.root / "ledger.json"
+        from agentnode_sdk.gateway.protocol import is_terminal
+
+        # The worker's LAST write is the run's terminal state. Reading the directory while that
+        # is still in flight would be this test breaking the gateway rather than watching it:
+        # on Windows an open read handle blocks the rename an atomic write ends with.
+        for _ in range(200):
+            entry = service.ledger.run_entry("unchanged") or {}
+            if is_terminal(str(entry.get("state") or "")):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("the run never reached a state the gateway wrote down")
 
         def settled():
-            """The bytes on disk, once the gateway has finished putting them there.
+            """Every file under the state directory, once the gateway has stopped writing.
 
-            Windows will not let a file be read while it is being replaced, and the worker
-            writes the run's last state after the answer comes back. A retry here is about that
-            and nothing else -- what is being established is that the READ-ONLY command changed
-            nothing, which needs a before and an after that are both readable."""
-            for _ in range(50):
+            Windows will not let a file be read while it is being replaced, and the worker writes
+            the run's last state after the answer comes back. Read until two whole readings agree,
+            so that a before and an after are each a moment rather than a smear."""
+            was = None
+            for _ in range(200):
                 try:
-                    return ledger.read_bytes()
+                    now = {str(p.relative_to(state.root)): p.read_bytes()
+                           for p in sorted(state.root.rglob("*")) if p.is_file()}
                 except PermissionError:
                     time.sleep(0.05)
-            return ledger.read_bytes()
+                    continue
+                if now == was:
+                    return now
+                was = now
+                time.sleep(0.05)
+            raise AssertionError("the gateway never stopped writing to its state directory")
 
         before = settled()
-        self.command(state.root, run="unchanged")
-        assert settled() == before
+        assert "ledger.json" in before
+        self.command(state.root, token=conn.token, run="unchanged")
+        after = settled()
+        assert set(after) == set(before), set(after) ^ set(before)
+        for name, body in before.items():
+            assert after[name] == body, name
 
     def test_the_ledger_reader_answers_about_one_run(self):
         from agentnode_sdk.gateway import ledger as module

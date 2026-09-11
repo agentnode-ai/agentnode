@@ -295,8 +295,13 @@ class AGatewaysOwnRecord(channels.TheGatewaysOwnRecord):
     the production `challenge` module built, never one written here.
     """
 
-    def __init__(self, binding=None, trouble="", answers_with=None):
-        super().__init__(ask=self._instead, gateway_bin="/gw", state_dir="/state", as_user="gw")
+    #: The shape this gateway issues: `secrets.token_urlsafe`. A stand-in that used some
+    #: other shape would be testing the guard rather than the channel.
+    TOKEN = "Tk3n-urlsafe_LOOKS-LIKE-THIS"
+
+    def __init__(self, binding=None, trouble="", answers_with=None, token=TOKEN):
+        super().__init__(ask=self._instead, gateway_bin="/gw", state_dir="/state", as_user="gw",
+                         token=token)
         self.binding = binding
         self.trouble = trouble
         self.answers_with = answers_with
@@ -318,11 +323,12 @@ class TestTheOtherDirectionIsAChallengeThisGatewayIssued:
 
     PAYLOAD = b"print(os.environ['AGENTNODE_RUN_CHALLENGE'])"
     GATEWAY = "gw-1"
+    INSTANCE = "Backend:abcd"
 
     def issued(self, value, **changes):
         from agentnode_sdk.gateway import challenge as ch
 
-        made = dict(run_id="r" * 32, gateway_id=self.GATEWAY, backend_instance="Backend:abcd",
+        made = dict(run_id="r" * 32, gateway_id=self.GATEWAY, backend_instance=self.INSTANCE,
                     effective_policy_sha256="p" * 64, value=value, delivered=True)
         made.update({k: v for k, v in changes.items() if k in made})
         binding = ch.bind(**made)
@@ -331,10 +337,15 @@ class TestTheOtherDirectionIsAChallengeThisGatewayIssued:
                 binding = ch.Binding(**{**binding.as_dict(), field: value_of})
         return binding
 
-    def answered(self, a_record, value, run_id=None, policy="p" * 64):
+    def answered(self, a_record, value, run_id=None, policy="p" * 64, instance=INSTANCE):
         from agentnode_sdk.gateway import challenge as ch
 
-        record = a_record(ch.ECHO + " " + value if value else "nothing came back")
+        # What the JOB printed: the value it was given, and the instance it found itself in.
+        printed = "nothing came back"
+        if value:
+            printed = (ch.ECHO + " " + value + chr(10)
+                       + ch.ECHO_INSTANCE + " " + instance)
+        record = a_record(printed)
         record = dict(record)
         record["effective_policy_sha256"] = policy
         if run_id:
@@ -365,10 +376,13 @@ class TestTheOtherDirectionIsAChallengeThisGatewayIssued:
         ledger = AGatewaysOwnRecord(self.issued(value, run_id=gateway.record["run_id"]))
         self.crossing(gateway, ledger)
         assert len(ledger.asked_for) == 1
-        asked = ledger.asked_for[0]
+        # The one pipe is how WHO IS ASKING reaches the far side's standard input. What is
+        # checked is the command itself, which is everything after it.
+        before, _, asked = ledger.asked_for[0].partition("|")
+        assert before.startswith("printf ") and "|" not in asked
         assert "--run " + gateway.record["run_id"] in asked
         assert "gateway challenge" in asked
-        for shape in ("grep", "|", "--all", "list"):
+        for shape in ("grep", "--all", "list", "cat ", "ledger.json"):
             assert shape not in asked, shape
 
     def test_a_value_that_is_not_the_one_issued_fails(self, a_record):
@@ -440,6 +454,52 @@ class TestTheOtherDirectionIsAChallengeThisGatewayIssued:
                             payload=b"print('" + value.encode() + b"')")
         assert one.decidable is True and one.holds is False
         assert "could have produced it" in one.why
+
+    def test_a_binding_naming_another_executing_instance_fails(self, a_record):
+        """`EM3C-CROSSING-0001`, F-C2-INSTANCE-NOT-VERIFIED: the binding said which instance
+        would run this and nothing was ever held against it, so a binding from a different
+        executing instance was credited as long as its other fields agreed."""
+        value = "a1b2c3d4e5f60718"
+        gateway = self.answered(a_record, value, instance="Backend:9999")
+        ledger = AGatewaysOwnRecord(self.issued(value, run_id=gateway.record["run_id"]))
+        one = self.crossing(gateway, ledger)
+        assert one.decidable is True and one.holds is False
+        assert "was to be executed by" in one.why
+
+    def test_an_answer_that_does_not_say_where_it_ran_fails(self, a_record):
+        """Then the instance in the binding is a field nobody checked."""
+        value = "a1b2c3d4e5f60718"
+        gateway = self.answered(a_record, value, instance="")
+        ledger = AGatewaysOwnRecord(self.issued(value, run_id=gateway.record["run_id"]))
+        one = self.crossing(gateway, ledger)
+        assert one.decidable is True and one.holds is False
+        assert "not something anybody checked" in one.why
+
+    def test_who_is_asking_is_sent_but_is_not_written_down(self, a_record):
+        """`EM3C-CROSSING-0001`, F-C5-CROSS-CLIENT-READ put a token on this read. It goes on the
+        far side's STANDARD INPUT, and the record of what was asked has a word where it was:
+        an evidence file carrying a live credential would be worse than the thing it evidences."""
+        value = "a1b2c3d4e5f60718"
+        gateway = self.answered(a_record, value)
+        ledger = AGatewaysOwnRecord(self.issued(value, run_id=gateway.record["run_id"]))
+        said = ledger.for_run(gateway.record["run_id"])
+        assert AGatewaysOwnRecord.TOKEN in ledger.asked_for[0]
+        assert " --run" not in ledger.asked_for[0].split("|")[0]
+        assert AGatewaysOwnRecord.TOKEN not in said.asked
+        assert "<the client's own token>" in said.asked
+
+    def test_a_token_that_is_not_the_shape_this_gateway_issues_is_not_sent(self, a_record):
+        value = "a1b2c3d4e5f60718"
+        ledger = AGatewaysOwnRecord(self.issued(value), token="oops'; rm -rf /")
+        said = ledger.for_run("r" * 32)
+        assert said.answered is False
+        assert ledger.asked_for == []
+        assert "not the shape this gateway issues" in said.trouble
+
+    def test_the_read_channel_will_not_be_built_without_one(self):
+        """Not a default that quietly sends nothing: leaving it out is a TypeError."""
+        taken = inspect.signature(channels.TheGatewaysOwnRecord.__init__).parameters["token"]
+        assert taken.default is inspect.Parameter.empty
 
     def test_a_record_that_cannot_be_read_decides_nothing(self, a_record):
         value = "a1b2c3d4e5f60718"

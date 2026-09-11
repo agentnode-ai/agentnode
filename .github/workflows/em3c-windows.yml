@@ -149,7 +149,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_challenge.py 2>&1 | tee challenge.txt
-          grep -qE "^37 passed" challenge.txt || {
+          grep -qE "^44 passed" challenge.txt || {
             echo "the challenge tests did not all pass"; exit 1; }
 
       - name: What a channel knows, on Windows
@@ -157,7 +157,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_verification_channels.py 2>&1 | tee channels.txt
-          grep -qE "^37 passed" channels.txt || {
+          grep -qE "^42 passed" channels.txt || {
             echo "the channel tests did not all pass"; exit 1; }
 
       - name: What this lane established

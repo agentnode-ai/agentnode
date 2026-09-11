@@ -1010,7 +1010,7 @@ class GatewayService:
         # command line is one anybody listing processes on this host can read.
         command = list(request.command) or ch.bootstrap(command_was_given=False)
         if record.challenge:
-            payload = ch.on_stdin(record.challenge, payload)
+            payload = ch.on_stdin(record.challenge, self.instance, payload)
         spec = ProcessSpec(
             command=command,
             network=mode,
