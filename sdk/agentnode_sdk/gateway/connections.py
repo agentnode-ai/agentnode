@@ -44,6 +44,10 @@ class SavedGateway:
     token: str
     gateway_id: str = ""
     fingerprint: str = ""
+    #: The certificate this client paired with. Not a secret -- a certificate is public -- and it
+    #: is what makes every later connection be to the same gateway rather than to whatever is
+    #: answering at that address.
+    certificate_sha256: str = ""
 
     def redacted(self) -> dict:
         """Everything except the credential. This is what may be printed or logged."""
@@ -52,6 +56,7 @@ class SavedGateway:
             "url": self.url,
             "gateway_id": self.gateway_id,
             "fingerprint": self.fingerprint,
+            "certificate_sha256": self.certificate_sha256,
         }
 
 
@@ -92,6 +97,7 @@ class ConnectionStore:
             token=str(entry.get("token", "")),
             gateway_id=str(entry.get("gateway_id", "")),
             fingerprint=str(entry.get("fingerprint", "")),
+            certificate_sha256=str(entry.get("certificate_sha256", "")),
         )
 
     def default_name(self) -> str:
@@ -129,6 +135,7 @@ class ConnectionStore:
             "token": saved.token,
             "gateway_id": saved.gateway_id,
             "fingerprint": saved.fingerprint,
+            "certificate_sha256": saved.certificate_sha256,
         }
         if make_default or not data["default"]:
             data["default"] = saved.name

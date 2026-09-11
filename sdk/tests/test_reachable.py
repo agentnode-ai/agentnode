@@ -1,0 +1,332 @@
+"""Reaching a gateway without a tunnel, and knowing which gateway was reached.
+
+Everything the remote gateway established so far was reached through an ssh tunnel by one operator
+who had a key. A sandbox people are meant to be able to use cannot be reached that way, and the
+three routes this build already documents each start by requiring something: a private tunnel, a
+domain name, or a certificate you already have.
+
+What every client already does before it can send anything is pair, out of band, with something a
+person handed over. So that something carries the certificate's digest, and the client pins it
+before it sends the code. What authenticates the gateway is then what authorised the client.
+
+The TLS here is real: a real certificate this build made, a real server serving it, and a real
+handshake. What is not real is a network -- everything is on loopback, because what is being
+established is which certificate a client will talk to, and that is the same question on any wire.
+"""
+from __future__ import annotations
+
+import http.server
+import json
+import ssl
+import threading
+
+import pytest
+
+from agentnode_sdk.gateway import certificate as tls
+from agentnode_sdk.gateway import client as gc
+from agentnode_sdk.gateway.invitation import NotAnInvitation, read, write
+from agentnode_sdk.gateway.pinning import PinnedConnection, WrongCertificate, opener_for
+
+
+@pytest.fixture()
+def a_certificate(tmp_path):
+    cert, key, pin = tls.make(tmp_path / "one", "127.0.0.1")
+    return cert, key, pin
+
+
+@pytest.fixture()
+def another_certificate(tmp_path):
+    cert, key, pin = tls.make(tmp_path / "two", "127.0.0.1")
+    return cert, key, pin
+
+
+class ASmallServer:
+    """Something that serves TLS and counts what reached it.
+
+    It answers everything the same way, because what these tests are about is whether a request
+    arrived at all -- not what came back.
+    """
+
+    def __init__(self, cert, key):
+        self.reached: list[str] = []
+        server = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_a):
+                pass
+
+            def _answer(self):
+                server.reached.append(self.path)
+                body = json.dumps({"ok": True}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = _answer
+            do_POST = _answer
+
+        self.http = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(cert), str(key))
+        self.http.socket = context.wrap_socket(self.http.socket, server_side=True)
+        self.thread = threading.Thread(target=self.http.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def url(self) -> str:
+        return "https://127.0.0.1:%d" % self.http.server_address[1]
+
+    def stop(self):
+        self.http.shutdown()
+        self.thread.join(timeout=10)
+
+
+# --------------------------------------------------------- the certificate is the gateway's own
+
+
+class TestTheCertificateIsTheGatewaysOwn:
+
+    def test_it_is_made_where_the_gateway_keeps_its_secrets(self, tmp_path):
+        cert, key, _pin = tls.make(tmp_path, "sandbox.example")
+        assert cert.parent == tmp_path and key.parent == tmp_path
+        assert cert.name == tls.CERT_NAME and key.name == tls.KEY_NAME
+
+    def test_the_key_is_readable_by_nobody_else(self, tmp_path):
+        import os
+        import sys
+
+        _cert, key, _pin = tls.make(tmp_path, "sandbox.example")
+        if sys.platform == "win32":
+            pytest.skip("this platform's file modes are advisory; the Linux lane checks them")
+        assert (os.stat(key).st_mode & 0o077) == 0, "somebody else can read this gateway's key"
+
+    def test_the_pin_is_over_the_certificate_and_not_over_the_file(self, tmp_path):
+        """PEM is a text wrapper. A pin that moved when a file was copied through the wrong tool
+        would be a pin nobody could rely on."""
+        cert, _key, pin = tls.make(tmp_path, "sandbox.example")
+        text = cert.read_bytes()
+        assert tls.fingerprint(text) == pin
+        assert tls.fingerprint(text.replace(b"\n", b"\r\n")) == pin
+
+    def test_a_key_that_is_not_its_key(self, tmp_path):
+        cert, _key, _pin = tls.make(tmp_path / "a", "one.example")
+        _other, key, _p = tls.make(tmp_path / "b", "two.example")
+        assert tls.belongs_together(cert, key) is False
+
+    def test_and_one_that_is(self, tmp_path):
+        cert, key, _pin = tls.make(tmp_path, "one.example")
+        assert tls.belongs_together(cert, key) is True
+
+    def test_it_cannot_sign_another_certificate(self, tmp_path):
+        """A client pinning it is pinning one key, not an authority that could issue more."""
+        from cryptography import x509
+
+        cert, _key, _pin = tls.make(tmp_path, "one.example")
+        loaded = x509.load_pem_x509_certificate(cert.read_bytes())
+        basic = loaded.extensions.get_extension_for_class(x509.BasicConstraints).value
+        assert basic.ca is False
+
+    def test_two_gateways_are_two_certificates(self, tmp_path):
+        _c1, _k1, one = tls.make(tmp_path / "a", "same.example")
+        _c2, _k2, two = tls.make(tmp_path / "b", "same.example")
+        assert one != two
+
+
+# ------------------------------------------------------- the client knows which gateway it is
+
+
+class TestTheClientKnowsWhichGatewayItReached:
+
+    def test_it_talks_to_the_certificate_it_was_told_about(self, a_certificate):
+        cert, key, pin = a_certificate
+        server = ASmallServer(cert, key)
+        try:
+            status, _body = gc._get(server.url + "/v1/hello", pin=pin)
+            assert status == 200
+            assert server.reached == ["/v1/hello"]
+        finally:
+            server.stop()
+
+    def test_and_to_nothing_else(self, a_certificate, another_certificate):
+        """The request is refused, and NOTHING reaches the far side -- not the path, not a
+        header, not a byte."""
+        cert, key, _pin = a_certificate
+        _other, _otherkey, other_pin = another_certificate
+        server = ASmallServer(cert, key)
+        try:
+            with pytest.raises(gc.GatewayClientError) as caught:
+                gc._get(server.url + "/v1/hello", pin=other_pin)
+            assert "different certificate" in str(caught.value)
+            assert server.reached == [], "something was sent to a gateway it did not recognise"
+        finally:
+            server.stop()
+
+    def test_a_connection_with_nothing_to_expect_refuses_to_be_made(self, a_certificate):
+        cert, key, _pin = a_certificate
+        server = ASmallServer(cert, key)
+        try:
+            connection = PinnedConnection("127.0.0.1", server.http.server_address[1], pin="")
+            with pytest.raises(WrongCertificate) as caught:
+                connection.connect()
+            assert "nothing to check" in str(caught.value)
+        finally:
+            server.stop()
+
+    def test_the_check_happens_before_anything_is_written(self, a_certificate,
+                                                          another_certificate):
+        """Established rather than asserted: the connection is opened and then asked to send,
+        and the refusal comes from opening it."""
+        cert, key, _pin = a_certificate
+        _o, _ok, other_pin = another_certificate
+        server = ASmallServer(cert, key)
+        try:
+            connection = PinnedConnection("127.0.0.1", server.http.server_address[1],
+                                          pin=other_pin)
+            with pytest.raises(WrongCertificate):
+                connection.connect()
+            assert server.reached == []
+        finally:
+            server.stop()
+
+    def test_the_permissive_context_cannot_be_had_without_the_check(self):
+        """The context does not verify a chain, because the pin is the verification. One like
+        that is only safe with the check attached, so the two are not separable."""
+        import inspect
+
+        from agentnode_sdk.gateway import pinning
+
+        source = inspect.getsource(pinning)
+        assert "CERT_NONE" in source
+        # It is built inside the connection that performs the check, and there is no function
+        # here that hands one out.
+        assert source.count("ssl.SSLContext(") == 1
+        assert "def context(" not in source
+        made = inspect.getsource(pinning.PinnedConnection.__init__)
+        assert "CERT_NONE" in made
+
+    def test_a_pin_is_to_a_key_and_says_so(self):
+        import inspect
+
+        from agentnode_sdk.gateway import pinning
+
+        said = inspect.getdoc(pinning) or ""
+        assert "pin is to a KEY" in said
+        assert "reason to open a port" in said
+
+
+# ----------------------------------------------------------------------- what is handed over
+
+
+class TestWhatIsHandedOver:
+
+    def test_it_carries_where_the_code_and_what_to_expect(self):
+        one = write("https://sandbox.example:8099", "ABCD-EFGH-IJKL", "a" * 64)
+        assert read(one) == ("https://sandbox.example:8099", "ABCD-EFGH-IJKL", "a" * 64)
+
+    def test_an_address_full_of_colons_survives(self):
+        """An IPv6 literal. A reader that split on punctuation would work until somebody
+        deployed it properly."""
+        where = "https://[2a01:4f8:1c1a:47dd::1]:8099"
+        assert read(write(where, "CODE", "b" * 64))[0] == where
+
+    def test_one_with_nothing_to_expect_is_refused(self):
+        """Not treated as "no pinning wanted": accepting it would make the check optional in
+        exactly the situation where it matters."""
+        import base64
+
+        body = json.dumps({"where": "https://x", "code": "y"}).encode()
+        without = "agentnode-invite-1." + base64.urlsafe_b64encode(body).decode().rstrip("=")
+        with pytest.raises(NotAnInvitation) as caught:
+            read(without)
+        assert "which certificate to expect" in str(caught.value)
+
+    def test_one_that_was_cut_short(self):
+        one = write("https://sandbox.example:8099", "CODE", "c" * 64)
+        with pytest.raises(NotAnInvitation) as caught:
+            read(one[:40])
+        assert "cut short" in str(caught.value)
+
+    def test_something_that_is_not_one_at_all(self):
+        with pytest.raises(NotAnInvitation) as caught:
+            read("https://sandbox.example:8099")
+        assert "does not look like an invitation" in str(caught.value)
+
+    def test_a_certificate_that_is_not_a_digest(self):
+        import base64
+
+        body = json.dumps({"where": "https://x", "code": "y", "certificate": "nope"}).encode()
+        odd = "agentnode-invite-1." + base64.urlsafe_b64encode(body).decode().rstrip("=")
+        with pytest.raises(NotAnInvitation) as caught:
+            read(odd)
+        assert "not a sha256" in str(caught.value)
+
+    def test_writing_one_without_a_certificate_is_refused_at_the_gateway_too(self):
+        with pytest.raises(NotAnInvitation):
+            write("https://sandbox.example:8099", "CODE", "")
+
+    def test_what_it_refuses_never_repeats_what_it_was_given(self):
+        """An error message is something people paste into issues."""
+        secret = "d" * 64
+        one = write("https://sandbox.example:8099", "THE-SECRET-CODE", secret)
+        try:
+            read(one[:45])
+        except NotAnInvitation as exc:
+            assert "THE-SECRET-CODE" not in str(exc)
+            assert secret not in str(exc)
+
+
+# ------------------------------------------------------------------- pairing without a shell
+
+
+class TestPairingDoesNotNeedAShell:
+
+    def test_what_the_operator_runs_and_what_the_person_runs(self):
+        """Two commands, neither of which needs the other machine."""
+        import inspect
+
+        from agentnode_sdk.cli import gateway_commands, remote_commands
+
+        issuing = inspect.getsource(gateway_commands.cmd_pair)
+        assert "an_invitation(where, code, pin)" in issuing
+        taking = inspect.getsource(remote_commands.cmd_connect)
+        assert "an_invitation(given)" in taking
+        for shape in ("ssh", "scp", "tailscale"):
+            assert shape not in taking, shape
+
+    def test_the_code_is_still_single_use_and_still_expires(self):
+        from agentnode_sdk.gateway.identity import PAIRING_TTL_SECONDS, new_pairing_code
+
+        assert PAIRING_TTL_SECONDS <= 15 * 60
+        assert len({new_pairing_code() for _ in range(200)}) == 200
+
+    def test_an_invitation_is_not_written_into_anything(self):
+        """It is the thing that would let somebody else pair as you."""
+        import inspect
+
+        from agentnode_sdk.cli import gateway_commands
+
+        source = inspect.getsource(gateway_commands.cmd_pair)
+        for shape in ("logging.", "logger", "open(", ".write("):
+            assert shape not in source, shape
+
+
+# --------------------------------------------------------------- what this does not establish
+
+
+class TestWhatThisDoesNotEstablish:
+
+    def test_the_limits_are_where_a_reader_will_meet_them(self):
+        import inspect
+
+        from agentnode_sdk.gateway import certificate, pinning
+
+        for module, must_say in (
+            (pinning, ("pin is to a KEY", "reason to open a port")),
+            (certificate, ("not who owns it", "reason to open a port",
+                           "pin to a KEY")),
+        ):
+            said = inspect.getdoc(module) or ""
+            for phrase in must_say:
+                assert phrase in said, (module.__name__, phrase)

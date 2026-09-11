@@ -25,6 +25,9 @@ A pin is to a KEY. It says this is the thing that issued your invitation. It doe
 it, what organisation it belongs to, or that anyone has vouched for it -- and the hostname in the
 certificate is not checked, because the pin is stronger than a name and the name may legitimately
 be an address today and a domain tomorrow.
+
+None of this is a reason to open a port. Whether a gateway is reachable at all is arranged by
+whoever runs the machine, and a client that can pin a certificate still cannot make one answer.
 """
 from __future__ import annotations
 
@@ -34,8 +37,16 @@ import ssl
 import urllib.request
 
 
-class WrongCertificate(Exception):
-    """The far side is not the gateway this client paired with."""
+class WrongCertificate(OSError):
+    """The far side is not the gateway this client paired with.
+
+    An `OSError` on purpose. `connect()` is reached lazily from `send()`, inside urllib's own
+    `do_open`, which wraps an OSError from there into a `URLError` -- so being one means this
+    arrives at the caller as the same shape every other connection failure has, rather than
+    tearing out through a stack that was not expecting it. It is still told apart from an
+    ordinary network problem where it is caught, because presenting it as one would invite
+    somebody to retry until it worked.
+    """
 
 
 class PinnedConnection(http.client.HTTPSConnection):

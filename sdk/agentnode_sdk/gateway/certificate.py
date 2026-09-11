@@ -19,6 +19,9 @@ what a public web certificate is for; the two are not in competition, and an ope
 real certificate can still use one.
 
 It is also not a reason to open a port. Reachability is arranged by whoever runs the machine.
+
+What a client does with it is a pin to a KEY, in `gateway/pinning.py`, and the limits of that are
+stated there.
 """
 from __future__ import annotations
 

@@ -36,7 +36,8 @@ def _connection(args):
         return None, None
     return saved, GatewayConnection(base_url=saved.url, token=saved.token,
                                     gateway_id=saved.gateway_id,
-                                    fingerprint=saved.fingerprint)
+                                    fingerprint=saved.fingerprint,
+                                    certificate_sha256=saved.certificate_sha256)
 
 
 def _no_gateway() -> int:
@@ -67,9 +68,30 @@ def cmd_connect(args) -> int:
         InsecureTransportError,
     )
 
-    url = str(args.url).rstrip("/")
+    from agentnode_sdk.gateway.invitation import NotAnInvitation, PREFIX
+    from agentnode_sdk.gateway.invitation import read as an_invitation
+
+    given = str(args.url).strip()
+    code = str(getattr(args, "code", "") or "")
+    expect = ""
+    if given.startswith(PREFIX):
+        try:
+            given, code, expect = an_invitation(given)
+        except NotAnInvitation as exc:
+            print()
+            print(f"  {bold('That invitation could not be used.')}")
+            print(f"  {exc}")
+            return 2
+    elif not code:
+        print()
+        print("  Paste the invitation you were given, or pass the address and --code:")
+        print("    agentnode remote connect agentnode-invite-1....")
+        print("    agentnode remote connect https://sandbox.example:8099 --code ABCD-EFGH-IJKL")
+        return 2
+
+    url = given.rstrip("/")
     try:
-        hello = gc.hello(url)
+        hello = gc.hello(url, pin=expect)
     except InsecureTransportError as exc:
         print()
         print(f"  {bold('Did not connect.')}")
@@ -84,7 +106,8 @@ def cmd_connect(args) -> int:
         return 1
 
     try:
-        connection = gc.pair(url, str(args.code), client_name=getattr(args, "as_name", "") or "")
+        connection = gc.pair(url, code, client_name=getattr(args, "as_name", "") or "",
+                             certificate_sha256=expect)
     except gc.GatewayClientError as exc:
         print()
         print(f"  {bold('That did not pair.')} {exc}")
@@ -93,13 +116,17 @@ def cmd_connect(args) -> int:
     name = getattr(args, "as_name", "") or _name_from(url)
     _store(args).save(SavedGateway(name=name, url=url, token=connection.token,
                                    gateway_id=connection.gateway_id,
-                                   fingerprint=connection.fingerprint))
+                                   fingerprint=connection.fingerprint,
+                                   certificate_sha256=connection.certificate_sha256))
     print()
     print(f"  {bold('Connected')} to the sandbox at {url}, saved as {bold(name)}.")
     print()
     _explain_protection(hello)
     print()
     print("  Your access is stored on this machine only, readable by you alone.")
+    if expect:
+        print("  This client will talk to that sandbox's certificate and to nothing else:")
+        print(f"  {dim(expect)}")
     print("  Next:  agentnode remote test")
     return 0
 
