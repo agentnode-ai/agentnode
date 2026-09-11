@@ -125,7 +125,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_allowance.py 2>&1 | tee em3c-allow.txt
-          grep -qE "^35 passed" em3c-allow.txt || {
+          grep -qE "^74 passed" em3c-allow.txt || {
             echo "the allowance tests did not all run here"; exit 1; }
 
       # Reaching a gateway without a tunnel, and knowing which one answered. The one case
@@ -134,7 +134,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_reachable.py 2>&1 | tee em3c-reach.txt
-          grep -qE "^35 passed" em3c-reach.txt || {
+          grep -qE "^54 passed" em3c-reach.txt || {
             echo "the reachability tests did not all run here"; exit 1; }
 
       # The line between the control plane and the worker. On Linux the socket itself is real,
@@ -145,7 +145,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_socket_worker.py 2>&1 | tee em3c-socket.txt
-          grep -qE "^74 passed" em3c-socket.txt || {
+          grep -qE "^88 passed" em3c-socket.txt || {
             echo "the socket tests did not all run here; a skip on Linux is a case nobody ran"
             exit 1; }
 
