@@ -125,7 +125,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_allowance.py 2>&1 | tee em3c-allow.txt
-          grep -qE "^74 passed" em3c-allow.txt || {
+          grep -qE "^81 passed" em3c-allow.txt || {
             echo "the allowance tests did not all run here"; exit 1; }
 
       # Reaching a gateway without a tunnel, and knowing which one answered. The one case

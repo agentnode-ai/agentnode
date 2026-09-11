@@ -149,7 +149,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -rs -p no:randomly tests/test_allowance.py 2>&1 | tee allow.txt
-          grep -qE "^73 passed, 1 skipped" allow.txt || {
+          grep -qE "^80 passed, 1 skipped" allow.txt || {
             echo "the allowance tests did not come out as this lane expects"; exit 1; }
           grep -q "modes are advisory" allow.txt || {
             echo "the skipped case is not the one this lane expects"; exit 1; }
