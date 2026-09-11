@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import stat
 import struct
 import threading
 import time
@@ -630,7 +631,14 @@ class TestTheSocketIsReachableByOneAccount:
         try:
             path = address[len("unix://"):]
             assert (os.stat(path).st_mode & 0o777) == SOCKET_MODE
-            assert (os.stat(os.path.dirname(path)).st_mode & 0o777) == DIRECTORY_MODE
+            # 0o7777, not 0o777: the mask has to keep the setgid bit, which is the whole
+            # reason this directory has the mode it has. Masking it off compares against a
+            # number that can never match -- and would equally have passed a directory that
+            # was NOT setgid, which is the case that leaves the gateway unable to reach its
+            # worker at all.
+            folder = os.stat(os.path.dirname(path)).st_mode
+            assert (folder & 0o7777) == DIRECTORY_MODE
+            assert folder & stat.S_ISGID, "the socket would not inherit the shared group"
         finally:
             bench.stop_serving()
 
