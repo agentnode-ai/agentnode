@@ -134,6 +134,83 @@ class TestTheCertificateIsTheGatewaysOwn:
         assert one != two
 
 
+class TestNothingIsServedInTheClear:
+    """A gateway a stranger could reach without a certificate does not start."""
+
+    def test_binding_where_a_stranger_could_reach_it_needs_one(self):
+        from agentnode_sdk.gateway.transport import InsecureTransportError, check_bind_address
+
+        for where in ("0.0.0.0", "::", "116.203.32.193"):
+            with pytest.raises(InsecureTransportError) as caught:
+                check_bind_address(where, tls=None)
+            assert "without encryption" in str(caught.value)
+
+    def test_and_there_is_no_setting_that_permits_it(self):
+        """A boundary with a documented way around it is a default. The variable that used to
+        permit this is kept only so it can be shown to be inert."""
+        import os
+
+        from agentnode_sdk.gateway.transport import (
+            LEGACY_PLAINTEXT_ENV,
+            InsecureTransportError,
+            TransportRules,
+            check_bind_address,
+        )
+
+        was = os.environ.get(LEGACY_PLAINTEXT_ENV)
+        os.environ[LEGACY_PLAINTEXT_ENV] = "1"
+        try:
+            with pytest.raises(InsecureTransportError):
+                check_bind_address("0.0.0.0", tls=None)
+        finally:
+            if was is None:
+                os.environ.pop(LEGACY_PLAINTEXT_ENV, None)
+            else:
+                os.environ[LEGACY_PLAINTEXT_ENV] = was
+        # And the rules can only tighten: there is no field that would loosen this.
+        assert not hasattr(TransportRules(), "allow_plain_anywhere")
+
+    def test_a_certificate_that_will_not_load_stops_it_rather_than_serving(self, tmp_path):
+        from agentnode_sdk.gateway.transport import InsecureTransportError, TlsFiles
+
+        nothing = tmp_path / "not-a-certificate.pem"
+        nothing.write_text("this is not a certificate", encoding="utf-8")
+        with pytest.raises(InsecureTransportError) as caught:
+            TlsFiles(certfile=str(nothing), keyfile=str(nothing)).context()
+        assert "was not started" in str(caught.value)
+
+    def test_a_gateway_that_made_one_serves_it_without_being_told_where_it_is(self, tmp_path):
+        """A gateway with a certificate never serves in the clear by omission."""
+        import types
+
+        from agentnode_sdk.cli.gateway_commands import _tls_from
+
+        tls.make(tmp_path, "127.0.0.1")
+        found = _tls_from({}, types.SimpleNamespace(dir=str(tmp_path)))
+        assert found is not None
+        assert found.context() is not None
+
+
+class TestTheKeyIsTheGatewaysAlone:
+    """The mode goes on as the file is created, not after it exists."""
+
+    def test_it_is_created_with_its_permissions_and_not_narrowed_afterwards(self, tmp_path,
+                                                                           monkeypatch):
+        from agentnode_sdk.gateway import certificate as module
+
+        opened = []
+        real_open = module.os.open
+
+        def watching(path, flags, mode=0o777):
+            opened.append((str(path), oct(mode)))
+            return real_open(path, flags, mode)
+
+        monkeypatch.setattr(module.os, "open", watching)
+        tls.make(tmp_path, "one.example")
+        keys = [mode for path, mode in opened if path.endswith(tls.KEY_NAME)]
+        assert keys == [oct(0o600)], opened
+
+
 # ------------------------------------------------------- the client knows which gateway it is
 
 
@@ -313,6 +390,53 @@ class TestPairingDoesNotNeedAShell:
 
 
 # --------------------------------------------------------------- what this does not establish
+
+
+class TestItRunsAsAServiceUnderItsOwnAccount:
+    """The units are the deployment. What they say is checkable without deploying them."""
+
+    def units(self):
+        from pathlib import Path
+
+        here = Path(__file__).resolve().parent.parent / "deploy"
+        return ((here / "agentnode-gateway.service").read_text(encoding="utf-8"),
+                (here / "agentnode-worker.service").read_text(encoding="utf-8"))
+
+    def test_the_control_plane_is_in_no_group_that_can_drive_a_runtime(self):
+        gateway, _worker = self.units()
+        groups = [line.split("=", 1)[1] for line in gateway.splitlines()
+                  if line.startswith("SupplementaryGroups=")]
+        for named in groups:
+            assert "docker" not in named, named
+            assert "podman" not in named, named
+        assert "User=agentnode-gateway" in gateway
+        assert "User=root" not in gateway
+
+    def test_and_the_worker_is_the_one_that_can(self):
+        _gateway, worker = self.units()
+        assert "SupplementaryGroups=docker" in worker
+        assert "User=agentnode-worker" in worker
+
+    def test_neither_runs_as_a_person_who_has_to_be_logged_in(self):
+        for unit in self.units():
+            assert "Restart=always" in unit
+            assert "WantedBy=multi-user.target" in unit
+
+    def test_the_worker_cannot_reach_the_control_planes_directory(self):
+        _gateway, worker = self.units()
+        assert "InaccessiblePaths=-/var/lib/agentnode" in worker
+        assert "ReadWritePaths=/run/agentnode" in worker
+
+    def test_what_the_deployment_says_it_is_not(self):
+        from pathlib import Path
+
+        said = (Path(__file__).resolve().parent.parent / "deploy" / "README.md").read_text(
+            encoding="utf-8")
+        # The line wrapping in a document is not what is being established; the claims are.
+        flowed = " ".join(said.split())
+        for phrase in ("this is not isolation", "root-equivalent", "single-host-development",
+                       "may be described as production-safe"):
+            assert phrase in flowed, phrase
 
 
 class TestWhatThisDoesNotEstablish:
