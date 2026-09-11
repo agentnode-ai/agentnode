@@ -626,7 +626,10 @@ class TestARealContainer:
                 # a formula copied into a test is a second definition waiting to disagree.
                 named = service.runs["real-cancel"].container_name
                 assert named, "the gateway never gave this run a container name"
-                answered, names = service._containers_named(named)
+                # The seam moved: whether a container is gone is the WORKER's to answer, because
+                # it is the worker that started it. ALPHA-BOUNDARY-0001.
+                left = service.worker.gone(named, patiently=False)
+                answered, names = left.answered, list(left.left)
                 assert answered and names == [], names
             finally:
                 server.shutdown()
