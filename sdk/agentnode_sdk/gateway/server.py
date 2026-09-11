@@ -109,6 +109,10 @@ class RunRecord:
     #: Set when the operator's kill switch is what ended this run, and carried into the answer so
     #: a client is told that rather than being left to read a bare "cancelled" as its own doing.
     halted_by: str = ""
+    #: The ceilings this run was ADMITTED under, taken at admission. Sampling it at the end would
+    #: mean a limit changed while a run was going rewrote what that run is recorded as having been
+    #: allowed -- which is the one thing a record of what was allowed must not do.
+    admitted_under: str = ""
     native_status: int | None = None
     native_platform: str = ""
     stdout: str = ""
@@ -774,15 +778,24 @@ class GatewayService:
             self._use = held
         return held
 
-    def within_its_allowance(self, client_id: str, asking_for: int) -> None:
-        """Raise `OverTheCeiling` if this client may not have another run right now."""
+    def within_its_allowance(self, client_id: str, asking_for: int, run_id: str = "") -> str:
+        """Raise `OverTheCeiling` if this client may not have another run right now.
+
+        With a `run_id`, the looking and the claiming happen inside ONE transaction: two requests
+        arriving together used to read the same remaining allowance and both be admitted, because
+        the check and the record were separate steps with the whole of admission in between.
+
+        Returns the digest of the ceilings that were applied, so the run can carry what it was
+        admitted UNDER rather than what happens to be configured when it ends.
+        """
         from agentnode_sdk.gateway.protocol import is_terminal
 
         allowed = self.allowance()
+        granted = allowed.digest()
         if not client_id:
             # Nothing to count against. Admission refuses an unpaired caller elsewhere; this is
             # not the place that decides that, and counting against "" would pool every client.
-            return
+            return granted
         if allowed.concurrent_runs:
             with self._lock:
                 going = sum(1 for r in self.runs.values()
@@ -792,9 +805,8 @@ class GatewayService:
                     "concurrent_runs",
                     "this client already has %d runs going and may have %d at once. Wait for one "
                     "to finish." % (going, allowed.concurrent_runs))
-        if allowed.runs_per_window or allowed.seconds_per_window:
-            runs, seconds = self.use.so_far(client_id)
-            lifts = self.use.oldest(client_id) + allowed.window_seconds
+        def judge(runs: int, seconds: float, oldest: float) -> None:
+            lifts = oldest + allowed.window_seconds
             if allowed.runs_per_window and runs >= allowed.runs_per_window:
                 raise OverTheCeiling(
                     "runs_per_window",
@@ -805,9 +817,22 @@ class GatewayService:
             if allowed.seconds_per_window and seconds + asking_for > allowed.seconds_per_window:
                 raise OverTheCeiling(
                     "seconds_per_window",
-                    "this client has used %.0f of %d seconds in this window and this job asks for "
-                    "up to %d more." % (seconds, allowed.seconds_per_window, asking_for),
+                    "this client has used %.0f of %d seconds in this window and this job asks "
+                    "for up to %d more. The oldest stops counting in %.0f seconds."
+                    % (seconds, allowed.seconds_per_window, asking_for,
+                       max(0.0, lifts - time.time())),
                     lifts_at=lifts)
+
+        if allowed.runs_per_window or allowed.seconds_per_window:
+            if run_id:
+                # One transaction: judged and claimed under the same lock.
+                self.use.claim(client_id, run_id, judge)
+            else:
+                runs, seconds = self.use.so_far(client_id)
+                judge(runs, seconds, self.use.oldest(client_id))
+        elif run_id:
+            self.use.note(client_id, run_id)
+        return granted
 
     def admit(self, request: JobRequest, artifact: bytes,
               token: str = "") -> tuple:
@@ -833,7 +858,10 @@ class GatewayService:
         # What this client has already used, against what the operator allows it. Before the
         # artefact is digested, because refusing over a ceiling should not cost the work of
         # hashing something that is not going to run.
-        self.within_its_allowance(self.state.client_id_for(token) or "", request.wall_clock_s)
+        # Claimed here, not later: the run is counted in the same breath as the ceiling is
+        # checked, and the ceilings that were applied are carried on the run from this moment.
+        granted_digest = self.within_its_allowance(
+            self.state.client_id_for(token) or "", request.wall_clock_s, run_id=request.run_id)
 
         actual = digest(artifact)
         if actual != request.artifact_sha256:
@@ -937,7 +965,7 @@ class GatewayService:
         # neither list was reduced with no delta and no refusal, so a caller holding two
         # unequal policy digests had nothing that said which field moved. `mandatory` still
         # decides what is REFUSED, above; it was never meant to decide what is DISCLOSED.
-        return granted, properties, requested_shape, effective_shape, describe_deltas(
+        return granted, properties, requested_shape, effective_shape, granted_digest, describe_deltas(
             tuple(narrowed), requested_shape, effective_shape)
 
 
@@ -1029,8 +1057,11 @@ class GatewayService:
                            required_properties=tuple(request.required_properties),
                            owner_client_id=self.state.client_id_for(token) or "")
         try:
-            granted, _props, req_shape, eff_shape, deltas = self.admit(
+            granted, _props, req_shape, eff_shape, granted_digest, deltas = self.admit(
                 request, artifact, token)
+            # From here the run carries what it was admitted under. A limit changed while it is
+            # going must not rewrite what this run is recorded as having been allowed.
+            record.admitted_under = granted_digest
         except Exception as exc:                              # noqa: BLE001 - refusal is an answer
             record.move_to("refused")
             record.refusal = str(exc)
@@ -1093,10 +1124,9 @@ class GatewayService:
             value=record.challenge, delivered=carried,
             because="" if carried else ch.BROUGHT_ITS_OWN_COMMAND).as_dict())
 
-        # Counted before it runs, so a gateway that dies mid-run has still counted it. A run
-        # nobody counted is one a client could have for free by crashing the gateway.
-        if record.owner_client_id:
-            self.use.note(record.owner_client_id, request.run_id)
+        # Already counted, inside the same transaction that judged it -- see
+        # `within_its_allowance`. Counting here as a separate step is what let two requests
+        # arriving together both pass one ceiling.
 
         with self._lock:
             self.runs[request.run_id] = record
@@ -1279,7 +1309,8 @@ class GatewayService:
                 state=terminal, outcome=outcome_of(terminal, record.termination_reason),
                 bytes_out=len(record.stdout or "") + len(record.stderr or ""),
                 worker_topology=self.worker.topology,
-                allowance_sha256=self.allowance().digest())
+                # What it was admitted under, not what is configured now.
+                allowance_sha256=record.admitted_under or self.allowance().digest())
         except OSError:                                       # pragma: no cover - a full disk
             # A run that happened is not un-happened by a meter that could not be written, and
             # refusing to publish the terminal state over it would lose the run instead.

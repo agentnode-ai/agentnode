@@ -121,21 +121,41 @@ class Allowance:
         ).hexdigest()
 
 
+class CannotReadTheCeilings(OSError):
+    """Raised instead of guessing what an operator meant to allow.
+
+    Its own type because the caller has to tell it from an absent file: absent is a gateway that
+    has not been given limits, and unreadable is a gateway that HAS and cannot see them.
+    """
+
+
 def read_allowance(root: str | os.PathLike[str]) -> Allowance:
     """The operator's limits, or the ones an alpha starts with.
 
-    An unreadable file is NOT no limits. It is the default, which is more permissive -- so this
-    reads the file and refuses to invent anything from a broken one, and the gateway's own
-    `doctor` is where an operator finds out it is broken. Fail-closed lives in the stop, which is
-    the thing that exists to be certain about.
+    Absent means no limits have been set, and the defaults apply. PRESENT AND UNREADABLE raises.
+
+    An earlier version returned the defaults for both, with a docstring arguing that the defaults
+    are not "no limits". They are: every ceiling defaults to 0, and 0 means unlimited. So a
+    corrupt or truncated file silently removed every ceiling the operator had set, on a gateway
+    that went on looking configured -- the failure and the thing it was protecting against wear
+    the same face. That is the same mistake as a replay floor that starts again from zero, and it
+    is wrong for the same reason: the permissive state is never the one to fall back to.
     """
     path = Path(root) / ALLOWANCE_NAME
+    if not path.exists():
+        return Allowance()
     try:
         body = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return Allowance()
+    except (OSError, ValueError) as exc:
+        raise CannotReadTheCeilings(
+            "this gateway cannot read the limits it is supposed to be applying ("
+            + str(exc)[:120] + "). It will not take work until it can: carrying on would mean "
+            "applying no ceiling at all to a client the operator meant to bound. The file is "
+            + str(path) + "; removing it restores the defaults deliberately.") from exc
     if not isinstance(body, dict):
-        return Allowance()
+        raise CannotReadTheCeilings(
+            "the limits in " + str(path) + " are not an object, so this gateway cannot tell what "
+            "it is supposed to allow. It will not take work until that is fixed.")
     return Allowance(
         concurrent_runs=int(body.get("concurrent_runs") or 0),
         runs_per_window=int(body.get("runs_per_window") or 0),
@@ -226,6 +246,28 @@ class Use:
         at = time.time() if now is None else now
         with self._lock, ProcessLock(self.path):
             body = self._forget(self._load(), at)
+            body.setdefault(str(client_id), []).append(
+                {"run_id": str(run_id), "at": at, "seconds": 0.0})
+            _atomically(self.path, json.dumps(body, sort_keys=True))
+
+    def claim(self, client_id: str, run_id: str, judge, now: float | None = None) -> None:
+        """Look at what this client has used and write down another run, as ONE transaction.
+
+        `judge(runs, seconds, oldest)` raises if this run may not start. It is called while the
+        lock is held, and the claim is written before the lock is released.
+
+        Reading and then writing as two steps is the bug this exists to remove: two requests
+        arriving together both read "one run used, one allowed" and both then wrote, so a ceiling
+        of one admitted two. The window between the look and the claim is exactly as long as the
+        work in between, and there is no amount of care at the call site that closes it -- only
+        holding the lock across both does.
+        """
+        at = time.time() if now is None else now
+        with self._lock, ProcessLock(self.path):
+            body = self._forget(self._load(), at)
+            mine = body.get(str(client_id), [])
+            judge(len(mine), sum(float(e.get("seconds", 0.0)) for e in mine),
+                  min((float(e.get("at", at)) for e in mine), default=at))
             body.setdefault(str(client_id), []).append(
                 {"run_id": str(run_id), "at": at, "seconds": 0.0})
             _atomically(self.path, json.dumps(body, sort_keys=True))

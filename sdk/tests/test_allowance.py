@@ -88,9 +88,30 @@ class TestTheOperatorSetsTheCeilings:
         got = read_allowance(tmp_path)
         assert (got.concurrent_runs, got.runs_per_window, got.seconds_per_window) == (2, 10, 600)
 
-    def test_a_file_that_is_not_one_does_not_invent_limits(self, tmp_path):
+    def test_a_file_that_is_not_one_stops_this_gateway(self, tmp_path):
+        """This asserted the opposite, and the opposite was wrong.
+
+        It read: an unreadable file gives the defaults. But every ceiling DEFAULTS TO ZERO and
+        zero means unlimited -- so a corrupt or truncated file silently removed every limit the
+        operator had set, on a gateway that went on looking configured. Review found it. The
+        permissive state is never the one to fall back to.
+        """
+        from agentnode_sdk.gateway.allowance import CannotReadTheCeilings
+
         (tmp_path / "allowance.json").write_text("not json", encoding="utf-8")
+        with pytest.raises(CannotReadTheCeilings):
+            read_allowance(tmp_path)
+
+    def test_but_no_file_at_all_is_a_gateway_nobody_has_set_limits_on(self, tmp_path):
+        """Absent and unreadable are different: one has never been configured, one cannot be read."""
         assert read_allowance(tmp_path) == Allowance()
+
+    def test_a_file_that_is_not_an_object_stops_it_too(self, tmp_path):
+        from agentnode_sdk.gateway.allowance import CannotReadTheCeilings
+
+        (tmp_path / "allowance.json").write_text("[1, 2, 3]", encoding="utf-8")
+        with pytest.raises(CannotReadTheCeilings):
+            read_allowance(tmp_path)
 
     def test_nothing_a_client_sends_reaches_it(self):
         """The limits come from a file in the gateway's own directory. A job cannot name one."""
@@ -343,14 +364,42 @@ class TestOneThingStopsEverything:
         assert "start_again" in inspect.getsource(gateway_commands.cmd_resume)
         assert "start_again" not in inspect.getsource(GatewayService)
 
-    def test_runs_already_going_are_left_to_finish(self, a_gateway):
-        """Stopping one of those is a cancellation, and a stop is not one."""
+    def test_runs_already_going_are_ended_too(self, a_gateway):
+        """This asserted that they were LEFT TO FINISH, and that was the wrong target.
+
+        Two expectations lived side by side: this one, and the class that ends in-flight runs.
+        Both passed, because in this fixture a run completes before the watcher's next poll --
+        so nothing here was ever exercising the disagreement. Review named it.
+
+        The resolved target is that the stop ends them. The reason to stop a gateway AT ONCE is
+        usually the code running on it at that moment, and a switch that left it running would be
+        no switch. A lowered CEILING is the case that leaves a run alone, and that is a different
+        thing with a different trigger -- see the test below.
+        """
         base, state, service, _backend = a_gateway
         conn = _paired(base, state)
-        a_run(conn, service, "already-going")
+        going = _a_running_record(service, "already-going")
         stop_everything(state.root, "stopped mid-flight")
-        final = gc.wait_for(conn, "already-going", timeout=20)
-        assert final["state"] == "finished"
+        for _ in range(60):
+            if going.cancel_requested.is_set():
+                break
+            time.sleep(0.25)
+        assert going.cancel_requested.is_set(), "the stop left a run in flight alone"
+        assert going.halted_by == "stopped mid-flight"
+
+    def test_but_lowering_a_ceiling_leaves_one_alone(self, a_gateway):
+        """The genuinely different case, and the one the docstring is about.
+
+        A quota is not a cancellation: lowering a limit applies to the next job. Ending what is
+        already going is what the kill switch is for, and conflating the two would mean an
+        operator could not tighten a limit without stopping work.
+        """
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        going = _a_running_record(service, "under-the-old-ceiling")
+        write_allowance(state.root, Allowance(runs_per_window=1))
+        time.sleep(1.5)
+        assert not going.cancel_requested.is_set(), "a lowered ceiling cancelled a running job"
 
 
 # ----------------------------------------------------------------- a record that keeps no secret
@@ -832,3 +881,132 @@ class TestALogThatStartedBeforeTheChainDid:
         held = meter.verify(tmp_path)
         assert held["lines"] == 5
         assert held["unchecked"] == 2
+
+
+class TestLookingAndClaimingAreOneTransaction:
+    """Two requests arriving together both read the same remaining allowance.
+
+    The check and the record used to be separate steps with the whole of admission between them,
+    so a ceiling of one admitted two. No amount of care at the call site closes that window --
+    only holding the lock across both does.
+    """
+
+    def test_a_ceiling_of_one_admits_one_of_two_racing_claims(self, tmp_path):
+        from agentnode_sdk.gateway.allowance import OverTheCeiling, Use
+
+        use = Use(tmp_path / "use.json", window=3600.0)
+        admitted, refused = [], []
+
+        def judge(runs, seconds, oldest):
+            if runs >= 1:
+                raise OverTheCeiling("runs_per_window", "one at a time")
+
+        def claim(which):
+            try:
+                use.claim("client", "run-%d" % which, judge)
+                admitted.append(which)
+            except OverTheCeiling:
+                refused.append(which)
+
+        threads = [threading.Thread(target=claim, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(admitted) == 1, f"both were admitted past a ceiling of one: {admitted}"
+        assert len(refused) == 1
+
+    def test_many_at_once_against_a_ceiling_of_three(self, tmp_path):
+        from agentnode_sdk.gateway.allowance import OverTheCeiling, Use
+
+        use = Use(tmp_path / "use.json", window=3600.0)
+        admitted = []
+
+        def judge(runs, seconds, oldest):
+            if runs >= 3:
+                raise OverTheCeiling("runs_per_window", "three")
+
+        def claim(which):
+            try:
+                use.claim("client", "r%d" % which, judge)
+                admitted.append(which)
+            except OverTheCeiling:
+                pass
+
+        threads = [threading.Thread(target=claim, args=(i,)) for i in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(admitted) == 3, f"a ceiling of three admitted {len(admitted)}"
+
+    def test_a_refusal_claims_nothing(self, tmp_path):
+        """A refused run must not consume the allowance it was refused for."""
+        from agentnode_sdk.gateway.allowance import OverTheCeiling, Use
+
+        use = Use(tmp_path / "use.json", window=3600.0)
+
+        def always_no(runs, seconds, oldest):
+            raise OverTheCeiling("runs_per_window", "no")
+
+        with pytest.raises(OverTheCeiling):
+            use.claim("client", "r1", always_no)
+        assert use.so_far("client") == (0, 0.0)
+
+
+class TestARunCarriesWhatItWasAdmittedUnder:
+    """A limit changed mid-flight must not rewrite what a finished run was allowed."""
+
+    def test_the_record_takes_the_digest_at_admission(self):
+        from agentnode_sdk.gateway.server import RunRecord
+
+        record = RunRecord(run_id="r" * 32, job_id="j")
+        record.admitted_under = "d" * 64
+        assert record.admitted_under == "d" * 64
+
+    def test_and_the_meter_writes_that_rather_than_what_is_configured_now(self):
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        text = inspect.getsource(server.GatewayService.write_down_what_it_used)
+        assert "record.admitted_under" in text
+        assert "admitted under, not what is configured now" in text
+
+    def test_the_digest_comes_back_from_the_check_that_applied_it(self):
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        text = inspect.getsource(server.GatewayService.within_its_allowance)
+        assert "return granted" in text
+
+
+class TestASecondsCeilingSaysWhenItLifts:
+    """A refusal that does not say when it clears is one a client can only poll against."""
+
+    def test_the_message_names_the_moment(self):
+        """Exercised rather than read: the message a client gets, not the source that makes it."""
+        from agentnode_sdk.gateway.allowance import Allowance, OverTheCeiling, write_allowance
+        from agentnode_sdk.gateway.server import GatewayService, GatewayState
+
+        state = GatewayState(str(self.root), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        write_allowance(self.root, Allowance(seconds_per_window=10))
+        service.use.note("c1", "earlier")
+        service.use.finished("c1", "earlier", 9.0)
+        with pytest.raises(OverTheCeiling) as over:
+            service.within_its_allowance("c1", asking_for=60)
+        assert over.value.which == "seconds_per_window"
+        assert "stops counting in" in str(over.value), str(over.value)
+        assert over.value.lifts_at > 0
+
+    @pytest.fixture(autouse=True)
+    def _root(self, tmp_path):
+        self.root = tmp_path
+
+    def test_and_carries_it_as_a_value_too(self):
+        from agentnode_sdk.gateway.allowance import OverTheCeiling
+
+        over = OverTheCeiling("seconds_per_window", "used too much", lifts_at=1234.0)
+        assert over.lifts_at == 1234.0
