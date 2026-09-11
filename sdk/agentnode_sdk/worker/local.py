@@ -27,6 +27,7 @@ import time
 
 from agentnode_sdk.worker import (
     SINGLE_HOST_DEVELOPMENT,
+    CouldNotRestrictTheNetwork,
     Gone,
     Isolation,
     Job,
@@ -66,11 +67,17 @@ class LocalWorker(Worker):
             "kind": type(self).__name__,
             "backend": isolation.backend,
             "backend_version": self.runtime_version(),
-            "image_digest": str(getattr(self.backend.check_available(), "image_digest", "") or ""),
+            "image_digest": self.image_digest(),
         }
         return hashlib.sha256(
             json.dumps(described, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+
+    def instance_label(self) -> str:
+        return type(self.backend).__name__
+
+    def image_digest(self) -> str:
+        return str(getattr(self.backend.check_available(), "image_digest", "") or "")
 
     def can_it_isolate(self) -> Isolation:
         availability = self.backend.check_available()
@@ -104,6 +111,19 @@ class LocalWorker(Worker):
         self._version_cache = value
         return value
 
+    # ------------------------------------------------------------------ measuring it
+
+    def measure(self, *, generated_at, options, egress_matrix, egress_expected):
+        from agentnode_sdk.conformance.runner import run_conformance
+
+        return run_conformance(self.backend, generated_at=generated_at, options=options,
+                               egress_matrix=egress_matrix, egress_expected=egress_expected)
+
+    def measure_egress(self, *, allowed, denied):
+        from agentnode_sdk.conformance.runner import measure_egress
+
+        return measure_egress(self.backend, allowed=allowed, denied=denied)
+
     # ------------------------------------------------------------------ running one
 
     def run(self, job: Job) -> Outcome:
@@ -122,7 +142,12 @@ class LocalWorker(Worker):
             # filtered internet -- it gets no route at all, and one door.
             from agentnode_sdk.sandbox.egress import start_egress_proxy
 
-            egress = start_egress_proxy(list(job.allowed_domains))
+            try:
+                egress = start_egress_proxy(list(job.allowed_domains))
+            except Exception as exc:                          # noqa: BLE001
+                # Nothing has started, so there is nothing to clean up and nothing to report
+                # about a route out that was never opened.
+                raise CouldNotRestrictTheNetwork(str(exc)) from exc
 
         spec = ProcessSpec(
             command=list(job.command),

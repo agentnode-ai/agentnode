@@ -47,6 +47,9 @@ from agentnode_sdk.gateway.readiness import (
     describe_missing,
 )
 from agentnode_sdk.gateway.transport import TlsFiles, check_bind_address
+from agentnode_sdk.worker import CouldNotRestrictTheNetwork, JobFailed, Job as WorkerJob
+from agentnode_sdk.worker import Limits as WorkerLimits
+from agentnode_sdk.worker import WorkerUnreachable
 from agentnode_sdk.gateway.protocol import (
     refusal,
     PROTOCOL_VERSION,
@@ -212,9 +215,16 @@ class GatewayService:
 
         return {**body, **stamp_fields(self.state.identity)}
 
-    def __init__(self, state: GatewayState, backend=None, operator_policy=None) -> None:
+    def __init__(self, state: GatewayState, backend=None, operator_policy=None,
+                 worker=None) -> None:
         self.state = state
         self._backend = backend
+        #: What runs foreign code. `ALPHA-BOUNDARY-0001`: this is the only way anything here
+        #: reaches a container runtime, so that moving the worker to another machine is a
+        #: deployment change and not a rewrite. A caller that supplies a `backend` gets a worker
+        #: on this machine wrapped around it, which is what every caller did before there was a
+        #: word for it.
+        self._worker = worker
         self._operator_policy = operator_policy
         self.nonces = NonceCache()
         self.runs: dict[str, RunRecord] = {}
@@ -223,7 +233,7 @@ class GatewayService:
         self.ledger = Ledger(self.state.root / "ledger.json")
         #: Which gateway process, and which sandbox behind it. A restart is a different instance,
         #: and a challenge says which one issued it.
-        self.instance = "%s:%s" % (type(self.backend).__name__, secrets.token_hex(8))
+        self.instance = "%s:%s" % (self.worker.instance_label(), secrets.token_hex(8))
         self.readiness = ReadinessGate(self.state.root)
         self._restore_interrupted()
         self._lock = threading.Lock()
@@ -232,11 +242,26 @@ class GatewayService:
 
     @property
     def backend(self):
+        """The sandbox backend, for a caller that is building a worker around it.
+
+        Nothing in this class may use it. Every question about a runtime goes through `worker`,
+        because a gateway that could ask one directly would be a gateway that has to be where it
+        is -- which is the thing `ALPHA-BOUNDARY-0001` decided against.
+        """
         if self._backend is None:
             from agentnode_sdk.sandbox.container_backend import ContainerBackend
 
             self._backend = ContainerBackend()
         return self._backend
+
+    @property
+    def worker(self):
+        """Whatever runs foreign code. Here for now; elsewhere later, without this class caring."""
+        if self._worker is None:
+            from agentnode_sdk.worker.local import LocalWorker
+
+            self._worker = LocalWorker(self.backend)
+        return self._worker
 
     def active_state(self):
         """The authenticated policy-and-report pair currently in force, or None.
@@ -330,17 +355,22 @@ class GatewayService:
         from agentnode_sdk.conformance.report import SUITE_VERSION
 
         identity = self.state.identity
-        availability = self.backend.check_available()
+        isolation = self.worker.can_it_isolate()
         boot_value, _method = boot_identity()
         return ReportBinding(
             gateway_id=identity.gateway_id,
             gateway_version=identity.version,
-            backend=str(availability.backend or ""),
-            image_digest=str(availability.image_digest or ""),
+            backend=isolation.backend if isolation.backend != "none" else "",
+            image_digest=self.worker.image_digest(),
             boot_id=boot_value,
             backend_version=self.runtime_version(),
             conformance_schema=str(SUITE_VERSION),
             operator_policy_digest=policy_digest or self.operator_envelope().digest(),
+            # Where this was measured, and what the worker was configured as when it was.
+            # `ALPHA-BOUNDARY-0001`: a report that does not say which of those two it describes is
+            # a report somebody will read as describing the other.
+            worker_topology=self.worker.topology,
+            worker_configuration_sha256=self.worker.configuration_sha256(),
         )
 
     def runtime_version(self) -> str:
@@ -354,21 +384,7 @@ class GatewayService:
         caught at its next start or measurement, not mid-process. That is a stated limit, not an
         assumption that it cannot happen.
         """
-        cached = getattr(self, "_runtime_version_cache", None)
-        if cached is not None:
-            return cached
-        from agentnode_sdk.conformance.runner import _runtime_version
-
-        availability = self.backend.check_available()
-        runtime = str(availability.backend or "")
-        value = ""
-        if runtime and runtime != "none":
-            try:
-                value = str(_runtime_version(runtime) or "")
-            except Exception:                                     # noqa: BLE001
-                value = ""
-        self._runtime_version_cache = value
-        return value
+        return self.worker.runtime_version()
 
     def measure(self, options=None, now: float | None = None):
         """Re-measure the policy currently configured, and put it in force if it holds.
@@ -445,8 +461,8 @@ class GatewayService:
                 # was being measured if the process dies before it finishes.
                 store.write_pending(envelope)
 
-                report = run_conformance(
-                    self.backend, generated_at=stamp, options=options,
+                report = self.worker.measure(
+                    generated_at=stamp, options=options,
                     egress_matrix=self._egress_matrix_for(envelope),
                     # The policy's own destinations, so the check compares the matrix against
                     # what is being permitted rather than against what the run happened to do.
@@ -502,8 +518,7 @@ class GatewayService:
         # ALL of them. Measuring the first and permitting the rest was what EM3C-FINAL-0001
         # found: the policy was reported as measured while every destination after the first
         # was an open path nobody had tried.
-        return measure_egress(self.backend, allowed=envelope.allowed_destinations,
-                              denied=denied)
+        return self.worker.measure_egress(allowed=envelope.allowed_destinations, denied=denied)
 
     def readiness_now(self):
         """The current answer to whether this gateway may take work, with its reason.
@@ -573,7 +588,7 @@ class GatewayService:
 
     def hello(self) -> dict[str, Any]:
         identity = self.state.identity
-        availability = self.backend.check_available()
+        availability = self.worker.can_it_isolate()
         readiness = self.readiness_now()
         # Both have to hold. A runtime that is missing means nothing can run; a gateway that has
         # not been measured means nothing SHOULD run, because it cannot say what it enforces.
@@ -979,31 +994,7 @@ class GatewayService:
 
     def _run(self, request: JobRequest, artifact: bytes, granted, record: RunRecord) -> None:
         from agentnode_sdk.sandbox.composition import network_mode
-        from agentnode_sdk.sandbox.types import ProcessSpec
-
         mode, domains = network_mode(granted)
-        egress = None
-        if mode == "egress":
-            # The same mechanism the local runners already use: an --internal network with no
-            # route out, plus a dual-homed CONNECT proxy that is the only way through. The job
-            # does not get a filtered internet -- it gets no route at all, and one door.
-            #
-            # Built here rather than declared: an earlier version refused this case outright and
-            # said so honestly, which was right at the time. Running it with open networking
-            # instead would have been the silent widening this whole design exists to refuse.
-            from agentnode_sdk.sandbox.egress import start_egress_proxy
-
-            try:
-                egress = start_egress_proxy(domains)
-            except Exception as exc:                          # noqa: BLE001
-                record.move_to("refused")
-                record.refusal = (
-                    "the restricted network this job asked for could not be set up, so it was "
-                    f"not started: {exc}"
-                )
-                record.finished_at = time.time()
-                return
-
         record.container_name = f"agentnode-em3c-{record.run_id[:16]}"
         record.move_to("running")
         payload = base64.b64encode(artifact).decode("ascii")
@@ -1015,14 +1006,22 @@ class GatewayService:
         command = list(request.command) or ch.bootstrap(command_was_given=False)
         if record.challenge:
             payload = ch.on_stdin(record.challenge, self.instance, payload)
-        spec = ProcessSpec(
-            command=command,
+        job = WorkerJob(
+            run_id=record.run_id,
+            container_name=record.container_name,
+            command=tuple(command),
+            artifact=artifact,
+            stdin=payload,
             network=mode,
-            egress=egress.spec if egress is not None else None,
-            clean_home=True,
-            interactive=True,
-            name=record.container_name,
+            allowed_domains=tuple(domains or ()),
+            limits=WorkerLimits(
+                cpu=float(granted.limits.cpu),
+                memory_mb=int(granted.limits.memory_mb),
+                processes=int(granted.limits.processes),
+                wall_clock_s=int(granted.limits.wall_clock_s),
+            ),
         )
+        left_behind = None
         terminal = "refused"
         try:
             if record.cancel_requested.is_set():
@@ -1032,19 +1031,15 @@ class GatewayService:
             # client decided how long its code could run -- the operator ceiling bound one and
             # not the other, and the policy digest could not catch it because the digested value
             # was not the enforced one. EM3C-GATEWAY-0004 found it.
-            outcome = self.backend.run_process(
-                spec, input_text=payload, timeout=float(granted.limits.wall_clock_s)
-            )
-            rc, out, err = outcome
-            from agentnode_sdk.sandbox.backend import why_it_stopped
-
-            reason, native, platform = why_it_stopped(outcome)
-            record.termination_reason = reason
-            record.native_status = native
+            outcome = self.worker.run(job)
+            left_behind = outcome.egress_gone
+            rc, platform = outcome.exit_code, outcome.native_platform
+            record.termination_reason = outcome.reason
+            record.native_status = outcome.native_status
             record.native_platform = platform
             record.exit_code = rc
-            record.stdout = out or ""
-            record.stderr = err or ""
+            record.stdout = outcome.stdout
+            record.stderr = outcome.stderr
             terminal = "cancelled" if record.cancel_requested.is_set() else "finished"
             if terminal == "cancelled":
                 # `EM3C-E8-RECORD-0001`: what came back here is whatever the runtime made of a
@@ -1059,7 +1054,7 @@ class GatewayService:
                 from agentnode_sdk.gateway.protocol import CANCELLED as _CANCELLED
 
                 record.termination_reason = _CANCELLED
-                whose = platform or getattr(self.backend, "native_platform", "")
+                whose = platform or outcome.runtime_platform
                 record.native_status = rc if whose else None
                 record.native_platform = whose if record.native_status is not None else ""
                 record.exit_code = None
@@ -1069,23 +1064,36 @@ class GatewayService:
             terminal = "cancelled"
             record.termination_reason = CANCELLED
             record.refusal = "cancelled by the client before it started"
+        except WorkerUnreachable as exc:
+            # Not a job that failed. Nobody established whether it ran, and saying it failed
+            # would tell a client something nobody knows. `EM3C-EVIDENCE-0002` cost an external
+            # run to exactly this distinction.
+            terminal = "unverified"
+            record.refusal = (
+                "the sandbox that runs jobs for this gateway could not be reached, so what "
+                f"happened to this run is not known: {exc}. It was not established that it ran, "
+                "and it was not established that it did not."
+            )
+        except CouldNotRestrictTheNetwork as exc:
+            terminal = "refused"
+            record.refusal = (
+                "the restricted network this job asked for could not be set up, so it was "
+                f"not started: {exc}"
+            )
+        except JobFailed as exc:
+            terminal = "refused"
+            left_behind = exc.egress_gone
+            record.refusal = f"the run could not be completed: {exc}"
         except Exception as exc:                              # noqa: BLE001
             terminal = "refused"
             record.refusal = f"the run could not be completed: {exc}"
         finally:
-            if egress is not None:
-                # The proxy and its two networks are part of this run. Leaving them behind would
-                # leave a route out that nothing is using and nobody is watching.
-                from agentnode_sdk.sandbox.egress import stop_egress_proxy
-
-                try:
-                    stop_egress_proxy(egress)
-                except Exception:                             # noqa: BLE001
-                    pass
-            record.cleanup_verified = self._verify_gone(record.container_name)
-            if record.cleanup_verified and egress is not None:
-                # Cleanup means the whole run, not just the container that carried it.
-                record.cleanup_verified = self._egress_gone(egress)
+            record.cleanup_verified = self.worker.gone(record.container_name).verified
+            if record.cleanup_verified and left_behind is not None:
+                # Cleanup means the whole run, not just the container that carried it. What a run
+                # needed BESIDES its container is on the worker's side of the line, so the worker
+                # is what says whether it is gone.
+                record.cleanup_verified = left_behind
             record.finished_at = time.time()
             # The terminal state is published LAST, and that ordering is the point. An earlier
             # version set it before this block, so a client polling in the window between the two
@@ -1114,105 +1122,6 @@ class GatewayService:
             record.move_to(terminal)
             self.ledger.note_state(record.run_id, terminal)
 
-    def _containers_named(self, prefix: str) -> tuple[bool, list[str]]:
-        """Ask the runtime which containers carry this run's name prefix.
-
-        Returns (the runtime answered, the names). The first element matters: an empty list from a
-        command that FAILED is not an empty list of containers, and treating it as one would report
-        a container gone because we could not ask. EM-3B-R1 closed exactly that hole in the local
-        backend; the same rule applies here.
-        """
-        import subprocess
-
-        # A backend that ran the container is best placed to say whether it is gone. Where one can
-        # answer, ask it; the shell-out below is the fallback for backends that cannot. This also
-        # keeps the question honest under test: a stand-in that never started a container was
-        # previously interrogated by asking the REAL runtime about a name it had never created, so
-        # the unit suite was quietly driving docker and waiting on it.
-        asker = getattr(self.backend, "containers_named", None)
-        if asker is not None:
-            return asker(prefix)
-
-        availability = self.backend.check_available()
-        runtime = availability.backend
-        if not runtime or runtime == "none" or not prefix:
-            return False, []
-        try:
-            listed = subprocess.run(
-                [runtime, "ps", "-a", "--filter", f"name={prefix}", "--format", "{{.Names}}"],
-                capture_output=True, text=True, timeout=30,
-            )
-        except Exception:                                     # noqa: BLE001
-            return False, []
-        if listed.returncode != 0:
-            return False, []
-        return True, [n for n in listed.stdout.split() if n.startswith(prefix)]
-
-    def _egress_gone(self, handle) -> bool | None:
-        """Whether this run's proxy and its two networks are gone. None when unaskable.
-
-        Separate from the container check because they are separate objects: a container can be
-        removed while the network it sat on stays, and a leftover network with a proxy on it is a
-        route out that nothing is using and nobody is watching.
-        """
-        import subprocess
-
-        availability = self.backend.check_available()
-        runtime = availability.backend
-        if not runtime or runtime == "none":
-            return None
-        # A container is listed with .Names and a network with .Name. Asking for the wrong one
-        # makes the runtime fail the template rather than answer, which came back as "could not
-        # ask" -- unknown rather than a false yes, but still blind.
-        for kind, field, name in (("container", "{{.Names}}", handle.proxy_name),
-                                  ("network", "{{.Name}}", handle.int_net),
-                                  ("network", "{{.Name}}", handle.ext_net)):
-            try:
-                listed = subprocess.run(
-                    [runtime, kind, "ls", "--filter", f"name={name}", "--format", field],
-                    capture_output=True, text=True, timeout=30,
-                )
-            except Exception:                                 # noqa: BLE001
-                return None
-            if listed.returncode != 0:
-                return None                                   # could not ask is not "gone"
-            if any(line.strip() == name for line in listed.stdout.splitlines()):
-                return False
-        return True
-
-    def _verify_gone(self, container_name: str) -> bool | None:
-        """Absence has to be stated by the runtime, not inferred from a command that failed.
-
-        The prefix, not the exact name: the backend gives every run its own generated identity
-        (`<name>-<suffix>`), so the name this service chose is a PREFIX of the container that
-        actually ran. An earlier version of this method asked about the bare name, which matched
-        nothing -- so a cancellation removed nothing and a cleanup check reported success about a
-        container that was still running. The real container lane caught it.
-        """
-        # Removal is not instantaneous, and sampling once can catch a container mid-teardown --
-        # which would report "not gone" about something that is going. Ask repeatedly until the
-        # runtime says it is absent, or until the deadline; a listing that never succeeds stays
-        # unknown rather than becoming a "yes".
-        # Retrying is only worth anything against a runtime that ANSWERS. If there is no runtime
-        # to ask, thirty seconds of asking again produces the same "unknown" it produced at once,
-        # and every run pays for it -- which is what happened when the terminal state began waiting
-        # on this method. Distinguish the two cases before looping: unknowable now is unknowable
-        # later, while "still present" is exactly the thing that changes with time.
-        availability = self.backend.check_available()
-        if not availability.backend or availability.backend == "none":
-            return None
-
-        deadline = time.monotonic() + 30.0
-        answered = False
-        names: list[str] = ["pending"]
-        while time.monotonic() < deadline:
-            answered, names = self._containers_named(container_name)
-            if answered and not names:
-                return True
-            time.sleep(0.25)
-        if not answered:
-            return None
-        return not names
     #: How long a cancellation waits for the run to actually stop before it answers. The worker
     #: publishes the terminal state LAST, after cleanup -- so waiting for that state is waiting
     #: for the abort to be established and the cleanup to be done, which is the only moment at
@@ -1246,44 +1155,12 @@ class GatewayService:
             return record, True
         deadline = time.monotonic() + (self.CANCEL_SETTLE_SECONDS if settle is None else settle)
         record.cancel_requested.set()
-        self._end_container(record)
+        self.worker.stop(record.run_id, record.container_name, self.CONTAINER_APPEAR_SECONDS)
         while time.monotonic() < deadline:
             if is_terminal(record.state):
                 return record, True
             time.sleep(0.05)
         return record, is_terminal(record.state)
-
-    def _end_container(self, record: RunRecord) -> None:
-        """Remove this run's container by the identity the backend actually gave it.
-
-        Nothing outside this run's own prefix is ever addressed, and a listing that failed stops
-        the removal rather than making it guess at a name.
-        """
-        import subprocess
-
-        availability = self.backend.check_available()
-        runtime = availability.backend
-        if not runtime or runtime == "none" or not record.container_name:
-            return
-        # A cancel can arrive before the container exists: the worker marks the run "running"
-        # and then the runtime takes a moment to create it. Removing nothing at that instant and
-        # returning would leave the payload to run to its wall clock, which is not what the client
-        # asked for -- so wait briefly for it to appear. Bounded, because a container that never
-        # appears is a run that never started, and the record already says so.
-        deadline = time.monotonic() + self.CONTAINER_APPEAR_SECONDS
-        names: list[str] = []
-        while time.monotonic() < deadline:
-            answered, names = self._containers_named(record.container_name)
-            if answered and names:
-                break
-            if record.state in ("finished", "refused", "cancelled") and not names:
-                return
-            time.sleep(0.25)
-        for name in names:
-            try:
-                subprocess.run([runtime, "rm", "-f", name], capture_output=True, timeout=60)
-            except Exception:                                 # noqa: BLE001
-                pass
 
 
 class _Cancelled(Exception):

@@ -78,6 +78,15 @@ class JobFailed(Exception):
         self.egress_gone = egress_gone
 
 
+class CouldNotRestrictTheNetwork(JobFailed):
+    """The job asked for a restricted network and the worker could not build one.
+
+    Its own kind, because the alternative is running it on a bare network -- which is the failure
+    the whole restricted path exists to prevent -- and because a client that asked for one door
+    needs to be told there was no door rather than that something went wrong.
+    """
+
+
 class NotData(TypeError):
     """Something was put in a message that could not be written down and read back.
 
@@ -245,12 +254,33 @@ class Worker(ABC):
         """A digest of the worker's own configuration, for conformance to bind."""
 
     @abstractmethod
+    def instance_label(self) -> str:
+        """What to call whatever runs jobs here, in a run's binding. Not an address and not a
+        secret: a name for the thing, so that two runs can be seen to have been executed by the
+        same one or by different ones."""
+
+    @abstractmethod
+    def image_digest(self) -> str:
+        """The image a job runs inside, as the worker knows it. Empty when there is none."""
+
+    @abstractmethod
     def can_it_isolate(self) -> Isolation:
         """What runs code there and whether it can isolate it."""
 
     @abstractmethod
     def runtime_version(self) -> str:
         """The runtime's own version, or "" when there is nothing to ask."""
+
+    @abstractmethod
+    def measure(self, *, generated_at, options, egress_matrix, egress_expected):
+        """Measure what this worker really enforces, and return the report.
+
+        The measurement belongs where the runtime is. A control plane that measured a worker it
+        could not reach would be reporting on something it had not touched."""
+
+    @abstractmethod
+    def measure_egress(self, *, allowed, denied):
+        """Try every destination the policy permits and every one it does not, there."""
 
     @abstractmethod
     def run(self, job: Job) -> Outcome:

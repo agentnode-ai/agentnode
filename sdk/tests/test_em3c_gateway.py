@@ -1024,14 +1024,14 @@ class TestATerminalStateMeansTheRecordIsComplete:
     def test_cleanup_is_verified_before_the_state_is_published(self, gateway):
         base, state, service, _ = gateway
         observed: list = []
-        original = service._verify_gone
+        original = service.worker.gone
 
-        def watching(container_name):
+        def watching(container_name, patiently=True):
             # what a client would have seen if it had polled at this exact moment
             observed.append([r.state for r in service.runs.values()])
-            return original(container_name)
+            return original(container_name, patiently)
 
-        service._verify_gone = watching
+        service.worker.gone = watching
         conn = _paired(base, state)
         answer = gc.submit(conn, b"x", network="none")
         final = gc.wait_for(conn, answer["run_id"], timeout=20)
