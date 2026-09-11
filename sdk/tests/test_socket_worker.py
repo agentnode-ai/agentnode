@@ -496,9 +496,14 @@ class TestEveryFailureIsClosed:
 
     def test_a_refusal_that_is_not_about_the_job_is_nobody_saying_anything(self):
         worker = SocketWorker("unix:///tmp/x.sock", KEY)
+        # RUNTIME_ABSENT used to be in this list, and that was the conflation review found: it
+        # is the worker ANSWERING that its host has nothing to run code in, which is a fact it
+        # established rather than an absence of information. It has its own answer now -- see
+        # TestThreeFailuresAreThreeAnswers. What belongs here is only the codes where the worker
+        # declines to have an opinion at all.
         for code in (wire.UNAUTHENTICATED, wire.STALE, wire.REPLAY, wire.TOO_LARGE,
                      wire.UNKNOWN_METHOD, wire.BAD_PARAMS, wire.DEADLINE_PASSED,
-                     wire.RUNTIME_ABSENT, wire.INTERNAL, wire.MALFORMED):
+                     wire.INTERNAL, wire.MALFORMED):
             with pytest.raises(WorkerUnreachable):
                 _answer_with(worker, {"ok": False, "error": code, "detail": "x"})
 
@@ -1243,3 +1248,178 @@ class TestAWorkerThatCannotRememberWhatItAcceptedDoesNotServe:
         floor.can_be_written()
         assert floor.highest == 5000.0
         assert wire.Floor(tmp_path / "floor.json").highest == 5000.0
+
+
+
+def _a_request_body() -> dict:
+    """The params a SocketWorker really sends for a run, built the way it builds them."""
+    job = a_job()
+    params = {"job": job.as_message()}
+    params["artifact"] = wire.as_text(job.artifact)
+    params["job"].pop("artifact", None)
+    return params
+
+
+class TestTheControlPlaneDoesNotTouchARuntime:
+    """The seam the whole arrangement rests on: the gateway asks, it never drives.
+
+    If any path in the gateway reached a container runtime directly -- by running it, naming its
+    executable, listing containers or removing one -- then moving the worker to another machine
+    would mean changing that path, and "the worker's location is deployment configuration" would
+    be untrue in a way nobody would notice until the move.
+    """
+
+    def _gateway_source(self) -> str:
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        return inspect.getsource(server)
+
+    def test_the_gateway_names_no_container_runtime(self):
+        text = self._gateway_source()
+        for runtime in ("docker", "podman", "crun", "runc"):
+            for shape in (f'"{runtime}"', f"'{runtime}'", f"{runtime} ", f"/{runtime}"):
+                assert shape not in text, (
+                    f"the gateway names a container runtime ({shape!r}); asking the worker is "
+                    f"the only way it is supposed to reach one")
+
+    def test_nor_does_it_import_the_backend_except_behind_the_worker(self):
+        """A ContainerBackend in the gateway is a runtime in the gateway."""
+        text = self._gateway_source()
+        for line in text.splitlines():
+            if "ContainerBackend" in line and not line.strip().startswith("#"):
+                assert "LocalWorker" in text, line
+                assert "def backend" in text or "self._backend" in text, line
+
+    def test_everything_the_gateway_asks_for_is_on_the_worker(self):
+        """The interface is the whole of what may be asked, so it can be listed."""
+        from agentnode_sdk.worker import Worker
+
+        asked = {name for name in dir(Worker) if not name.startswith("_")}
+        assert {"run", "stop", "gone", "measure", "can_it_isolate", "instance_label",
+                "image_digest", "configuration_sha256", "runtime_version",
+                "prove_its_ceilings"} <= asked
+
+    def test_and_none_of_it_hands_back_something_that_only_means_something_here(self):
+        """Everything that crosses has to survive being written down and read on another machine.
+
+        Checked on what is actually SENT, not on the objects behind it: a job's artefact is bytes,
+        which are data but not JSON, and the transport encodes them. Asserting against
+        `Job.as_message()` would have been asserting about a representation that never crosses.
+        """
+        from agentnode_sdk.worker import Gone, Isolation, Outcome
+
+        sent = json.dumps(_a_request_body())
+        assert "artifact" in sent
+        for answer in (Outcome(exit_code=0, stdout="", stderr="", reason="exited",
+                               native_status=0, native_platform="linux-container").as_message(),
+                       Isolation(available=True).as_message(),
+                       Gone(answered=True).as_message()):
+            json.dumps(answer)                                 # raises on anything that is not data
+
+    def test_no_live_thing_is_put_into_a_message(self):
+        """A callable, a handle or a process id would mean something only on one machine."""
+        from agentnode_sdk.worker import NotData, _plain
+
+        for live in (lambda: None, object(), open):
+            with pytest.raises(NotData):
+                _plain({"x": live}, "job")
+
+    def test_a_worker_somewhere_else_is_the_same_interface(self):
+        """Same methods, so nothing in the product can tell which one it holds."""
+        from agentnode_sdk.worker.local import LocalWorker
+        from agentnode_sdk.worker.remote import SocketWorker
+
+        for name in ("run", "stop", "gone", "measure", "can_it_isolate", "prove_its_ceilings"):
+            assert callable(getattr(LocalWorker, name, None)), name
+            assert callable(getattr(SocketWorker, name, None)), name
+
+
+class TestThreeFailuresAreThreeAnswers:
+    """Nobody answered, the worker has no runtime, the job ran and failed.
+
+    They send a person to three different places: the network, the worker's host, and their own
+    code. Review found the middle one collapsed into the first -- a worker that ANSWERED, saying
+    its host has no usable runtime, was reported as a worker that could not be reached, which
+    sends somebody to look at a connection that is working perfectly.
+    """
+
+    def _refusing(self, code, detail="nothing here can isolate anything"):
+        worker = SocketWorker("unix:///nowhere", KEY)
+        worker._ask = lambda *a, **k: (_ for _ in ()).throw(AssertionError("unused"))
+        return worker, {"ok": False, "error": code, "detail": detail}
+
+    def test_a_worker_that_has_no_runtime_says_so(self):
+        from agentnode_sdk.worker import NoRuntimeThere
+
+        worker, answer = self._refusing(wire.RUNTIME_ABSENT)
+        with pytest.raises(NoRuntimeThere) as raised:
+            worker._interpret(answer)
+        assert "no container runtime" in str(raised.value)
+
+    def test_and_that_is_not_the_same_as_nobody_answering(self):
+        from agentnode_sdk.worker import JobFailed, NoRuntimeThere
+
+        assert not issubclass(NoRuntimeThere, WorkerUnreachable)
+        assert not issubclass(NoRuntimeThere, JobFailed)
+
+    def test_a_job_that_ran_and_failed_is_its_own_answer(self):
+        worker, answer = self._refusing(wire.JOB_FAILED, "it exited 1")
+        with pytest.raises(JobFailed):
+            worker._interpret(answer)
+
+    def test_and_anything_the_worker_will_not_have_an_opinion_on_is_unreachable(self):
+        """The catch-all stays a catch-all: what it must not swallow is a definite answer."""
+        for code in (wire.UNAUTHENTICATED, wire.STALE, wire.REPLAY, wire.INTERNAL):
+            worker, answer = self._refusing(code)
+            with pytest.raises(WorkerUnreachable):
+                worker._interpret(answer)
+
+
+class TestARecordSaysWhatItsArrangementDoesNotEstablish:
+    """A label means nothing to a reader who does not already know what it means.
+
+    "single-host-development" in a record months later, or handed to somebody as evidence, tells
+    them nothing about what it does not protect against -- and that implication is the whole
+    reason the label is recorded. So the limits travel with it.
+    """
+
+    def test_the_limits_are_a_value_and_not_only_prose(self):
+        from agentnode_sdk.worker import (
+            SEPARATE_WORKER_HOST,
+            SINGLE_HOST_DEVELOPMENT,
+            what_it_does_not_establish,
+        )
+
+        said = what_it_does_not_establish(SINGLE_HOST_DEVELOPMENT)
+        assert "not isolation" in said
+        assert "signing identity" in said
+        assert "not production-ready" in said and "not multi-tenant" in said
+        assert what_it_does_not_establish(SEPARATE_WORKER_HOST) != said
+
+    def test_an_arrangement_this_build_does_not_describe_claims_nothing(self):
+        from agentnode_sdk.worker import what_it_does_not_establish
+
+        said = what_it_does_not_establish("something-nobody-has-defined")
+        assert "does not describe" in said
+
+    def test_and_every_record_of_use_carries_them(self, tmp_path):
+        from agentnode_sdk.gateway import meter
+        from agentnode_sdk.worker import SINGLE_HOST_DEVELOPMENT
+
+        meter.record(tmp_path, run_id="r", client_id="c", started_at=1.0, finished_at=2.0,
+                     cpu=1.0, memory_mb=512, wall_clock_s=60, state="finished",
+                     outcome="succeeded", bytes_out=1,
+                     worker_topology=SINGLE_HOST_DEVELOPMENT, allowance_sha256="a" * 64)
+        line = meter.read(tmp_path)[0]
+        assert line["worker_topology"] == SINGLE_HOST_DEVELOPMENT
+        assert "not isolation" in line["worker_topology_means"]
+
+    def test_and_a_caller_cannot_put_its_own_words_there(self):
+        """It is derived from the label, so it cannot become a place to write anything."""
+        import inspect
+
+        from agentnode_sdk.gateway import meter
+
+        assert "worker_topology_means" not in str(inspect.signature(meter.record))

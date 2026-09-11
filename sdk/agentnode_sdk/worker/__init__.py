@@ -54,6 +54,34 @@ SEPARATE_WORKER_HOST = "separate-worker-host"
 
 TOPOLOGIES = (SINGLE_HOST_DEVELOPMENT, SEPARATE_WORKER_HOST)
 
+#: What each topology does NOT protect against, in the record itself.
+#:
+#: A label is only meaningful to somebody who already knows what it means. A person reading a
+#: record months later, or somebody handed one as evidence, meets the word
+#: "single-host-development" and has nothing to tell them what it implies -- and the implication
+#: is the whole point of recording it. So the limits travel with the label rather than living
+#: only in a file next to the code.
+WHAT_A_TOPOLOGY_DOES_NOT_ESTABLISH = {
+    SINGLE_HOST_DEVELOPMENT: (
+        "The control plane and the sandbox worker are separate accounts on ONE kernel. That is "
+        "not isolation between them and not a tenancy boundary: an escape from the sandbox "
+        "reaches the host that holds this gateway's signing identity and every client's token. "
+        "This is a development and closed-alpha arrangement. It is not production-ready, not "
+        "multi-tenant, and not escape-proof between control plane and worker."),
+    SEPARATE_WORKER_HOST: (
+        "The worker is on its own machine. What that establishes has not been measured, because "
+        "nothing has run in that arrangement yet; this text exists so a record made under it is "
+        "not read as carrying a claim nobody checked."),
+}
+
+
+def what_it_does_not_establish(topology: str) -> str:
+    """The limits of the arrangement a record was made under, for the record to carry."""
+    return WHAT_A_TOPOLOGY_DOES_NOT_ESTABLISH.get(
+        str(topology),
+        "This record was made under an arrangement this build does not describe, so nothing "
+        "about what it does or does not protect against can be read from it.")
+
 
 class WorkerUnreachable(Exception):
     """The worker could not be asked. NOT that the job failed -- nobody knows whether it ran.
@@ -61,6 +89,20 @@ class WorkerUnreachable(Exception):
     `EM3C-EVIDENCE-0002` cost an external run to the difference between "the answer is no" and
     "there was no answer". A worker that cannot be reached is the second kind, and collapsing it
     into a failed job would tell a client something nobody established.
+    """
+
+
+class NoRuntimeThere(Exception):
+    """The worker was reached, answered, and has nothing that can isolate anything.
+
+    Its own kind, because it is not the other two and the difference decides what somebody does
+    next. `WorkerUnreachable` means nobody answered and nothing is known -- look at the network,
+    the socket, whether the service is up. This means the worker answered and told us: its host
+    has no usable container runtime, and no amount of retrying will change that. `JobFailed`
+    means it ran and did not work, which is about the job.
+
+    Collapsing this into "unreachable" sent people to look at a connection that was working
+    perfectly, which is the kind of wrong answer that costs an afternoon.
     """
 
 

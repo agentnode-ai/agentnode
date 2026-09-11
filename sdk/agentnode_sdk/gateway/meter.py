@@ -53,6 +53,8 @@ import os
 import time
 from pathlib import Path
 
+from agentnode_sdk.worker import what_it_does_not_establish
+
 #: One line per run, appended. A file rather than the ledger, because the ledger is about replay
 #: and is read on every admission -- a record that grows with every run does not belong in it.
 METER_NAME = "use-log.jsonl"
@@ -61,7 +63,7 @@ METER_NAME = "use-log.jsonl"
 #: purpose, in a place a reviewer reads, rather than a keyword appearing at a call site.
 FIELDS = ("run_id", "client_id", "started_at", "finished_at", "seconds",
           "cpu", "memory_mb", "wall_clock_s", "state", "outcome", "bytes_out",
-          "worker_topology", "allowance_sha256")
+          "worker_topology", "worker_topology_means", "allowance_sha256")
 
 #: What binds one line to the one before it. Not in FIELDS: those are what a line SAYS, these are
 #: what makes it hard to change, and keeping them apart stops a reader mistaking one for the
@@ -146,6 +148,10 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
         # How much the job wrote, not what it wrote.
         "bytes_out": int(bytes_out),
         "worker_topology": str(worker_topology),
+        # The label and what it means, together. A reader who meets "single-host-development" in
+        # a record months from now has no other way to know what it does not protect against,
+        # and that is the reason the label is there at all.
+        "worker_topology_means": what_it_does_not_establish(worker_topology),
         "allowance_sha256": str(allowance_sha256),
     }
     assert set(line) == set(FIELDS), "a line has exactly the fields this module declares"

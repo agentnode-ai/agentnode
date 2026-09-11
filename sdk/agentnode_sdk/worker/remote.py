@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 
 from agentnode_sdk.worker import (
     Ceilings,
+    NoRuntimeThere,
     SEPARATE_WORKER_HOST,
     SINGLE_HOST_DEVELOPMENT,
     CouldNotRestrictTheNetwork,
@@ -137,6 +138,17 @@ class SocketWorker(Worker):
             raise WorkerUnreachable(
                 "the sandbox worker answered about a different request, so nothing it said is "
                 "about this one")
+        return self._interpret(answered)
+
+    def _interpret(self, answered: dict):
+        """What an answer MEANS. Named, because the meaning is the thing worth testing.
+
+        There are three ways a run does not produce a result, and they send a person to three
+        different places: nobody answered (the network, the socket, the service), the worker
+        answered and has no runtime (that host), and the job ran and failed (their own code).
+        Collapsing the middle one into the first sent people to look at a connection that was
+        working perfectly.
+        """
         if answered.get("ok") is True:
             return answered.get("result")
 
@@ -146,6 +158,12 @@ class SocketWorker(Worker):
             raise JobFailed(detail, egress_gone=answered.get("egress_gone"))
         if code == wire.NETWORK_UNAVAILABLE:
             raise CouldNotRestrictTheNetwork(detail)
+        if code == wire.RUNTIME_ABSENT:
+            # The worker ANSWERED. That its host has no runtime is a fact it established, not an
+            # absence of information.
+            raise NoRuntimeThere(
+                "the sandbox worker at " + self.address + " has no container runtime it can use"
+                + (": " + detail if detail else ""))
         # Everything else is the worker refusing to have an opinion: unauthenticated, stale,
         # replayed, oversized, unknown, malformed, internal. A client is told nobody knows.
         raise WorkerUnreachable(

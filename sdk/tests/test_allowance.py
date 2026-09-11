@@ -480,7 +480,11 @@ class TestARecordOfUseCarriesNoSecret:
         import inspect
 
         taken = inspect.signature(meter.record).parameters
-        assert set(taken) - {"root"} == set(meter.FIELDS) - {"seconds"}
+        # `seconds` and `worker_topology_means` are DERIVED -- computed from what was passed,
+        # never accepted from a caller. That is the point: a caller cannot put anything of its
+        # own into either, and naming them here keeps that a decision rather than a gap.
+        derived = {"seconds", "worker_topology_means"}
+        assert set(taken) - {"root"} == set(meter.FIELDS) - derived
         for name, parameter in taken.items():
             assert parameter.kind is not parameter.VAR_KEYWORD, name
 
@@ -757,11 +761,25 @@ class TestTheRecordOfUseCanBeShownNotToHaveChanged:
             assert (key.stat().st_mode & 0o077) == 0, "the meter key is readable by others"
 
     def test_nothing_in_a_line_is_a_secret(self, tmp_path):
-        """The chain must not have smuggled anything in beside the counts."""
+        """The chain must not have smuggled anything in beside the counts.
+
+        Scanned with the one constant field taken out, and that field then checked to BE the
+        constant. It carries the sentence saying what the topology does not protect against, and
+        that sentence contains the word "token" -- so a word-scan over the whole line would trip
+        on prose while telling you nothing about secrets. Excluding it would be a hole, so it is
+        excluded and pinned instead: it can only ever hold one of the declared texts.
+        """
+        from agentnode_sdk.worker import WHAT_A_TOPOLOGY_DOES_NOT_ESTABLISH
+
         meter = self._log(tmp_path)
-        blob = json.dumps(self._rows(meter, tmp_path))
+        rows = self._rows(meter, tmp_path)
+        for row in rows:
+            assert row["worker_topology_means"] in set(
+                WHAT_A_TOPOLOGY_DOES_NOT_ESTABLISH.values()), "that field is not a constant"
+        scanned = json.dumps([{k: v for k, v in r.items() if k != "worker_topology_means"}
+                              for r in rows])
         for bad in ("token", "PRIVATE", "BEGIN", "code"):
-            assert bad not in blob
+            assert bad not in scanned
 
     def test_what_it_does_not_establish_is_written_down(self):
         """A log cannot be evidence against the thing that writes it, and this says so."""
