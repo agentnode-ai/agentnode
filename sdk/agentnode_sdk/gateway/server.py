@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from agentnode_sdk.worker import what_it_does_not_establish
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
 from agentnode_sdk.gateway import challenge as ch
 from agentnode_sdk.gateway.ledger import Ledger
@@ -109,6 +110,14 @@ class RunRecord:
     #: Set when the operator's kill switch is what ended this run, and carried into the answer so
     #: a client is told that rather than being left to read a bare "cancelled" as its own doing.
     halted_by: str = ""
+    #: Where this run was measured and what the thing measuring it was configured as, taken at
+    #: admission like everything else that must not change underneath a finished run. The
+    #: conformance report has bound these for a while; a JOB's own evidence did not, so a reader
+    #: holding one run's record could not tell which arrangement produced it without going to
+    #: find a separate document and hoping it was the same one.
+    worker_topology: str = ""
+    worker_configuration_sha256: str = ""
+    backend_version: str = ""
     #: The ceilings this run was ADMITTED under, taken at admission. Sampling it at the end would
     #: mean a limit changed while a run was going rewrote what that run is recorded as having been
     #: allowed -- which is the one thing a record of what was allowed must not do.
@@ -158,6 +167,10 @@ class RunRecord:
             "exit_code": self.exit_code,
             "termination_reason": self.termination_reason,
             "halted_by": self.halted_by,
+            "worker_topology": self.worker_topology,
+            "worker_topology_means": what_it_does_not_establish(self.worker_topology),
+            "worker_configuration_sha256": self.worker_configuration_sha256,
+            "backend_version": self.backend_version,
             "native_status": self.native_status,
             "native_platform": self.native_platform,
             "stdout": self.stdout,
@@ -1062,6 +1075,11 @@ class GatewayService:
             # From here the run carries what it was admitted under. A limit changed while it is
             # going must not rewrite what this run is recorded as having been allowed.
             record.admitted_under = granted_digest
+            # Where it ran and what that was configured as, taken now rather than at the end:
+            # a worker replaced mid-flight must not rewrite what a finished run was measured on.
+            record.worker_topology = self.worker.topology
+            record.worker_configuration_sha256 = self.worker.configuration_sha256()
+            record.backend_version = self.runtime_version()
         except Exception as exc:                              # noqa: BLE001 - refusal is an answer
             record.move_to("refused")
             record.refusal = str(exc)

@@ -1423,3 +1423,120 @@ class TestARecordSaysWhatItsArrangementDoesNotEstablish:
         from agentnode_sdk.gateway import meter
 
         assert "worker_topology_means" not in str(inspect.signature(meter.record))
+
+
+class TestNoPathInTheGatewayReachesARuntimeDirectly:
+    """A scan for the word "docker" is not a gate; it is a spelling check.
+
+    Review made the point: a direct backend call that never names an executable —
+    `self.backend.run_process(...)`, `ContainerBackend().remove(...)` — passes a text scan
+    completely while being exactly the thing the seam exists to prevent. So this walks the
+    gateway's syntax instead of its characters.
+
+    The rule: `self.backend` may be touched in TWO places and nowhere else — the `backend`
+    property that builds it, and the `worker` property that wraps it in a `LocalWorker`. Anywhere
+    else is the control plane driving a runtime.
+    """
+
+    def _offending_uses(self):
+        import ast
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        tree = ast.parse(inspect.getsource(server))
+        allowed = {"backend", "worker"}
+        offending = []
+
+        class Look(ast.NodeVisitor):
+            def __init__(self):
+                self.where = []
+
+            def visit_FunctionDef(self, node):
+                self.where.append(node.name)
+                self.generic_visit(node)
+                self.where.pop()
+
+            def visit_Attribute(self, node):
+                # self.backend.<anything>  -- the attribute chain, not the property itself
+                inner = node.value
+                if (isinstance(inner, ast.Attribute) and inner.attr == "backend"
+                        and isinstance(inner.value, ast.Name) and inner.value.id == "self"):
+                    if not self.where or self.where[-1] not in allowed:
+                        offending.append((self.where[-1] if self.where else "<module>",
+                                          node.attr, node.lineno))
+                self.generic_visit(node)
+
+        Look().visit(tree)
+        return offending
+
+    def test_the_gateway_touches_its_backend_in_two_places_and_nowhere_else(self):
+        offending = self._offending_uses()
+        assert offending == [], (
+            "the control plane drives a runtime directly at: "
+            + ", ".join(f"{fn}() line {ln} -> .{attr}" for fn, attr, ln in offending))
+
+    def test_and_the_rule_catches_a_call_that_names_no_executable(self):
+        """The counter-case for the gate itself: it must see a call it cannot read as text."""
+        import ast
+
+        tree = ast.parse(
+            "class S:\n"
+            "    def somewhere_else(self):\n"
+            "        return self.backend.run_process(spec)\n")
+        found = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Attribute)
+                 and n.value.attr == "backend"]
+        assert found, "the shape this gate looks for is not the shape a direct call has"
+
+
+class TestEveryJobsEvidenceBindsWhereItWasMeasured:
+    """The conformance report bound these; a single run's record did not.
+
+    Somebody holding one run's evidence could not tell which arrangement produced it without
+    going to find a separate document and trusting that it was the same one. The five values a
+    reader needs are the operator policy, the effective policy digest, the backend version, the
+    worker's configuration and the topology — and all five have to be on the run itself.
+    """
+
+    MUST_BIND = ("requested_policy", "effective_policy_sha256", "backend_version",
+                 "worker_configuration_sha256", "worker_topology")
+
+    def _a_record(self):
+        from agentnode_sdk.gateway.server import RunRecord
+
+        record = RunRecord(run_id="r" * 32, job_id="j")
+        record.requested_policy = {"network": "none"}
+        record.effective_policy_sha256 = "e" * 64
+        record.backend_version = "podman 5.8.4"
+        record.worker_configuration_sha256 = "c" * 64
+        record.worker_topology = SINGLE_HOST_DEVELOPMENT
+        return record
+
+    def test_every_mandated_value_is_on_the_run(self):
+        shown = self._a_record().public()
+        for field in self.MUST_BIND:
+            assert field in shown, f"a run's evidence does not bind {field}"
+            assert shown[field], f"a run's evidence binds {field} as empty"
+
+    def test_and_the_topology_comes_with_what_it_means(self):
+        shown = self._a_record().public()
+        assert "not isolation" in shown["worker_topology_means"]
+
+    def test_they_are_taken_at_admission_and_not_at_the_end(self):
+        """A worker replaced mid-flight must not rewrite what a finished run was measured on."""
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        text = inspect.getsource(server.GatewayService.submit)
+        assert "record.worker_topology = self.worker.topology" in text
+        assert "taken now rather than at the end" in text
+
+    def test_a_record_that_binds_none_of_them_is_visibly_empty(self):
+        """The counter-case: the check must be able to tell bound from unbound."""
+        from agentnode_sdk.gateway.server import RunRecord
+
+        shown = RunRecord(run_id="r" * 32, job_id="j").public()
+        assert not shown["worker_topology"]
+        assert not shown["backend_version"]

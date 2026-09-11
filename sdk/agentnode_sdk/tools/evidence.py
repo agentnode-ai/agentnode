@@ -257,8 +257,11 @@ def _production() -> dict:
 
         hints = typing.get_type_hints(RunRecord)
         inner = tuple(RunRecord(run_id="", job_id="").public())
-        # `policy_deltas` is the only public key whose attribute is named differently.
-        attribute = {"policy_deltas": "deltas"}
+        # Public keys whose attribute is named differently, or which are DERIVED and have no
+        # attribute at all. `worker_topology_means` is the sentence that travels with the
+        # topology label; it is computed from that label rather than stored, so it takes its
+        # type from it.
+        attribute = {"policy_deltas": "deltas", "worker_topology_means": "worker_topology"}
         types = {key: _runtime_types(hints[attribute.get(key, key)]) for key in inner}
 
         # The envelope's types come from a real stamp over a real identity, so they are the
