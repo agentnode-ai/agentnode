@@ -1445,6 +1445,8 @@ class TestNoPathInTheGatewayReachesARuntimeDirectly:
         from agentnode_sdk.gateway import server
 
         tree = ast.parse(inspect.getsource(server))
+        # The two properties that are allowed to know a runtime exists, and the import
+        # block, where naming the class is how it gets into the module at all.
         allowed = {"backend", "worker"}
         offending = []
 
@@ -1457,14 +1459,38 @@ class TestNoPathInTheGatewayReachesARuntimeDirectly:
                 self.generic_visit(node)
                 self.where.pop()
 
+            def _here(self):
+                return self.where[-1] if self.where else "<module>"
+
+            def _outside(self):
+                return not self.where or self.where[-1] not in allowed
+
             def visit_Attribute(self, node):
-                # self.backend.<anything>  -- the attribute chain, not the property itself
+                # self.backend.<anything> -- the attribute chain, not the property itself
                 inner = node.value
                 if (isinstance(inner, ast.Attribute) and inner.attr == "backend"
                         and isinstance(inner.value, ast.Name) and inner.value.id == "self"):
-                    if not self.where or self.where[-1] not in allowed:
-                        offending.append((self.where[-1] if self.where else "<module>",
-                                          node.attr, node.lineno))
+                    if self._outside():
+                        offending.append((self._here(), node.attr, node.lineno))
+                self.generic_visit(node)
+
+            def visit_Assign(self, node):
+                # A local variable is the obvious way around an attribute-chain check:
+                #     runtime = self.backend
+                #     runtime.remove(...)
+                # so binding it to a name outside the two properties is itself the offence,
+                # whatever is done with the name afterwards.
+                value = node.value
+                if (isinstance(value, ast.Attribute) and value.attr == "backend"
+                        and isinstance(value.value, ast.Name) and value.value.id == "self"
+                        and self._outside()):
+                    offending.append((self._here(), "bound to a local name", node.lineno))
+                self.generic_visit(node)
+
+            def visit_Name(self, node):
+                # And building one directly needs no `self.backend` at all.
+                if node.id in ("ContainerBackend", "LocalWorker") and self._outside():
+                    offending.append((self._here(), "constructs " + node.id, node.lineno))
                 self.generic_visit(node)
 
         Look().visit(tree)
@@ -1586,3 +1612,34 @@ class TestAWorkerLostAtCleanupStillEndsTheRun:
         guarded = inspect.getsource(server.GatewayService._run).split("finally:")[-1]
         assert 'if terminal not in ("refused", "cancelled")' in guarded
         assert "if not record.refusal:" in guarded
+
+
+class TestTheConformanceReportBindsWhereItWasMeasured:
+    """The report is what says what this sandbox enforces. What it was measured ON belongs in it.
+
+    A report that lost one of those bindings would still look like a report -- the numbers would
+    all be there -- while no longer saying which arrangement produced them.
+    """
+
+    MUST_BIND = ("image_digest", "backend_version", "worker_topology",
+                 "worker_configuration_sha256")
+
+    def test_the_report_is_built_with_every_one_of_them(self):
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        built = inspect.getsource(server.GatewayService.report_binding)
+        for field in self.MUST_BIND:
+            assert field + "=" in built, f"the conformance report does not bind {field}"
+
+    def test_and_each_comes_from_the_worker_rather_than_from_here(self):
+        """A control plane that filled these in itself would be describing something it guessed."""
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        built = inspect.getsource(server.GatewayService.report_binding)
+        assert "self.worker.image_digest()" in built
+        assert "self.worker.topology" in built
+        assert "self.worker.configuration_sha256()" in built
