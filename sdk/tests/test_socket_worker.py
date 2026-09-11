@@ -1540,3 +1540,49 @@ class TestEveryJobsEvidenceBindsWhereItWasMeasured:
         shown = RunRecord(run_id="r" * 32, job_id="j").public()
         assert not shown["worker_topology"]
         assert not shown["backend_version"]
+
+
+class TestAWorkerLostAtCleanupStillEndsTheRun:
+    """The case most likely to happen, and the one that used to hang.
+
+    A worker lost during a run is a worker that cannot be asked about cleanup either -- so the
+    cleanup question fails precisely when it matters. It was an unguarded call inside a
+    `finally`, so that exception escaped before the terminal state was published and the run
+    never reached one. A client polling it waits forever on something nobody will finish, which
+    is worse than either answer it could have been given.
+    """
+
+    def test_the_run_still_reaches_a_terminal_state(self):
+        from agentnode_sdk.gateway.protocol import TERMINAL_STATES
+
+        assert "unverified" in TERMINAL_STATES
+
+    def test_not_knowing_is_recorded_as_not_knowing(self):
+        """None, not False: "nobody could ask" is not "something was left behind"."""
+        from agentnode_sdk.gateway.server import RunRecord
+
+        record = RunRecord(run_id="r" * 32, job_id="j")
+        assert record.cleanup_verified is None
+        assert record.public()["cleanup_verified"] is None
+
+    def test_and_it_is_not_turned_into_a_job_that_failed(self):
+        """Nothing about the job is known from a cleanup question that could not be asked."""
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        text = inspect.getsource(server.GatewayService._run)
+        guarded = text.split("finally:")[-1]
+        assert "try:" in guarded, "the cleanup question is unguarded inside a finally"
+        assert 'terminal = "unverified"' in guarded
+        assert "not turned into a job that failed" in guarded
+
+    def test_a_refusal_that_was_already_decided_is_not_overwritten(self):
+        """A job that genuinely failed keeps saying so, even if cleanup then could not be asked."""
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        guarded = inspect.getsource(server.GatewayService._run).split("finally:")[-1]
+        assert 'if terminal not in ("refused", "cancelled")' in guarded
+        assert "if not record.refusal:" in guarded

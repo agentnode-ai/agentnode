@@ -1249,7 +1249,27 @@ class GatewayService:
             terminal = "refused"
             record.refusal = f"the run could not be completed: {exc}"
         finally:
-            record.cleanup_verified = self.worker.gone(record.container_name).verified
+            # Asking the worker whether anything is left can itself fail, and it is MOST likely
+            # to fail in exactly the case that got us here: a worker lost during the run is a
+            # worker that cannot be asked about cleanup either. This used to be an unguarded call
+            # in a `finally`, so that exception escaped before the terminal state was published --
+            # and the run then had no terminal state at all. A client polling it waits forever on
+            # something nobody will ever finish, which is worse than either answer.
+            #
+            # Not knowing is its own answer: `cleanup_verified` stays None and the run ends
+            # `unverified`, which is the word this gateway already uses for "nobody established
+            # what happened". It is not turned into a job that failed -- nothing here says
+            # anything about the job.
+            try:
+                record.cleanup_verified = self.worker.gone(record.container_name).verified
+            except Exception as exc:                          # noqa: BLE001
+                record.cleanup_verified = None
+                if terminal not in ("refused", "cancelled"):
+                    terminal = "unverified"
+                if not record.refusal:
+                    record.refusal = (
+                        "the run ended, and this gateway could not ask the worker whether "
+                        "anything was left behind: " + str(exc)[:200])
             if record.cleanup_verified and left_behind is not None:
                 # Cleanup means the whole run, not just the container that carried it. What a run
                 # needed BESIDES its container is on the worker's side of the line, so the worker
