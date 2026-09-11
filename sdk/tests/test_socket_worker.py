@@ -323,11 +323,18 @@ class TestWhatAReceiverWillNotGoBackBefore:
             wire.check(bad, seen, now=1000.0, floor=floor)
         assert floor.highest == 0.0
 
-    def test_a_floor_that_cannot_be_read_does_not_stop_the_worker(self, tmp_path):
-        """A corrupt hint is not a reason to refuse everything: Seen still holds within a life."""
+    def test_a_floor_that_cannot_be_read_stops_the_worker(self, tmp_path):
+        """This test used to assert the opposite, and the opposite was wrong.
+
+        It read: "a corrupt hint is not a reason to refuse everything". But starting again from
+        zero is precisely the state an attacker wants, because it is the state in which nothing
+        is too old -- so corrupting one small file turned the protection off and left a worker
+        that looked healthy. Review found it. Present-and-unreadable is not absent.
+        """
         path = tmp_path / "floor.json"
         path.write_text("this is not json", encoding="utf-8")
-        assert wire.Floor(path).highest == 0.0
+        with pytest.raises(wire.CannotRememberTheFloor):
+            wire.Floor(path)
 
     def test_a_message_from_too_long_ago(self):
         body = wire.request("describe", {}, deadline=4000.0, now=1000.0)
@@ -1182,3 +1189,57 @@ class TestTheWireDescribesEveryFieldItAccepts:
         """So that adding a field is a decision in a place a reviewer reads."""
         assert set(wire.FIELDS) == {"protocol", "request_id", "nonce", "method", "issued_at",
                                     "deadline", "params"}
+
+
+class TestAWorkerThatCannotRememberWhatItAcceptedDoesNotServe:
+    """The floor used to fail OPEN, with a comment arguing that it should.
+
+    An unreadable floor file started again from zero, and a floor that could not be written was
+    ignored. Both were wrong in the one direction this class exists to prevent: zero is the state
+    in which nothing is too old, so corrupting one small file -- or filling a disk -- turned the
+    replay defence off and left a worker that looked perfectly healthy. Found in review.
+    """
+
+    def test_a_floor_that_is_there_and_unreadable_is_refused(self, tmp_path):
+        path = tmp_path / "floor.json"
+        path.write_text("this is not json", encoding="utf-8")
+        with pytest.raises(wire.CannotRememberTheFloor) as refused:
+            wire.Floor(path)
+        assert "already accepted" in str(refused.value)
+
+    def test_but_one_that_is_simply_absent_is_a_first_run(self, tmp_path):
+        """The distinction that matters: absent is ordinary, corrupt is not."""
+        assert wire.Floor(tmp_path / "not-there.json").highest == 0.0
+
+    def test_a_floor_that_cannot_be_written_is_refused(self, tmp_path):
+        """Not best-effort: a floor that advanced only in memory is reset by a restart."""
+        floor = wire.Floor(tmp_path / "sub" / "floor.json")
+        floor.path = tmp_path / "sub" / "nope" / "\0" / "floor.json"
+        with pytest.raises(wire.CannotRememberTheFloor):
+            floor.accepted(2000.0)
+
+    def test_and_the_message_is_not_accepted_when_it_cannot_be_recorded(self, tmp_path):
+        """Accepting while unable to record it is how the gap gets built, silently."""
+        floor = wire.Floor(tmp_path / "floor.json")
+        floor.path = tmp_path / "\0" / "floor.json"
+        with pytest.raises(wire.CannotRememberTheFloor):
+            wire.check(wire.request("describe", {}, deadline=1030.0, now=1000.0),
+                       wire.Seen(elapsed=lambda: 0.0), now=1000.0, floor=floor)
+
+    def test_a_worker_whose_floor_cannot_be_written_does_not_listen(self, tmp_path):
+        """The durability contract: no socket unless the record can actually be kept."""
+        worker = AWorkerThatAnswers()
+        key = tmp_path / "k"
+        key.write_bytes(wire.new_key())
+        bench = service.Bench(worker, "unix://" + str(tmp_path / "s.sock"), wire.read_key(key),
+                              only_uid=0, remembers_at=str(tmp_path / "\0" / "floor.json"))
+        with pytest.raises(wire.CannotRememberTheFloor):
+            bench.floor.can_be_written()
+
+    def test_and_one_whose_floor_works_is_left_where_it_was(self, tmp_path):
+        """The probe must not move the floor it is testing."""
+        floor = wire.Floor(tmp_path / "floor.json")
+        floor.accepted(5000.0)
+        floor.can_be_written()
+        assert floor.highest == 5000.0
+        assert wire.Floor(tmp_path / "floor.json").highest == 5000.0

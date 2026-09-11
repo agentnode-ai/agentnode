@@ -280,6 +280,15 @@ class Seen:
         return len(self._when)
 
 
+class CannotRememberTheFloor(OSError):
+    """Raised instead of carrying on with no memory of what has already been accepted.
+
+    A separate type because the thing that starts a worker has to be able to tell this from an
+    ordinary I/O failure: this one means the replay defence is not in place, and a worker whose
+    replay defence is not in place is not one to hand foreign code to.
+    """
+
+
 class Floor:
     """The oldest moment a receiver will still accept, which only ever moves forward.
 
@@ -302,15 +311,25 @@ class Floor:
     def __init__(self, path=None) -> None:
         self.path = Path(path) if path else None
         self._highest = 0.0
-        if self.path is not None:
-            try:
-                self._highest = float(json.loads(self.path.read_text(encoding="utf-8"))["highest"])
-            except (OSError, ValueError, KeyError, TypeError):
-                # Absent is the ordinary case on a first run. Unreadable is not treated as a
-                # reason to refuse everything: `Seen` still holds within this process, and a
-                # receiver that would not start because of a corrupt hint is worse than one that
-                # starts with the hint it can read.
-                self._highest = 0.0
+        if self.path is None or not self.path.exists():
+            # Absent is the ordinary case on a first run, and the only one that starts at zero.
+            return
+        try:
+            self._highest = float(json.loads(self.path.read_text(encoding="utf-8"))["highest"])
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            # PRESENT AND UNREADABLE IS NOT ABSENT. An earlier version of this started at zero
+            # here, with a comment arguing that a corrupt hint should not stop a worker. That was
+            # wrong, and wrong in the direction this whole class exists to prevent: starting at
+            # zero is exactly the state an attacker wants, because it is the state in which
+            # nothing is too old. Corrupting one small file would have turned the protection off
+            # and left a worker that looked healthy.
+            raise CannotRememberTheFloor(
+                "this worker cannot read what it has already accepted (" + str(exc)[:120] + "). "
+                "That file is what stops a message captured earlier being replayed after a "
+                "restart, and starting again from nothing is the one state in which every "
+                "captured message is acceptable. Look at " + str(self.path) + ": if it is "
+                "genuinely lost, removing it starts a new record deliberately rather than by "
+                "accident.") from exc
 
     @property
     def highest(self) -> float:
@@ -321,19 +340,44 @@ class Floor:
         return self._highest > 0.0 and float(issued_at) < self._highest - window
 
     def accepted(self, issued_at: float) -> None:
-        """Note that this moment has been accepted. Only ever moves the floor forward."""
+        """Note that this moment has been accepted. Only ever moves the floor forward.
+
+        Raises when it cannot be written down. Not "best effort": a floor that advanced only in
+        memory is one that a restart resets, and a receiver that kept accepting while unable to
+        record what it accepted would be building exactly the gap this closes -- silently, and
+        for as long as the disk stayed full.
+        """
         if float(issued_at) <= self._highest:
             return
+        self._persist(float(issued_at))
         self._highest = float(issued_at)
+
+    def can_be_written(self) -> None:
+        """Raise unless this floor can actually be recorded. Asked BEFORE a worker listens.
+
+        Proved by writing, through the same path a real update takes: a directory that looks
+        writable and a file that can be written are different questions, and only the second one
+        matters. It writes back the value it already holds, so the probe does not move the thing
+        it is testing.
+        """
+        self._persist(self._highest)
+
+    def _persist(self, value: float) -> None:
         if self.path is None:
             return
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".new")
-            tmp.write_text(json.dumps({"highest": self._highest}), encoding="utf-8")
+            tmp.write_text(json.dumps({"highest": float(value)}), encoding="utf-8")
             os.replace(tmp, self.path)
-        except OSError:                                       # pragma: no cover - best effort
-            pass
+        except (OSError, ValueError) as exc:
+            # ValueError as well as OSError: a path the platform will not even accept is the same
+            # condition as one it will not write, and only one of those is an OSError.
+            raise CannotRememberTheFloor(
+                "this worker could not write down what it has accepted (" + str(exc)[:120]
+                + "). Carrying on would mean a restart forgetting it, and a message captured now "
+                "being acceptable again afterwards.") from exc
+
 
 
 def check(body: dict[str, Any], seen: Seen, now: float | None = None,

@@ -340,11 +340,26 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None) -> Non
         os.environ.get("HOME", "") or os.path.expanduser("~"), "replay-floor.json")
     bench = Bench(the_worker, address, wire.read_key(key_path), only_uid,
                   remembers_at=remembers_at)
+
+    # Before the socket, like the ceiling. What a worker has already accepted is what stops a
+    # message captured earlier being replayed after a restart, and a worker that cannot record
+    # that has no such protection -- while looking exactly like one that has. Proved by writing,
+    # because a directory that looks writable and a file that can be written are different
+    # questions and only the second one matters.
+    try:
+        bench.floor.can_be_written()
+    except wire.CannotRememberTheFloor as exc:
+        raise CannotHoldItsLimits(
+            "this worker cannot keep a record of what it has accepted, so it cannot refuse a "
+            "message captured before a restart: " + str(exc),
+            {"replay_floor": remembers_at}) from exc
     path = bench.open()
     print("  listening at " + path + " for uid " + str(only_uid))
     print("  this worker holds no pairing state, no signing identity and no client's token.")
     print("  On one host, two accounts are not isolation: see ALPHA-BOUNDARY-0001.")
     print("  a ceiling was hit here before this socket opened, and it held.")
+    print("  it can also write down what it accepts, which is what refuses a replay after a "
+          "restart.")
     bench.serve_forever()
 
 
