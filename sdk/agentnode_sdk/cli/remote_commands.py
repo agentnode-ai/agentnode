@@ -16,6 +16,7 @@ tool's job to remember and the tool's job to explain when it matters.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 from agentnode_sdk.cli.output import bold, dim
@@ -74,13 +75,32 @@ def cmd_connect(args) -> int:
     given = str(args.url).strip()
     code = str(getattr(args, "code", "") or "")
     expect = ""
+    named_gateway = ""
     if given.startswith(PREFIX):
+        from agentnode_sdk.gateway.invitation import details as what_it_carries
+
         try:
+            carried = what_it_carries(given)
             given, code, expect = an_invitation(given)
         except NotAnInvitation as exc:
             print()
             print(f"  {bold('That invitation could not be used.')}")
             print(f"  {exc}")
+            return 2
+        named_gateway = str(carried.get("gateway", ""))
+        # Said here, before anything is contacted. An expired invitation that fails at the far
+        # end looks like a network problem, and people debug a network that is working.
+        dies_at = float(carried.get("expires", 0) or 0)
+        if dies_at and dies_at < time.time():
+            ago = time.time() - dies_at
+            print()
+            print(f"  {bold('That invitation has expired.')}")
+            print("  It stopped working %s ago, and nothing was contacted."
+                  % ("%d minutes" % (ago // 60) if ago >= 60 else "%d seconds" % ago))
+            print("  Invitations are short-lived on purpose: one that stayed valid would be a")
+            print("  key that keeps working long after whoever was sent it has forgotten it.")
+            print()
+            print("  Ask for another:  agentnode gateway pair")
             return 2
     elif not code:
         print()
@@ -92,6 +112,22 @@ def cmd_connect(args) -> int:
     url = given.rstrip("/")
     try:
         hello = gc.hello(url, pin=expect)
+        # The certificate is what makes the answer trustworthy; this is a separate question --
+        # whether the gateway that answered is the one the invitation was written for. They can
+        # differ when an old invitation is used against a gateway that has since been rebuilt,
+        # and then pairing would appear to work and the client would be attached to something
+        # nobody meant.
+        if named_gateway:
+            answered = str((hello.get("gateway") or {}).get("gateway_id", ""))
+            if answered and answered != named_gateway:
+                print()
+                print(f"  {bold('That is not the gateway this invitation was written for.')}")
+                print(f"  The invitation names {named_gateway[:12]}, and {url} calls itself")
+                print(f"  {answered[:12]}. Nothing was paired.")
+                print()
+                print("  This usually means the gateway was rebuilt after the invitation was")
+                print("  made. Ask for a new one.")
+                return 1
     except InsecureTransportError as exc:
         print()
         print(f"  {bold('Did not connect.')}")

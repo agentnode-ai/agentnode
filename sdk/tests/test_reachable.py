@@ -19,6 +19,7 @@ import http.server
 import json
 import ssl
 import threading
+import time
 
 import pytest
 
@@ -366,7 +367,7 @@ class TestPairingDoesNotNeedAShell:
         from agentnode_sdk.cli import gateway_commands, remote_commands
 
         issuing = inspect.getsource(gateway_commands.cmd_pair)
-        assert "an_invitation(where, code, pin)" in issuing
+        assert "an_invitation(where, code, pin" in issuing
         taking = inspect.getsource(remote_commands.cmd_connect)
         assert "an_invitation(given)" in taking
         for shape in ("ssh", "scp", "tailscale"):
@@ -558,3 +559,131 @@ class TestAnAddressToAdvertiseIsCheckedWhereItIsTyped:
     def test_and_an_ipv6_literal_is_not_mistaken_for_one(self, tmp_path):
         """Colons are how IPv6 is spelled; refusing those would refuse the address itself."""
         assert self._init(tmp_path, "2001:db8::1") == 0
+
+
+class TestAnInvitationIsOneTimeShortLivedWithdrawableAndCheckable:
+    """Four properties, and each one is a different way of being handed to the wrong person.
+
+    An invitation travels out of band -- read aloud, pasted into a chat, photographed off a
+    screen. Every one of those can reach further than intended, so the question is never "can it
+    leak" but "for how long does a leak matter, and what can be done once it has".
+    """
+
+    def _invitation(self, **changes):
+        from agentnode_sdk.gateway import invitation
+
+        made = dict(where="https://127.0.0.1:8099", code="AAAA-BBBB-CCCC",
+                    certificate_sha256="a" * 64, expires=time.time() + 900,
+                    gateway_id="gw-1234567890")
+        made.update(changes)
+        return invitation.write(made.pop("where"), made.pop("code"),
+                                made.pop("certificate_sha256"), **made)
+
+    def test_it_says_when_it_stops_working(self):
+        from agentnode_sdk.gateway import invitation
+
+        carried = invitation.details(self._invitation())
+        assert carried["expires"] > time.time()
+
+    def test_and_a_client_refuses_an_expired_one_without_contacting_anything(self, capsys,
+                                                                            monkeypatch):
+        """Contacting the far end first makes an expired invitation look like a broken network."""
+        from agentnode_sdk.cli import remote_commands
+
+        def nobody_should_call_this(*_a, **_k):
+            raise AssertionError("it contacted the gateway before checking the expiry")
+
+        from agentnode_sdk.gateway import client as gateway_client
+
+        monkeypatch.setattr(gateway_client, "hello", nobody_should_call_this)
+
+        class Args:
+            url = self._invitation(expires=time.time() - 600)
+            code = ""
+            name = ""
+
+        assert remote_commands.cmd_connect(Args()) == 2
+        said = capsys.readouterr().out
+        assert "has expired" in said
+        assert "nothing was contacted" in said
+
+    def test_it_names_the_gateway_it_was_written_for(self):
+        from agentnode_sdk.gateway import invitation
+
+        assert invitation.details(self._invitation())["gateway"] == "gw-1234567890"
+
+    def test_an_older_invitation_does_not_pair_with_a_rebuilt_gateway(self, capsys, monkeypatch):
+        """It would otherwise appear to work, and attach the client to something nobody meant."""
+        from agentnode_sdk.cli import remote_commands
+
+        from agentnode_sdk.gateway import client as gateway_client
+
+        monkeypatch.setattr(
+            gateway_client, "hello",
+            lambda url, pin="": {"gateway": {"gateway_id": "a-different-gateway"},
+                                 "protocol": "em3c/2"})
+
+        class Args:
+            url = self._invitation()
+            code = ""
+            name = ""
+
+        assert remote_commands.cmd_connect(Args()) == 1
+        said = capsys.readouterr().out
+        assert "not the gateway this invitation was written for" in said
+
+    def test_the_essentials_are_still_three(self):
+        """Older invitations carry no expiry and no gateway, and must still be usable."""
+        from agentnode_sdk.gateway import invitation
+
+        old = invitation.write("https://x:8099", "AAAA-BBBB-CCCC", "b" * 64)
+        where, code, pin = invitation.read(old)
+        assert (where, code, pin) == ("https://x:8099", "AAAA-BBBB-CCCC", "b" * 64)
+        assert "expires" not in invitation.details(old)
+
+
+class TestTakingAnInvitationBack:
+    """Issuing another one replaces the first, but that is not the same as being able to kill it."""
+
+    def _state(self, tmp_path):
+        from agentnode_sdk.gateway.server import GatewayState
+
+        return GatewayState(str(tmp_path), version="test")
+
+    def test_a_code_that_was_withdrawn_no_longer_works(self, tmp_path):
+        from agentnode_sdk.gateway.identity import PairingError
+
+        state = self._state(tmp_path)
+        code = state.start_pairing()
+        assert state.withdraw_pairing() is True
+        with pytest.raises(PairingError):
+            state.redeem_pairing(code)
+
+    def test_withdrawing_when_there_is_nothing_says_so(self, tmp_path):
+        state = self._state(tmp_path)
+        state.start_pairing()
+        assert state.withdraw_pairing() is True
+        assert state.withdraw_pairing() is False
+
+    def test_a_code_that_was_not_withdrawn_still_works(self, tmp_path):
+        """The counter-case: withdrawal must not be the only outcome."""
+        state = self._state(tmp_path)
+        code = state.start_pairing()
+        assert state.redeem_pairing(code)
+
+    def test_and_it_is_still_one_time(self, tmp_path):
+        from agentnode_sdk.gateway.identity import PairingError
+
+        state = self._state(tmp_path)
+        code = state.start_pairing()
+        state.redeem_pairing(code)
+        with pytest.raises(PairingError):
+            state.redeem_pairing(code)
+
+    def test_and_still_expires(self, tmp_path):
+        from agentnode_sdk.gateway.identity import PAIRING_TTL_SECONDS, PairingError
+
+        state = self._state(tmp_path)
+        code = state.start_pairing(now=1000.0)
+        with pytest.raises(PairingError):
+            state.redeem_pairing(code, now=1000.0 + PAIRING_TTL_SECONDS + 1)

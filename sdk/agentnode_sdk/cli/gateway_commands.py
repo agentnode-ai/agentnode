@@ -548,6 +548,20 @@ def _say_remote_access(root: Path, config: dict) -> None:
 def cmd_pair(args) -> int:
     root = _root(args)
     state, service = _service(root)
+
+    if getattr(args, "withdraw", False):
+        # An invitation is handed over out of band -- read aloud, pasted into a chat,
+        # photographed off a screen -- and any of those can reach further than intended. Issuing
+        # another one replaces it, but an operator who wants the outstanding one dead should not
+        # have to create a live one to do it.
+        print()
+        if state.withdraw_pairing():
+            print(f"  {bold('That code will not work now.')}")
+            print("  Anyone still holding it gets the same answer as somebody holding a guess.")
+        else:
+            print("  There was no code outstanding, so there was nothing to take back.")
+            return 1
+        return 0
     readiness = service.readiness_now()
     if not readiness.ready:
         print()
@@ -559,7 +573,12 @@ def cmd_pair(args) -> int:
             print(f"    {step}")
         return 1
 
+    import time as _clock
+
+    from agentnode_sdk.gateway.identity import PAIRING_TTL_SECONDS
+
     code = state.start_pairing()
+    dies_at = _clock.time() + PAIRING_TTL_SECONDS
     config = _load_config(root)
     where, pin = _where_and_what_to_expect(root, config, args)
     if where and pin:
@@ -568,16 +587,20 @@ def cmd_pair(args) -> int:
         print()
         print(f"  {bold('Give this to the person connecting:')}")
         print()
-        print("      " + an_invitation(where, code, pin))
+        print("      " + an_invitation(where, code, pin, expires=dies_at,
+                                       gateway_id=state.identity.gateway_id))
         print()
-        print("  It carries the address, the code, and which certificate to expect -- so their")
-        print("  client can tell this sandbox from anything else answering there. It works once")
-        print("  and expires in 15 minutes.")
+        print("  It carries the address, the code, which certificate to expect, when it stops")
+        print("  working and which gateway it is for -- so their client can tell this sandbox")
+        print("  from anything else answering there, and can say that it has expired without")
+        print("  having to try. It works once and expires in %d minutes."
+              % (PAIRING_TTL_SECONDS // 60))
         print("  On their machine:")
         print("    agentnode remote connect <paste it here>")
         print()
         print(dim("  Hand it over the way you would a key. Anyone who sees it before the person"))
-        print(dim("  you meant can pair as them."))
+        print(dim("  you meant can pair as them -- and if that happens, or you simply change"))
+        print(dim("  your mind:  agentnode gateway pair --withdraw"))
         return 0
 
     print()
@@ -777,8 +800,11 @@ def cmd_stop(args) -> int:
     at = stop_everything(_root(args), reason)
     print()
     print(f"  {bold('This gateway is not taking work.')}")
-    print("  Every job sent to it is refused with what you just said. Runs already going are")
-    print("  left to finish -- stopping one of those is  agentnode remote cancel.")
+    print("  Every job sent to it is refused with what you just said, and every run that was")
+    print("  going has been ended -- the reason to stop a gateway at once is usually the code")
+    print("  running on it right now, and a switch that left it running would be no switch.")
+    print("  The gateway acts on this within a second or so; it is a file, and this command and")
+    print("  the gateway are different processes.")
     print(f"  {dim(str(at))}")
     print()
     print("  To take work again:  agentnode gateway resume")
@@ -833,7 +859,27 @@ def cmd_used(args) -> int:
     """What each client has used. What an operator asks before changing a limit."""
     from agentnode_sdk.gateway import meter
 
-    totals = meter.summarise(_root(args))
+    root = _root(args)
+    if getattr(args, "verify", False):
+        held = meter.verify(root)
+        print()
+        if held["ok"]:
+            print(f"  {bold('This record has not been altered.')}")
+            print(f"  {held['lines']} line(s); {held['detail']}.")
+            print()
+            print(dim("  Tamper-evident, which is a smaller claim than tamper-proof: nobody"))
+            print(dim("  without this gateway's meter key can change the file without the change"))
+            print(dim("  showing up here. It says nothing about whether the gateway is honest --"))
+            print(dim("  the process that writes a log cannot be checked by that log."))
+            return 0
+        print(f"  {bold('This record has been altered.')}")
+        print(f"  {held['detail']}.")
+        print()
+        print(f"  Everything before line {held.get('at', 0)} still checks out. From there on it")
+        print("  is not evidence of anything.")
+        return 1
+
+    totals = meter.summarise(root)
     if not totals:
         print()
         print("  Nothing has run here yet.")
@@ -846,6 +892,7 @@ def cmd_used(args) -> int:
               f"{what['bytes_out']:>12}")
     print()
     print(dim("  This is a record of use. Nothing here is priced and nothing is charged."))
+    print(dim("  To check that nothing in it has been altered:  agentnode gateway used --verify"))
     return 0
 
 

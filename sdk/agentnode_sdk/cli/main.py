@@ -295,6 +295,8 @@ def main(argv: list[str] | None = None) -> int:
 
     gw_used = gw_sub.add_parser("used", help="What each client has used")
     gw_used.add_argument("--dir", default=None)
+    gw_used.add_argument("--verify", action="store_true",
+                         help="Check that nothing in the record has been altered")
 
     gw_egress = gw_sub.add_parser(
         "egress", help="What the code this gateway runs is allowed to reach")
@@ -319,6 +321,8 @@ def main(argv: list[str] | None = None) -> int:
     gw_doctor.add_argument("--verbose", action="store_true", help="Show the underlying detail")
     gw_pair = gw_sub.add_parser("pair", help="Show a one-time invitation so someone can connect")
     gw_pair.add_argument("--dir", default=None)
+    gw_pair.add_argument("--withdraw", action="store_true",
+                         help="Take back the outstanding invitation, so it no longer works")
     gw_pair.add_argument("--advertise", default="",
                          help="Override the address in the invitation, for a gateway reached at "
                               "more than one")

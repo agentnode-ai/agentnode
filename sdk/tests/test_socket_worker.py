@@ -222,11 +222,112 @@ class TestTheSameMessageTwiceIsRefused:
         assert caught.value.code == wire.REPLAY
 
     def test_and_it_does_forget_eventually(self):
-        seen = wire.Seen(memory=10.0)
+        """On a clock nobody can set. Moving the wall clock is not how a receiver forgets."""
+        ticking = [0.0]
+        seen = wire.Seen(memory=10.0, elapsed=lambda: ticking[0])
         body = wire.request("describe", {}, deadline=2000.0, now=1000.0)
         wire.check(body, seen, now=1000.0)
+        ticking[0] = 100.0                                    # a hundred seconds really elapsed
         body["issued_at"] = 1100.0
         wire.check(body, seen, now=1100.0)
+
+    def test_and_moving_the_wall_clock_forward_forgets_nothing(self):
+        """The defence against replay must not be removable by setting a clock.
+
+        Forgetting used to be measured against the wall clock: one forward jump aged every
+        remembered nonce out of the window at once. An attacker who could move a clock -- or wait
+        for an NTP correction -- emptied the memory without forging anything, and a message
+        captured before the jump was accepted again after it.
+        """
+        seen = wire.Seen(memory=10.0, elapsed=lambda: 0.0)    # no time has really passed
+        body = wire.request("describe", {}, deadline=2000.0, now=1000.0)
+        wire.check(body, seen, now=1000.0)
+        # A year of wall clock goes by in one step, and nothing real has elapsed.
+        for leap in (1100.0, 100000.0, 1000.0 + 365 * 86400):
+            with pytest.raises(wire.ProtocolError) as caught:
+                wire.check(dict(body, deadline=leap + 30), seen, now=leap)
+            assert caught.value.code in (wire.REPLAY, wire.STALE)
+        assert len(seen) == 1, "the memory was emptied by a clock"
+
+    def test_the_whole_attack_end_to_end(self):
+        """Capture, make it forget, put the clock back, send it again."""
+        elapsed = [0.0]
+        seen = wire.Seen(memory=120.0, elapsed=lambda: elapsed[0])
+        captured = wire.request("describe", {}, deadline=1030.0, now=1000.0)
+        wire.check(dict(captured), seen, now=1000.0)
+
+        # Forward, to make it forget. Something has to arrive for any eviction to run at all.
+        try:
+            wire.check(wire.request("describe", {}, deadline=87430.0, now=87400.0),
+                       seen, now=87400.0)
+        except wire.ProtocolError:
+            pass
+        # Back where it started. The captured message is inside its freshness window again.
+        with pytest.raises(wire.ProtocolError) as caught:
+            wire.check(dict(captured), seen, now=1000.0)
+        assert caught.value.code == wire.REPLAY
+
+
+class TestWhatAReceiverWillNotGoBackBefore:
+    """`Seen` cannot outlive its process; this is the part that does.
+
+    A monotonic clock restarts with the process, so on its own the memory leaves one sequence
+    open: capture a message, wait for a restart, set the clock back, send it again. Every check
+    would pass -- the MAC still verifies, nothing is remembered, and a clock that has moved back
+    makes it fresh with an unexpired deadline.
+    """
+
+    def test_a_message_older_than_what_was_already_accepted(self, tmp_path):
+        floor = wire.Floor(tmp_path / "floor.json")
+        seen = wire.Seen(elapsed=lambda: 0.0)
+        wire.check(wire.request("describe", {}, deadline=1030.0, now=1000.0), seen,
+                   now=1000.0, floor=floor)
+        with pytest.raises(wire.ProtocolError) as caught:
+            wire.check(wire.request("describe", {}, deadline=530.0, now=500.0),
+                       wire.Seen(elapsed=lambda: 0.0), now=500.0, floor=floor)
+        assert caught.value.code == wire.ROLLED_BACK
+
+    def test_and_it_survives_the_restart_that_empties_the_memory(self, tmp_path):
+        """The whole point: a new process, remembering nothing, still refuses."""
+        path = tmp_path / "floor.json"
+        wire.check(wire.request("describe", {}, deadline=1030.0, now=1000.0),
+                   wire.Seen(elapsed=lambda: 0.0), now=1000.0, floor=wire.Floor(path))
+
+        after_restart = wire.Floor(path)                       # a different object, as on a restart
+        assert after_restart.highest == 1000.0
+        with pytest.raises(wire.ProtocolError) as caught:
+            wire.check(wire.request("describe", {}, deadline=530.0, now=500.0),
+                       wire.Seen(elapsed=lambda: 0.0), now=500.0, floor=after_restart)
+        assert caught.value.code == wire.ROLLED_BACK
+
+    def test_the_floor_only_ever_moves_forward(self, tmp_path):
+        floor = wire.Floor(tmp_path / "floor.json")
+        floor.accepted(1000.0)
+        floor.accepted(500.0)
+        assert floor.highest == 1000.0
+
+    def test_a_message_within_the_window_is_not_refused_by_it(self, tmp_path):
+        """Clocks differ by a little between machines; that is what the window is for."""
+        floor = wire.Floor(tmp_path / "floor.json")
+        floor.accepted(1000.0)
+        assert not floor.too_old(1000.0 - wire.FRESHNESS_SECONDS + 1, wire.FRESHNESS_SECONDS)
+        assert floor.too_old(1000.0 - wire.FRESHNESS_SECONDS - 1, wire.FRESHNESS_SECONDS)
+
+    def test_only_a_message_that_passed_everything_raises_it(self, tmp_path):
+        """A malformed message carrying a far-future moment must not bar everything after it."""
+        floor = wire.Floor(tmp_path / "floor.json")
+        seen = wire.Seen(elapsed=lambda: 0.0)
+        bad = wire.request("describe", {}, deadline=1030.0, now=1000.0)
+        bad["method"] = "nothing-like-this"
+        with pytest.raises(wire.ProtocolError):
+            wire.check(bad, seen, now=1000.0, floor=floor)
+        assert floor.highest == 0.0
+
+    def test_a_floor_that_cannot_be_read_does_not_stop_the_worker(self, tmp_path):
+        """A corrupt hint is not a reason to refuse everything: Seen still holds within a life."""
+        path = tmp_path / "floor.json"
+        path.write_text("this is not json", encoding="utf-8")
+        assert wire.Floor(path).highest == 0.0
 
     def test_a_message_from_too_long_ago(self):
         body = wire.request("describe", {}, deadline=4000.0, now=1000.0)

@@ -74,7 +74,8 @@ class Bench:
     started it.
     """
 
-    def __init__(self, worker, address: str, key: bytes, only_uid: int | None) -> None:
+    def __init__(self, worker, address: str, key: bytes, only_uid: int | None,
+                 remembers_at=None) -> None:
         self.worker = worker
         self.address = address
         self.key = key
@@ -83,6 +84,11 @@ class Bench:
         #: start.
         self.only_uid = only_uid
         self.seen = wire.Seen()
+        #: What this worker will not go back before, kept across restarts. `Seen` forgets when
+        #: the process does -- a monotonic clock starts again with it -- so on its own it leaves
+        #: "capture, wait for a restart, set the clock back, send again" open. This is the part
+        #: that does not forget.
+        self.floor = wire.Floor(remembers_at)
         self._socket: socket.socket | None = None
         self._serving = False
 
@@ -171,7 +177,7 @@ class Bench:
             with connection.makefile("rb") as stream:
                 body = wire.read_frame(stream, self.key)
             asked = str(body.get("request_id") or "")
-            wire.check(body, self.seen)
+            wire.check(body, self.seen, floor=self.floor)
             result = self.answer(str(body["method"]), dict(body["params"]))
             connection.sendall(wire.seal(wire.answer(asked, result), self.key))
         except wire.ProtocolError as exc:
@@ -327,7 +333,13 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None) -> Non
             "is not one to hand foreign code to: " + (proof.reason or "no reason given"),
             proof.evidence)
 
-    bench = Bench(the_worker, address, wire.read_key(key_path), only_uid)
+    # Next to the worker's own state, which is the only directory it may write. A worker that
+    # could not write this would still refuse replays within its own life; it just could not
+    # refuse one that spans a restart, so a failure here is a narrowing and not an opening.
+    remembers_at = os.path.join(
+        os.environ.get("HOME", "") or os.path.expanduser("~"), "replay-floor.json")
+    bench = Bench(the_worker, address, wire.read_key(key_path), only_uid,
+                  remembers_at=remembers_at)
     path = bench.open()
     print("  listening at " + path + " for uid " + str(only_uid))
     print("  this worker holds no pairing state, no signing identity and no client's token.")

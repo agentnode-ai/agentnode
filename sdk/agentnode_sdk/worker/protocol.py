@@ -45,6 +45,7 @@ import os
 import secrets
 import struct
 import time
+from pathlib import Path
 from typing import Any
 
 #: The version on every message. A receiver that does not know it refuses rather than guessing;
@@ -80,6 +81,7 @@ UNAUTHENTICATED = "unauthenticated"          # the MAC did not verify
 MALFORMED = "malformed"                      # the bytes are not a message this build describes
 STALE = "stale"                              # its clock is too far from ours
 REPLAY = "replay"                            # we have seen this one before
+ROLLED_BACK = "rolled-back"                  # issued before something already accepted
 TOO_LARGE = "too-large"                      # the frame is bigger than anyone may send
 UNKNOWN_METHOD = "unknown-method"
 BAD_PARAMS = "bad-params"
@@ -89,8 +91,8 @@ JOB_FAILED = "job-failed"                    # it was run and it did not work
 NETWORK_UNAVAILABLE = "network-unavailable"  # the restricted network could not be built
 INTERNAL = "internal"                        # the worker broke, and says so rather than hanging
 
-ERRORS = (UNAUTHENTICATED, MALFORMED, STALE, REPLAY, TOO_LARGE, UNKNOWN_METHOD, BAD_PARAMS,
-          DEADLINE_PASSED, RUNTIME_ABSENT, JOB_FAILED, NETWORK_UNAVAILABLE, INTERNAL)
+ERRORS = (UNAUTHENTICATED, MALFORMED, STALE, REPLAY, ROLLED_BACK, TOO_LARGE, UNKNOWN_METHOD,
+          BAD_PARAMS, DEADLINE_PASSED, RUNTIME_ABSENT, JOB_FAILED, NETWORK_UNAVAILABLE, INTERNAL)
 
 
 class ProtocolError(Exception):
@@ -236,23 +238,106 @@ class Seen:
     Forgetting is bounded by time rather than by count: a cache that forgot the oldest when it
     filled would be a cache an attacker could empty by sending enough messages, and then replay
     into.
+
+    But WHICH time matters, and getting that wrong is what this class got wrong. Forgetting used
+    to be measured against the wall clock, and the wall clock is a thing that can be set. A
+    forward jump made every remembered nonce older than the window in one step, so the memory
+    emptied; when the clock came back, a captured message satisfied freshness again and was no
+    longer remembered. The defence against replay was removable by an attacker who could move a
+    clock, which is a smaller ask than forging a MAC.
+
+    So forgetting is measured against a clock nobody can set. `time.monotonic` only ever moves
+    forward at its own rate; setting the system clock does not touch it. The wall-clock moment a
+    message arrived is still recorded, because that is what a reader of this wants to know, but
+    no decision rests on it.
+
+    A monotonic clock resets when the process does, which leaves one gap: capture a message,
+    restart the receiver, roll the clock back, replay. `Floor` closes that, and the two are meant
+    to be used together -- see `check`.
     """
 
-    def __init__(self, memory: float = NONCE_MEMORY_SECONDS) -> None:
+    def __init__(self, memory: float = NONCE_MEMORY_SECONDS, elapsed=None) -> None:
         self.memory = memory
-        self._when: dict[str, float] = {}
+        #: A clock that cannot be set backwards or forwards by anyone. Injectable so that a test
+        #: can move it -- and, more to the point, so a test can move the WALL clock and show that
+        #: nothing is forgotten.
+        self._elapsed = elapsed or time.monotonic
+        self._when: dict[str, tuple[float, float]] = {}
 
     def again(self, nonce: str, now: float | None = None) -> bool:
         """True when this one has been seen. Records it either way."""
         at = time.time() if now is None else now
-        self._when = {n: t for n, t in self._when.items() if t > at - self.memory}
+        since = float(self._elapsed())
+        # Evicted on elapsed time, never on `at`. `at` is what is REMEMBERED, not what decides.
+        self._when = {n: (w, m) for n, (w, m) in self._when.items()
+                      if since - m <= self.memory}
         if nonce in self._when:
             return True
-        self._when[str(nonce)] = at
+        self._when[str(nonce)] = (at, since)
         return False
 
+    def __len__(self) -> int:
+        return len(self._when)
 
-def check(body: dict[str, Any], seen: Seen, now: float | None = None) -> None:
+
+class Floor:
+    """The oldest moment a receiver will still accept, which only ever moves forward.
+
+    `Seen` cannot survive a restart -- a monotonic clock starts again with the process -- so
+    without this, the sequence "capture a message, wait for a restart, set the clock back, send
+    it again" works. Every check it has to pass would pass: the MAC is still valid, the nonce is
+    no longer remembered, and a clock that has been moved back makes it fresh and its deadline
+    unexpired.
+
+    This is the part that does not forget. The highest `issued_at` ever accepted is written down,
+    and nothing issued more than one freshness window before that is ever accepted again. Moving
+    the clock back therefore does not buy an attacker a second chance; it buys a receiver that
+    refuses everything, including the attacker, until the clock is right again. That is the
+    correct direction for a thing to fail in.
+
+    It is deliberately not a lock-out that needs clearing by hand: as soon as the clock is
+    correct, the window covers the present again and the receiver carries on.
+    """
+
+    def __init__(self, path=None) -> None:
+        self.path = Path(path) if path else None
+        self._highest = 0.0
+        if self.path is not None:
+            try:
+                self._highest = float(json.loads(self.path.read_text(encoding="utf-8"))["highest"])
+            except (OSError, ValueError, KeyError, TypeError):
+                # Absent is the ordinary case on a first run. Unreadable is not treated as a
+                # reason to refuse everything: `Seen` still holds within this process, and a
+                # receiver that would not start because of a corrupt hint is worse than one that
+                # starts with the hint it can read.
+                self._highest = 0.0
+
+    @property
+    def highest(self) -> float:
+        return self._highest
+
+    def too_old(self, issued_at: float, window: float) -> bool:
+        """Whether this was issued so long before anything already accepted that it cannot be new."""
+        return self._highest > 0.0 and float(issued_at) < self._highest - window
+
+    def accepted(self, issued_at: float) -> None:
+        """Note that this moment has been accepted. Only ever moves the floor forward."""
+        if float(issued_at) <= self._highest:
+            return
+        self._highest = float(issued_at)
+        if self.path is None:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".new")
+            tmp.write_text(json.dumps({"highest": self._highest}), encoding="utf-8")
+            os.replace(tmp, self.path)
+        except OSError:                                       # pragma: no cover - best effort
+            pass
+
+
+def check(body: dict[str, Any], seen: Seen, now: float | None = None,
+          floor: "Floor | None" = None) -> None:
     """Everything about a request that is true before its method is even looked up."""
     at = time.time() if now is None else now
     if body.get("protocol") != PROTOCOL:
@@ -277,6 +362,15 @@ def check(body: dict[str, Any], seen: Seen, now: float | None = None) -> None:
         raise ProtocolError(DEADLINE_PASSED,
                             "this message stopped being worth answering %.1fs ago"
                             % (at - float(body["deadline"])))
+    # Before the nonce, because a message from before the floor is refused whether or not this
+    # receiver happens to remember it -- and after a restart it remembers nothing.
+    if floor is not None and floor.too_old(float(body["issued_at"]), FRESHNESS_SECONDS):
+        raise ProtocolError(
+            ROLLED_BACK,
+            "this message was issued %.0fs before something this receiver has already accepted, "
+            "which cannot happen to a new message. Either it is one that was captured earlier, "
+            "or this machine's clock has been set back; neither is a reason to run it."
+            % (floor.highest - float(body["issued_at"])))
     if seen.again(str(body["nonce"]), at):
         raise ProtocolError(REPLAY, "this message has been seen before")
     if body["method"] not in METHODS:
@@ -295,6 +389,10 @@ def check(body: dict[str, Any], seen: Seen, now: float | None = None) -> None:
             "this message carries " + ", ".join(repr(f) for f in extra[:4]) + ", which this "
             "build does not describe. A receiver that ignored them would be acting on less than "
             "it was sent")
+    # Last, so that only a message which passed everything moves the floor. A malformed one that
+    # happened to carry a far-future moment must not raise the bar for everything after it.
+    if floor is not None:
+        floor.accepted(float(body["issued_at"]))
 
 
 # ------------------------------------------------------------------------------ bytes in JSON

@@ -106,6 +106,9 @@ class RunRecord:
     #: it had stopped, and a cancelled run kept whatever the destroyed container's exit looked
     #: like. Nothing has to set it for it to be right now, because empty claims nothing.
     termination_reason: str = ""
+    #: Set when the operator's kill switch is what ended this run, and carried into the answer so
+    #: a client is told that rather than being left to read a bare "cancelled" as its own doing.
+    halted_by: str = ""
     native_status: int | None = None
     native_platform: str = ""
     stdout: str = ""
@@ -150,6 +153,7 @@ class RunRecord:
             "state": self.state,
             "exit_code": self.exit_code,
             "termination_reason": self.termination_reason,
+            "halted_by": self.halted_by,
             "native_status": self.native_status,
             "native_platform": self.native_platform,
             "stdout": self.stdout,
@@ -1281,6 +1285,38 @@ class GatewayService:
             # refusing to publish the terminal state over it would lose the run instead.
             pass
 
+    def stop_what_is_running(self, why: str, settle: float | None = None) -> list:
+        """End every run that has not ended, because the operator stopped this gateway.
+
+        The stop used to mean "admit nothing new", and runs already going were left to finish.
+        That is the wrong reading of a switch somebody reaches for: the reason to stop a gateway
+        at once is usually the code that is running on it right now -- an image being replaced
+        under it, a client doing something that must not continue, a host that has to be freed.
+        A switch that leaves that running is one an operator cannot rely on.
+
+        Returns what it did to each, so a caller can say so rather than assume. A run that will
+        not settle is reported as unsettled rather than counted as stopped; this is a fail-closed
+        thing and claiming more than happened would defeat it.
+        """
+        from agentnode_sdk.gateway.protocol import is_terminal
+
+        done = []
+        for record in list(self.runs.values()):
+            if is_terminal(record.state):
+                continue
+            # Said before it is stopped, so that whatever publishes the terminal state can see
+            # why, and a client is told the gateway stopped rather than that its code was
+            # cancelled by somebody unnamed.
+            record.halted_by = why
+            try:
+                _, settled = self.cancel(record.run_id, settle=settle)
+            except Exception as exc:                          # noqa: BLE001 - one run, not all
+                done.append({"run_id": record.run_id, "stopped": False, "error": str(exc)[:200]})
+                continue
+            done.append({"run_id": record.run_id, "stopped": bool(settled),
+                         "state": record.state})
+        return done
+
     def cancel(self, run_id: str, settle: float | None = None):
         """Stop a run and answer once it has stopped. Returns `(record, settled)`.
 
@@ -1554,7 +1590,51 @@ def make_server(
     else:
         server.agentnode_tls = False
     server.agentnode_serving = True
+    def _watch_the_stop(target) -> None:
+        """Act on the operator's stop, which is a FILE and not a call into this process.
+
+        `agentnode gateway stop` runs in a different process from the gateway -- an operator at a
+        terminal, or a script -- so it cannot reach the runs held here. The file is the only thing
+        both sides share, which makes it the right place for the decision and this the right place
+        to act on it.
+
+        Polling rather than watching: a missed notification would be a kill switch that did not
+        fire, and there is no filesystem-watch API worth trusting equally on every platform this
+        runs on. A second's delay is acceptable for something an operator reaches for; silently
+        not firing is not.
+        """
+        from agentnode_sdk.gateway.allowance import why_it_is_stopped
+
+        acted_on = ""
+        while getattr(target, "agentnode_serving", False):
+            time.sleep(1.0)
+            try:
+                halted = why_it_is_stopped(service.state.root)
+            except Exception:                                 # noqa: BLE001 - never kill the loop
+                continue
+            if not halted:
+                acted_on = ""                                 # lifted; a later stop acts again
+                continue
+            if halted == acted_on:
+                continue
+            acted_on = halted
+            stopped = service.stop_what_is_running(halted)
+            if stopped:
+                unsettled = [r for r in stopped if not r.get("stopped")]
+                sys.stderr.write(
+                    ("\n  This gateway was stopped, and %d run(s) that were "
+                     "going were ended.\n") % len(stopped))
+                if unsettled:
+                    # Never counted as stopped. An operator reaching for this needs to know
+                    # which ones they still have to go and look at.
+                    sys.stderr.write(
+                        ("  %d did not confirm they had stopped: %s\n")
+                        % (len(unsettled),
+                           ", ".join(r["run_id"][:12] for r in unsettled)))
+                sys.stderr.flush()
+
     threading.Thread(target=_watch_permissions, args=(server,), daemon=True).start()
+    threading.Thread(target=_watch_the_stop, args=(server,), daemon=True).start()
     return server
 
 

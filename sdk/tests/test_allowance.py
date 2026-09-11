@@ -14,6 +14,8 @@ import json
 import threading
 import time
 
+import os
+from pathlib import Path
 import pytest
 
 from agentnode_sdk.gateway import client as gc
@@ -475,3 +477,246 @@ class TestWhatThisDoesNotEstablish:
         said = " ".join((inspect.getdoc(meter) or "").split())
         assert "it is not billing" in said
         assert "prices nothing" in said
+
+
+def _a_running_record(service, run_id):
+    """A run this gateway believes is going, without a container behind it."""
+    from agentnode_sdk.gateway.server import RunRecord
+
+    record = RunRecord(run_id=run_id, job_id="j-" + run_id)
+    record.state = "running"
+    record.container_name = "agentnode-em3c-" + run_id
+    service.runs[run_id] = record
+    return record
+
+
+class _WorkerThatNeverSettles:
+    """Asked to stop, it says it asked. The run does not become terminal."""
+
+    def stop(self, run_id, container_name, appear_seconds):
+        return True
+
+
+class TestTheStopReachesWhatIsAlreadyRunning:
+    """A switch that leaves the current job running is not the switch an operator reached for.
+
+    The stop used to mean "admit nothing new". But the reason to stop a gateway AT ONCE is
+    usually what is running on it at that moment -- an image being replaced underneath it, a
+    client doing something that must not continue, a host that has to be freed. Leaving that
+    going is the one case the operator was trying to prevent.
+    """
+
+    @pytest.fixture()
+    def service(self, tmp_path):
+        state = GatewayState(str(tmp_path), version="test")
+        made = GatewayService(state, backend=StandInBackend())
+        made._worker = _WorkerThatNeverSettles()
+        return made
+
+    def test_every_run_that_had_not_ended_is_ended(self, service):
+        going = [_a_running_record(service, "r%d" % i) for i in range(3)]
+        done = service.stop_what_is_running("upgrading the sandbox image", settle=0.05)
+        assert len(done) == 3
+        for record in going:
+            assert record.cancel_requested.is_set(), "this one was left running"
+
+    def test_and_each_is_told_what_ended_it(self, service):
+        record = _a_running_record(service, "why")
+        service.stop_what_is_running("the operator stopped this gateway", settle=0.05)
+        assert record.halted_by == "the operator stopped this gateway"
+        assert record.public()["halted_by"] == "the operator stopped this gateway"
+
+    def test_a_run_that_had_already_ended_is_left_alone(self, service):
+        """Idempotent: stopping twice must not re-end anything, or count it twice."""
+        finished = _a_running_record(service, "done")
+        finished.state = "finished"
+        assert service.stop_what_is_running("x", settle=0.05) == []
+        assert not finished.cancel_requested.is_set()
+
+    def test_one_that_will_not_settle_is_not_counted_as_stopped(self, service):
+        """Claiming more than happened is exactly what a fail-closed switch must not do."""
+        _a_running_record(service, "stuck")
+        done = service.stop_what_is_running("x", settle=0.05)
+        assert done and done[0]["stopped"] is False
+
+    def test_and_one_that_settles_is(self, service):
+        record = _a_running_record(service, "quick")
+
+        class Settles:
+            def stop(self, run_id, container_name, appear_seconds):
+                record.state = "cancelled"
+                return True
+
+        service._worker = Settles()
+        done = service.stop_what_is_running("x", settle=2.0)
+        assert done and done[0]["stopped"] is True
+
+    def test_one_that_raises_does_not_stop_the_others(self, service):
+        """One run that cannot be reached must not leave the rest running."""
+        _a_running_record(service, "first")
+        second = _a_running_record(service, "second")
+
+        class Awkward:
+            def __init__(self):
+                self.calls = 0
+
+            def stop(self, run_id, container_name, appear_seconds):
+                self.calls += 1
+                if self.calls == 1:
+                    raise OSError("the runtime is not answering")
+                return True
+
+        service._worker = Awkward()
+        done = service.stop_what_is_running("x", settle=0.05)
+        assert len(done) == 2
+        assert any("error" in r for r in done), done
+        assert second.cancel_requested.is_set()
+
+    def test_the_gateway_acts_on_the_file_and_not_on_a_call(self):
+        """The CLI and the gateway are different processes; the file is all they share."""
+        import inspect
+
+        from agentnode_sdk.gateway import server as server_module
+
+        text = inspect.getsource(server_module.make_server)
+        assert "_watch_the_stop" in text
+        assert "why_it_is_stopped" in text
+
+
+class TestTheRecordOfUseCanBeShownNotToHaveChanged:
+    """A record that can be edited without trace is not a record, it is a note.
+
+    Each line carries the digest of the line before it and a signature over both, so removing a
+    line, reordering two, or changing a number in one shows up -- and `verify` says where it
+    first stops agreeing, because a reader told "40 and 700 are wrong" cannot tell whether the
+    second is a consequence of the first.
+    """
+
+    def _log(self, root, how_many=4):
+        from agentnode_sdk.gateway import meter
+
+        for i in range(how_many):
+            meter.record(root, run_id="run%d" % i, client_id="c1", started_at=1.0,
+                         finished_at=2.0, cpu=1.0, memory_mb=512, wall_clock_s=60,
+                         state="finished", outcome="succeeded", bytes_out=10,
+                         worker_topology="single-host-development", allowance_sha256="a" * 64)
+        return meter
+
+    def _rows(self, meter, root):
+        return [json.loads(l) for l in
+                (Path(root) / meter.METER_NAME).read_text(encoding="utf-8").splitlines()
+                if l.strip()]
+
+    def _put(self, meter, root, rows):
+        (Path(root) / meter.METER_NAME).write_text(
+            "\n".join(json.dumps(r, sort_keys=True, separators=(",", ":")) for r in rows) + "\n",
+            encoding="utf-8")
+
+    def test_a_log_nobody_touched_verifies(self, tmp_path):
+        meter = self._log(tmp_path)
+        held = meter.verify(tmp_path)
+        assert held["ok"] is True
+        assert held["lines"] == 4
+
+    def test_changing_one_number_is_seen(self, tmp_path):
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        rows[1]["bytes_out"] = 999999
+        self._put(meter, tmp_path, rows)
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert held["at"] == 2
+
+    def test_taking_a_line_out_is_seen(self, tmp_path):
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        self._put(meter, tmp_path, rows[:1] + rows[2:])
+        assert meter.verify(tmp_path)["ok"] is False
+
+    def test_putting_two_in_the_other_order_is_seen(self, tmp_path):
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        self._put(meter, tmp_path, rows[:2][::-1] + rows[2:])
+        assert meter.verify(tmp_path)["ok"] is False
+
+    def test_and_putting_it_back_exactly_verifies_again(self, tmp_path):
+        """So the check is about the bytes, not about having been touched."""
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        self._put(meter, tmp_path, rows[:2])
+        assert meter.verify(tmp_path)["ok"] is False
+        self._put(meter, tmp_path, rows)
+        assert meter.verify(tmp_path)["ok"] is True
+
+    def test_cutting_the_tail_off_is_seen(self, tmp_path):
+        """The one a chain alone cannot catch, and the obvious way to hide recent use.
+
+        Every prefix of a hash chain is itself a valid chain, so a truncated log verifies
+        perfectly against itself. Nothing inside a file can say how long that file should be,
+        which is why where it ends is written down beside it and signed.
+        """
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        self._put(meter, tmp_path, rows[:1])
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert "taken off the end" in held["detail"]
+        assert "3 line(s)" in held["detail"], held["detail"]
+
+    def test_and_the_note_saying_where_it_ends_cannot_be_forged(self, tmp_path):
+        """Otherwise whoever cut the tail off would simply rewrite it to match."""
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        self._put(meter, tmp_path, rows[:1])
+        (Path(tmp_path) / meter.HEAD_NAME).write_text(
+            json.dumps({"seq": 1, "digest": "0" * 64, "signature": "aa" * 64}), encoding="utf-8")
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert "not signed by this gateway" in held["detail"]
+
+    def test_a_log_with_no_note_at_all_is_not_called_whole(self, tmp_path):
+        meter = self._log(tmp_path)
+        (Path(tmp_path) / meter.HEAD_NAME).unlink()
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert "taken off the end would not show" in held["detail"]
+
+    def test_a_line_appended_by_something_without_the_key_is_seen(self, tmp_path):
+        """The case that matters: somebody adding use that never happened."""
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        forged = dict(rows[-1])
+        forged.update(seq=len(rows) + 1, run_id="never-ran", prev="0" * 64)
+        self._put(meter, tmp_path, rows + [forged])
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert held["at"] == len(rows) + 1
+
+    def test_a_log_with_no_public_key_beside_it_is_not_evidence(self, tmp_path):
+        """Unverifiable must not read the same as verified."""
+        meter = self._log(tmp_path)
+        (Path(tmp_path) / meter.METER_PUBLIC_NAME).unlink()
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert "cannot be checked" in held["detail"]
+
+    def test_the_private_half_is_never_beside_the_public_one_in_the_open(self, tmp_path):
+        meter = self._log(tmp_path)
+        key = Path(tmp_path) / meter.METER_KEY_NAME
+        assert key.exists()
+        if os.name != "nt":
+            assert (key.stat().st_mode & 0o077) == 0, "the meter key is readable by others"
+
+    def test_nothing_in_a_line_is_a_secret(self, tmp_path):
+        """The chain must not have smuggled anything in beside the counts."""
+        meter = self._log(tmp_path)
+        blob = json.dumps(self._rows(meter, tmp_path))
+        for bad in ("token", "PRIVATE", "BEGIN", "code"):
+            assert bad not in blob
+
+    def test_what_it_does_not_establish_is_written_down(self):
+        """A log cannot be evidence against the thing that writes it, and this says so."""
+        from agentnode_sdk.gateway import meter
+
+        assert "tamper-EVIDENT" in meter.__doc__
+        assert "does NOT establish" in meter.__doc__

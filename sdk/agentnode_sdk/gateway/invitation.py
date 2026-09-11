@@ -40,8 +40,16 @@ class NotAnInvitation(Exception):
     """That string is not one, or is one this build does not understand."""
 
 
-def write(where: str, code: str, certificate_sha256: str) -> str:
-    """The string an operator hands over."""
+def write(where: str, code: str, certificate_sha256: str, expires: float = 0.0,
+          gateway_id: str = "") -> str:
+    """The string an operator hands over.
+
+    It carries when it stops being worth trying and which gateway it is for, so a client can say
+    "this expired four minutes ago" without asking anything, and can tell afterwards that the
+    machine which answered is the one the invitation named. Neither replaces the certificate --
+    that is what makes the answer trustworthy at all -- but an invitation that cannot say it is
+    stale sends people to debug a network that is working.
+    """
     for name, value in (("where", where), ("code", code),
                         ("certificate", certificate_sha256)):
         if not value:
@@ -49,9 +57,27 @@ def write(where: str, code: str, certificate_sha256: str) -> str:
                 "an invitation carries where to connect, the code, and the certificate to expect."
                 " This one has no " + name + ", and a client that accepted it would be trusting "
                 "whatever answered.")
-    body = json.dumps({"where": where, "code": code, "certificate": certificate_sha256},
-                      sort_keys=True, separators=(",", ":")).encode("utf-8")
+    carried = {"where": where, "code": code, "certificate": certificate_sha256}
+    if expires:
+        carried["expires"] = round(float(expires), 3)
+    if gateway_id:
+        carried["gateway"] = str(gateway_id)
+    body = json.dumps(carried, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return PREFIX + base64.urlsafe_b64encode(body).decode("ascii").rstrip("=")
+
+
+def details(invitation: str) -> dict:
+    """Everything an invitation carries, for a caller that wants more than the three essentials."""
+    text = (invitation or "").strip()
+    if not text.startswith(PREFIX):
+        raise NotAnInvitation("that does not look like an invitation.")
+    raw = text[len(PREFIX):]
+    try:
+        return json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8"))
+    except Exception as exc:                                  # noqa: BLE001
+        raise NotAnInvitation(
+            "that invitation could not be read; it may have been cut short when it was copied."
+        ) from exc
 
 
 def read(invitation: str) -> tuple[str, str, str]:
