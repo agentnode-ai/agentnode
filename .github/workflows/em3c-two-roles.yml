@@ -1,0 +1,128 @@
+# EM-3C: two roles on one runner, kept apart the way two machines would be.
+#
+# The end-to-end journey runs the published commands, but both roles share a user, a home and a
+# container runtime. That shows the commands work; it does not show they work ACROSS a boundary.
+# A client that can read the gateway's files, or run containers of its own, may be succeeding for
+# reasons that will not exist on a real remote pair.
+#
+# So the client here is a second Unix user with its own home, no docker group and no read access
+# to the gateway's state. If it can still pair, submit and read results, it did so over the
+# network, which is the only route left to it.
+#
+# This does not replace the external run on a separate machine: real TLS to a real peer, a routed
+# network and DNS are exactly what one runner cannot provide. It exists so that everything a
+# second machine would have found is already found before anyone pays for one.
+name: EM-3C two roles (client and gateway separated)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  DOCKER_SERVER_VERSION: 28.0.4
+  DOCKER_APT_VERSION: 5:28.0.4-1~ubuntu.24.04~noble
+  SANDBOX_IMAGE: ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f
+  TWO_ROLE_CLIENT_USER: anclient
+  TWO_ROLE_GATEWAY_DIR: /opt/agentnode-gateway
+  TWO_ROLE_CLIENT_HOME: /home/anclient
+  TWO_ROLE_PORT: "8399"
+
+jobs:
+  two-roles:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+
+      - name: Pin the runtime, as every other lane does
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --allow-downgrades \
+            "docker-ce=${DOCKER_APT_VERSION}" "docker-ce-cli=${DOCKER_APT_VERSION}" || true
+          got="$(docker version --format '{{.Server.Version}}')"
+          echo "docker server ${got}"
+          test "${got}" = "${DOCKER_SERVER_VERSION}"
+          docker pull "${SANDBOX_IMAGE}"
+
+      - run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
+
+      - name: Build the wheel the client will be installed from
+        run: |
+          set -eu
+          python -m pip install build
+          python -m build --wheel --outdir /tmp/anwheel
+          ls -l /tmp/anwheel
+
+      - name: Make the client a different user, with no runtime and no access
+        run: |
+          set -eu
+          sudo useradd -m -d "${TWO_ROLE_CLIENT_HOME}" -s /bin/bash "${TWO_ROLE_CLIENT_USER}"
+          sudo mkdir -p "${TWO_ROLE_GATEWAY_DIR}"
+          sudo chown "$(id -un):$(id -gn)" "${TWO_ROLE_GATEWAY_DIR}"
+          chmod 700 "${TWO_ROLE_GATEWAY_DIR}"
+          # Deliberately NOT added to the docker group. The check asserts this rather than
+          # assuming it, because a client that can start its own containers would prove nothing.
+          echo "client groups: $(id -nG "${TWO_ROLE_CLIENT_USER}")"
+
+      - name: Install AgentNode for the client, from the wheel, as the client
+        run: |
+          set -eu
+          # Not the developer checkout: the client cannot read it, which is the boundary working.
+          # A real remote client installs from a package, so this one does too.
+          sudo -n -u "${TWO_ROLE_CLIENT_USER}" python3 -m venv "${TWO_ROLE_CLIENT_HOME}/venv"
+          sudo -n -u "${TWO_ROLE_CLIENT_USER}" "${TWO_ROLE_CLIENT_HOME}/venv/bin/pip"             install --quiet /tmp/anwheel/*.whl
+          sudo -n -u "${TWO_ROLE_CLIENT_USER}" "${TWO_ROLE_CLIENT_HOME}/venv/bin/python"             -m agentnode_sdk.cli remote list || true
+          echo "TWO_ROLE_CLIENT_PYTHON=${TWO_ROLE_CLIENT_HOME}/venv/bin/python" >> "$GITHUB_ENV"
+
+      # Installing docker-ce restarts the daemon, and the version check above can pass while it
+      # is still settling. Twice this lane then failed minutes later with "docker found but its
+      # daemon is not reachable" -- not a defect in what is being tested, but a precondition
+      # nobody re-checked. Waiting for it is bounded and says so if it never arrives; this is
+      # the lane's own precondition, not the thing under test.
+      - name: Wait for the runtime to be reachable again
+        run: |
+          set -eu
+          attempt=0
+          while [ "${attempt}" -lt 60 ]; do
+            attempt=$((attempt + 1))
+            if docker info >/dev/null 2>&1; then
+              echo "the daemon answered on attempt ${attempt}"
+              docker version --format 'server {{.Server.Version}}'
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the container runtime never became reachable; the two-role check needs one"
+          docker info || true
+          exit 1
+
+      - name: Set the gateway up as its own user
+        run: python -m agentnode_sdk.cli gateway init --dir "${TWO_ROLE_GATEWAY_DIR}"
+
+      - name: Run the two-role check
+        run: |
+          set -o pipefail
+          python ../.github/two-role-check.py 2>&1 | tee two-role.txt
+          grep -q "TWO-ROLE CHECK PASSED" two-role.txt || {
+            echo "the two-role check did not pass"; exit 1; }
+
+      - name: Nothing may be left behind
+        if: always()
+        run: |
+          set -eu
+          for prefix in agentnode-em3c- agentnode-egress- agentnode-conformance-; do
+            left="$(docker container ls -a --filter "name=${prefix}" --format '{{.Names}}' | wc -l)"
+            echo "containers named ${prefix}*: ${left}"
+            docker container ls -a --filter "name=${prefix}" --format '{{.Names}}'
+            test "${left}" = "0"
+          done

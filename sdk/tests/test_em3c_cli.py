@@ -550,3 +550,334 @@ class TestTheWholeJourneyThroughThePublishedCommands:
         leftovers = [n for n in listed.stdout.split() if n.strip()]
         print("  [observed] leftover run containers:", leftovers or "none")
         assert not leftovers, leftovers
+
+
+class TestTheCommandsSayWhatWasGrantedNotWhatWasAsked:
+    """EM3C-EGRESS-CLASSIFY-0001.
+
+    In the external two-machine run the client printed "It may reach: example.com -- and
+    nothing else." and the run then executed with no network at all. The sentence was printed
+    before the job had been submitted, so it described a request as though it were a grant.
+    A person reading it had no way to tell that the destination was never allowed.
+    """
+
+    @pytest.fixture()
+    def closed_gateway(self, tmp_path):
+        """A gateway whose operator permits no egress -- the shipped default."""
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        closed = SandboxPolicy(
+            network=NetworkRules(enabled=False, allowed_destinations=frozenset()))
+        state = GatewayState(tmp_path / "gw-closed", version="test")
+        service = GatewayService(state, backend=StandInBackend(), operator_policy=closed)
+        _store_measurement(service)
+        server = make_server(service, port=0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        url = "http://127.0.0.1:%d" % server.server_address[1]
+        try:
+            yield url, state, service
+        finally:
+            server.shutdown()
+
+    def test_the_request_is_not_worded_as_a_grant(self, home, closed_gateway, tmp_path, capsys):
+        url, state, _service = closed_gateway
+        _connect(url, state)
+        capsys.readouterr()
+        script = tmp_path / "reach.py"
+        script.write_text("print('x')\n", encoding="utf-8")
+
+        main(["remote", "run", str(script), "--allow", "example.com"])
+        out = capsys.readouterr().out
+
+        assert "Asking to reach: example.com" in out, out
+        assert "It may reach: example.com" not in out, \
+            "the client stated a grant it had not been given"
+
+    def test_what_was_actually_granted_is_printed(self, home, closed_gateway, tmp_path, capsys):
+        """The point is not to say less. It is to say the true thing."""
+        url, state, _service = closed_gateway
+        _connect(url, state)
+        capsys.readouterr()
+        script = tmp_path / "reach.py"
+        script.write_text("print('x')\n", encoding="utf-8")
+
+        main(["remote", "run", str(script), "--allow", "example.com"])
+        out = capsys.readouterr().out
+
+        assert "Granted: no network access." in out, out
+
+    def test_the_narrowing_is_reported_to_the_person(self, home, closed_gateway, tmp_path,
+                                                     capsys):
+        """The server now discloses every narrowing; the client has to show it."""
+        url, state, _service = closed_gateway
+        _connect(url, state)
+        capsys.readouterr()
+        script = tmp_path / "reach.py"
+        script.write_text("print('x')\n", encoding="utf-8")
+
+        main(["remote", "run", str(script), "--allow", "example.com"])
+        out = capsys.readouterr().out
+
+        assert "stricter than asked" in out, out
+        assert "network.allowed_destinations" in out, out
+
+    def test_a_granted_destination_is_named_as_granted(self, home, tmp_path, capsys):
+        """The control. Without it, a client that always said "no network" would pass."""
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        open_policy = SandboxPolicy(
+            network=NetworkRules(enabled=True,
+                                 allowed_destinations=frozenset({"example.com"})))
+        state = GatewayState(tmp_path / "gw-open", version="test")
+        service = GatewayService(state, backend=StandInBackend(), operator_policy=open_policy)
+        _store_measurement(service)
+        server = make_server(service, port=0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        url = "http://127.0.0.1:%d" % server.server_address[1]
+        try:
+            _connect(url, state)
+            capsys.readouterr()
+            script = tmp_path / "reach.py"
+            script.write_text("print('x')\n", encoding="utf-8")
+            main(["remote", "run", str(script), "--allow", "example.com"])
+            out = capsys.readouterr().out
+            assert "Granted: example.com -- and nothing else." in out, out
+            assert "stricter than asked" not in out, \
+                "nothing was narrowed, so nothing should have been reported as narrowed"
+        finally:
+            server.shutdown()
+
+    def test_the_test_command_reads_cleanup_rather_than_asserting_it(self, home,
+                                                                     running_gateway, capsys):
+        """`remote test` used to state that the sandbox was removed afterwards without ever
+        looking at whether that had been established."""
+        url, state, _service = running_gateway
+        _connect(url, state)
+        capsys.readouterr()
+
+        assert main(["remote", "test"]) == 0
+        out = capsys.readouterr().out
+        assert "It works" in out
+        assert "was removed afterwards, and that was confirmed." in out \
+            or "could not be confirmed" in out \
+            or "was NOT removed afterwards" in out, out
+        assert "It had no network access and was removed afterwards." not in out, \
+            "removal was asserted rather than read from the record"
+
+
+class TestARunItsLimitEndedIsReportedAsThat:
+    """`EM3C-E4-CLASSIFY-0001`: the command returned the gateway's exit code, which for a run the
+    sandbox stopped was -1 -- and Windows reported that as 4294967295, a status no caller could
+    tell from an ordinary failure."""
+
+    def _timed_out(self, running_gateway, home, monkeypatch):
+        from agentnode_sdk.gateway.protocol import TIMED_OUT
+        from agentnode_sdk.sandbox.backend import Outcome
+
+        url, state, service = running_gateway
+        monkeypatch.setattr(
+            service.backend, "run_process",
+            lambda spec, input_text=None, timeout=120.0: Outcome(
+                None, "", "[sandbox timed out after %ss]" % timeout,
+                reason=TIMED_OUT, native_status=137, platform="linux-container"),
+            raising=False)
+        main(["remote", "connect", url, "--code", state.start_pairing(), "--as", "gw"])
+        return url
+
+    def test_the_command_exits_with_the_documented_status(self, home, tmp_path, capsys,
+                                                          running_gateway, monkeypatch):
+        from agentnode_sdk.gateway.protocol import TIMEOUT_EXIT_STATUS
+
+        self._timed_out(running_gateway, home, monkeypatch)
+        job = tmp_path / "slow.py"
+        job.write_text("print('never mind')", encoding="utf-8")
+        capsys.readouterr()
+        code = main(["remote", "run", str(job)])
+        out = capsys.readouterr().out
+        assert code == TIMEOUT_EXIT_STATUS, out
+        assert "ran out of time" in out, out
+        assert "4294967295" not in out and "-1" not in out.split("reported")[0], out
+
+    def test_it_says_which_platform_the_native_number_came_from(self, home, tmp_path, capsys,
+                                                               running_gateway, monkeypatch):
+        self._timed_out(running_gateway, home, monkeypatch)
+        job = tmp_path / "slow.py"
+        job.write_text("print('never mind')", encoding="utf-8")
+        capsys.readouterr()
+        main(["remote", "run", str(job)])
+        out = capsys.readouterr().out
+        assert "linux-container reported 137" in out, out
+
+    def test_a_run_that_really_exits_is_not_reported_as_a_timeout(self, home, tmp_path, capsys,
+                                                                  running_gateway):
+        """The control: this command does not say that about every run."""
+        url, state, _service = running_gateway
+        main(["remote", "connect", url, "--code", state.start_pairing(), "--as", "gw"])
+        job = tmp_path / "ok.py"
+        job.write_text("print('fine')", encoding="utf-8")
+        capsys.readouterr()
+        code = main(["remote", "run", str(job)])
+        out = capsys.readouterr().out
+        assert code == 0, out
+        assert "ran out of time" not in out
+
+
+class TestAnOperatorCanOpenEgressFromTheCommandLine:
+    """The other half of EM3C-EGRESS-CLASSIFY-0001: `--allow` on the client was unreachable
+    because no published gateway command could raise the operator ceiling that denies it.
+
+    EM3C-Y6-DECISION-0001 then made opening it a measured transaction, so what these tests check
+    is that the command exists, that it never claims a change it has not made, and that a
+    machine which cannot measure the change does not get the change.
+    """
+
+    def test_the_egress_command_exists(self, home, tmp_path, capsys):
+        root = tmp_path / "gw"
+        main(["gateway", "egress", "--dir", str(root)])
+        out = capsys.readouterr().out
+        assert "not been measured" in out, out
+        assert "doctor --measure" in out, out
+
+    def test_a_host_that_cannot_be_enforced_is_refused(self, home, tmp_path, capsys):
+        root = tmp_path / "gw"
+        assert main(["gateway", "egress", "--dir", str(root), "--allow", "*"]) == 2
+        out = capsys.readouterr().out
+        assert "cannot be enforced" in out, out
+        assert "Nothing was changed" in out, out
+
+    def test_opposite_flags_are_refused_rather_than_guessed(self, home, tmp_path, capsys):
+        root = tmp_path / "gw"
+        assert main(["gateway", "egress", "--dir", str(root),
+                     "--allow", "example.com", "--none"]) == 2
+        assert "opposite things" in capsys.readouterr().out
+
+    def _measurement_fails(self, monkeypatch):
+        """Make the measurement fail on purpose.
+
+        These two tests first got their failure from the machine having no container runtime,
+        which is true on a laptop and false in CI -- so in CI the measurement succeeded and both
+        failed for the opposite of the reason they were about.
+        """
+        from agentnode_sdk.gateway.readiness import Readiness
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        # `activate` is what the command calls; patching only `measure` left the real
+        # activation running and the test passing because this machine has no runtime.
+        def fake(self, proposed=None, options=None, now=None):
+            return Readiness(False, "the allowlist could not be measured on this machine.",
+                             {}, ("egress_allowlist",),
+                             ("agentnode gateway doctor --measure",))
+
+        monkeypatch.setattr(Service, "activate", fake)
+        monkeypatch.setattr(Service, "measure", fake)
+
+    def test_it_says_it_is_measuring_and_never_that_it_has_finished(self, home, tmp_path,
+                                                                    capsys, monkeypatch):
+        """The command may not say the policy is saved, active or protecting on the way past."""
+        self._measurement_fails(monkeypatch)
+        root = tmp_path / "gw"
+        rc = main(["gateway", "egress", "--dir", str(root), "--allow", "example.com"])
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "Measuring the protections" in out, out
+        assert "still the one in force" in out, out
+        assert "remains in force" in out, out
+        for premature in ("is now in force", "Saved. It takes effect", "may reach:"):
+            assert premature not in out, f"the command claimed {premature!r} without having done it"
+
+    def test_a_gateway_that_cannot_measure_does_not_get_the_policy(self, home, tmp_path,
+                                                                   monkeypatch):
+        from agentnode_sdk.gateway.activation import ActivationStore
+
+        self._measurement_fails(monkeypatch)
+        root = tmp_path / "gw"
+        main(["gateway", "egress", "--dir", str(root), "--allow", "example.com"])
+        assert ActivationStore(root).load_active() is None, \
+            "a policy was put in force on a machine that could not measure it"
+
+    def test_a_measurement_that_passes_does_report_the_policy_in_force(self, home, tmp_path,
+                                                                       capsys, monkeypatch):
+        """The control. Without it, both tests above would pass on a command that could never
+        activate anything, which is not the behaviour being described."""
+        from agentnode_sdk.gateway.activation import ActivationStore
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.readiness import Readiness
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        root = tmp_path / "gw"
+        seeded = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(seeded)
+
+        def fake(self, proposed=None, options=None, now=None):
+            envelope = proposed or self.configured_envelope()
+            active = ActivationStore(self.state.root).load_active()
+            self._write_config_for(envelope)
+            binding = self.report_binding(envelope.digest())
+            ActivationStore(self.state.root).activate(envelope, active.report, binding.as_dict())
+            return Readiness(True, "", {}, (), ())
+
+        monkeypatch.setattr(Service, "activate", fake)
+        assert main(["gateway", "egress", "--dir", str(root), "--allow", "example.com"]) == 0
+        out = capsys.readouterr().out
+        assert "Measurements passed" in out, out
+        assert "example.com" in out, out
+        assert ActivationStore(root).load_active().policy.mode == "restricted"
+
+    def _measured_gateway(self, tmp_path, monkeypatch, allow):
+        """A gateway with a policy really in force, so the diagnostic block has one to show."""
+        from agentnode_sdk.gateway.activation import ActivationStore
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.readiness import Readiness
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        root = tmp_path / "gw"
+        seeded = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(seeded)
+
+        def fake(self, proposed=None, options=None, now=None):
+            envelope = proposed or self.configured_envelope()
+            active = ActivationStore(self.state.root).load_active()
+            self._write_config_for(envelope)
+            binding = self.report_binding(envelope.digest())
+            ActivationStore(self.state.root).activate(envelope, active.report, binding.as_dict())
+            return Readiness(True, "", {}, (), ())
+
+        monkeypatch.setattr(Service, "activate", fake)
+        assert main(["gateway", "egress", "--dir", str(root), *allow]) == 0
+        return root
+
+    def test_the_diagnostic_block_names_the_mode_in_force(self, home, tmp_path, capsys,
+                                                          monkeypatch):
+        """`EM3C-EVIDENCE-0003`: an external record has to note which mode was in force, and the
+        prose above this block is a sentence that could be reworded without the policy changing.
+        The mode is printed as the policy's own word for it, beside the digests."""
+        root = self._measured_gateway(tmp_path, monkeypatch, ["--allow", "example.com"])
+        capsys.readouterr()
+        assert main(["gateway", "egress", "--dir", str(root), "--verbose"]) == 0
+        out = capsys.readouterr().out
+        assert "network mode          : restricted" in out, out
+
+    def test_the_mode_follows_the_policy_rather_than_being_a_constant(self, home, tmp_path,
+                                                                      capsys, monkeypatch):
+        """The control. A line printing one fixed word would satisfy the test above."""
+        root = self._measured_gateway(tmp_path, monkeypatch, ["--none"])
+        capsys.readouterr()
+        assert main(["gateway", "egress", "--dir", str(root), "--verbose"]) == 0
+        out = capsys.readouterr().out
+        assert "network mode          : none" in out, out
+
+    def test_the_mode_is_not_shown_without_the_flag(self, home, tmp_path, capsys, monkeypatch):
+        """A digest-adjacent detail stays in the diagnostic block: the plain command is for the
+        person who wants to know what jobs may reach, not what the policy is called."""
+        root = self._measured_gateway(tmp_path, monkeypatch, ["--allow", "example.com"])
+        capsys.readouterr()
+        assert main(["gateway", "egress", "--dir", str(root)]) == 0
+        assert "network mode" not in capsys.readouterr().out
+
+    def test_the_required_properties_are_named_before_measuring(self, home, tmp_path, capsys):
+        """An operator is told what is about to be checked, not just that something is."""
+        root = tmp_path / "gw"
+        main(["gateway", "egress", "--dir", str(root), "--allow", "example.com"])
+        out = capsys.readouterr().out
+        assert "egress_allowlist" in out, out
+        assert "container_isolation" in out, out

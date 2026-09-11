@@ -83,10 +83,13 @@ class Throttle:
     #: cheaper move -- delete one file -- and nothing more, which is worth having and worth not
     #: overstating.
     established_marker: str | os.PathLike[str] | None = None
+    #: Supplied by a gateway, so reads and writes go through its verified directory descriptor.
+    store: "Store | None" = None
 
     _failures: list[float] = field(default_factory=list, repr=False)
     _locked_until: float = field(default=0.0, repr=False)
     _consecutive_locks: int = field(default=0, repr=False)
+    _last_seen: float = field(default=0.0, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     #: Set when corrupt state was read, so the fail-closed decision is written back rather
@@ -113,7 +116,7 @@ class Throttle:
         if self.path is None:
             return
         target = Path(self.path)
-        if not target.exists():
+        if not self._exists(target):
             marker = Path(self.established_marker) if self.established_marker else None
             if marker is not None and marker.exists():
                 # This gateway has run before, so an absent state file was removed rather than
@@ -126,7 +129,8 @@ class Throttle:
         deadline = time.monotonic() + 1.0
         while True:
             try:
-                raw = target.read_text(encoding="utf-8")
+                raw = (self.store.read(target.name) if self.store is not None
+                       else target.read_text(encoding="utf-8"))
                 break
             except OSError:
                 if time.monotonic() >= deadline:
@@ -154,13 +158,30 @@ class Throttle:
             self._failures = [float(t) for t in (loaded.get("failures") or [])]
             self._locked_until = float(loaded.get("locked_until") or 0.0)
             self._consecutive_locks = int(loaded.get("consecutive_locks") or 0)
+            self._last_seen = float(loaded.get("last_seen") or 0.0)
         except (TypeError, ValueError):
             self._fail_closed(now)
+
+    def _exists(self, target: Path) -> bool:
+        if self.store is None:
+            return target.exists()
+        try:
+            return self.store.read(target.name) is not None
+        except OSError:
+            return True                           # cannot tell: treated as present, not absent
 
     def _write_locked(self) -> None:
         if self.path is None:
             return
         target = Path(self.path)
+        if self.store is not None:
+            self.store.write(target.name, json.dumps({
+                "failures": self._failures,
+                "locked_until": self._locked_until,
+                "consecutive_locks": self._consecutive_locks,
+                "last_seen": self._last_seen,
+            }))
+            return
         target.parent.mkdir(parents=True, exist_ok=True)
         handle, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".throttle-")
         try:
@@ -169,6 +190,7 @@ class Throttle:
                     "failures": self._failures,
                     "locked_until": self._locked_until,
                     "consecutive_locks": self._consecutive_locks,
+                    "last_seen": self._last_seen,
                 }, fh)
             os.replace(tmp, target)
         except BaseException:
@@ -190,14 +212,13 @@ class Throttle:
         every gateway that has simply never had a failed attempt look tampered with -- which it
         did, and which locked three tests out of pairing immediately.
         """
-        if self.path is None or Path(self.path).exists():
+        if self.path is None or self._exists(Path(self.path)):
             return
         with self._lock, self._across_processes():
-            if not Path(self.path).exists():
-                try:
-                    self._write_locked()
-                except OSError:
-                    pass
+            try:
+                self._write_locked()
+            except OSError:
+                pass
 
     def _prune(self, now: float) -> None:
         cutoff = now - self.window_seconds
@@ -208,16 +229,15 @@ class Throttle:
         now = time.time() if now is None else now
         with self._lock, self._across_processes():
             self._read_locked(now)
-            if self._dirty:
-                # Best effort. If the fail-closed decision cannot be persisted -- the same broken
-                # state that made it unreadable may also make it unwritable -- the answer is still
-                # "locked", and the next fresh object will fail closed on the same read. Raising
-                # here would turn a lockout into a crash, and a crash is not an answer.
-                try:
-                    self._write_locked()
-                except OSError:
-                    pass
-                self._dirty = False
+            now = steady(self._last_seen, now)
+            self._last_seen = now
+            # Persisted whether or not the state was corrupt: the anchor is what lets a lock
+            # expire, and an anchor that only moves on a write nobody makes never moves.
+            try:
+                self._write_locked()
+            except OSError:
+                pass
+            self._dirty = False
             return max(0.0, self._locked_until - now)
 
     def check(self, now: float | None = None) -> None:
@@ -231,6 +251,8 @@ class Throttle:
         now = time.time() if now is None else now
         with self._lock, self._across_processes():
             self._read_locked(now)
+            now = steady(self._last_seen, now)
+            self._last_seen = now
             self._prune(now)
             self._failures.append(now)
             if len(self._failures) <= self.allowed_failures:
@@ -254,6 +276,156 @@ class Throttle:
             self._write_locked()
 
 
+@dataclass
+class Budget:
+    """How many attempts the gateway will consider at all, in a window.
+
+    `EM3C-STATEDIR-DECISION-0001` chose P2-A: no source identity anywhere. The per-origin counter
+    it replaces keyed on the immediate TCP peer, which behind a reverse proxy is the proxy -- so
+    every client shared one allowance and any of them could lock out the rest. Trusting a
+    forwarding header instead would mean trusting whoever can set one.
+
+    So nothing here depends on where an attempt came from. The Throttle beside this counts
+    FAILURES and locks after too many; this counts ATTEMPTS, successful or not, and simply stops
+    considering them past a ceiling. Between them, an attacker who can reach the gateway is bounded
+    without anyone having to decide whose address to believe.
+
+    What it deliberately does not give is per-user isolation: this ceiling is shared, and exhausting
+    it denies pairing to everyone until the window passes. That is the trade P2-A makes, and the
+    allowance is set high enough that ordinary use never approaches it while grinding does.
+    """
+
+    allowance: int = 30
+    window_seconds: float = 10 * 60.0
+    path: str | os.PathLike[str] | None = None
+    #: Present once the gateway has run. Without it, deleting the budget file is indistinguishable
+    #: from first use and hands back every attempt -- which `EM3C-EXTERNAL-0013` found, and which
+    #: the failure counter beside this one had already been given a marker to prevent.
+    established_marker: str | os.PathLike[str] | None = None
+    store: "Store | None" = None
+
+    _spent: list = field(default_factory=list, repr=False)
+    _last_seen: float = field(default=0.0, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def _across_processes(self):
+        if self.path is None:
+            return _NoLock()
+        return ProcessLock(self.path)
+
+    def _read(self, now: float) -> None:
+        if self.path is None:
+            return
+        target = Path(self.path)
+        try:
+            raw = (self.store.read(target.name) if self.store is not None
+                   else (target.read_text(encoding="utf-8") if target.exists() else None))
+        except OSError:
+            self._spent = [now] * self.allowance
+            return
+        if raw is None:
+            marker = Path(self.established_marker) if self.established_marker else None
+            if marker is not None and marker.exists():
+                # It was removed rather than never written: the same reasoning, and the same
+                # answer, as the failure counter beside this one.
+                self._spent = [now] * self.allowance
+            return
+        try:
+            loaded = json.loads(raw)
+            self._spent = [float(t) for t in (loaded.get("spent") or [])]
+            self._last_seen = float(loaded.get("last_seen") or 0.0)
+        except (OSError, ValueError, TypeError):
+            # Unreadable is not empty. An attempt budget that forgets is not a budget, so the
+            # window is treated as fully spent until it would have expired anyway.
+            self._spent = [now] * self.allowance
+
+    def _write(self) -> None:
+        if self.path is None:
+            return
+        target = Path(self.path)
+        if self.store is not None:
+            self.store.write(target.name,
+                             json.dumps({"spent": self._spent, "last_seen": self._last_seen}))
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        handle, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".budget-")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as fh:
+                json.dump({"spent": self._spent, "last_seen": self._last_seen}, fh)
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        try:
+            os.chmod(target, 0o600)
+        except OSError:
+            pass
+
+    def ensure_initialised(self) -> None:
+        """Write an empty-but-valid budget, so a later absence means removal.
+
+        Created with the gateway rather than on first spend: otherwise a gateway that has simply
+        never had a pairing attempt would look tampered with, which is the mistake the failure
+        counter beside this one already made once.
+        """
+        if self.path is None or self._exists(Path(self.path)):
+            return
+        with self._lock, self._across_processes():
+            try:
+                self._write()
+            except OSError:
+                pass
+
+    def _exists(self, target: Path) -> bool:
+        if self.store is None:
+            return target.exists()
+        try:
+            return self.store.read(target.name) is not None
+        except OSError:
+            return True
+
+    def spend(self, now: float | None = None) -> None:
+        """Record one attempt, or raise if the window has no room left."""
+        now = time.time() if now is None else now
+        with self._lock, self._across_processes():
+            self._read(now)
+            now = steady(self._last_seen, now)
+            self._last_seen = now
+            cutoff = now - self.window_seconds
+            self._spent = [t for t in self._spent if t > cutoff]
+            if len(self._spent) >= self.allowance:
+                oldest = min(self._spent)
+                # Persist the advance before refusing. The anchor only moves when it is written,
+                # and if a refusal did not move it, an exhausted budget would never recover --
+                # the only thing that could advance it is the call it is refusing.
+                try:
+                    self._write()
+                except OSError:
+                    pass
+                raise Locked(max(1.0, (oldest + self.window_seconds) - now))
+            self._spent.append(now)
+            try:
+                self._write()
+            except OSError:
+                pass
+
+    def remaining(self, now: float | None = None) -> int:
+        now = time.time() if now is None else now
+        with self._lock, self._across_processes():
+            self._read(now)
+            now = steady(self._last_seen, now)
+            self._last_seen = now
+            try:
+                self._write()
+            except OSError:
+                pass
+            cutoff = now - self.window_seconds
+            return max(0, self.allowance - len([t for t in self._spent if t > cutoff]))
+
+
 class _NoLock:
     """What `_across_processes` returns when the throttle is memory-only."""
 
@@ -262,6 +434,43 @@ class _NoLock:
 
     def __exit__(self, *exc):
         return False
+
+
+#: The furthest a single step is allowed to advance the clock these counters run on. Beyond this,
+#: the jump is not credited. `EM3C-EXTERNAL-0013` found that both counters were evaluated against
+#: the wall clock, so setting it forward expired a lockout and emptied a window -- buying back the
+#: attempts the limits had just taken away. There is no way to tell a real hour from a claimed one,
+#: so the answer is not to trust a large one: time never runs backwards here, and a forward jump is
+#: worth at most one window per operation, each of which already costs budget.
+MAX_CREDITED_STEP = 5 * 60.0
+
+
+class Store:
+    """How a counter reaches its file.
+
+    `EM3C-EXTERNAL-0014` found the pairing failure counter and the attempt budget resolving the
+    state directory by pathname while every other secret had moved to the held descriptor. They are
+    gateway security state -- one of them decides whether pairing is locked -- so they belong on the
+    same footing. A gateway supplies a store that reads and writes relative to its verified
+    descriptor; anything constructed without one falls back to the path, which is what a standalone
+    unit test wants and what a gateway never uses.
+
+    The lock file beside them is still addressed by name, and that is deliberate: it holds nothing.
+    Its whole content is the fact that somebody has it open.
+    """
+
+    def __init__(self, read, write):
+        self.read = read
+        self.write = write
+
+
+def steady(last_seen: float, now: float, max_step: float = MAX_CREDITED_STEP) -> float:
+    """A clock that only moves forward, and never far in one go."""
+    if last_seen <= 0:
+        return now
+    if now < last_seen:
+        return last_seen                          # backwards is refused outright
+    return min(now, last_seen + max_step)
 
 
 class Locked(Exception):

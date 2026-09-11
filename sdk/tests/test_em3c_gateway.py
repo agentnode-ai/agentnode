@@ -18,6 +18,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import contextlib
+import dataclasses
 import tempfile
 from pathlib import Path
 import threading
@@ -30,6 +32,7 @@ from agentnode_sdk.conformance.report import Vantage
 from agentnode_sdk.gateway import readiness
 from agentnode_sdk.gateway import transport as tr
 from agentnode_sdk.gateway.identity import (
+    hash_token,
     PairingError,
     GatewayState,
     client_token_secret,
@@ -158,8 +161,34 @@ def _store_measurement(service, ok=True, observed=True, only=None, binding=None)
     report = ConformanceReport(
         backend_identity="StandInBackend", backend_version="test", runtime="docker",
         image="", generated_at="1970-01-01T00:00:00+00:00", results=tuple(results))
-    service.readiness.store(report.to_dict(), binding or service.report_binding())
+    # Readiness reads the authenticated snapshot, not the loose file, so a helper that wrote
+    # only the file would be testing a path nothing uses. Both are written: the snapshot because
+    # it is what decides, the file because it is the diagnostic copy the real measurement leaves.
+    from agentnode_sdk.gateway.activation import ActivationStore
+
+    envelope = service.configured_envelope()
+    stamped = binding or service.report_binding(envelope.digest())
+    service.readiness.store(report.to_dict(), stamped)
+    ActivationStore(service.state.root).activate(envelope, report.to_dict(), stamped.as_dict())
     return service.readiness_now()
+
+
+_BINDABLE_DIRS: list = []
+
+
+def _bindable():
+    """Something shaped like a service, with a private state directory of its own.
+
+    These tests are about which addresses may be served, not about the service -- but make_server
+    now also checks that the gateway's own files are private, and handing it a bare object() would
+    only prove that an attribute is missing.
+    """
+    import tempfile
+    import types
+
+    holder = tempfile.TemporaryDirectory()
+    _BINDABLE_DIRS.append(holder)                 # kept alive for the session
+    return types.SimpleNamespace(state=types.SimpleNamespace(root=Path(holder.name)))
 
 
 @pytest.fixture()
@@ -230,7 +259,11 @@ class TestPairing:
 
     def test_hello_works_before_pairing(self, gateway):
         base, _, _, _ = gateway
-        assert gc.hello(base)["protocol"] == "em3c/1"
+        from agentnode_sdk.gateway.protocol import PROTOCOL_VERSION
+
+        # The version this build speaks, not a version written down here: a test that names
+        # the number states the number rather than the property.
+        assert gc.hello(base)["protocol"] == PROTOCOL_VERSION
 
     def test_the_token_file_never_holds_a_usable_token(self, gateway):
         base, state, _, _ = gateway
@@ -365,7 +398,9 @@ class TestNothingRunsUntilItIsAdmitted:
                 "signature": sign(client_token_secret(conn.token), payload),
                 "artifact_b64": base64.b64encode(b"x").decode()}
         status, answer = gc._post(base + "/v1/jobs", body)
-        assert status == 403 and "em3c/1" in answer["error"]
+        from agentnode_sdk.gateway.protocol import PROTOCOL_VERSION
+
+        assert status == 403 and PROTOCOL_VERSION in answer["error"]
         assert backend.specs == [], "an unknown protocol version must not reach a container"
 
 
@@ -488,6 +523,8 @@ class TestEveryAnswerNamesTheGatewayThatGaveIt:
     """T-C: an answer a client cannot tie to a build is not a measurement of that build."""
 
     def test_hello_pair_submit_status_and_cancel_all_carry_the_identity(self, gateway):
+        from agentnode_sdk.gateway.protocol import PROTOCOL_VERSION
+
         base, state, service, _ = gateway
         conn = _paired(base, state)
         expected = state.identity
@@ -496,10 +533,12 @@ class TestEveryAnswerNamesTheGatewayThatGaveIt:
         answers["submit"] = gc.submit(conn, b"x", granted=_granted(service), run_id="stamped")
         gc.wait_for(conn, "stamped", timeout=20)
         answers["status"] = gc.status_of(conn, "stamped")
-        answers["cancel"] = gc.cancel(conn, "stamped")
+        # A cancellation answers with the record AND whether it settled; the record is the part
+        # that carries an identity.
+        answers["cancel"], _settled = gc.cancel(conn, "stamped")
 
         for name, answer in answers.items():
-            assert answer.get("protocol") == "em3c/1", name
+            assert answer.get("protocol") == PROTOCOL_VERSION, name
             assert answer.get("gateway", {}).get("gateway_id") == expected.gateway_id, name
             assert answer.get("gateway", {}).get("version") == expected.version, name
             assert answer.get("fingerprint") == expected.fingerprint, name
@@ -516,6 +555,7 @@ class TestEveryAnswerNamesTheGatewayThatGaveIt:
 
 class TestMandatoryAndOptionalNarrowing:
     """EM3C-DIGEST-DECISION-0001 chose A1/B1/C1/D1/E1. This is that decision, checked."""
+
 
     def _serve(self, state, wall_clock_s=180):
         from agentnode_sdk.sandbox.contract import Limits, SandboxPolicy
@@ -693,7 +733,7 @@ class TestSecretsDoNotTravelInTheClear:
             tr.check_client_url(url)
         assert "no longer does anything" in str(e.value)
         with pytest.raises(tr.InsecureTransportError):
-            make_server(object(), host="0.0.0.0")
+            make_server(_bindable(), host="0.0.0.0")
 
     def test_a_name_that_is_not_loopback_does_not_inherit_the_exemption(self):
         assert not tr.is_loopback("localhost.attacker.example")
@@ -708,7 +748,7 @@ class TestSecretsDoNotTravelInTheClear:
     def test_serving_beyond_loopback_in_the_clear_is_refused(self, host, monkeypatch):
         monkeypatch.delenv(tr.LEGACY_PLAINTEXT_ENV, raising=False)
         with pytest.raises(tr.InsecureTransportError) as e:
-            make_server(object(), host=host)
+            make_server(_bindable(), host=host)
         assert "without encryption" in str(e.value)
 
     def test_the_guard_is_on_the_request_path_not_only_the_helper(self, monkeypatch):
@@ -806,7 +846,7 @@ class TestARedirectIsASecondDestination:
         conn = gc.GatewayConnection(base_url=base, token="s3cret-token", gateway_id="g")
         try:
             with pytest.raises(gc.GatewayClientError):
-                gc.status_of(conn, "some-run", verify=False)
+                gc.status_of(conn, "some-run")
         finally:
             server.shutdown()
             recorder.shutdown()
@@ -832,6 +872,56 @@ class TestARedirectIsASecondDestination:
             assert "s3cret" not in str(exc.value)
         finally:
             server.shutdown()
+
+
+class TestTheAnswerMustComeFromTheGatewayYouPairedWith:
+    """EM3C-REMOTE-ACCESS-0001 asked for this independently of the transport.
+
+    TLS or a tunnel authenticates the channel. This authenticates the peer at the other end of it,
+    against what was learned when the two were introduced -- so an address that is later pointed
+    somewhere else stops being trusted rather than being quietly used.
+    """
+
+    def test_an_answer_from_a_different_gateway_is_refused(self, gateway):
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none", run_id="pinned")
+        gc.wait_for(conn, "pinned", timeout=20)
+
+        elsewhere = gc.GatewayConnection(base_url=base, token=conn.token,
+                                         gateway_id="a-different-gateway",
+                                         fingerprint=conn.fingerprint)
+        with pytest.raises(gc.GatewayClientError, match="not the sandbox you paired with"):
+            gc.status_of(elsewhere, "pinned")
+
+    def test_a_changed_fingerprint_is_refused(self, gateway):
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none", run_id="pinned-print")
+        gc.wait_for(conn, "pinned-print", timeout=20)
+
+        moved = gc.GatewayConnection(base_url=base, token=conn.token,
+                                     gateway_id=conn.gateway_id,
+                                     fingerprint="0" * 64)
+        with pytest.raises(gc.GatewayClientError, match="no longer identifies itself"):
+            gc.status_of(moved, "pinned-print")
+
+    def test_submitting_to_the_wrong_gateway_is_refused_too(self, gateway):
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        elsewhere = gc.GatewayConnection(base_url=base, token=conn.token,
+                                         gateway_id="somebody-else", fingerprint="")
+        with pytest.raises(gc.GatewayClientError, match="not the sandbox you paired with"):
+            gc.submit(elsewhere, b"x", network="none", run_id="wrong-peer")
+
+    def test_a_connection_saved_before_fingerprints_still_works(self, gateway):
+        """Refusing those would break every existing pairing to add a check it cannot perform."""
+        base, state, service, _ = gateway
+        conn = _paired(base, state)
+        older = gc.GatewayConnection(base_url=base, token=conn.token,
+                                     gateway_id=conn.gateway_id, fingerprint="")
+        answer = gc.submit(older, b"x", network="none", run_id="legacy")
+        assert answer["state"] != "refused"
 
 
 class TestCredentialsNeverRideInAUrl:
@@ -906,13 +996,13 @@ class TestTlsIsProvenByLoadingIt:
     def test_a_certificate_that_does_not_load_stops_the_gateway(self, tmp_path):
         bad = tr.TlsFiles(certfile=str(tmp_path / "nope.pem"), keyfile=str(tmp_path / "nope.key"))
         with pytest.raises(tr.InsecureTransportError) as e:
-            make_server(object(), host="0.0.0.0", tls=bad)
+            make_server(_bindable(), host="0.0.0.0", tls=bad)
         assert "could not be loaded" in str(e.value)
         assert "not started" in str(e.value)
 
     def test_a_real_certificate_permits_a_bind_that_plain_http_could_not_have(self, tmp_path):
         cert, key = _self_signed(tmp_path)
-        server = make_server(object(), host="127.0.0.1", port=0,
+        server = make_server(_bindable(), host="127.0.0.1", port=0,
                              tls=tr.TlsFiles(certfile=cert, keyfile=key))
         try:
             assert server.agentnode_tls is True
@@ -994,7 +1084,7 @@ class TestNobodyReadsSomebodyElsesRun:
         answer = gc.submit(conn, b"x", network="none")
         anonymous = gc.GatewayConnection(base_url=base, token="", gateway_id=conn.gateway_id)
         with pytest.raises(gc.GatewayClientError) as e:
-            gc.status_of(anonymous, answer["run_id"], verify=False)
+            gc.status_of(anonymous, answer["run_id"])
         assert "not paired" in str(e.value)
 
     def test_status_with_a_token_this_gateway_never_issued_is_refused(self, gateway):
@@ -1004,7 +1094,7 @@ class TestNobodyReadsSomebodyElsesRun:
         forged = gc.GatewayConnection(base_url=base, token="not-a-real-token",
                                       gateway_id=conn.gateway_id)
         with pytest.raises(gc.GatewayClientError):
-            gc.status_of(forged, answer["run_id"], verify=False)
+            gc.status_of(forged, answer["run_id"])
 
     def test_another_clients_run_is_reported_exactly_like_one_that_does_not_exist(self, gateway):
         """Distinguishing them would let any paired client enumerate real run ids."""
@@ -1049,7 +1139,7 @@ class TestNobodyReadsSomebodyElsesRun:
 
         assert state.revoke(conn.token) is True
         with pytest.raises(gc.GatewayClientError):
-            gc.status_of(conn, "before-revocation", verify=False)
+            gc.status_of(conn, "before-revocation")
         with pytest.raises(gc.GatewayClientError):
             gc.submit(conn, b"x", network="none", run_id="after-revocation")
         with pytest.raises(gc.GatewayClientError):
@@ -1254,9 +1344,17 @@ class TestCorruptLockoutStateFailsClosed:
             throttle = Throttle(path=path)
             locked = throttle.locked_for(now=1000.0)
             assert locked > 0.0
-            # the fail-closed decision was written back as valid state, so it expires normally
+            # The fail-closed decision was written back as valid state, so it expires -- but only
+            # as time actually passes. A single leap past the deadline is not credited, so the
+            # clock is walked forward the way a clock does.
+            from agentnode_sdk.gateway.throttle import MAX_CREDITED_STEP
+
             later = Throttle(path=path)
-            assert later.locked_for(now=1000.0 + locked + 1.0) == 0.0
+            at = 1000.0
+            for _ in range(int(locked // MAX_CREDITED_STEP) + 2):
+                at += MAX_CREDITED_STEP
+                remaining = later.locked_for(now=at)
+            assert remaining == 0.0
 
     def test_state_that_exists_but_will_not_open_also_fails_closed(self):
         """EM3C-GATEWAY-0010: unparseable was handled; unreadable was not.
@@ -1323,10 +1421,14 @@ class TestRotationReplacesTheSecretAndNothingElse:
         assert replacement and replacement != conn.token
 
         with pytest.raises(gc.GatewayClientError):
-            gc.status_of(conn, "pre-rotation", verify=False)
+            gc.status_of(conn, "pre-rotation")
+        # With the fingerprint, so the answer verifies: `EM3C-CANCEL-0005` removed the way to
+        # ask for an unverified one, and this was never about verification -- it is about the
+        # rotated credential being the one that works.
         rotated = gc.GatewayConnection(base_url=base, token=replacement,
-                                       gateway_id=conn.gateway_id)
-        assert gc.status_of(rotated, "pre-rotation", verify=False)["state"] == "finished"
+                                       gateway_id=conn.gateway_id,
+                                       fingerprint=conn.fingerprint)
+        assert gc.status_of(rotated, "pre-rotation")["state"] == "finished"
 
     def test_what_the_client_may_reach_travels_with_it(self, gateway):
         base, state, service, _ = gateway
@@ -1513,18 +1615,21 @@ class TestNothingRunsOnAnUnmeasuredGateway:
         with tempfile.TemporaryDirectory() as td:
             state, service, server, base = self._fresh(td)
             try:
-                # everything measured except the cleanup checks
+                # Everything measured except the egress check. A closed policy does not require
+                # `egress_allowlist`, so the gateway stays ready -- which is the point: an
+                # unproven property has to be absent from what is offered without taking the
+                # whole gateway down, or a job could not be refused for needing it specifically.
                 _store_measurement(service, only=("outside-host-process", "not-root",
                                                   "network-mode", "limit-memory",
-                                                  "egress-allowlist"))
+                                                  "run-leaves-nothing", "cancel-and-kill"))
                 hello = gc.hello(base)
                 assert hello["ready"] is True, hello["reason"]
-                assert hello["properties"]["verified_cleanup"] is False
-                assert "verified_cleanup" in hello["unproven"]
+                assert hello["properties"]["egress_allowlist"] is False
+                assert "egress_allowlist" in hello["unproven"]
 
                 conn = gc.pair(base, state.start_pairing())
                 answer = gc.submit(conn, b"x", network="none",
-                                   required_properties=("verified_cleanup",))
+                                   required_properties=("egress_allowlist",))
                 assert answer["state"] == "refused"
                 assert service.backend.specs == []
             finally:
@@ -1549,7 +1654,12 @@ class TestNothingRunsOnAnUnmeasuredGateway:
         with tempfile.TemporaryDirectory() as td:
             state = GatewayState(td, version="test")
             service = GatewayService(state, backend=StandInBackend())
-            service.readiness.store(report.to_dict(), service.report_binding())
+            from agentnode_sdk.gateway.activation import ActivationStore
+
+            envelope = service.configured_envelope()
+            binding = service.report_binding(envelope.digest())
+            service.readiness.store(report.to_dict(), binding)
+            ActivationStore(state.root).activate(envelope, report.to_dict(), binding.as_dict())
             result = service.readiness_now()
 
         proven = [name for name, held in result.properties.items() if held]
@@ -1669,11 +1779,11 @@ class TestEveryRemediationIsInvocableAndChangesTheAnswer:
     def test_supplying_a_certificate_turns_a_refused_bind_into_a_serving_one(self, tmp_path):
         """The refusal names --tls-cert and --tls-key. Supplying them has to be enough."""
         with pytest.raises(tr.InsecureTransportError) as refusal:
-            make_server(object(), host="0.0.0.0")
+            make_server(_bindable(), host="0.0.0.0")
         assert "--tls-cert" in str(refusal.value)
 
         cert, key = _self_signed(tmp_path)
-        server = make_server(object(), host="127.0.0.1", port=0,
+        server = make_server(_bindable(), host="127.0.0.1", port=0,
                              tls=tr.TlsFiles(certfile=cert, keyfile=key))
         try:
             assert server.agentnode_tls is True
@@ -1851,6 +1961,462 @@ class TestRestrictedEgress:
                 assert tuple(spec.egress.allowed_domains) == ("example.com",)
             finally:
                 server.shutdown()
+
+
+# ------------------------------------------------- what a restart and a shared machine change
+
+class TestAMeasurementBelongsToOneBoot:
+    """A reboot can change what a container gets without moving the image digest.
+
+    A new kernel, a cgroup controller that is no longer mounted, a seccomp or apparmor policy that
+    loaded differently -- none of those change the image, and all of them change what the sandbox
+    actually enforces. Without the boot in the binding the old report would still look current.
+    """
+
+    def test_a_report_from_an_earlier_boot_does_not_count(self):
+        from agentnode_sdk.gateway.readiness import ReportBinding
+
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            service = GatewayService(state, backend=StandInBackend())
+            current = service.report_binding()
+            assert current.boot_id, "the binding does not record a boot at all"
+
+            # Derived from the current binding and altered in exactly one field, so a drift in
+            # any other one cannot be what this test actually observes.
+            earlier = dataclasses.replace(current, boot_id="some-previous-boot")
+            _store_measurement(service, binding=earlier)
+            result = service.readiness_now()
+            assert result.ready is False
+            assert "restarted" in result.reason
+            assert result.next_steps
+
+    def test_the_same_boot_still_counts(self):
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            service = GatewayService(state, backend=StandInBackend())
+            _store_measurement(service)
+            assert service.readiness_now().ready is True
+
+    def test_the_boot_is_named_by_the_kernel_where_there_is_one(self):
+        """On Linux this is exact; elsewhere it is an estimate and says so."""
+        from agentnode_sdk.gateway.boot import boot_identity, describe
+
+        value, method = boot_identity()
+        assert value
+        assert method in ("kernel-boot-id", "process-lifetime")
+        assert describe(method)
+        again, method_again = boot_identity()
+        assert (value, method) == (again, method_again), "the boot identity is not stable"
+
+
+class TestTheGatewaysOwnFilesArePrivate:
+    """The directory holds token hashes, the ledger, the lockout and the live code's hash."""
+
+    def test_a_private_directory_is_accepted(self):
+        from agentnode_sdk.gateway.statedir import inspect
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "gw"
+            root.mkdir(mode=0o700)
+            verdict = inspect(root)
+            assert verdict.ok is True
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+    def test_a_world_readable_directory_stops_the_gateway(self):
+        from agentnode_sdk.gateway.statedir import InsecureStateDirectory, require_private
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "gw"
+            root.mkdir(mode=0o755)
+            with pytest.raises(InsecureStateDirectory) as exc:
+                require_private(root)
+            message = str(exc.value)
+            assert "not private" in message
+            assert "chmod 700" in message, "the refusal must name the command that fixes it"
+            assert "was not started" in message
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+    def test_serving_is_refused_on_a_shared_directory(self):
+        from agentnode_sdk.gateway.statedir import InsecureStateDirectory
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "gw"
+            root.mkdir(mode=0o700)
+            state = GatewayState(root, version="test")
+            service = GatewayService(state, backend=StandInBackend())
+            os.chmod(root, 0o755)
+            with pytest.raises(InsecureStateDirectory):
+                make_server(service, port=0)
+
+    @pytest.mark.skipif(os.name == "posix", reason="the unverifiable case")
+    def test_where_it_cannot_be_checked_it_is_not_claimed_to_be_secure(self):
+        from agentnode_sdk.gateway.statedir import inspect
+
+        with tempfile.TemporaryDirectory() as td:
+            verdict = inspect(td)
+            assert verdict.verifiable is False
+            assert "cannot be checked" in verdict.reason
+
+
+posix_only = pytest.mark.skipif(
+    os.name != "posix", reason="descriptor-relative work is a POSIX facility")
+
+
+class TestASwappedPathCannotRedirectASecret:
+    """The attacks the descriptor work exists to stop, actually attempted.
+
+    `EM3C-EXTERNAL-0007` found the pairing claim working through pathnames while everything else
+    had moved to descriptors. A name is not an object: between checking a path and opening it, the
+    name can be made to refer to something else. These tests do the swapping rather than reasoning
+    about it.
+    """
+
+    @posix_only
+    def test_replacing_the_directory_is_noticed_before_a_secret_is_touched(self, tmp_path):
+        real = tmp_path / "gw"
+        state = GatewayState(real, version="test")
+        assert state.identity.gateway_id
+        state.start_pairing()
+
+        # the attacker's directory, in place of the gateway's, with a pairing record of their own
+        impostor = tmp_path / "impostor"
+        impostor.mkdir(mode=0o700)
+        (impostor / "pairing.json").write_text(
+            json.dumps({"code_sha256": "0" * 64, "expires": 9e9}), encoding="utf-8")
+        real.rename(tmp_path / "moved-aside")
+        impostor.rename(real)
+
+        from agentnode_sdk.gateway.securedir import InsecureState
+
+        with pytest.raises((InsecureState, PairingError)):
+            state.redeem_pairing("AAAA-AAAA-AAAA")
+        with pytest.raises(InsecureState):
+            state._read_tokens()
+
+    @posix_only
+    def test_a_symlink_in_place_of_a_secret_is_refused_not_followed(self, tmp_path):
+        elsewhere = tmp_path / "somebody-elses.json"
+        elsewhere.write_text(json.dumps({"stolen": True}), encoding="utf-8")
+
+        root = tmp_path / "gw"
+        state = GatewayState(root, version="test")
+        assert state.identity.gateway_id
+
+        (root / "tokens.json").unlink(missing_ok=True)
+        (root / "tokens.json").symlink_to(elsewhere)
+
+        from agentnode_sdk.gateway.securedir import UnverifiableState
+
+        with pytest.raises(UnverifiableState):
+            state._read_tokens()
+
+    @posix_only
+    def test_a_symlinked_pairing_record_yields_no_pairing(self, tmp_path):
+        planted = tmp_path / "planted.json"
+        planted.write_text(
+            json.dumps({"code_sha256": hash_token("AAAA-AAAA-AAAA"), "expires": 9e9}),
+            encoding="utf-8")
+
+        root = tmp_path / "gw"
+        state = GatewayState(root, version="test")
+        assert state.identity.gateway_id
+        (root / "pairing.json").unlink(missing_ok=True)
+        (root / "pairing.json").symlink_to(planted)
+
+        # The claim renames the link itself; reading through it must not succeed, so the planted
+        # code cannot buy a token.
+        with pytest.raises(PairingError):
+            state.redeem_pairing("AAAA-AAAA-AAAA")
+
+    @posix_only
+    def test_a_second_hard_link_to_a_secret_is_refused(self, tmp_path):
+        """Another name for the same bytes, in a directory whose permissions say nothing here."""
+        root = tmp_path / "gw"
+        state = GatewayState(root, version="test")
+        state._write_private("tokens.json", json.dumps({}))
+        os.link(root / "tokens.json", tmp_path / "second-door.json")
+
+        from agentnode_sdk.gateway.securedir import InsecureState
+
+        with pytest.raises(InsecureState):
+            state._read_tokens()
+
+    @posix_only
+    def test_widening_the_directory_refuses_the_next_secret_operation(self, tmp_path):
+        root = tmp_path / "gw"
+        state = GatewayState(root, version="test")
+        assert state.identity.gateway_id
+        assert state._read_tokens() == {}
+
+        os.chmod(root, 0o755)
+
+        from agentnode_sdk.gateway.securedir import InsecureState
+        from agentnode_sdk.gateway.statedir import InsecureStateDirectory
+
+        refuses = (InsecureState, InsecureStateDirectory)
+        with pytest.raises(refuses):
+            state._read_tokens()
+        with pytest.raises(refuses):
+            state._write_private("tokens.json", "{}")
+
+    @posix_only
+    def test_identity_is_the_inode_not_the_name(self, tmp_path):
+        """A test that compared two path strings would pass against every attack above."""
+        from agentnode_sdk.gateway import securedir
+
+        root = tmp_path / "gw"
+        root.mkdir(mode=0o700)
+        fd = securedir.open_state_dir(root)
+        try:
+            assert securedir.same_object(fd, root)
+            root.rename(tmp_path / "renamed")
+            (tmp_path / "other").mkdir(mode=0o700)
+            (tmp_path / "other").rename(root)
+            assert not securedir.same_object(fd, root), (
+                "a different directory under the same name was accepted as the same object"
+            )
+        finally:
+            os.close(fd)
+
+
+class TestThePairingAnswerMustDescribeItself:
+    """The one exchange with nothing to pin against, so it is checked against itself."""
+
+    def test_a_fingerprint_that_does_not_match_the_identity_is_refused(self, gateway, monkeypatch):
+        base, state, service, _ = gateway
+        code = state.start_pairing()
+
+        real_post = gc._post
+
+        def bent(url, body, timeout=30.0):
+            status, answer = real_post(url, body, timeout)
+            if url.endswith("/v1/pair") and isinstance(answer, dict):
+                answer = dict(answer, fingerprint="0" * 64)
+            return status, answer
+
+        monkeypatch.setattr(gc, "_post", bent)
+        with pytest.raises(gc.GatewayClientError, match="does not describe itself"):
+            gc.pair(base, code)
+
+    def test_a_missing_fingerprint_is_refused_too(self, gateway, monkeypatch):
+        base, state, service, _ = gateway
+        code = state.start_pairing()
+        real_post = gc._post
+
+        def stripped(url, body, timeout=30.0):
+            status, answer = real_post(url, body, timeout)
+            if url.endswith("/v1/pair") and isinstance(answer, dict):
+                answer = {k: v for k, v in answer.items() if k != "fingerprint"}
+            return status, answer
+
+        monkeypatch.setattr(gc, "_post", stripped)
+        with pytest.raises(gc.GatewayClientError, match="does not describe itself"):
+            gc.pair(base, code)
+
+    def test_a_refusal_that_cannot_describe_itself_is_not_repeated(self, gateway, monkeypatch):
+        """The refusal path was presented before any check ran."""
+        base, state, service, _ = gateway
+        state.start_pairing()
+        real_post = gc._post
+
+        def hostile(url, body, timeout=30.0):
+            if url.endswith("/v1/pair"):
+                return 403, {"error": "PLAUSIBLE-SOUNDING-LIE",
+                             "gateway": {"gateway_id": "someone", "version": "1"},
+                             "fingerprint": "0" * 64}
+            return real_post(url, body, timeout)
+
+        monkeypatch.setattr(gc, "_post", hostile)
+        with pytest.raises(gc.GatewayClientError) as exc:
+            gc.pair(base, "ABCD-EFGH-JKLM")
+        assert "PLAUSIBLE-SOUNDING-LIE" not in str(exc.value)
+        assert "does not describe itself" in str(exc.value)
+
+    def test_a_consistent_refusal_is_still_reported(self, gateway):
+        """A real gateway refusing a wrong code must still say so in its own words."""
+        base, state, service, _ = gateway
+        state.start_pairing()
+        with pytest.raises(gc.GatewayClientError, match="does not match"):
+            gc.pair(base, "ZZZZ-ZZZZ-ZZZZ")
+
+    def test_an_honest_answer_still_pairs(self, gateway):
+        base, state, service, _ = gateway
+        connection = gc.pair(base, state.start_pairing())
+        assert connection.token and connection.gateway_id and connection.fingerprint
+
+
+class TestPairingIsLimitedWithoutTrustingAnAddress:
+    """EM3C-STATEDIR-DECISION-0001 chose P2-A: no source identity anywhere.
+
+    The per-origin counter this replaces keyed on the immediate TCP peer. Behind a reverse proxy --
+    one of the supported remote-access routes -- that is the proxy for every client, so one client
+    could exhaust the allowance and lock out the rest. Trusting a forwarding header instead would
+    mean trusting whoever is able to set one.
+
+    What is left is three limits and not one of them is an address: every attempt spends a shared
+    budget, failures accumulate towards a lockout, and a code is consumed by a single attempt.
+    """
+
+    def test_issuing_a_new_code_does_not_hand_back_spent_attempts(self):
+        with tempfile.TemporaryDirectory() as td:
+            now = 4_000.0
+            state = GatewayState(td, version="test")
+            for _ in range(state._throttle.allowed_failures):
+                state.start_pairing(now=now)
+                with pytest.raises(PairingError):
+                    state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now)
+            state.start_pairing(now=now)
+            with pytest.raises(PairingError):
+                state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now)
+            assert state._throttle.locked_for(now) > 0.0
+
+    def test_a_code_is_spent_by_one_attempt_and_takes_nobody_elses_with_it(self):
+        """A wrong guess costs that code. The next person's code is untouched."""
+        with tempfile.TemporaryDirectory() as td:
+            now = 4_000.0
+            state = GatewayState(td, version="test")
+            state.start_pairing(now=now)
+            with pytest.raises(PairingError):
+                state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ", now=now)
+
+            fresh = state.start_pairing(now=now)
+            assert state.redeem_pairing(fresh, now=now), (
+                "one wrong guess against an earlier code prevented a later one from being used"
+            )
+
+    def test_forwarding_headers_change_nothing(self, gateway):
+        """No header is read, so there is nothing to forge. The behaviour is identical."""
+        import urllib.request
+
+        base, state, service, _ = gateway
+        code = state.start_pairing()
+        request = urllib.request.Request(
+            base + "/v1/pair", method="POST",
+            data=json.dumps({"code": code, "client_name": "via-proxy"}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Forwarded-For": "203.0.113.99, 198.51.100.4",
+                "Forwarded": 'for=203.0.113.99;proto=https',
+                "X-Real-IP": "203.0.113.99",
+            })
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = json.loads(response.read().decode())
+        assert body.get("token"), body
+
+    def test_many_clients_behind_one_proxy_do_not_lock_each_other_out(self, gateway):
+        """Every client arrives from the same peer address. Under P2-A that is not a limit."""
+        base, state, service, _ = gateway
+        for index in range(6):
+            wrong = gc.GatewayClientError
+            state.start_pairing()
+            with pytest.raises(wrong):
+                gc.pair(base, "ZZZZ-ZZZZ-ZZZZ")      # this client mistypes
+            good = state.start_pairing()
+            assert gc.pair(base, good).token, f"client {index} was locked out by the previous one"
+
+    def test_the_attempt_budget_bounds_grinding_whatever_the_address(self):
+        from agentnode_sdk.gateway.throttle import Budget, Locked
+
+        with tempfile.TemporaryDirectory() as td:
+            budget = Budget(allowance=4, window_seconds=600.0,
+                            path=Path(td) / "admission.json")
+            now = 100.0
+            for _ in range(4):
+                budget.spend(now)
+            with pytest.raises(Locked):
+                budget.spend(now)
+            assert budget.remaining(now) == 0
+            # It recovers as the window passes, walked forward rather than jumped: a single leap
+            # past the window is exactly what setting the clock forward looks like.
+            from agentnode_sdk.gateway.throttle import MAX_CREDITED_STEP
+
+            at = now
+            for _ in range(int(600.0 // MAX_CREDITED_STEP) + 2):
+                at += MAX_CREDITED_STEP
+                left = budget.remaining(at)
+            assert left == 4
+
+    def test_the_budget_counts_successes_too(self):
+        """A grinder whose guesses happen to be right is still a grinder."""
+        from agentnode_sdk.gateway.throttle import Budget
+
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            state._admission = Budget(allowance=3, window_seconds=600.0,
+                                      path=Path(td) / "admission.json")
+            now = 100.0
+            for _ in range(3):
+                code = state.start_pairing(now=now)
+                assert state.redeem_pairing(code, now=now)
+            code = state.start_pairing(now=now)
+            with pytest.raises(PairingError, match="Try again"):
+                state.redeem_pairing(code, now=now)
+
+    def test_moving_the_clock_forward_does_not_buy_back_attempts(self):
+        """EM3C-EXTERNAL-0013: both counters ran on the wall clock, which can be set."""
+        from agentnode_sdk.gateway.throttle import Budget, Locked
+
+        with tempfile.TemporaryDirectory() as td:
+            budget = Budget(allowance=2, window_seconds=600.0, path=Path(td) / "b.json")
+            now = 1_000.0
+            budget.spend(now)
+            budget.spend(now)
+            with pytest.raises(Locked):
+                budget.spend(now)
+            # a year later, according to the clock
+            with pytest.raises(Locked):
+                budget.spend(now + 365 * 24 * 3600.0)
+
+    def test_moving_the_clock_backwards_does_not_help_either(self):
+        from agentnode_sdk.gateway.throttle import Budget, Locked
+
+        with tempfile.TemporaryDirectory() as td:
+            budget = Budget(allowance=2, window_seconds=600.0, path=Path(td) / "b.json")
+            now = 10_000.0
+            budget.spend(now)
+            budget.spend(now)
+            with pytest.raises(Locked):
+                budget.spend(now - 100_000.0)
+
+    def test_deleting_the_budget_of_a_gateway_that_has_run_restores_nothing(self):
+        """The failure counter had this marker; the budget did not."""
+        from agentnode_sdk.gateway.throttle import Locked
+
+        with tempfile.TemporaryDirectory() as td:
+            state = GatewayState(td, version="test")
+            assert state.identity.gateway_id
+            now = 2_000.0
+            for _ in range(state._admission.allowance):
+                state._admission.spend(now)
+            (Path(td) / "pairing-admission.json").unlink()
+
+            reopened = GatewayState(td, version="test")
+            with pytest.raises(Locked):
+                reopened._admission.spend(now)
+
+    def test_the_budget_survives_a_restart(self):
+        from agentnode_sdk.gateway.throttle import Budget, Locked
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "admission.json"
+            now = 100.0
+            first = Budget(allowance=2, window_seconds=600.0, path=path)
+            first.spend(now)
+            first.spend(now)
+            second = Budget(allowance=2, window_seconds=600.0, path=path)
+            with pytest.raises(Locked):
+                second.spend(now)
+
+    def test_an_unreadable_budget_is_treated_as_spent(self):
+        """Forgetting how many attempts have happened is not a budget."""
+        from agentnode_sdk.gateway.throttle import Budget, Locked
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "admission.json"
+            path.write_text("{ not json", encoding="utf-8")
+            with pytest.raises(Locked):
+                Budget(allowance=2, window_seconds=600.0, path=path).spend(100.0)
 
 
 # ----------------------------------------------------- what must outlive the process itself
@@ -2127,7 +2693,10 @@ class TestTheVerticalFlowForReal:
         print("")
         print(f"  [observed] cancelled run: state={final['state']} "
               f"cleanup_verified={final['cleanup_verified']}", flush=True)
-        assert final["state"] in ("cancelled", "finished"), final
+        # Not ("cancelled", "finished"): the payload sleeps for ten minutes under a five-minute
+        # ceiling, so it cannot finish on its own, and accepting "finished" would let a run that
+        # ended for any other reason satisfy a test named for cancellation.
+        assert final["state"] == "cancelled", final
         assert final["cleanup_verified"] is True, "a cancelled run must leave nothing behind"
 
     def test_a_run_that_exceeds_its_wall_clock_is_ended(self, real_gateway):
@@ -2262,3 +2831,1465 @@ class TestRestrictedEgressForReal:
             leftovers = [n for n in listed.stdout.split() if n.strip()]
             print("  [observed] leftover %ss: %s" % (kind, leftovers or "none"))
             assert not leftovers, "%s left behind: %s" % (kind, leftovers)
+
+
+@pytest.mark.skipif(not os.environ.get("AGENTNODE_SANDBOX_E2E"),
+                    reason="needs a container runtime")
+class TestAControlledDestinationWithNoInternet:
+    """A destination this test owns, so the egress result does not depend on anyone else.
+
+    The other egress lane reaches example.com, which is honest about what it proves and dishonest
+    about when it fails: a network fault out there is indistinguishable from the allowlist letting
+    the wrong thing through. This one creates its own destination on the proxy's own network, so
+    the answer comes from the code under test and nothing else.
+
+    What it establishes, precisely: the destination is alive on the proxy's own network, the proxy
+    ANSWERS and refuses a plain HTTP request to it, and there is no route to it without the proxy.
+
+    What it does NOT establish, and used to claim: that private-address screening caused the
+    refusal. `EM3C-EXTERNAL-0006` was right -- the proxy returns 405 for a non-CONNECT method and
+    403 for a denied host or port, so a 405 to an http:// URL proves the method policy and nothing
+    about addresses. Screening is tested where it can be attributed, against real addresses, in
+    TestPrivateAddressesAreScreened below.
+    """
+
+    IMAGE_ENV = "AGENTNODE_SANDBOX_IMAGE"
+
+    def _image(self):
+        import os as _os
+
+        image = _os.environ.get(self.IMAGE_ENV) or _os.environ.get("SANDBOX_IMAGE")
+        if not image:
+            from agentnode_sdk.sandbox import container_backend
+
+            image = getattr(container_backend, "_BASE_IMAGE", "")
+        assert image, "no sandbox image is pinned for this lane"
+        return image
+
+    def _run(self, argv, timeout=120):
+        import subprocess
+
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+
+    def test_the_proxy_answers_and_refuses_and_there_is_no_way_around_it(self):
+        from agentnode_sdk.sandbox.egress import start_egress_proxy, stop_egress_proxy
+
+        image = self._image()
+        handle = start_egress_proxy(("controlled.test",))
+        server = "agentnode-controlled-destination"
+        try:
+            started = self._run([
+                handle.runtime, "run", "-d", "--rm", "--name", server,
+                "--network", handle.ext_net, "--network-alias", "controlled.test",
+                image, "python", "-m", "http.server", "8000",
+            ])
+            assert started.returncode == 0, started.stderr
+            print("")
+            print("  [observed] destination container: %s" % started.stdout.strip()[:12])
+
+            probe = (
+                "import urllib.error, urllib.request\n"
+                "try:\n"
+                "    with urllib.request.urlopen('http://controlled.test:8000/', timeout=20) as r:\n"
+                "        print('REACHED', r.status)\n"
+                "except urllib.error.HTTPError as e:\n"
+                "    print('ANSWERED-AND-REFUSED', e.code)\n"
+                "except Exception as e:\n"
+                "    print('NO-ANSWER', type(e).__name__)\n"
+            )
+
+            # Positive control first. Without it, "the job could not reach the destination" is
+            # satisfied just as well by a destination that never came up -- EM3C-EXTERNAL-0001
+            # found that this test accepted any exception at all, so it could not tell a policy
+            # refusal from a broken server. From the proxy's own network the destination must be
+            # reachable; only then does a refusal on the inside mean something.
+            reachable = self._run([
+                handle.runtime, "run", "--rm", "--network", handle.ext_net,
+                image, "python", "-c", probe,
+            ])
+            control = (reachable.stdout or "").strip()
+            print("  [observed] from the proxy's own network: %r" % control)
+            assert control.startswith("REACHED"), (
+                "the controlled destination was not reachable even from the network it sits on, "
+                "so nothing below can be attributed to policy: " + control
+                + " / " + (reachable.stderr or "")[:200]
+            )
+            out = self._run([
+                handle.runtime, "run", "--rm", "--network", handle.int_net,
+                "-e", "HTTP_PROXY=" + handle.spec.proxy_url,
+                "-e", "HTTPS_PROXY=" + handle.spec.proxy_url,
+                image, "python", "-c", probe,
+            ])
+            said = (out.stdout or "").strip()
+            print("  [observed] through the proxy, to an allowlisted private address: %r" % said)
+            # The proxy must have ANSWERED and refused. "Could not connect" is what a dead proxy
+            # produces, and the destination is provably alive, so this separates the two. 405 is
+            # the method refusal specifically: this proxy forwards nothing in plaintext.
+            assert said.startswith("ANSWERED-AND-REFUSED"), (
+                "the proxy did not answer at all for a destination that is provably alive: "
+                + said + " / " + (out.stderr or "")[:200]
+            )
+            assert said.endswith("405"), (
+                "expected the method refusal a CONNECT-only proxy gives a plaintext request; "
+                "got " + said
+            )
+
+            # and with no proxy at all there is no route to it either
+            direct = self._run([
+                handle.runtime, "run", "--rm", "--network", handle.int_net,
+                image, "python", "-c", probe,
+            ])
+            said_direct = (direct.stdout or "").strip()
+            print("  [observed] with no proxy at all: %r" % said_direct)
+            # Here the opposite is required: with no proxy there is nothing to answer, so the
+            # right observation is that nothing did.
+            assert said_direct.startswith("NO-ANSWER"), said_direct
+        finally:
+            self._run([handle.runtime, "rm", "-f", server], timeout=60)
+            stop_egress_proxy(handle)
+
+    def test_nothing_of_the_controlled_run_is_left_behind(self):
+        import subprocess
+
+        from agentnode_sdk.sandbox.container_backend import ContainerBackend
+
+        runtime = ContainerBackend().check_available().backend
+        for kind, field in (("container", "{{.Names}}"), ("network", "{{.Name}}")):
+            listed = subprocess.run(
+                [runtime, kind, "ls", "-a" if kind == "container" else "--no-trunc",
+                 "--filter", "name=agentnode-controlled-destination",
+                 "--format", field],
+                capture_output=True, text=True, timeout=30,
+            )
+            assert listed.returncode == 0, listed.stderr
+            left = [n for n in listed.stdout.split() if n.strip()]
+            print("  [observed] leftover %ss: %s" % (kind, left or "none"))
+            assert not left, left
+
+
+class TestPrivateAddressesAreScreened:
+    """Where the screening can be attributed: the function that does it, on real addresses.
+
+    The container lane cannot separate this from the proxy's other refusals, because a denied host,
+    a denied port and a screened address all answer 403 and a plaintext request answers 405. Here
+    there is only one rule in play, so a refusal means what it says.
+    """
+
+    @pytest.mark.parametrize("address", [
+        "127.0.0.1",        # loopback
+        "10.0.0.7",         # private
+        "192.168.1.4",      # private
+        "172.16.0.9",       # private
+        "169.254.10.1",     # link-local, which is where cloud metadata lives
+        "::1",              # loopback again, the other family
+        "fd00::1",          # unique local
+    ])
+    def test_a_non_public_address_is_refused(self, address):
+        import socket
+
+        from agentnode_sdk.sandbox.egress_proxy import EgressBlocked, screen_addrinfos
+
+        family = socket.AF_INET6 if ":" in address else socket.AF_INET
+        infos = [(family, socket.SOCK_STREAM, 6, "", (address, 443))]
+        with pytest.raises(EgressBlocked):
+            screen_addrinfos(infos)
+
+    def test_a_public_address_is_allowed(self):
+        """The control: without this, a screen that refused everything would look correct."""
+        import socket
+
+        from agentnode_sdk.sandbox.egress_proxy import screen_addrinfos
+
+        infos = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        assert screen_addrinfos(infos), "a public address was screened out"
+
+    def test_one_private_address_among_public_ones_still_refuses(self):
+        """A name that resolves to several addresses is only as safe as its worst answer."""
+        import socket
+
+        from agentnode_sdk.sandbox.egress_proxy import EgressBlocked, screen_addrinfos
+
+        infos = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 443)),
+        ]
+        with pytest.raises(EgressBlocked):
+            screen_addrinfos(infos)
+
+
+class TestEveryNarrowingIsDisclosed:
+    """EM3C-EGRESS-CLASSIFY-0001.
+
+    A real two-machine run asked for one reachable host and executed with no network. The
+    gateway was right to narrow it -- the operator ceiling said no network -- but it reported
+    an empty policy_deltas list while three fields differed and the two policy digests
+    disagreed. The caller was left holding two unequal digests and nothing that said which
+    field had moved.
+
+    The cause was that disclosure was gated on the job's own optional list. A field in neither
+    mandatory nor optional was narrowed with no refusal and no delta. The mandatory list
+    decides what is REFUSED; it was never meant to decide what is DISCLOSED.
+    """
+
+    def _serve(self, state, operator):
+        svc = GatewayService(state, backend=StandInBackend(), operator_policy=operator)
+        _store_measurement(svc)
+        server = make_server(svc, port=0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return svc, server, f"http://127.0.0.1:{server.server_address[1]}"
+
+    def _ceiling(self):
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        return SandboxPolicy(
+            network=NetworkRules(enabled=False, allowed_destinations=frozenset()))
+
+    def test_a_narrowed_field_in_neither_list_is_still_reported(self, gateway):
+        """The exact shape of the external run: nothing declared, network taken away."""
+        _, state, _, _ = gateway
+        _svc, server, url = self._serve(state, self._ceiling())
+        try:
+            conn = gc.pair(url, state.start_pairing())
+            answer = gc.submit(conn, b"x", network="restricted",
+                               allowed_domains=("example.com",))
+            assert answer["state"] != "refused", answer.get("refusal")
+            final = gc.wait_for(conn, answer["run_id"], timeout=20)
+
+            fields = {d["field"] for d in final["policy_deltas"]}
+            assert "network.enabled" in fields, final["policy_deltas"]
+            assert "network.allowed_destinations" in fields, final["policy_deltas"]
+
+            # What makes this test mean something: the digests really did differ, so an empty
+            # delta list here would have been the defect rather than a job that simply got
+            # what it asked for.
+            assert final["request_policy_sha256"] != final["effective_policy_sha256"]
+            assert final["requested_policy"]["network.enabled"] is True
+            assert final["effective_policy"]["network.enabled"] is False
+        finally:
+            server.shutdown()
+
+    def test_the_delta_says_what_was_asked_and_what_was_granted(self, gateway):
+        """A delta that only named the field would not tell a caller what ran."""
+        _, state, _, _ = gateway
+        _svc, server, url = self._serve(state, self._ceiling())
+        try:
+            conn = gc.pair(url, state.start_pairing())
+            answer = gc.submit(conn, b"x", network="restricted",
+                               allowed_domains=("example.com",))
+            final = gc.wait_for(conn, answer["run_id"], timeout=20)
+            deltas = {d["field"]: d for d in final["policy_deltas"]}
+            dest = deltas["network.allowed_destinations"]
+            assert dest["requested"] == ["example.com"]
+            assert dest["effective"] == []
+        finally:
+            server.shutdown()
+
+    def test_a_job_that_was_not_narrowed_still_reports_nothing(self, gateway):
+        """The control. Without it, a change that reported every field always would pass."""
+        base, state = gateway[0], gateway[1]
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none", wall_clock_s=60)
+        final = gc.wait_for(conn, answer["run_id"], timeout=20)
+        assert final["policy_deltas"] == []
+        assert final["request_policy_sha256"] == final["effective_policy_sha256"]
+
+    def test_a_narrowed_mandatory_field_is_still_refused_not_merely_reported(self, gateway):
+        """Disclosure must not have replaced the refusal boundary."""
+        _, state, _, _ = gateway
+        svc, server, url = self._serve(state, self._ceiling())
+        try:
+            conn = gc.pair(url, state.start_pairing())
+            answer = gc.submit(conn, b"x", network="restricted",
+                               allowed_domains=("example.com",),
+                               mandatory=("network.enabled",))
+            assert answer["state"] == "refused"
+            assert "network.enabled" in answer["refusal"]
+            assert "mandatory" in answer["refusal"]
+            assert svc.backend.specs == [], "nothing may start when a mandatory field is narrowed"
+        finally:
+            server.shutdown()
+
+    def test_an_unknown_optional_path_is_still_refused(self, gateway):
+        """The optional list no longer gates disclosure, but it is still validated."""
+        base, state, _, backend = gateway
+        conn = _paired(base, state)
+        answer = gc.submit(conn, b"x", network="none", optional=("network.nope",))
+        assert answer["state"] == "refused"
+        assert "cannot be enforced" in answer["refusal"]
+        assert backend.specs == []
+
+
+class TestAnOperatorCanPermitEgress:
+    """EM3C-EGRESS-CLASSIFY-0001: the gateway defaulted to no network and documented that the
+    operator opens it deliberately -- while publishing no command that could open it. The
+    restricted-egress option on the client was unreachable through the shipped surface.
+
+    EM3C-Y6-DECISION-0001 then made opening it a transaction rather than a setting: the policy
+    that is in force is the one that was measured, and a policy nobody measured is not in force
+    however plainly it is written in a file.
+    """
+
+    def _args(self, root, allow=None, none=False, verbose=False):
+        class Args:
+            pass
+
+        args = Args()
+        args.dir = str(root)
+        args.allow = allow
+        args.none = none
+        args.verbose = verbose
+        return args
+
+    def test_a_new_gateway_allows_nothing_and_is_not_ready(self, tmp_path):
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        root = tmp_path / "gw"
+        # Nothing measured, so nothing in force -- and saying so is a refusal, not a report.
+        assert gwc.cmd_egress(self._args(root)) == 1
+        state = GatewayState(root, version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        assert service.active_state() is None
+        assert service.readiness_now().ready is False
+
+    def test_the_policy_in_force_is_the_measured_one_not_the_written_one(self, tmp_path):
+        """The whole finding, in one test: a file is an input, a measurement is the decision."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        assert service.readiness_now().ready is True
+        assert service.operator_envelope().mode == opol.NONE
+
+        # An operator edits the config by hand and restarts nothing.
+        (state.root / "config.json").write_text(
+            json.dumps({"egress_allowed": ["example.com"]}), encoding="utf-8")
+
+        assert service.configured_envelope().mode == opol.RESTRICTED
+        assert service.operator_envelope().mode == opol.NONE, \
+            "a hand-edited file must not become the policy in force"
+        verdict = service.readiness_now()
+        assert verdict.ready is False
+        assert "measured" in verdict.reason
+        # And the policy actually handed to the fold is still the closed one.
+        assert service.operator_policy().network.enabled is False
+
+    def test_a_value_that_cannot_be_enforced_is_refused_before_anything_is_measured(self, tmp_path):
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        root = tmp_path / "gw"
+        for bad in ("*", "http://example.com", "example.com:443", "example.com/path", ""):
+            assert gwc.cmd_egress(self._args(root, allow=[bad])) == 2, bad
+        assert not (root / "active-state.json").exists()
+
+    def _make_measurement_fail(self, monkeypatch, how):
+        """Make the measurement fail on purpose.
+
+        The first version of these two tests relied on the machine having no container runtime,
+        which is true on a developer's laptop and false in CI -- so in CI the measurement
+        succeeded and the tests failed for the opposite of the reason they were about. A test
+        that needs a failure has to cause one rather than hope for it.
+        """
+        from agentnode_sdk.gateway.readiness import Readiness
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        # `activate` is what the command calls. Patching `measure` here left the real
+        # activation running and the test passing only because this machine has no runtime --
+        # the same environment dependence these tests were rewritten to remove.
+        if how == "raises":
+            def fake(self, proposed=None, options=None, now=None):
+                raise RuntimeError("the runtime went away mid-measurement")
+        else:
+            def fake(self, proposed=None, options=None, now=None):
+                return Readiness(False, "the allowlist could not be measured on this machine.",
+                                 {}, ("egress_allowlist",),
+                                 ("agentnode gateway doctor --measure",))
+        monkeypatch.setattr(Service, "activate", fake)
+        monkeypatch.setattr(Service, "measure", fake)
+
+    @pytest.mark.parametrize("how", ["returns not ready", "raises"])
+    def test_a_measurement_that_fails_leaves_the_previous_policy_in_force(self, tmp_path,
+                                                                          monkeypatch, how):
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        before = service.active_state()
+        assert before is not None and before.policy.mode == "none"
+
+        self._make_measurement_fail(monkeypatch, how)
+        rc = gwc.cmd_egress(self._args(state.root, allow=["example.com"]))
+        assert rc == 1, "a policy that could not be measured must not be reported as in force"
+
+        after = GatewayService(GatewayState(state.root, version="test"),
+                               backend=StandInBackend()).active_state()
+        assert after is not None
+        assert after.policy.mode == "none", "the previous policy did not survive a failed change"
+        assert after.generation == before.generation, "a failed change must not advance anything"
+
+    def test_a_failed_change_does_not_leave_the_gateway_blocked(self, tmp_path, monkeypatch):
+        """A proposal left behind in the file would disagree with the snapshot for ever."""
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+
+        self._make_measurement_fail(monkeypatch, "returns not ready")
+        assert gwc.cmd_egress(self._args(state.root, allow=["example.com"])) == 1
+
+        fresh = GatewayService(GatewayState(state.root, version="test"), backend=StandInBackend())
+        assert fresh.readiness_now().ready is True, \
+            "a change that failed left the gateway unable to run anything"
+
+    def test_a_measurement_that_succeeds_does_put_the_policy_in_force(self, tmp_path, monkeypatch):
+        """The control. Without it, the two tests above would also pass on a gateway that could
+        never activate anything at all, which is a different thing entirely."""
+        from agentnode_sdk.cli import gateway_commands as gwc
+        from agentnode_sdk.gateway.activation import ActivationStore
+        from agentnode_sdk.gateway.readiness import Readiness
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        before = service.active_state()
+
+        def fake(self, proposed=None, options=None, now=None):
+            envelope = proposed or self.configured_envelope()
+            active = ActivationStore(self.state.root).load_active()
+            self._write_config_for(envelope)
+            binding = self.report_binding(envelope.digest())
+            ActivationStore(self.state.root).activate(envelope, active.report, binding.as_dict())
+            return Readiness(True, "", {}, (), ())
+
+        monkeypatch.setattr(Service, "activate", fake)
+        assert gwc.cmd_egress(self._args(state.root, allow=["example.com"])) == 0
+
+        after = GatewayService(GatewayState(state.root, version="test"),
+                               backend=StandInBackend()).active_state()
+        assert after.policy.mode == "restricted"
+        assert after.policy.allowed_destinations == ("example.com",)
+        assert after.generation > before.generation
+
+    def test_a_job_cannot_be_granted_a_host_the_operator_did_not_allow(self, tmp_path):
+        """The ceiling is the point. Permitting one host must not permit the next."""
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.policy_paths import policy_shape
+        from agentnode_sdk.sandbox.contract import (
+            NetworkRules,
+            SandboxPolicy,
+            Scope,
+            merge_policies,
+        )
+
+        envelope = opol.build(opol.RESTRICTED, ("example.com",))
+        ceiling = SandboxPolicy(network=NetworkRules(
+            enabled=True, allowed_destinations=frozenset(envelope.allowed_destinations)))
+
+        for asked in (frozenset({"evil.example"}),
+                      frozenset({"example.com", "evil.example"}),
+                      None):
+            job = SandboxPolicy(network=NetworkRules(enabled=True, allowed_destinations=asked))
+            shape = policy_shape(merge_policies({Scope.ORGANISATION: ceiling, Scope.USER: job}))
+            assert "evil.example" not in (shape["network.allowed_destinations"] or []), \
+                f"a job asking for {asked} was granted a host off the ceiling"
+
+
+class TestAReportIsAboutOnePolicy:
+    """EM3C-Y6: readiness used to say nothing about the policy underneath it.
+
+    A report taken while the gateway allowed no network at all was accepted as evidence that it
+    was ready after the operator opened an allowlist -- two different enforcement modes, one
+    measurement, and nothing between them that noticed. Each test here changes exactly one thing
+    about the policy and asks whether the old report still counts.
+    """
+
+    def _measured(self, root, allow=None):
+        """A gateway measured under one policy, returned with that policy in force."""
+        state = GatewayState(root, version="test")
+        if allow:
+            (state.root).mkdir(parents=True, exist_ok=True)
+            (state.root / "config.json").write_text(
+                json.dumps({"egress_allowed": list(allow)}), encoding="utf-8")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        return state, service
+
+    def _reopen(self, root):
+        return GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+
+    def test_an_unchanged_policy_with_its_own_report_is_ready(self, tmp_path):
+        """The control. Without it, a gate that refused everything would pass every test below."""
+        _state, service = self._measured(tmp_path / "gw")
+        assert service.readiness_now().ready is True
+
+    def test_a_changed_allowlist_with_the_old_report_is_not_ready(self, tmp_path):
+        state, service = self._measured(tmp_path / "gw", allow=["example.com"])
+        assert service.readiness_now().ready is True
+        (state.root / "config.json").write_text(
+            json.dumps({"egress_allowed": ["example.com", "other.example"]}), encoding="utf-8")
+        verdict = self._reopen(state.root).readiness_now()
+        assert verdict.ready is False
+        assert "measured" in verdict.reason
+
+    def test_going_from_no_network_to_an_allowlist_with_the_old_report_is_not_ready(self, tmp_path):
+        """The exact shape of the finding."""
+        state, service = self._measured(tmp_path / "gw")
+        assert service.readiness_now().ready is True
+        (state.root / "config.json").write_text(
+            json.dumps({"egress_allowed": ["example.com"]}), encoding="utf-8")
+        assert self._reopen(state.root).readiness_now().ready is False
+
+    def test_going_from_an_allowlist_to_no_network_with_the_old_report_is_not_ready(self, tmp_path):
+        """Narrowing is still a change. A report is about one policy, not about a direction."""
+        state, _service = self._measured(tmp_path / "gw", allow=["example.com"])
+        (state.root / "config.json").write_text(json.dumps({}), encoding="utf-8")
+        assert self._reopen(state.root).readiness_now().ready is False
+
+    def test_an_unrestricted_policy_is_never_ready_because_nothing_measures_it(self, tmp_path):
+        """`network_unrestricted` has no check in this build, so it cannot be observed and passed.
+
+        A mode nobody has implemented a measurement for must not become ready by omission. The
+        gate is asked directly here, with a report that passes everything it CAN measure and a
+        binding that matches, so the only reason left for a refusal is the missing measurement.
+        """
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.readiness import PROPERTY_CHECKS, ReadinessGate
+
+        envelope = opol.build(opol.UNRESTRICTED)
+        assert "network_unrestricted" in envelope.required_properties
+        assert "network_unrestricted" not in PROPERTY_CHECKS,             "this build gained the check -- the test now has to measure it rather than assume"
+
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        active = service.active_state()
+
+        document = {"measured_at": active.activated_at,
+                    "binding": active.binding, "report": active.report}
+        binding = service.report_binding(active.policy_digest)
+        gate = ReadinessGate(state.root)
+
+        # The control: everything this build CAN measure is proven under the same document.
+        assert gate.evaluate_document(
+            document, binding, opol.build(opol.NONE).required_properties).ready is True
+
+        verdict = gate.evaluate_document(document, binding, envelope.required_properties)
+        assert verdict.ready is False
+        assert "network_unrestricted" in verdict.unproven
+
+    def test_the_same_policy_written_differently_has_the_same_digest(self, tmp_path):
+        """Order and case are not policy. If they moved the digest, every restart would look
+        like a change and the check would be trained out of people."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        one = opol.build(opol.RESTRICTED, ("b.example", "A.EXAMPLE"))
+        two = opol.build(opol.RESTRICTED, ("a.example", "b.example", "a.example"))
+        assert one.digest() == two.digest()
+        assert one.allowed_destinations == ("a.example", "b.example")
+
+    def test_a_different_policy_has_a_different_digest(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        assert (opol.build(opol.RESTRICTED, ("a.example",)).digest()
+                != opol.build(opol.RESTRICTED, ("b.example",)).digest())
+        assert (opol.build(opol.NONE).digest()
+                != opol.build(opol.RESTRICTED, ("a.example",)).digest())
+
+    def test_a_changed_limit_changes_the_digest(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        a = opol.build(opol.NONE, limits={"memory_mb": 512})
+        b = opol.build(opol.NONE, limits={"memory_mb": 1024})
+        assert a.digest() != b.digest()
+
+    def test_a_whole_float_and_an_integer_limit_are_one_policy(self, tmp_path):
+        """Otherwise 512 and 512.0 would be two policies, and one of them would never be ready."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        assert (opol.build(opol.NONE, limits={"memory_mb": 512}).digest()
+                == opol.build(opol.NONE, limits={"memory_mb": 512.0}).digest())
+
+    def test_a_configured_limit_pulls_in_the_property_that_measures_it(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        assert "memory_ceiling_enforceable" in opol.build(
+            opol.NONE, limits={"memory_mb": 512}).required_properties
+
+    @pytest.mark.parametrize("mode,expected", [
+        ("none", "network_none"),
+        ("restricted", "egress_allowlist"),
+        ("unrestricted", "network_unrestricted"),
+    ])
+    def test_each_mode_requires_its_own_measurement(self, mode, expected):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        dests = ("a.example",) if mode == "restricted" else ()
+        required = opol.build(mode, dests).required_properties
+        assert expected in required
+        others = {"network_none", "egress_allowlist", "network_unrestricted"} - {expected}
+        assert not (others & set(required)), \
+            "one mode's requirement was satisfied by another mode's measurement"
+
+
+class TestAPolicyThatCannotBeReadIsNotAPolicy:
+    """Unknown, duplicated or unrepresentable fields fail closed rather than being interpreted."""
+
+    def test_a_duplicated_key_is_refused_rather_than_silently_resolved(self):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        with pytest.raises(opol.OperatorPolicyError) as caught:
+            opol.loads_strict('{"egress_allowed": ["a.example"], "egress_allowed": ["b.example"]}')
+        assert "more than once" in str(caught.value)
+
+    def test_a_duplicated_key_deeper_in_is_also_refused(self):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        with pytest.raises(opol.OperatorPolicyError):
+            opol.loads_strict('{"network": {"mode": "none", "mode": "restricted"}}')
+
+    def test_an_unknown_field_is_refused_rather_than_ignored(self):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        good = opol.build(opol.NONE).as_canonical()
+        good["surprise"] = True
+        with pytest.raises(opol.OperatorPolicyError) as caught:
+            opol.from_document(json.dumps(good))
+        assert "does not understand" in str(caught.value)
+
+    def test_a_missing_field_is_refused_rather_than_defaulted(self):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        good = opol.build(opol.NONE).as_canonical()
+        del good["limits"]
+        with pytest.raises(opol.OperatorPolicyError):
+            opol.from_document(json.dumps(good))
+
+    def test_a_policy_cannot_lower_its_own_required_set(self, tmp_path):
+        """A file that listed fewer properties than its mode demands would lower its own bar."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        doc = opol.build(opol.RESTRICTED, ("a.example",)).as_canonical()
+        doc["required_properties"] = ["container_isolation"]
+        with pytest.raises(opol.OperatorPolicyError) as caught:
+            opol.from_document(json.dumps(doc))
+        assert "required properties" in str(caught.value)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), 0, -1, "512"])
+    def test_a_limit_with_no_canonical_form_is_refused(self, bad):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        with pytest.raises(opol.OperatorPolicyError):
+            opol.build(opol.NONE, limits={"memory_mb": bad})
+
+    def test_a_restricted_policy_with_no_destination_is_refused(self):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        with pytest.raises(opol.OperatorPolicyError):
+            opol.build(opol.RESTRICTED, ())
+
+    def test_a_schema_from_another_version_is_not_read_approximately(self):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        doc = opol.build(opol.NONE).as_canonical()
+        doc["schema_version"] = opol.SCHEMA_VERSION + 1
+        with pytest.raises(opol.OperatorPolicyError):
+            opol.from_document(json.dumps(doc))
+
+
+class TestPolicyAndReportMoveTogether:
+    """EM3C-Y6-DECISION-0001 D4: one document, one rename, or nothing."""
+
+    def _service(self, root):
+        return GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+
+    def test_a_successful_activation_puts_both_in_place(self, tmp_path):
+        from agentnode_sdk.gateway.activation import ActivationStore
+
+        service = self._service(tmp_path / "gw")
+        _store_measurement(service)
+        state = ActivationStore(service.state.root).load_active()
+        assert state is not None
+        assert state.policy_digest == state.policy.digest()
+        assert state.report and state.binding
+        assert state.generation >= 1
+
+    def test_a_crash_between_measuring_and_activating_leaves_the_old_state(self, tmp_path):
+        """Simulated by writing the pending file and then not activating."""
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.activation import ActivationStore
+
+        service = self._service(tmp_path / "gw")
+        _store_measurement(service)
+        before = ActivationStore(service.state.root).load_active()
+
+        store = ActivationStore(service.state.root)
+        store.write_pending(opol.build(opol.RESTRICTED, ("example.com",)))
+
+        after = ActivationStore(service.state.root).load_active()
+        assert after.policy_digest == before.policy_digest
+        assert after.generation == before.generation
+        assert self._service(service.state.root).operator_envelope().mode == "none", \
+            "a pending policy was treated as though it were in force"
+
+    def test_a_pending_policy_is_never_what_admission_reads(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.activation import ActivationStore
+
+        service = self._service(tmp_path / "gw")
+        _store_measurement(service)
+        ActivationStore(service.state.root).write_pending(
+            opol.build(opol.RESTRICTED, ("example.com",)))
+        assert service.operator_policy().network.enabled is False
+
+    def test_activation_advances_the_generation(self, tmp_path):
+        from agentnode_sdk.gateway.activation import ActivationStore
+
+        service = self._service(tmp_path / "gw")
+        _store_measurement(service)
+        first = ActivationStore(service.state.root).load_active().generation
+        _store_measurement(service)
+        second = ActivationStore(service.state.root).load_active().generation
+        assert second == first + 1
+
+    def test_two_activations_at_once_are_serialised(self, tmp_path):
+        from agentnode_sdk.gateway.activation import ActivationError, ActivationLock
+
+        root = tmp_path / "gw"
+        with ActivationLock(root):
+            with pytest.raises(ActivationError):
+                with ActivationLock(root):
+                    pass
+
+    def test_the_lock_is_released_even_when_the_work_raises(self, tmp_path):
+        from agentnode_sdk.gateway.activation import ActivationLock
+
+        root = tmp_path / "gw"
+        with contextlib.suppress(RuntimeError):
+            with ActivationLock(root):
+                raise RuntimeError("boom")
+        with ActivationLock(root):
+            pass
+
+
+class TestTamperingWithTheStateIsRefused:
+    """D7. What this exercises is an attacker who can write the STATE directory.
+
+    It is not a claim about someone who can also read the key directory beside it: that is the
+    gateway's own user, and no arrangement of files on one machine defends against it. The
+    gateway's documentation has always said whoever can write its directory can forge its
+    identity; this narrows that, and these tests say exactly which half they cover.
+    """
+
+    def _measured(self, root):
+        service = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(service)
+        return service
+
+    def _reopen(self, root):
+        return GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+
+    def test_widening_the_policy_in_the_active_file_is_refused(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.activation import ACTIVE_NAME, SnapshotUnusable
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / ACTIVE_NAME
+        document = json.loads(path.read_text(encoding="utf-8"))
+        wider = opol.build(opol.RESTRICTED, ("attacker.example",))
+        document["policy"] = wider.as_canonical()
+        document["policy_digest"] = wider.digest()
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+        with pytest.raises(SnapshotUnusable):
+            self._reopen(service.state.root).active_state()
+        assert self._reopen(service.state.root).readiness_now().ready is False
+
+    def test_a_report_swapped_for_another_is_refused(self, tmp_path):
+        from agentnode_sdk.gateway.activation import ACTIVE_NAME, SnapshotUnusable
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / ACTIVE_NAME
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["report"] = {"results": []}
+        path.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(SnapshotUnusable):
+            self._reopen(service.state.root).active_state()
+
+    def test_rolling_back_to_an_earlier_activation_is_refused(self, tmp_path):
+        """The old document is genuinely authentic. It is simply not the current one."""
+        from agentnode_sdk.gateway.activation import ACTIVE_NAME, SnapshotUnusable
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / ACTIVE_NAME
+        first = path.read_text(encoding="utf-8")
+
+        _store_measurement(service)
+        assert self._reopen(service.state.root).active_state().generation == 2
+
+        path.write_text(first, encoding="utf-8")
+        with pytest.raises(SnapshotUnusable) as caught:
+            self._reopen(service.state.root).active_state()
+        assert "rollback" in str(caught.value)
+
+    def test_removing_the_tag_is_refused(self, tmp_path):
+        from agentnode_sdk.gateway.activation import ACTIVE_NAME, SnapshotUnusable
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / ACTIVE_NAME
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document.pop("tag")
+        path.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(SnapshotUnusable):
+            self._reopen(service.state.root).active_state()
+
+    def test_the_key_is_not_inside_the_state_directory(self, tmp_path):
+        """If it were, writing the state directory would be enough to re-sign anything."""
+        from agentnode_sdk.gateway.activation import key_dir_for
+
+        service = self._measured(tmp_path / "gw")
+        key_dir = key_dir_for(service.state.root).resolve()
+        state_dir = service.state.root.resolve()
+        assert key_dir != state_dir
+        assert state_dir not in key_dir.parents, "the key lives under the directory it protects"
+
+    def test_an_unreadable_state_is_not_treated_as_no_state(self, tmp_path):
+        """"No policy" is a valid closed state. A tampered one must not be able to look like it."""
+        from agentnode_sdk.gateway.activation import ACTIVE_NAME, SnapshotUnusable
+
+        service = self._measured(tmp_path / "gw")
+        (service.state.root / ACTIVE_NAME).write_text("{not json", encoding="utf-8")
+        with pytest.raises(SnapshotUnusable):
+            self._reopen(service.state.root).active_state()
+        assert self._reopen(service.state.root).readiness_now().ready is False
+
+
+class TestAnAllowlistIsMeasuredBeforeItIsPermitted:
+    """EM3C-Y6-DECISION-0001 D3-a.
+
+    `check_egress_allowlist` returns `not_checked` unless a matrix reaches it, and the gateway
+    supplied none -- so a gateway that permitted egress was ready on a report that had never
+    tried to leave it. These tests are about the matrix being built from the policy's own
+    destinations, which is the only thing that makes the resulting report about that policy.
+    """
+
+    def _service(self, root, allow):
+        state = GatewayState(root, version="test")
+        state.root.mkdir(parents=True, exist_ok=True)
+        (state.root / "config.json").write_text(
+            json.dumps({"egress_allowed": list(allow)}), encoding="utf-8")
+        return GatewayService(state, backend=StandInBackend())
+
+    def test_a_restricted_policy_is_measured_against_its_own_destinations(self, tmp_path,
+                                                                          monkeypatch):
+        seen = {}
+
+        def fake(backend, *, allowed, denied, **kw):
+            seen["allowed"] = tuple(allowed) if not isinstance(allowed, str) else (allowed,)
+            seen["denied"] = denied
+            return {"allowed_via_proxy": "ALLOWED:200", "denied_via_proxy": "refused"}
+
+        import agentnode_sdk.conformance.runner as runner_mod
+        monkeypatch.setattr(runner_mod, "measure_egress", fake)
+
+        service = self._service(tmp_path / "gw", ["example.com"])
+        matrix = service._egress_matrix_for(service.configured_envelope())
+        assert matrix is not None, "an allowlist policy was activated without measuring it"
+        assert seen["allowed"] == ("example.com",)
+        assert seen["denied"] not in seen["allowed"],             "the control was on the allowlist, so a refusal proves nothing"
+
+    def test_a_closed_policy_has_no_allowlist_to_measure(self, tmp_path):
+        """The control. Inventing a passing matrix for a policy with no allowlist would be the
+        exact failure this exists to prevent."""
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        assert service._egress_matrix_for(service.configured_envelope()) is None
+
+    def test_a_report_with_no_measured_allowlist_cannot_make_an_allowlist_ready(self, tmp_path):
+        """Whatever else passed, `egress_allowlist` unmeasured means this policy is not ready."""
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.readiness import ReadinessGate
+
+        state = GatewayState(tmp_path / "gw", version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        # everything measured EXCEPT the egress check, which is what a gateway that never
+        # built a matrix would have
+        _store_measurement(service, only=("outside-host-process", "not-root", "network-mode",
+                                          "limit-memory", "run-leaves-nothing",
+                                          "cancel-and-kill"))
+        active = service.active_state()
+        document = {"measured_at": active.activated_at,
+                    "binding": active.binding, "report": active.report}
+        binding = service.report_binding(active.policy_digest)
+        gate = ReadinessGate(state.root)
+
+        # The control: the closed policy this report WAS taken for is ready.
+        assert gate.evaluate_document(
+            document, binding, opol.build(opol.NONE).required_properties).ready is True
+
+        verdict = gate.evaluate_document(
+            document, binding, opol.build(opol.RESTRICTED, ("example.com",)).required_properties)
+        assert verdict.ready is False
+        assert "egress_allowlist" in verdict.unproven
+
+
+class TestTheOperatorSurfaceShowsTheRightAmount:
+    """EM3C-Y6-DECISION-0001 D6: digests are diagnostic, not everyday reading."""
+
+    def _args(self, root, verbose):
+        class Args:
+            pass
+
+        args = Args()
+        args.dir = str(root)
+        args.allow = None
+        args.none = False
+        args.verbose = verbose
+        return args
+
+    def _measured(self, root):
+        service = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(service)
+        return service
+
+    def _output(self, root, verbose):
+        import contextlib
+        import io as _io
+
+        from agentnode_sdk.cli import gateway_commands as gwc
+
+        buffer = _io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            gwc.cmd_egress(self._args(root, verbose))
+        return buffer.getvalue()
+
+    @staticmethod
+    def _has_digest(text):
+        return any(len(word) == 64 and all(c in "0123456789abcdef" for c in word)
+                   for word in text.split())
+
+    def test_ordinary_output_carries_no_digests(self, tmp_path):
+        service = self._measured(tmp_path / "gw")
+        assert not self._has_digest(self._output(service.state.root, verbose=False))
+
+    def test_the_diagnostic_view_carries_them(self, tmp_path):
+        """The control: without this, a command that printed nothing would pass the test above."""
+        service = self._measured(tmp_path / "gw")
+        text = self._output(service.state.root, verbose=True)
+        assert self._has_digest(text)
+        assert "digests agree" in text
+        assert "activation generation" in text
+
+
+class TestAnUnreadablePolicyFailsClosed:
+    """A policy that cannot be read is an unknown policy, and an unknown policy is not something
+    to run foreign code under. It is specifically NOT treated as the closed default, because the
+    closed default is a valid state that a broken one must not be able to impersonate."""
+
+    def _measured(self, root):
+        service = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(service)
+        return service
+
+    def _reopen(self, root):
+        return GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+
+    def test_a_config_that_is_not_json_stops_the_gateway(self, tmp_path):
+        service = self._measured(tmp_path / "gw")
+        (service.state.root / "config.json").write_text("{not json", encoding="utf-8")
+        verdict = self._reopen(service.state.root).readiness_now()
+        assert verdict.ready is False
+        assert "cannot read the policy" in verdict.reason
+
+    def test_a_config_with_a_duplicated_key_stops_the_gateway(self, tmp_path):
+        service = self._measured(tmp_path / "gw")
+        (service.state.root / "config.json").write_text(
+            '{"egress_allowed": ["a.example"], "egress_allowed": ["b.example"]}',
+            encoding="utf-8")
+        verdict = self._reopen(service.state.root).readiness_now()
+        assert verdict.ready is False
+        assert "cannot read the policy" in verdict.reason
+
+    def test_a_valid_config_does_not_stop_it(self, tmp_path):
+        """The control. A gateway that refused every config would pass both tests above."""
+        service = self._measured(tmp_path / "gw")
+        assert self._reopen(service.state.root).readiness_now().ready is True
+
+    def test_a_half_written_active_state_is_not_read_as_absent(self, tmp_path):
+        """A torn write must look broken, not look like a gateway that was never measured --
+        the two lead to different sentences and only one of them is honest."""
+        from agentnode_sdk.gateway.activation import ACTIVE_NAME, SnapshotUnusable
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / ACTIVE_NAME
+        whole = path.read_text(encoding="utf-8")
+        path.write_text(whole[: len(whole) // 2], encoding="utf-8")
+        with pytest.raises(SnapshotUnusable):
+            self._reopen(service.state.root).active_state()
+        assert self._reopen(service.state.root).readiness_now().ready is False
+
+
+class TestEveryPermittedDestinationIsMeasured:
+    """EM3C-FINAL-0001: a policy naming several hosts was reported as measured after one of them
+    was exercised, which left every other permitted destination an open path nobody had tried.
+    """
+
+    def _service(self, root, allow):
+        state = GatewayState(root, version="test")
+        state.root.mkdir(parents=True, exist_ok=True)
+        (state.root / "config.json").write_text(
+            json.dumps({"egress_allowed": list(allow)}), encoding="utf-8")
+        return GatewayService(state, backend=StandInBackend())
+
+    def test_all_of_them_reach_the_measurement(self, tmp_path, monkeypatch):
+        seen = {}
+
+        def fake(backend, *, allowed, denied, **kw):
+            seen["allowed"] = tuple(allowed) if not isinstance(allowed, str) else (allowed,)
+            seen["denied"] = denied
+            return {"allowed_via_proxy": "ALLOWED:200",
+                    "allowed_via_proxy_1": "ALLOWED:200",
+                    "allowed_via_proxy_2": "ALLOWED:200",
+                    "denied_via_proxy": "refused"}
+
+        import agentnode_sdk.conformance.runner as runner_mod
+        monkeypatch.setattr(runner_mod, "measure_egress", fake)
+
+        service = self._service(tmp_path / "gw", ["a.example", "b.example", "c.example"])
+        matrix = service._egress_matrix_for(service.configured_envelope())
+        assert matrix is not None
+        assert seen["allowed"] == ("a.example", "b.example", "c.example"), seen
+        assert seen["denied"] not in seen["allowed"]
+
+    def test_the_probe_tries_each_one(self):
+        from agentnode_sdk.conformance.probe import egress_matrix_source
+
+        source = egress_matrix_source(["a.example", "b.example"], "denied.example")
+        compile(source, "<probe>", "exec")
+        assert '"a.example", "b.example"' in source
+        assert "for _i, _host in enumerate(ALLOWED)" in source
+
+
+
+def _passing_report(backend, *, generated_at, options=None, egress_matrix=None, **kw):
+    """A conformance report in which everything this build can measure passed.
+
+    Built from real `CheckResult`s and serialised by the real report, for the same reason
+    `_store_measurement` is: a double that does not produce what the real thing produces tests
+    the double. Used where a test needs an activation to SUCCEED without a container runtime.
+    """
+    from agentnode_sdk.conformance.report import CheckResult, ConformanceReport, Vantage
+    from agentnode_sdk.gateway.readiness import PROPERTY_CHECKS
+
+    results = tuple(
+        CheckResult.measured(check_id, check_id, "test", True, Vantage.INSIDE, "stated by the test")
+        for check_id in sorted({c for ids in PROPERTY_CHECKS.values() for c in ids}))
+    return ConformanceReport(backend_identity="StandInBackend", backend_version="test",
+                             runtime="docker", image="", generated_at=generated_at,
+                             results=results)
+
+
+class TestOneLockCoversTheWholeChange:
+    """EM3C-FINAL-0001: the config file was written before the lock was taken and restored after
+    it was released, so two operators changing the policy at once could measure one proposal and
+    activate another.
+    """
+
+    def _measured(self, root):
+        service = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(service)
+        return service
+
+    def test_the_policy_measured_is_the_one_passed_in(self, tmp_path, monkeypatch):
+        """Not whatever the file happens to say by the time the measurement starts."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        import agentnode_sdk.conformance.runner as runner_mod
+
+        service = self._measured(tmp_path / "gw")
+        measured = {}
+
+        def watch(self, envelope):
+            measured["mode"] = envelope.mode
+            measured["hosts"] = envelope.allowed_destinations
+            # somebody else rewrites the operator's intent mid-transaction
+            (self.state.root / "config.json").write_text(
+                json.dumps({"egress_allowed": ["someone.else"]}), encoding="utf-8")
+            return {"allowed_via_proxy": "ALLOWED:200", "denied_via_proxy": "refused"}
+
+        monkeypatch.setattr(type(service), "_egress_matrix_for", watch)
+        monkeypatch.setattr(runner_mod, "run_conformance", _passing_report)
+        service.activate(opol.build(opol.RESTRICTED, ("mine.example",)))
+        assert measured["hosts"] == ("mine.example",), measured
+
+    def test_a_successful_activation_records_the_intent_it_acted_on(self, tmp_path, monkeypatch):
+        """Activation has to leave the file and the snapshot agreeing.
+
+        If the proposal is never written to the config file, the gateway ends up enforcing a
+        policy that its own configuration does not describe -- and `readiness_now` refuses that,
+        so the gateway would activate a policy and then refuse to run anything under it.
+        """
+        import agentnode_sdk.conformance.runner as runner_mod
+
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        service = self._measured(tmp_path / "gw")
+
+        def matrix(self, envelope):
+            return {"allowed_via_proxy": "ALLOWED:200", "denied_via_proxy": "refused"}
+
+        monkeypatch.setattr(type(service), "_egress_matrix_for", matrix)
+        monkeypatch.setattr(runner_mod, "run_conformance", _passing_report)
+
+        proposal = opol.build(opol.RESTRICTED, ("mine.example",))
+        service.activate(proposal)
+
+        fresh = GatewayService(GatewayState(service.state.root, version="test"),
+                               backend=StandInBackend())
+        assert fresh.configured_envelope().digest() == proposal.digest(),             "the policy that was acted on was not recorded as the operator's intent"
+
+    def test_a_second_activation_while_one_runs_is_refused(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.activation import ActivationError, ActivationLock
+
+        service = self._measured(tmp_path / "gw")
+        with ActivationLock(service.state.root):
+            with pytest.raises(ActivationError):
+                service.activate(opol.build(opol.RESTRICTED, ("example.com",)))
+
+    def test_a_refused_second_activation_changes_nothing(self, tmp_path):
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.activation import ActivationError, ActivationLock
+
+        service = self._measured(tmp_path / "gw")
+        before = (service.state.root / "config.json").read_text(encoding="utf-8") \
+            if (service.state.root / "config.json").is_file() else None
+        with ActivationLock(service.state.root):
+            with contextlib.suppress(ActivationError):
+                service.activate(opol.build(opol.RESTRICTED, ("example.com",)))
+        after = (service.state.root / "config.json").read_text(encoding="utf-8") \
+            if (service.state.root / "config.json").is_file() else None
+        assert after == before, "a refused activation still wrote the operator's intent"
+
+    def test_a_raising_measurement_puts_the_config_back(self, tmp_path, monkeypatch):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / "config.json"
+        before = path.read_text(encoding="utf-8") if path.is_file() else None
+
+        def boom(self, envelope):
+            raise RuntimeError("the runtime went away")
+
+        monkeypatch.setattr(type(service), "_egress_matrix_for", boom)
+        with pytest.raises(RuntimeError):
+            service.activate(opol.build(opol.RESTRICTED, ("example.com",)))
+        after = path.read_text(encoding="utf-8") if path.is_file() else None
+        assert after == before, "a failed activation left its proposal in the config file"
+
+
+class TestTheCommitPointIsTheRename:
+    """EM3C-FINAL-0003 and EM3C-FINAL-0004.
+
+    The first review found a failure after the snapshot had been replaced rolling back the
+    operator's intent while the new snapshot stayed in place. The fix made the anchor a cache
+    repaired on read, and the second review showed why that was worse: between the rename and the
+    anchor being advanced, the anchor still named the previous generation, so an earlier snapshot
+    -- genuinely authentic, genuinely tagged -- could be put back and accepted.
+
+    The rule now: the anchor is advanced FIRST and its failure aborts the activation; the rename
+    commits; reads never move the anchor. A crash between the two costs availability, which a
+    command fixes, rather than the rollback guarantee, which nothing fixes afterwards.
+    """
+
+    def _measured(self, root):
+        service = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(service)
+        return service
+
+    def _reopen(self, root):
+        return GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+
+    @staticmethod
+    def _matrix(service, envelope):
+        return {"allowed_hosts": list(envelope.allowed_destinations),
+                "allowed:" + envelope.allowed_destinations[0]: "ALLOWED:200",
+                "denied_via_proxy": "refused"}
+
+    def test_an_earlier_authentic_snapshot_put_back_is_refused(self, tmp_path):
+        """The attack the anchor exists for.
+
+        Nothing here is forged. The old document is this gateway's own, correctly tagged, and
+        was genuinely in force a moment ago. It is refused because it is behind.
+        """
+        from agentnode_sdk.gateway.activation import ACTIVE_NAME, SnapshotUnusable
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / ACTIVE_NAME
+        earlier = path.read_text(encoding="utf-8")
+
+        _store_measurement(service)
+        assert self._reopen(service.state.root).active_state().generation == 2
+
+        path.write_text(earlier, encoding="utf-8")
+        with pytest.raises(SnapshotUnusable) as caught:
+            self._reopen(service.state.root).active_state()
+        assert "rollback" in str(caught.value)
+        assert self._reopen(service.state.root).readiness_now().ready is False
+
+    def test_the_anchor_is_never_behind_the_snapshot_it_describes(self, tmp_path):
+        """Because it is written first. If it could lag, the window above would reopen."""
+        from agentnode_sdk.gateway.activation import ActivationStore, Protected
+
+        service = self._measured(tmp_path / "gw")
+        for _ in range(3):
+            _store_measurement(service)
+            state = ActivationStore(service.state.root).load_active()
+            anchor = Protected(service.state.root).accepted_generation()
+            assert anchor >= state.generation, (
+                "the anchor lagged the snapshot, which is the rollback window")
+
+    def test_reading_does_not_move_the_anchor(self, tmp_path):
+        """A read that repaired the anchor would repair it to whatever was put there."""
+        from agentnode_sdk.gateway.activation import ActivationStore, Protected
+
+        service = self._measured(tmp_path / "gw")
+        store = ActivationStore(service.state.root)
+        before = Protected(service.state.root).accepted_generation()
+
+        (Protected(service.state.root).dir / "generation.anchor").write_text(
+            str(before + 5), encoding="utf-8")
+        with pytest.raises(Exception):
+            store.load_active()
+        assert Protected(service.state.root).accepted_generation() == before + 5, (
+            "reading moved the anchor, which would let a read undo the protection")
+
+    def test_an_anchor_that_cannot_be_written_stops_the_activation(self, tmp_path, monkeypatch):
+        """It is not best-effort. Without it the commit would be unprotected."""
+        import agentnode_sdk.conformance.runner as runner_mod
+
+        from agentnode_sdk.gateway import operator_policy as opol
+        from agentnode_sdk.gateway.activation import Protected
+
+        service = self._measured(tmp_path / "gw")
+        before = service.active_state()
+
+        def refuse(self, generation):
+            raise OSError("the key directory is read-only")
+
+        monkeypatch.setattr(type(service), "_egress_matrix_for", self._matrix)
+        monkeypatch.setattr(runner_mod, "run_conformance", _passing_report)
+        monkeypatch.setattr(Protected, "remember_generation", refuse)
+
+        with pytest.raises(OSError):
+            service.activate(opol.build(opol.RESTRICTED, ("mine.example",)))
+
+        after = self._reopen(service.state.root)
+        assert after.active_state().policy_digest == before.policy_digest, (
+            "the previous policy did not survive an activation that could not be protected")
+        assert after.configured_envelope().digest() == before.policy_digest, (
+            "the intent was left describing a policy that never came into force")
+
+    def test_a_committed_change_is_in_force_and_usable(self, tmp_path, monkeypatch):
+        """The control. Without it the tests above would pass on a gateway that never commits."""
+        import agentnode_sdk.conformance.runner as runner_mod
+
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        service = self._measured(tmp_path / "gw")
+        monkeypatch.setattr(type(service), "_egress_matrix_for", self._matrix)
+        monkeypatch.setattr(runner_mod, "run_conformance", _passing_report)
+
+        proposal = opol.build(opol.RESTRICTED, ("mine.example",))
+        assert service.activate(proposal).ready is True
+
+        fresh = self._reopen(service.state.root)
+        assert fresh.operator_envelope().digest() == proposal.digest()
+        assert fresh.configured_envelope().digest() == proposal.digest()
+        assert fresh.readiness_now().ready is True
+
+    def test_a_failure_before_the_rename_restores_the_intent(self, tmp_path, monkeypatch):
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        service = self._measured(tmp_path / "gw")
+        path = service.state.root / "config.json"
+        before = path.read_text(encoding="utf-8") if path.is_file() else None
+
+        def boom(self, envelope):
+            raise RuntimeError("the runtime went away before anything was committed")
+
+        monkeypatch.setattr(type(service), "_egress_matrix_for", boom)
+        with pytest.raises(RuntimeError):
+            service.activate(opol.build(opol.RESTRICTED, ("example.com",)))
+
+        after = path.read_text(encoding="utf-8") if path.is_file() else None
+        assert after == before
+        assert self._reopen(service.state.root).operator_envelope().mode == "none"
+
+
+class TestTheIntervalBetweenTheAnchorAndTheRename:
+    """EM3C-FINAL-0005.
+
+    Advancing the generation is itself a durable change. When the anchor had been advanced and
+    the snapshot replacement then failed, the snapshot still on disk was behind the anchor and
+    would be refused -- so the previous policy was not usable, while the command said nothing had
+    changed. Both halves of that are addressed here: the anchor is put back, and the one case
+    where it cannot be is reported as itself.
+    """
+
+    def _measured(self, root):
+        service = GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+        _store_measurement(service)
+        return service
+
+    def _reopen(self, root):
+        return GatewayService(GatewayState(root, version="test"), backend=StandInBackend())
+
+    @staticmethod
+    def _matrix(service, envelope):
+        return {"allowed_hosts": list(envelope.allowed_destinations),
+                "allowed:" + envelope.allowed_destinations[0]: "ALLOWED:200",
+                "denied_via_proxy": "refused"}
+
+    def _arrange(self, service, monkeypatch):
+        import agentnode_sdk.conformance.runner as runner_mod
+
+        monkeypatch.setattr(type(service), "_egress_matrix_for", self._matrix)
+        monkeypatch.setattr(runner_mod, "run_conformance", _passing_report)
+
+    @staticmethod
+    def _fail_only_the_active_write(monkeypatch):
+        """Fail the snapshot replacement and nothing else.
+
+        A stub that failed every write would fire on the pending file, which is written before
+        the generation is advanced -- so the test would never reach the interval it is named
+        after, and would pass without exercising it.
+        """
+        from agentnode_sdk.gateway import activation as act
+
+        real = act._write_atomic
+
+        def selective(path, text):
+            if path.name == act.ACTIVE_NAME:
+                raise OSError("the state directory filled up")
+            return real(path, text)
+
+        monkeypatch.setattr(act, "_write_atomic", selective)
+
+    def test_a_rename_that_fails_leaves_the_previous_policy_usable(self, tmp_path, monkeypatch):
+        from agentnode_sdk.gateway import activation as act
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        service = self._measured(tmp_path / "gw")
+        self._arrange(service, monkeypatch)
+        before = service.active_state()
+        before_anchor = act.Protected(service.state.root).accepted_generation()
+
+        # Observed, so this test cannot pass by never reaching the interval it is named after.
+        # An anchor that was never advanced would satisfy every assertion below.
+        seen = []
+        real_remember = act.Protected.remember_generation
+
+        def watch(self, generation):
+            seen.append(generation)
+            return real_remember(self, generation)
+
+        monkeypatch.setattr(act.Protected, "remember_generation", watch)
+        self._fail_only_the_active_write(monkeypatch)
+        with pytest.raises(OSError):
+            service.activate(opol.build(opol.RESTRICTED, ("mine.example",)))
+
+        assert seen and max(seen) > before_anchor, (
+            "the generation was never advanced, so the interval under test was never entered")
+        assert seen[-1] == before_anchor, "the advance was not put back"
+
+        monkeypatch.undo()
+        after = self._reopen(service.state.root)
+        assert act.Protected(service.state.root).accepted_generation() == before_anchor, (
+            "the generation stayed advanced, so the snapshot on disk is now behind it")
+        assert after.active_state().policy_digest == before.policy_digest
+        assert after.readiness_now().ready is True, (
+            "a failed activation left the gateway unable to run anything")
+
+    def test_when_the_anchor_cannot_be_put_back_it_says_so(self, tmp_path, monkeypatch):
+        """The residual case. It is rare, it is not silently survivable, and it is named."""
+        from agentnode_sdk.gateway import activation as act
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        service = self._measured(tmp_path / "gw")
+        self._arrange(service, monkeypatch)
+
+        real_remember = act.Protected.remember_generation
+        calls = {"n": 0}
+
+        def remember_once_then_fail(self, generation):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real_remember(self, generation)
+            raise OSError("the key directory went read-only")
+
+        monkeypatch.setattr(act.Protected, "remember_generation", remember_once_then_fail)
+        self._fail_only_the_active_write(monkeypatch)
+
+        with pytest.raises(act.ActivationStranded) as caught:
+            service.activate(opol.build(opol.RESTRICTED, ("mine.example",)))
+        assert "measured again" in str(caught.value)
+
+    def test_the_command_does_not_claim_nothing_changed_when_stranded(self, tmp_path,
+                                                                      monkeypatch, capsys):
+        from agentnode_sdk.cli import gateway_commands as gwc
+        from agentnode_sdk.gateway import activation as act
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        service = self._measured(tmp_path / "gw")
+
+        def stranded(self, proposed=None, options=None, now=None):
+            raise act.ActivationStranded(
+                "this gateway recorded a new activation and then could not write the state that "
+                "goes with it. Nothing will run until the policy in force has been measured "
+                "again.")
+
+        monkeypatch.setattr(Service, "activate", stranded)
+
+        class Args:
+            pass
+
+        args = Args()
+        args.dir = str(service.state.root)
+        args.allow = ["example.com"]
+        args.none = False
+        args.verbose = False
+
+        assert gwc.cmd_egress(args) == 1
+        out = capsys.readouterr().out
+        assert "needs measuring again" in out, out
+        assert "Nothing was changed" not in out, (
+            "the command claimed nothing changed on the one path where something did")
+
+    def test_the_command_does_say_nothing_changed_when_that_is_true(self, tmp_path,
+                                                                    monkeypatch, capsys):
+        """The control. A command that never made the claim would pass the test above."""
+        from agentnode_sdk.cli import gateway_commands as gwc
+        from agentnode_sdk.gateway.server import GatewayService as Service
+
+        service = self._measured(tmp_path / "gw")
+
+        def boom(self, proposed=None, options=None, now=None):
+            raise RuntimeError("the runtime went away before anything was recorded")
+
+        monkeypatch.setattr(Service, "activate", boom)
+
+        class Args:
+            pass
+
+        args = Args()
+        args.dir = str(service.state.root)
+        args.allow = ["example.com"]
+        args.none = False
+        args.verbose = False
+
+        assert gwc.cmd_egress(args) == 1
+        out = capsys.readouterr().out
+        assert "The previous policy remains in force. Nothing was changed." in out, out

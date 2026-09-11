@@ -67,15 +67,108 @@ jobs:
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_em3c_gateway.py \
             -k "not TestTheVerticalFlowForReal" 2>&1 | tee em3c-admission.txt
-          grep -qE "^124 passed" em3c-admission.txt || {
+          grep -qE "^241 passed" em3c-admission.txt || {
             echo "the admission tests did not all pass"; exit 1; }
 
       - name: The commands a person actually types
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_em3c_cli.py 2>&1 | tee em3c-cli.txt
-          grep -qE "^25 passed" em3c-cli.txt || {
+          grep -qE "^43 passed" em3c-cli.txt || {
             echo "the CLI tests did not all pass"; exit 1; }
+
+      # The evidence runner has to be shown to CATCH things before any external run leans on
+      # it. EM3C-EXTERNAL-0017 blocked on evidence rather than on code, and a checker of
+      # evidence fails by passing what it cannot see -- so its own suite feeds it records that
+      # are each wrong in one named way and requires it to say so.
+      - name: The evidence runner, against deliberately broken evidence
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_evidence.py 2>&1 | tee em3c-evidence.txt
+          grep -qE "^302 passed" em3c-evidence.txt || {
+            echo "the evidence-runner tests did not all pass"; exit 1; }
+
+      # And the tool that produces the external record, driven offline over the whole matrix.
+      # Three external runs have died inside it rather than in the product; none of those
+      # defects was findable by reading it, and all three are findable by running it.
+      - name: The external-run driver, over a described pair of machines
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs -p no:randomly tests/test_verification_run.py 2>&1 | tee em3c-driver.txt
+          grep -qE "^34 passed, 1 skipped" em3c-driver.txt || {
+            echo "the external-run driver tests did not come out as expected"; exit 1; }
+          # The one skip is the Windows-only case, named rather than tolerated. The opposite skip
+          # belongs to the Windows lane; between the two every case runs somewhere.
+          grep -q "only this platform rewrites such an argument" em3c-driver.txt || {
+            echo "the skipped case is not the one this lane expects"; tail -5 em3c-driver.txt
+            exit 1; }
+
+      # EM3C-E6-RECORD-0001 found the first defect in the product rather than in the harness: a
+      # run was displayed as running after the gateway had cancelled it and removed its
+      # container. The fast cases replace only the sandbox; the container case at the end of the
+      # file replaces nothing and runs on this lane, which has a runtime.
+      - name: What state a run is in, and who may say so
+        env:
+          # This lane has a runtime, so the case that replaces nothing runs here. Every other
+          # case replaces only the sandbox; that one replaces neither the sandbox nor anything
+          # else, which is why the count below is one higher than the Windows lane's.
+          AGENTNODE_SANDBOX_E2E: "1"
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs -p no:randomly tests/test_cancel_consistency.py 2>&1 | tee em3c-cancel.txt
+          grep -qE "^40 passed" em3c-cancel.txt || {
+            echo "the cancellation tests did not come out as this lane expects"; exit 1; }
+
+      # Why a run stopped. EM3C-E8-RECORD-0001 found a cancelled run whose own signed answer
+      # said it had exited, and a running job already giving a reason for having stopped.
+      - name: The reason a run stopped
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_stop_reason.py 2>&1 | tee em3c-stop.txt
+          grep -qE "^32 passed" em3c-stop.txt || {
+            echo "the stop-reason tests did not all pass"; exit 1; }
+
+      # The value this gateway makes for one run: what it is bound to, where it travels, and
+      # what is kept. EM3C-E7-RECORD-0001 found the crossing before this one comparing a
+      # container's identity with its host's, which are correctly different.
+      - name: The challenge a gateway issues for a run
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_challenge.py 2>&1 | tee em3c-challenge.txt
+          grep -qE "^44 passed" em3c-challenge.txt || {
+            echo "the challenge tests did not all pass"; exit 1; }
+
+      # What a channel may be asked, what an answer can be made by, and what a crossing is tied
+      # to. EM3C-E6-RECORD-0001 found the previous tool confirming a sentinel by grepping the
+      # gateway's log for a sandbox job's output; these are the properties that replace it.
+      - name: What a channel knows, and what a crossing is tied to
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_verification_channels.py 2>&1 | tee em3c-channels.txt
+          grep -qE "^42 passed" em3c-channels.txt || {
+            echo "the channel tests did not all pass"; exit 1; }
+
+      # How that driver is told where it is happening, and the whole start it does before it
+      # reaches a network. EM3C-E5-CLASSIFY-0001 happened between two processes on Windows, so
+      # the parts of these that can only fail there are skipped here and required on the Windows
+      # lane. What Linux does establish is everything about the configuration itself, and the
+      # skips are counted rather than tolerated: a collection loss would otherwise read as a pass.
+      - name: How a run is told where it is happening
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_external_config.py 2>&1 | tee em3c-config.txt
+          grep -qE "^54 passed" em3c-config.txt || {
+            echo "the configuration tests did not all pass"; exit 1; }
+          python -m pytest -q -rs -p no:randomly tests/test_start_rehearsal.py tests/test_start_boundary.py 2>&1 | tee em3c-start.txt
+          grep -qE "^37 passed, 4 skipped" em3c-start.txt || {
+            echo "the start tests did not come out as this lane expects on Linux"; exit 1; }
+          # All four skips are the same one thing: this machine has no layer that rewrites a
+          # POSIX path, so it cannot establish that the boundary holds against one. The Windows
+          # lane runs exactly those four and is required.
+          test "$(grep -c "the conversion is a Windows shell.s doing" em3c-start.txt)" = "3" || {
+            echo "the skipped cases are not the three this lane expects"; exit 1; }
+          grep -q "only Windows has the other kind of path" em3c-start.txt || {
+            echo "the fourth skipped case is not the one this lane expects"; exit 1; }
 
       - name: The vertical flow, for real
         env:
@@ -117,6 +210,19 @@ jobs:
             exit 1
           }
 
+      - name: A destination this lane owns, with no internet involved
+        env:
+          AGENTNODE_SANDBOX_E2E: "1"
+        run: |
+          set -o pipefail
+          # The other egress lane reaches a public host, which cannot tell a network fault from a
+          # policy failure. This one owns both ends.
+          python -m pytest -p no:randomly -v -s             "tests/test_em3c_gateway.py::TestAControlledDestinationWithNoInternet"             2>&1 | tee em3c-controlled.txt
+          grep -qE "2 passed" em3c-controlled.txt || {
+            echo "the controlled-destination lane did not run: it skipped, failed or errored"
+            exit 1
+          }
+
       - name: No egress network or proxy may be left behind
         if: always()
         run: |
@@ -148,3 +254,9 @@ jobs:
           path: |
             sdk/em3c-admission.txt
             sdk/em3c-vertical.txt
+            sdk/em3c-driver.txt
+            sdk/em3c-config.txt
+            sdk/em3c-start.txt
+            sdk/em3c-cancel.txt
+            sdk/em3c-channels.txt
+            sdk/em3c-challenge.txt

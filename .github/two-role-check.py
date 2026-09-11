@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+"""Two roles on one machine, kept apart the way two machines would be.
+
+The end-to-end journey already runs the published commands, but both roles share a user, a home
+directory and a container runtime. That is enough to show the commands work and not enough to show
+they work *across* a boundary: a client that can read the gateway's files, or run containers of its
+own, might be succeeding for reasons that will not exist on a real remote pair.
+
+So this puts a real boundary in the way, on one runner:
+
+* The **client** runs as a second Unix user with its own home, no membership of the docker group,
+  and no read access to the gateway's state directory. If it can still pair, submit, and read
+  results, it did so over the network like any remote client.
+* The **gateway** runs as the runner's own user, with the runtime and the state.
+* They speak over a loopback TCP socket and nothing else.
+
+What this does NOT establish is the thing only a second machine can: real TLS to a real peer, a
+routed network, DNS. That is the external run this is meant to precede, and the point here is to
+have already found everything that a second machine would have found for a much higher price.
+
+Each step prints what it did and what came back. A step that cannot be observed is a step that
+did not happen.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+CLIENT_USER = os.environ.get("TWO_ROLE_CLIENT_USER", "anclient")
+GATEWAY_DIR = Path(os.environ.get("TWO_ROLE_GATEWAY_DIR", "/opt/agentnode-gateway"))
+CLIENT_HOME = Path(os.environ.get("TWO_ROLE_CLIENT_HOME", f"/home/{CLIENT_USER}"))
+PORT = int(os.environ.get("TWO_ROLE_PORT", "8399"))
+#: The client's own interpreter. It does NOT share the gateway's: a real remote client installs
+#: AgentNode from a package, and the first run of this check proved the point by failing -- the
+#: client user could not import the developer's checkout, because it cannot read it. That is the
+#: boundary doing its job, so the client is installed the way a real one is.
+CLIENT_PYTHON = os.environ.get("TWO_ROLE_CLIENT_PYTHON", sys.executable)
+BASE = f"http://127.0.0.1:{PORT}"
+
+#: What "the sandbox stopped it" actually looks like in the output. The timeout marker arrives on
+#: STDERR, which the first version of this check did not read -- so a job that had correctly
+#: started and been stopped was recorded as a failure. The behaviour was right; the assertion was
+#: looking in one of the two places the evidence could appear.
+STOPPED_MARKERS = ("did not finish", "unverified", "cancelled", "timed out")
+
+failures: list[str] = []
+
+#: The last command either helper ran. check() reports it when an assertion fails, so a failing
+#: step says what the command said rather than only that it failed -- without every call site
+#: having to remember to pass it along.
+last_result: subprocess.CompletedProcess | None = None
+
+
+def say(step: str, detail: str = "") -> None:
+    print(f"\n=== {step} ===", flush=True)
+    if detail:
+        print(detail, flush=True)
+
+
+def check(label: str, condition: bool, detail: str = "") -> bool:
+    mark = "ok  " if condition else "FAIL"
+    print(f"  [{mark}] {label}" + (f" -- {detail}" if detail else ""), flush=True)
+    if not condition:
+        failures.append(label)
+        # A failed step that says only that it failed sends the next person guessing at exactly
+        # what the command already told us.
+        if last_result is not None:
+            print("        exit %s" % last_result.returncode, flush=True)
+            for stream, text in (("out", last_result.stdout), ("err", last_result.stderr)):
+                for line in (text or "").strip().splitlines()[-15:]:
+                    print(f"        {stream}| {line}", flush=True)
+    return condition
+
+
+def refused_because(result, *phrases) -> bool:
+    """True when the command failed AND said one of these things.
+
+    `EM3C-EXTERNAL-0004`: a nonzero exit on its own is satisfied by an unreachable gateway, a
+    broken invocation, or any unrelated error, so a check written that way reports the protection
+    it names without ever establishing it. The refusal has to be the one that was expected.
+    """
+    if result.returncode == 0:
+        return False
+    said = ((result.stdout or "") + (result.stderr or "")).lower()
+    return any(phrase.lower() in said for phrase in phrases)
+
+
+def gateway(*args, timeout: int = 600) -> subprocess.CompletedProcess:
+    """A gateway-side command, as the runner's own user."""
+    global last_result
+    last_result = subprocess.run(
+        [sys.executable, "-m", "agentnode_sdk.cli", "gateway", *args, "--dir", str(GATEWAY_DIR)],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    return last_result
+
+
+def client(*args, timeout: int = 600, extra_env: dict | None = None) -> subprocess.CompletedProcess:
+    """A client-side command, as the other user, with only its own home."""
+    env_bits = [f"AGENTNODE_HOME={CLIENT_HOME}/.agentnode", f"HOME={CLIENT_HOME}"]
+    for key, value in (extra_env or {}).items():
+        env_bits.append(f"{key}={value}")
+    global last_result
+    last_result = subprocess.run(
+        ["sudo", "-n", "-u", CLIENT_USER, "env", *env_bits,
+         CLIENT_PYTHON, "-m", "agentnode_sdk.cli", "remote", *args],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    return last_result
+
+
+def pairing_code() -> str:
+    result = gateway("pair")
+    found = re.search(r"[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}", result.stdout)
+    if not found:
+        raise AssertionError("no pairing code was printed:\n" + result.stdout + result.stderr)
+    return found.group(0)
+
+
+def start_gateway() -> subprocess.Popen:
+    process = subprocess.Popen(
+        [sys.executable, "-m", "agentnode_sdk.cli", "gateway", "start",
+         "--dir", str(GATEWAY_DIR), "--port", str(PORT)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        probe = subprocess.run(
+            ["curl", "-sf", "-m", "3", BASE + "/v1/hello"], capture_output=True, text=True)
+        if probe.returncode == 0:
+            return process
+        if process.poll() is not None:
+            raise AssertionError("the gateway exited:\n" + (process.stdout.read() or ""))
+        time.sleep(0.5)
+    raise AssertionError("the gateway never started listening")
+
+
+def stop_gateway(process: subprocess.Popen) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        process.kill()
+
+
+def main() -> int:
+    say("the boundary itself",
+        "Before anything else: the client must not be able to reach the gateway's files or the "
+        "container runtime. If it can, nothing below proves what it looks like it proves.")
+
+    peek = subprocess.run(
+        ["sudo", "-n", "-u", CLIENT_USER, "cat", str(GATEWAY_DIR / "tokens.json")],
+        capture_output=True, text=True)
+    check("the client cannot read the gateway's tokens", peek.returncode != 0,
+          (peek.stderr or "").strip()[:120])
+
+    listing = subprocess.run(["sudo", "-n", "-u", CLIENT_USER, "ls", str(GATEWAY_DIR)],
+                             capture_output=True, text=True)
+    check("the client cannot list the gateway's directory", listing.returncode != 0,
+          (listing.stderr or "").strip()[:120])
+
+    # A nonzero exit is not specific enough: a missing docker binary would satisfy it just as
+    # well as a denied one, and would prove nothing about access. EM3C-EXTERNAL-0003 found that.
+    # So: the binary must exist, the refusal must be a permission refusal, and the client must not
+    # be in a group that would grant it another way.
+    which = subprocess.run(["sudo", "-n", "-u", CLIENT_USER, "which", "docker"],
+                           capture_output=True, text=True)
+    check("the docker client is installed for the client user", which.returncode == 0,
+          (which.stdout or "").strip())
+    docker = subprocess.run(["sudo", "-n", "-u", CLIENT_USER, "docker", "ps"],
+                            capture_output=True, text=True)
+    denied = "permission denied" in (docker.stderr or "").lower()
+    check("the container runtime refuses the client for lack of permission",
+          docker.returncode != 0 and denied, (docker.stderr or "").strip()[:140])
+    groups = subprocess.run(["id", "-nG", CLIENT_USER], capture_output=True, text=True)
+    check("the client is in no group that would grant the runtime",
+          "docker" not in (groups.stdout or "").split(), (groups.stdout or "").strip())
+    socket_read = subprocess.run(
+        ["sudo", "-n", "-u", CLIENT_USER, "test", "-r", "/var/run/docker.sock"],
+        capture_output=True, text=True)
+    check("the client cannot read the runtime socket", socket_read.returncode != 0)
+
+    say("the gateway measures itself and starts")
+    doctor = gateway("doctor", "--measure")
+    check("doctor --measure succeeded", doctor.returncode == 0,
+          (doctor.stdout or "").strip().splitlines()[-1][:160] if doctor.stdout else "")
+    if doctor.returncode != 0:
+        print(doctor.stdout, doctor.stderr)
+        return 1
+
+    process = start_gateway()
+    try:
+        say("pairing over the network")
+        code = pairing_code()
+        connected = client("connect", BASE, "--code", code, "--as", "two-role")
+        check("the client paired", connected.returncode == 0,
+              (connected.stdout or "").strip().replace("\n", " | ")[:200])
+
+        say("a job, and its result")
+        tested = client("test")
+        check("the test job ran and came back", tested.returncode == 0,
+              (tested.stdout or "").strip().replace("\n", " | ")[:220])
+
+        say("a job that is cancelled from the other side")
+        script = CLIENT_HOME / "slow.py"
+        subprocess.run(["sudo", "-n", "-u", CLIENT_USER, "tee", str(script)],
+                       input="import time\nprint('started', flush=True)\ntime.sleep(600)\n",
+                       capture_output=True, text=True)
+        runner = subprocess.Popen(
+            ["sudo", "-n", "-u", CLIENT_USER, "env",
+             f"AGENTNODE_HOME={CLIENT_HOME}/.agentnode", f"HOME={CLIENT_HOME}",
+             CLIENT_PYTHON, "-m", "agentnode_sdk.cli", "remote", "run", str(script),
+             "--max-seconds", "900", "--timeout", "300"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        run_id = ""
+        deadline = time.monotonic() + 90
+        buffered = ""
+        while time.monotonic() < deadline and not run_id:
+            line = runner.stdout.readline()
+            buffered += line
+            found = re.search(r"run: ([0-9a-f]{8,})", buffered)
+            if found:
+                run_id = found.group(1)
+            if not line and runner.poll() is not None:
+                break
+        check("the run announced an id that can be cancelled", bool(run_id), run_id)
+        if run_id:
+            time.sleep(4)
+            cancelled = client("cancel", "--run", run_id)
+            check("cancel was accepted", cancelled.returncode == 0,
+                  (cancelled.stdout or "").strip().replace("\n", " | ")[:160])
+        rest = (runner.stdout.read() or "") if runner.stdout else ""
+        runner.wait(timeout=300)
+        whole = (buffered + rest).lower()
+        # EM3C-EXTERNAL-0009: "the cancel was accepted and the process later ended" is also what
+        # happens when the cancel does nothing and something else stops the job. The payload now
+        # sleeps ten minutes under a fifteen-minute ceiling, so nothing else could have ended it
+        # in the seconds this takes, and the word required is the one that names the cause.
+        check("the run ended because it was cancelled, not for some other reason",
+              runner.returncode is not None and "cancelled" in whole,
+              (whole.strip().splitlines() or ["(no output)"])[-1][:140])
+
+        say("a job that outruns its limit")
+        forever = CLIENT_HOME / "forever.py"
+        subprocess.run(["sudo", "-n", "-u", CLIENT_USER, "tee", str(forever)],
+                       input="import time\nprint('going', flush=True)\ntime.sleep(600)\n",
+                       capture_output=True, text=True)
+        overran = client("run", str(forever), "--max-seconds", "10", "--timeout", "200")
+        # Nonzero alone would also be satisfied by the job never starting, which is the opposite
+        # of what this claims. It has to have STARTED and then been stopped.
+        text = (overran.stdout or "") + (overran.stderr or "")
+        check("a job past its limit started and was then stopped",
+              overran.returncode != 0 and "going" in text
+              and any(m in text.lower() for m in STOPPED_MARKERS),
+              text.strip().replace("\n", " | ")[:220])
+
+        say("the credential can be replaced and withdrawn")
+        rotated = client("rotate")
+        check("the client rotated its own access", rotated.returncode == 0,
+              (rotated.stdout or "").strip()[:160])
+        check("it still works afterwards", client("test").returncode == 0)
+
+        clients_before = gateway("clients")
+        found = re.search(r"two-role\s+([0-9a-f]{6,})", clients_before.stdout)
+        check("the gateway lists the connection", bool(found),
+              (clients_before.stdout or "").strip().replace("\n", " | ")[:200])
+        if found:
+            revoked = gateway("revoke", "--client", found.group(1))
+            check("the operator revoked it", revoked.returncode == 0)
+            check("the revoked client is refused at once, and says why",
+                  refused_because(client("test"), "not paired", "refused"))
+
+        say("what must fail, and did")
+        code2 = pairing_code()
+        again = client("connect", BASE, "--code", code2, "--as", "second")
+        check("a fresh pairing works", again.returncode == 0)
+
+        reused = client("connect", BASE, "--code", code2, "--as", "third")
+        check("a pairing code cannot be used twice, and says why",
+              refused_because(reused, "not accepting pairings", "does not match",
+                              "did not pair"),
+              (reused.stdout or "").strip().replace("\n", " | ")[:160])
+
+        plain = client("connect", "http://10.0.0.4:8099", "--code", "ABCD-EFGH-JKLM")
+        check("an unencrypted address off this machine is refused, and says why",
+              refused_because(plain, "would not be encrypted", "refusing to connect"),
+              (plain.stdout or "").strip().replace("\n", " | ")[:160])
+        check("and the refusal explains how to do it properly",
+              "--tls-cert" in (plain.stdout or ""))
+
+        legacy = client("connect", "http://10.0.0.4:8099", "--code", "ABCD-EFGH-JKLM",
+                        extra_env={"AGENTNODE_GATEWAY_ALLOW_PLAINTEXT": "1"})
+        check("the retired plaintext variable still changes nothing",
+              refused_because(legacy, "would not be encrypted", "refusing to connect"))
+
+        say("a restart does not forget")
+        stop_gateway(process)
+        process = start_gateway()
+        check("the client still works after the gateway restarted",
+              client("test").returncode == 0)
+
+        status = client("status")
+        check("status reports a protected sandbox", status.returncode == 0,
+              (status.stdout or "").strip().replace("\n", " | ")[:200])
+
+        disconnected = client("disconnect", "--name", "second")
+        check("the client can disconnect", disconnected.returncode == 0)
+    finally:
+        stop_gateway(process)
+
+    say("nothing left behind")
+    for kind, field in (("container", "{{.Names}}"), ("network", "{{.Name}}")):
+        for prefix in ("agentnode-em3c-", "agentnode-egress-"):
+            listed = subprocess.run(
+                ["docker", kind, "ls", "-a" if kind == "container" else "--no-trunc",
+                 "--filter", f"name={prefix}", "--format", field],
+                capture_output=True, text=True)
+            left = [n for n in listed.stdout.split() if n.strip()]
+            check(f"no {kind} left named {prefix}*", listed.returncode == 0 and not left,
+                  ", ".join(left) if left else "none")
+
+    print("\n" + "=" * 70)
+    if failures:
+        print(f"TWO-ROLE CHECK FAILED: {len(failures)} step(s)")
+        for name in failures:
+            print("  -", name)
+        return 1
+    print("TWO-ROLE CHECK PASSED: every step observed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

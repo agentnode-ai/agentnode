@@ -30,7 +30,9 @@ ABSENT_RUNTIME = "agentnode-conformance-absent-runtime"
 
 #: The signal ``run_process`` documents for a run it stopped: this return code AND this marker
 #: on stderr. Both together are what attributes an ending to the ceiling rather than to chance.
-TIMEOUT_RC = -1
+#: What a backend used to return for a timeout. Kept only so a reader of an OLD report knows
+#: what that number was; nothing decides anything by it (`EM3C-E4-CLASSIFY-0001`).
+SUPERSEDED_TIMEOUT_RC = -1
 TIMEOUT_MARKER = "[sandbox timed out after"
 
 #: 128 + SIGKILL: what a container runtime reports when the kernel stops a process for
@@ -92,9 +94,22 @@ def _probe_spec(backend, options: SuiteOptions, name: str) -> ProcessSpec:
 
 
 def _run(backend, spec, timeout):
+    """One run, with WHY it stopped kept beside what it produced.
+
+    `EM3C-E4-CLASSIFY-0001`: the verdict on the wall clock rested on the backend returning -1,
+    which is the number a Windows client read as 4294967295 -- so the signal that was supposed to
+    attribute a stop to the ceiling was the same kind of thing the defect was made of. The backend
+    says why now, and this keeps the saying.
+    """
+    from agentnode_sdk.sandbox.backend import why_it_stopped
+
     started = time.time()
-    rc, out, err = backend.run_process(spec, timeout=timeout)
-    return {"rc": rc, "stdout": out, "stderr": err, "elapsed": round(time.time() - started, 2)}
+    result = backend.run_process(spec, timeout=timeout)
+    rc, out, err = result
+    reason, native, platform = why_it_stopped(result)
+    return {"rc": rc, "stdout": out, "stderr": err, "reason": reason,
+            "native_status": native, "native_platform": platform,
+            "elapsed": round(time.time() - started, 2)}
 
 
 def _gather_probe(backend, options, name):
@@ -157,14 +172,20 @@ def _stress(backend, options, run_id):
             network="none", clean_home=True, name=f"agentnode-conformance-{run_id}-clock")
         r = _run(backend, spec, options.wallclock_timeout)
         # EM3B review: a duration is not evidence -- an unrelated early exit produces the same
-        # elapsed time. The verdict rests on the backend's own timeout signal: the return code it
-        # documents for a timeout AND the marker it writes. The elapsed time stays as diagnosis.
+        # elapsed time. The verdict rests on the backend SAYING it stopped the run at the ceiling,
+        # and on the marker it writes. The elapsed time stays as diagnosis, and no number is read
+        # as the signal any more (`EM3C-E4-CLASSIFY-0001`).
+        from agentnode_sdk.gateway.protocol import TIMED_OUT
+
         marker = TIMEOUT_MARKER in (r["stderr"] or "")
+        said_so = r.get("reason") == TIMED_OUT
         out["wallclock"] = {
             "sleep": options.wallclock_sleep, "timeout": options.wallclock_timeout,
             "elapsed": r["elapsed"], "rc": r["rc"],
+            "reason": r.get("reason"), "native_status": r.get("native_status"),
+            "native_platform": r.get("native_platform"),
             "timeout_marker_seen": marker,
-            "timeout_signal": bool(marker and r["rc"] == TIMEOUT_RC),
+            "timeout_signal": bool(marker and said_so),
             "stderr_tail": (r["stderr"] or "")[-120:].strip(),
         }
     except Exception as exc:                                        # noqa: BLE001
@@ -293,6 +314,7 @@ def _backend_loss(backend) -> dict:
 
 def run_conformance(backend, *, generated_at: str, options: SuiteOptions | None = None,
                     egress_matrix: dict | None = None,
+                    egress_expected=None,
                     credential_lifecycle: dict | None = None) -> ConformanceReport:
     """Measure what this backend actually does, and report what could not be measured as such.
 
@@ -327,6 +349,17 @@ def run_conformance(backend, *, generated_at: str, options: SuiteOptions | None 
     host = _host_observations(backend, runtime, run_id)
     if egress_matrix is not None:
         host["egress_matrix"] = egress_matrix
+        # What the POLICY permits, so the check can compare the matrix against it rather than
+        # against itself.
+        #
+        # There is deliberately no fallback here. The first version filled this in from the
+        # matrix's own `allowed_hosts` when the caller omitted it, which made the comparison
+        # compare the matrix with itself -- EM3C-FINAL-0004 pointed out that a caller could then
+        # weaken the binding simply by not supplying it. A caller that does not say what the
+        # policy permits gets no verdict about a policy; the check reports that it could not be
+        # established rather than passing on a self-comparison.
+        if egress_expected is not None:
+            host["egress_expected"] = list(egress_expected)
     if not probe_failure:
         # setdefault, not assignment: a test double may have supplied these through the
         # double-only hook, and a real backend never reaches that hook at all.
@@ -344,7 +377,7 @@ def run_conformance(backend, *, generated_at: str, options: SuiteOptions | None 
         generated_at=generated_at, results=run_all(ctx), is_test_double=is_double)
 
 
-def measure_egress(backend, *, allowed: str = "example.com", denied: str = "google.com",
+def measure_egress(backend, *, allowed="example.com", denied: str = "google.com",
                    timeout: float = 120.0) -> dict:
     """Run the bypass matrix inside a container on the internal network. Needs a real runtime.
 
@@ -354,10 +387,11 @@ def measure_egress(backend, *, allowed: str = "example.com", denied: str = "goog
     """
     from agentnode_sdk.sandbox import egress as egress_mod
 
-    handle = egress_mod.start_egress_proxy([allowed])
+    hosts = [allowed] if isinstance(allowed, str) else list(allowed)
+    handle = egress_mod.start_egress_proxy(hosts)
     try:
         spec = ProcessSpec(
-            command=["python", "-c", probe_mod.egress_matrix_source(allowed, denied)],
+            command=["python", "-c", probe_mod.egress_matrix_source(hosts, denied)],
             network="egress", egress=handle.spec, clean_home=True,
             name=f"agentnode-conformance-egress-{uuid.uuid4().hex[:8]}")
         result = _run(backend, spec, timeout)

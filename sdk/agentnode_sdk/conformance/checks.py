@@ -257,14 +257,48 @@ def check_egress_allowlist(ctx: Context) -> CheckResult:
             "egress-allowlist", "Only the sealed destinations are reachable", "egress",
             "no egress run was performed: it needs a container runtime and an internal network, "
             "so it is measured on Linux CI rather than wherever the suite happens to run")
-    bypassed = [k for k, v in matrix.items() if str(v).startswith("BYPASS")]
-    allowed_ok = str(matrix.get("allowed_via_proxy", "")).startswith("ALLOWED")
+    bypassed = [k for k, v in matrix.items()
+                if k != "allowed_hosts" and str(v).startswith("BYPASS")]
+
+    # Every permitted destination, and the SAME destinations the policy names.
+    #
+    # EM3C-FINAL-0001 found a policy naming several hosts reported as measured after one had been
+    # tried. Counting whatever result keys happened to be present fixed half of that, and
+    # EM3C-FINAL-0003 found the other half: a count cannot tell a complete matrix from a partial
+    # one, because it never knew how many there should have been. The run now records the hosts
+    # it measured, every one of them must have a result, and where the caller states which hosts
+    # the policy permits the two sets have to be equal.
+    measured = {k[len("allowed:"):]: v for k, v in matrix.items() if k.startswith("allowed:")}
+    declared = matrix.get("allowed_hosts")
+    expected = ctx.host.get("egress_expected")
+
+    if declared is None:
+        return CheckResult.not_checked(
+            "egress-allowlist", "Only the sealed destinations are reachable", "egress",
+            "the egress run did not record which destinations it measured, so a complete matrix "
+            "cannot be told apart from a partial one")
+
+    if expected is None:
+        # Nobody said which destinations the policy permits, so there is nothing to hold this
+        # run against. Comparing the matrix with its own declaration would only show that it is
+        # self-consistent, which a partial or dishonest run also is.
+        return CheckResult.not_checked(
+            "egress-allowlist", "Only the sealed destinations are reachable", "egress",
+            "the caller did not say which destinations the policy permits, so this run cannot be "
+            "shown to be about that policy")
+
+    declared_set = {str(h) for h in declared}
+    complete = bool(declared_set) and declared_set == set(measured)
+    bound = {str(h) for h in expected} == declared_set
+    allowed_ok = complete and bound and all(
+        str(v).startswith("ALLOWED") for v in measured.values())
     denied_ok = not str(matrix.get("denied_via_proxy", "")).startswith("ALLOWED")
     return CheckResult.measured(
         "egress-allowlist", "Only the sealed destinations are reachable", "egress",
         not bypassed and allowed_ok and denied_ok, Vantage.INSIDE,
         (f"inside the internal network: direct routes {'all blocked' if not bypassed else bypassed}, "
-         f"the sealed destination {'was reachable through the proxy' if allowed_ok else 'was NOT'}, "
+         f"the {len(declared_set)} sealed destination(s) named by the policy "
+         f"{'were all measured and all reachable through the proxy' if allowed_ok else 'were NOT all measured and reachable'}, "
          f"an unsealed one {'was refused' if denied_ok else 'was ALLOWED'}"),
         detail=dict(matrix))
 
@@ -428,7 +462,9 @@ def check_limit_wallclock(ctx: Context) -> CheckResult:
     """The stop has to be attributable to the ceiling, never inferred from how long it took.
 
     A duration is a diagnosis, not evidence: an unrelated early exit produces the same elapsed
-    time. What carries this check is the backend's own timeout signal.
+    time. What carries this check is the backend SAYING it stopped the run at the ceiling --
+    which used to be a return code of -1, the same number a Windows client read as 4294967295
+    (`EM3C-E4-CLASSIFY-0001`). A reason cannot be produced by an unrelated early exit.
     """
     s = ctx.stress.get("wallclock")
     if not isinstance(s, dict) or "_error" in s:
@@ -440,12 +476,13 @@ def check_limit_wallclock(ctx: Context) -> CheckResult:
     return CheckResult.measured(
         "limit-wallclock", "A run that will not finish is stopped", "limits",
         attributed, Vantage.OUTSIDE,
-        (f"a payload asked to sleep {s.get('sleep')}s under a {s.get('timeout')}s ceiling returned "
-         f"the backend's own timeout signal (rc={s.get('rc')}, marker present); the "
+        (f"a payload asked to sleep {s.get('sleep')}s under a {s.get('timeout')}s ceiling, and "
+         f"the backend reported it stopped for {s.get('reason')!r} with its marker present; the "
          f"{s.get('elapsed')}s it took is diagnosis rather than evidence"
          if attributed else
-         f"the run ended with rc={s.get('rc')} and no timeout signal from the backend, so nothing "
-         f"attributes the ending to the ceiling. It took {s.get('elapsed')}s"),
+         f"the run ended for {s.get('reason')!r} with marker "
+         f"{'present' if s.get('timeout_marker_seen') else 'absent'}, so nothing attributes the "
+         f"ending to the ceiling. It took {s.get('elapsed')}s"),
         detail=dict(s))
 
 

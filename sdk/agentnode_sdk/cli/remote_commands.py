@@ -149,6 +149,16 @@ def cmd_status(args) -> int:
     print(f"  {bold(saved.name)}  {dim(saved.url)}")
     try:
         hello = gc.hello(saved.url)
+        # `hello` is unauthenticated -- it has to be, since it is what an unpaired client asks
+        # first. But this connection already knows which gateway it paired with, and
+        # EM3C-EXTERNAL-0011 found the answer being read out to the user without that comparison:
+        # a substituted endpoint could have reported itself protected and measured. Anything this
+        # command is about to repeat has to come from the gateway it belongs to.
+        gc.assert_same_gateway(connection, hello)
+    except gc.GatewayClientError as exc:
+        print(f"  {bold('That is not the sandbox you paired with.')}")
+        print(f"  {exc}")
+        return 1
     except Exception as exc:                                  # noqa: BLE001
         print(f"  Cannot reach it right now: {exc}")
         print("  Your access is still saved; try again when it is back.")
@@ -200,7 +210,19 @@ def cmd_test(args) -> int:
     if final.get("state") == "finished":
         print(f"  {bold('It works.')}")
         print(f"  The sandbox ran the program and sent back: {(final.get('stdout') or '').strip()!r}")
-        print("  It had no network access and was removed afterwards.")
+        # Read from the record rather than asserted from what was asked for. The two are not the
+        # same thing, and saying the second while meaning the first is what C3 was about.
+        eff = final.get("effective_policy") or {}
+        if "network.enabled" in eff:
+            print("  It had no network access."
+                  if not eff.get("network.enabled") else "  It had network access.")
+        cleaned = final.get("cleanup_verified")
+        if cleaned is True:
+            print("  It was removed afterwards, and that was confirmed.")
+        elif cleaned is False:
+            print("  It was NOT removed afterwards.")
+        else:
+            print("  Whether it was removed afterwards could not be confirmed.")
         return 0
     if final.get("state") == "unverified":
         print(f"  {bold('It ran, but not everything could be confirmed.')}")
@@ -226,10 +248,13 @@ def cmd_run(args) -> int:
     network = "restricted" if allow else "none"
     print()
     print(f"  Sending {bold(path.name)} to {bold(saved.name)}.")
+    # What follows is what is being ASKED for. What is granted is not known until the gateway
+    # has composed the policy, and it can be narrower -- EM3C-EGRESS-CLASSIFY-0001 saw this line
+    # promise a destination the run never got. The grant is printed below, from the answer.
     if allow:
-        print(f"  It may reach: {', '.join(allow)} -- and nothing else.")
+        print(f"  Asking to reach: {', '.join(allow)} -- and nothing else.")
     else:
-        print("  It has no network access.")
+        print("  Asking for no network access.")
 
     try:
         answer = gc.submit(connection, artifact, network=network,
@@ -246,8 +271,20 @@ def cmd_run(args) -> int:
         return 1
 
     # Printed so it can be stopped from another terminal. A job you cannot name is a job you
-    # cannot cancel.
-    print(f"  run: {answer['run_id']}")
+    # cannot cancel -- and flushed, because when this is piped anywhere the id would otherwise sit
+    # in a buffer until the job ended, which is exactly when it stops being useful. The two-role
+    # check found that by trying to read it the way a person would.
+    print(f"  run: {answer['run_id']}", flush=True)
+
+    # Now the grant can be stated, because the gateway has answered with what it composed.
+    granted_net = (answer.get("effective_policy") or {})
+    if "network.enabled" in granted_net:
+        if not granted_net.get("network.enabled"):
+            print("  Granted: no network access.")
+        else:
+            hosts = granted_net.get("network.allowed_destinations") or []
+            print("  Granted: " + (", ".join(hosts) + " -- and nothing else."
+                                   if hosts else "network access with no destination allowed."))
 
     try:
         final = gc.wait_for(connection, answer["run_id"],
@@ -271,9 +308,30 @@ def cmd_run(args) -> int:
             print(f"    {delta.get('field')}: asked {delta.get('requested')!r}, "
                   f"got {delta.get('effective')!r}")
 
+    from agentnode_sdk.gateway.protocol import TIMED_OUT, TIMEOUT_EXIT_STATUS
+
     state = final.get("state")
+    # Whatever the answer said, and nothing where it said nothing. `EM3C-E8-RECORD-0001`: this
+    # read the field "or exited", so a client could print a reason the gateway had never given.
+    reason = str(final.get("termination_reason") or "")
+    if reason == TIMED_OUT:
+        # Read from what it MEANS, never from a number. `EM3C-E4-CLASSIFY-0001`: this returned
+        # the gateway's exit code, which for a timeout was -1, which Windows then reported as
+        # 4294967295 -- a status no caller could tell from an ordinary failure.
+        native = final.get("native_status")
+        where = final.get("native_platform") or "the sandbox"
+        print()
+        print(f"  {bold('It ran out of time.')} The sandbox stopped it at its limit.")
+        if native is not None:
+            print(f"  ({where} reported {native} for the stopped container.)")
+        return TIMEOUT_EXIT_STATUS
     if state == "finished":
-        return int(final.get("exit_code") or 0)
+        code = final.get("exit_code")
+        if code is None:
+            print()
+            print(f"  {bold('Did not finish.')} Nothing exited, and no reason was given.")
+            return 1
+        return int(code)
     if state == "unverified":
         print()
         print(f"  {bold('It ran, but not everything could be confirmed.')}")
@@ -290,14 +348,27 @@ def cmd_cancel(args) -> int:
     saved, connection = _connection(args)
     if saved is None:
         return _no_gateway()
+    from agentnode_sdk.gateway.protocol import outcome_of
+
     try:
-        record = gc.cancel(connection, str(args.run))
+        record, settled = gc.cancel(connection, str(args.run))
     except Exception as exc:                                  # noqa: BLE001
         print(f"  Could not stop it: {exc}")
         return 1
     print()
     print(f"  Asked {bold(saved.name)} to stop {args.run}.")
-    print(f"  It is now: {record.get('state')}")
+    # Every word below comes out of the answer the gateway signed and this client verified, and
+    # the outcome is derived from two of its signed fields rather than carried as a third.
+    # `EM3C-E6-RECORD-0001`: what stood here was read off an unverified body, and it told somebody
+    # a run was running after the gateway had destroyed its container.
+    if not settled:
+        print(f"  It has not stopped yet: the gateway waited, and it was still "
+              f"{record.get('state')}.")
+        print(f"  Ask again, or look:  agentnode remote status --run {args.run}")
+        return 1
+    outcome = outcome_of(str(record.get("state") or ""),
+                         str(record.get("termination_reason") or ""))
+    print(f"  It stopped. State: {record.get('state')} ({outcome}).")
     return 0
 
 
@@ -333,6 +404,22 @@ def cmd_disconnect(args) -> int:
     return 0
 
 
+def cmd_verify(args) -> int:
+    """The client half of the external run."""
+    from agentnode_sdk.tools import external_check
+
+    saved = _store(args).get(getattr(args, "name", "") or "")
+    url = getattr(args, "gateway", "") or (saved.url if saved else "")
+    if not url:
+        print("  Give the gateway's address with --gateway, or connect to it first.")
+        return 2
+    if not getattr(args, "code", ""):
+        print("  Give the pairing code with --code. The gateway prints one with")
+        print("    agentnode gateway pair")
+        return 2
+    return external_check.main(["--role", "client", "--gateway", url, "--code", args.code])
+
+
 def dispatch(args) -> int:
     action = getattr(args, "remote_command", None)
     handlers = {
@@ -345,11 +432,12 @@ def dispatch(args) -> int:
         "cancel": cmd_cancel,
         "rotate": cmd_rotate,
         "disconnect": cmd_disconnect,
+        "verify": cmd_verify,
     }
     handler = handlers.get(action)
     if handler is None:
         print("  Usage: agentnode remote "
-              "{connect|list|use|status|test|run|cancel|rotate|disconnect}")
+              "{connect|list|use|status|test|run|cancel|rotate|disconnect|verify}")
         return 2
     try:
         return handler(args)

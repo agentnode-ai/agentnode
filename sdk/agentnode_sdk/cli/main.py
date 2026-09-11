@@ -256,6 +256,23 @@ def main(argv: list[str] | None = None) -> int:
     gw_start.add_argument("--port", type=int, default=None, help="Port (default 8099)")
     gw_start.add_argument("--tls-cert", dest="tls_cert", default=None)
     gw_start.add_argument("--tls-key", dest="tls_key", default=None)
+    gw_challenge = gw_sub.add_parser(
+        "challenge",
+        help="What this gateway wrote down about the challenge it issued for one run")
+    gw_challenge.add_argument("--dir", default=None)
+    gw_challenge.add_argument("--run", default="", metavar="ID",
+                              help="The run to answer about. One run; there is no listing.")
+    gw_egress = gw_sub.add_parser(
+        "egress", help="What the code this gateway runs is allowed to reach")
+    gw_egress.add_argument("--dir", default=None)
+    gw_egress.add_argument("--allow", action="append", default=None, metavar="HOST",
+                           help="A host jobs on this gateway may reach. Repeatable. "
+                                "This is a ceiling: a job still has to ask, and can ask "
+                                "for less, but never for more.")
+    gw_egress.add_argument("--none", dest="none", action="store_true",
+                           help="Allow nothing. This is the default for a new gateway.")
+    gw_egress.add_argument("--verbose", action="store_true",
+                           help="Show the underlying detail, including the policy digests")
     gw_status = gw_sub.add_parser("status", help="Is it running, and is it protecting anything")
     gw_status.add_argument("--dir", default=None)
     # --verbose is per-command rather than global: the V1 top-level surface is frozen, and
@@ -273,6 +290,9 @@ def main(argv: list[str] | None = None) -> int:
     gw_revoke = gw_sub.add_parser("revoke", help="Disconnect a client, at once")
     gw_revoke.add_argument("--client", required=True, help="Its id or name")
     gw_revoke.add_argument("--dir", default=None)
+    gw_verify = gw_sub.add_parser(
+        "verify", help="Run the external check on this machine (the gateway half)")
+    gw_verify.add_argument("--dir", default=None)
 
     rm = sub.add_parser("remote", help="Send work to a sandbox on another machine")
     rm_sub = rm.add_subparsers(dest="remote_command")
@@ -304,6 +324,11 @@ def main(argv: list[str] | None = None) -> int:
     rm_rotate.add_argument("--name", default="")
     rm_disconnect = rm_sub.add_parser("disconnect", help="Forget a sandbox on this machine")
     rm_disconnect.add_argument("--name", default="")
+    rm_verify = rm_sub.add_parser(
+        "verify", help="Run the external check on this machine (the client half)")
+    rm_verify.add_argument("--gateway", default="", help="The gateway's address")
+    rm_verify.add_argument("--code", default="", help="The pairing code it printed")
+    rm_verify.add_argument("--name", default="")
 
     sandbox_parser = sub.add_parser("sandbox", help="Sandbox runtime image management")
     sandbox_sub = sandbox_parser.add_subparsers(dest="sandbox_action")

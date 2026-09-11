@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -137,12 +138,41 @@ def hello(base_url: str) -> dict[str, Any]:
 
 
 def pair(base_url: str, code: str, client_name: str = "") -> GatewayConnection:
-    """Exchange a pairing code for a token. The code is spent either way."""
+    """Exchange a pairing code for a token. The code is spent either way.
+
+    This is the one exchange with nothing to compare against: pairing is where a client learns
+    which gateway it is talking to, so there is no pinned identity yet and cannot be. What can be
+    checked is that the answer is consistent with itself -- the fingerprint is a function of the
+    gateway id and version, so a response reporting one identity and the fingerprint of another is
+    not a gateway answering honestly, whatever else it is. `EM3C-EXTERNAL-0013` asked for that, and
+    it happens before the token is adopted rather than after.
+
+    What this does not do is authenticate the peer. Nothing at this point can: that is what the
+    out-of-band code and the encrypted transport are for.
+    """
+    import hashlib
+
     status, body = _post(base_url.rstrip("/") + "/v1/pair",
                          {"code": code, "client_name": client_name})
+    # Before the status, and before any error text is repeated to the caller. Every answer this
+    # gateway gives is stamped, refusals included, so a response that cannot describe itself is
+    # not one to read anything out of -- EM3C-EXTERNAL-0015 found the refusal path being presented
+    # first. What this establishes is self-consistency; it cannot authenticate a peer there is
+    # nothing yet to compare against.
+    gateway = body.get("gateway") or {}
+    told = str(body.get("fingerprint", ""))
+    named = str(gateway.get("gateway_id", "")) + "\n" + str(gateway.get("version", ""))
+    computed = hashlib.sha256(named.encode()).hexdigest()
+    if not told or told != computed:
+        raise GatewayClientError(
+            "the sandbox at " + base_url.rstrip("/") + " gave an answer that does not describe "
+            "itself consistently, so nothing from it was saved. Your pairing code has been used; "
+            "ask for a new one before trying again."
+        )
     if status != 200:
         raise GatewayClientError(body.get("error", f"pairing failed ({status})"))
-    gateway = body.get("gateway") or {}
+    if not body.get("token"):
+        raise GatewayClientError("the gateway did not return an access token")
     return GatewayConnection(
         base_url=base_url.rstrip("/"),
         token=body["token"],
@@ -201,6 +231,7 @@ def submit(connection: GatewayConnection, artifact: bytes, *, granted=None,
         "artifact_b64": base64.b64encode(artifact).decode("ascii"),
     }
     status, answer = _post(connection.base_url + "/v1/jobs", body)
+    assert_same_gateway(connection, answer)
     if status not in (200, 202, 409):
         raise GatewayClientError(answer.get("error", f"the gateway answered {status}"))
     return answer
@@ -231,10 +262,12 @@ def verify_answer(connection: GatewayConnection, answer: dict[str, Any]) -> dict
         request_policy_sha256=answer.get("request_policy_sha256", ""),
         effective_policy_sha256=answer.get("effective_policy_sha256", ""),
         result=answer.get("stdout", ""),
+        outcome=answer,
     )
     if expected != binding:
         raise GatewayClientError(
-            "this answer does not describe the job it claims to. It was discarded."
+            "this answer does not describe the job it claims to, or what it says happened is not "
+            "what the gateway signed. It was discarded."
         )
     if connection.gateway_id and binding.get("gateway_id") != connection.gateway_id:
         raise GatewayClientError(
@@ -246,6 +279,50 @@ def verify_answer(connection: GatewayConnection, answer: dict[str, Any]) -> dict
             "this answer could not be verified as coming from your gateway. It was discarded."
         )
     return answer
+
+
+def assert_same_gateway(connection: GatewayConnection, body: dict) -> None:
+    """Refuse an answer from a gateway that is not the one this connection was paired with.
+
+    `EM3C-REMOTE-ACCESS-0001` asked for this as defence in depth, independent of which secure
+    transport is in front. What it establishes is that nothing in a response is acted on before the
+    peer is confirmed. It is not a claim that the bytes were never received or parsed -- the
+    identity is inside them, so reading and parsing necessarily come first. The transport authenticates the channel; this authenticates the peer at
+    the other end of it, using what was learned when the two were introduced. If the address is
+    ever pointed somewhere else -- a changed tunnel route, a proxy reconfigured, a name that now
+    resolves elsewhere -- the answer stops being accepted rather than being quietly used.
+
+    A connection that pinned nothing cannot check anything, and refusing those would break every
+    pairing saved before fingerprints were recorded. But once a connection HAS pinned a value, an
+    answer that simply omits the field is refused rather than skipped -- `EM3C-EXTERNAL-0001` found
+    that the earlier "compare only when both are present" rule handed an attacker the bypass, since
+    the field is theirs to leave out.
+    """
+    said = body.get("gateway") or {}
+    seen_id = str(said.get("gateway_id", "") or body.get("gateway_id", "") or "")
+    seen_print = str(body.get("fingerprint", "") or "")
+
+    if connection.gateway_id and not seen_id:
+        raise GatewayClientError(
+            "the answer from " + connection.base_url + " does not say which gateway it came from, "
+            "and this connection is paired with a particular one. Nothing was accepted from it."
+        )
+    if connection.gateway_id and seen_id and seen_id != connection.gateway_id:
+        raise GatewayClientError(
+            "the machine answering at " + connection.base_url + " is not the sandbox you paired "
+            "with. Nothing was sent to it. If the gateway genuinely moved, connect to it again; "
+            "if it did not, something else is answering on that address."
+        )
+    if connection.fingerprint and not seen_print:
+        raise GatewayClientError(
+            "the answer from " + connection.base_url + " carries no gateway fingerprint, and this "
+            "connection recorded one when it paired. Nothing was accepted from it."
+        )
+    if connection.fingerprint and seen_print and seen_print != connection.fingerprint:
+        raise GatewayClientError(
+            "the sandbox at " + connection.base_url + " no longer identifies itself the way it "
+            "did when you paired with it. Nothing was sent to it."
+        )
 
 
 def rotate(connection: GatewayConnection) -> GatewayConnection:
@@ -262,6 +339,10 @@ def rotate(connection: GatewayConnection) -> GatewayConnection:
         "payload": payload,
         "signature": sign(client_token_secret(connection.token), payload),
     })
+    # Checked before anything in the body is used -- the token above all. Taking a credential, or
+    # an error message, from a machine that is not the one you paired with is how you end up
+    # holding somebody else's key and calling it yours.
+    assert_same_gateway(connection, body)
     if status != 200 or not body.get("token"):
         raise GatewayClientError(str(body.get("error") or "the gateway would not rotate the token"))
     return GatewayConnection(
@@ -273,14 +354,64 @@ def rotate(connection: GatewayConnection) -> GatewayConnection:
     )
 
 
-def status_of(connection: GatewayConnection, run_id: str, verify: bool = True) -> dict[str, Any]:
+#: The furthest along each run has been seen to be, by gateway and by run.
+#:
+#: `EM3C-E6-RECORD-0001`: an answer that moves a run backwards is late, out of order, or about
+#: something else. Nothing is ever DISPLAYED from here -- this is not a store of states to show,
+#: which is the thing that must never happen; it is the memory that makes a regression
+#: recognisable, so that one can be refused instead of shown.
+_FURTHEST: dict = {}
+
+#: Reading it, deciding on it and writing it are one thing. `EM3C-CANCEL-0005`: they
+#: were three, and two answers arriving at once could both be judged against the same
+#: older value and then written in the wrong order, leaving the memory regressed and
+#: both answers accepted. A client polling in one thread while cancelling in another
+#: is the ordinary case, not an exotic one.
+_REMEMBERING = threading.Lock()
+
+
+def not_backwards(connection: GatewayConnection, answer: dict[str, Any]) -> dict[str, Any]:
+    """The answer, or a refusal because it would move this run backwards."""
+    from agentnode_sdk.gateway.protocol import may_move, stage_of
+
+    run_id = str(answer.get("run_id") or "")
+    state = str(answer.get("state") or "")
+    if not run_id or not state:
+        return answer
+    key = (str(connection.gateway_id), run_id)
+    with _REMEMBERING:
+        before = _FURTHEST.get(key)
+        if before is not None and not may_move(before, state):
+            raise GatewayClientError(
+                f"the gateway answered {state!r} for a run this client has already seen as "
+                f"{before!r}. An answer that moves a run backwards is late, out of order, or "
+                "about something else, and it is refused rather than shown: a reader cannot tell "
+                "which of two disagreeing answers is the one that is now")
+        if before is None or stage_of(state) >= stage_of(before):
+            _FURTHEST[key] = state
+    return answer
+
+
+def status_of(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
     """Idempotent: asking twice gives the same answer, and asking is free."""
     status, body = _get(f"{connection.base_url}/v1/jobs/{run_id}", token=connection.token)
+    # Before any field of this response is used, including the status. Not before the body is
+    # read: finding the identity means parsing the body, so "read" and "used" are different
+    # moments and only the second one is ours to control. An earlier version checked after the
+    # status was interpreted, which let a server at a changed address supply error text a person
+    # then read and acted on; every answer is stamped now, refusals included.
+    assert_same_gateway(connection, body)
     if status == 404:
         raise GatewayClientError(f"the gateway does not know a run {run_id}")
     if status != 200:
         raise GatewayClientError(body.get("error", f"the gateway answered {status}"))
-    return verify_answer(connection, body) if verify else body
+    # Only a verified answer, and there is no way to ask for anything else. `EM3C-CANCEL-0004`
+    # found a flag that returned the body unverified and let its state into the memory above;
+    # `EM3C-CANCEL-0005` held that showing no caller used it is not the same as its not being
+    # callable. The refusals that have to happen BEFORE verification -- the transport, the
+    # gateway's identity, a run this gateway does not know -- happen above, which is what that
+    # flag was really for.
+    return not_backwards(connection, verify_answer(connection, body))
 
 
 def cancel(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
@@ -293,9 +424,15 @@ def cancel(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
         "signature": sign(client_token_secret(connection.token), payload),
     }
     status, answer = _post(f"{connection.base_url}/v1/jobs/{run_id}/cancel", body)
-    if status != 200:
+    assert_same_gateway(connection, answer)
+    # 200: it stopped. 202: it was asked to and had not stopped yet. Anything else is not an
+    # answer about this run.
+    if status not in (200, 202):
         raise GatewayClientError(answer.get("error", f"the gateway answered {status}"))
-    return answer
+    # `EM3C-E6-RECORD-0001`: this used to return the body unverified, while `status_of` right
+    # above it verified. What a person was shown after a cancellation was therefore the one state
+    # in this client that nothing had checked.
+    return not_backwards(connection, verify_answer(connection, answer)), status == 200
 
 
 def wait_for(connection: GatewayConnection, run_id: str, timeout: float = 120.0,

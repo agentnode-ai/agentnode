@@ -28,6 +28,7 @@ import base64
 import hmac
 import json
 import os
+import secrets
 import sys
 import threading
 import time
@@ -37,14 +38,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
+from agentnode_sdk.gateway import challenge as ch
 from agentnode_sdk.gateway.ledger import Ledger
 from agentnode_sdk.gateway.readiness import (
+    Readiness,
     ReadinessGate,
     ReportBinding,
     describe_missing,
 )
 from agentnode_sdk.gateway.transport import TlsFiles, check_bind_address
 from agentnode_sdk.gateway.protocol import (
+    refusal,
     PROTOCOL_VERSION,
     JobRequest,
     NonceCache,
@@ -56,6 +60,11 @@ from agentnode_sdk.gateway.protocol import (
     sign,
     verify_signature,
 )
+
+
+#: The one command that closes every refusal below. A gate that names no way through is a
+#: wall, so the remediation is a command that really runs and really changes the answer.
+_MEASURE = "agentnode gateway doctor --measure"
 
 MAX_BODY_BYTES = 32 * 1024 * 1024
 
@@ -84,6 +93,17 @@ class RunRecord:
     signature: str = ""
     state: str = "accepted"          # accepted | running | finished | refused | cancelled
     exit_code: int | None = None
+    #: WHY it stopped, not what number came back. `EM3C-E4-CLASSIFY-0001`: a run ended by its own
+    #: wall clock was reported as exit code -1, a Windows client read 4294967295, and the two had
+    #: to be called equal for anything to work. A killed process has no exit code; it has a
+    #: reason. The runtime's own number is kept beside it, with the platform it belongs to.
+    #:
+    #: `EM3C-E8-RECORD-0001`: this defaulted to `"exited"`, so a run that had not stopped said why
+    #: it had stopped, and a cancelled run kept whatever the destroyed container's exit looked
+    #: like. Nothing has to set it for it to be right now, because empty claims nothing.
+    termination_reason: str = ""
+    native_status: int | None = None
+    native_platform: str = ""
     stdout: str = ""
     stderr: str = ""
     refusal: str = ""
@@ -92,6 +112,31 @@ class RunRecord:
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     cancel_requested: threading.Event = field(default_factory=threading.Event)
+    #: The value this gateway issued for this run, while the run is alive. It is NOT in `public`,
+    #: it is not in the ledger, and it is dropped when the run reaches a terminal state -- what
+    #: survives is its digest, in the binding the ledger holds.
+    challenge: str = ""
+
+    def move_to(self, new_state: str) -> None:
+        """Change this run's state, or refuse to.
+
+        `EM3C-E6-RECORD-0001`: a client was shown a run as running after the gateway had cancelled
+        it and removed its container. Nothing had ever stopped a state going backwards, because
+        every place that set one simply assigned the field. There is one place now, and it fails
+        closed: a move that is not forward raises rather than being ignored, so a caller that
+        would have written the wrong state finds out instead of the reader finding out later.
+        """
+        from agentnode_sdk.gateway.protocol import refuse_move
+
+        refuse_move(self.state, new_state)
+        self.state = new_state
+
+    @property
+    def outcome(self) -> str:
+        """What this run's end amounts to, or "" while it has none."""
+        from agentnode_sdk.gateway.protocol import outcome_of
+
+        return outcome_of(self.state, self.termination_reason)
 
     def public(self) -> dict[str, Any]:
         """What a client may see. No secrets, and no fields that only mean something inside."""
@@ -100,12 +145,15 @@ class RunRecord:
             "job_id": self.job_id,
             "state": self.state,
             "exit_code": self.exit_code,
+            "termination_reason": self.termination_reason,
+            "native_status": self.native_status,
+            "native_platform": self.native_platform,
             "stdout": self.stdout,
             "stderr": self.stderr,
             "refusal": self.refusal,
             "artifact_sha256": self.artifact_sha256,
             "cleanup_verified": self.cleanup_verified,
-            # Invariant 5: an optional narrowing may run, but the answer has to SAY what changed.
+            # Invariant 5: a narrowing may run, but the answer has to SAY what changed.
             "requested_policy": self.requested_policy,
             "effective_policy": self.effective_policy,
             "request_policy_sha256": self.request_policy_sha256,
@@ -128,7 +176,11 @@ class GatewayService:
         nobody else, so it is not evidence a third party can check.
 
         The binding covers the whole tuple: gateway identity and version, protocol, job and run
-        id, artifact digest, both policy digests, and the result itself. An answer lifted out of
+        id, artifact digest, both policy digests, the result, and a digest over everything the
+        answer says HAPPENED -- state, exit code, why it stopped, the native status and its
+        platform, cleanup, refusal, both streams, the narrowing and the timestamps.
+        `EM3C-EVIDENCE-0020` found that last part missing: an answer's outcome could be changed
+        on the way to the client and the binding still recomputed to what had been signed. An answer lifted out of
         its context fails verification because the context is what is signed.
         """
         secret = self.state.token_secret(token)
@@ -142,6 +194,7 @@ class GatewayService:
             request_policy_sha256=body.get("request_policy_sha256", ""),
             effective_policy_sha256=body.get("effective_policy_sha256", ""),
             result=body.get("stdout", ""),
+            outcome=body,
         )
         return {**body, "binding": binding, "signature": sign(secret, binding)}
 
@@ -153,9 +206,11 @@ class GatewayService:
         so a job result could not be tied to the gateway that produced it -- the review was right
         that the claim was broader than the code. Every answer carries it now.
         """
-        identity = self.state.identity
-        return {**body, "gateway": identity.as_dict(), "fingerprint": identity.fingerprint,
-                "protocol": PROTOCOL_VERSION}
+        # Built by `protocol.stamp_fields`, which is also what anything reading an answer back
+        # is told an answer carries. Two lists of the same thing drift; one does not.
+        from agentnode_sdk.gateway.protocol import stamp_fields
+
+        return {**body, **stamp_fields(self.state.identity)}
 
     def __init__(self, state: GatewayState, backend=None, operator_policy=None) -> None:
         self.state = state
@@ -166,6 +221,9 @@ class GatewayService:
         # What must survive this process. In-memory replay protection has a documented way
         # around it: restart the gateway, which on a server happens on its own.
         self.ledger = Ledger(self.state.root / "ledger.json")
+        #: Which gateway process, and which sandbox behind it. A restart is a different instance,
+        #: and a challenge says which one issued it.
+        self.instance = "%s:%s" % (type(self.backend).__name__, secrets.token_hex(8))
         self.readiness = ReadinessGate(self.state.root)
         self._restore_interrupted()
         self._lock = threading.Lock()
@@ -180,52 +238,319 @@ class GatewayService:
             self._backend = ContainerBackend()
         return self._backend
 
+    def active_state(self):
+        """The authenticated policy-and-report pair currently in force, or None.
+
+        Read on every admission rather than held from construction (`EM3C-Y6-DECISION-0001`,
+        `D4`): a gateway that cached the policy it started with would keep admitting jobs under
+        it after the operator changed it, which is the same class of staleness the digest exists
+        to catch, just moved into memory.
+
+        A snapshot that fails any of its checks raises, and the caller treats that as not ready.
+        It is never downgraded to "no policy", because "no policy" is a *valid* closed state and
+        a tampered one must not be able to impersonate it.
+        """
+        from agentnode_sdk.gateway.activation import ActivationStore
+
+        return ActivationStore(self.state.root).load_active()
+
+    def configured_envelope(self):
+        """What the operator has ASKED for, read from the config file.
+
+        Deliberately not the same thing as what is in force. The config file is an input; the
+        authenticated snapshot is the decision. Editing the file by hand therefore changes what
+        this returns and does NOT change what runs -- it makes the two disagree, and a
+        disagreement is refused rather than resolved in the file's favour.
+        """
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        if self._operator_policy is not None:
+            return self._explicit_envelope()
+        path = self.state.root / "config.json"
+        if not path.is_file():
+            return opol.build(opol.NONE)
+        try:
+            config = opol.loads_strict(path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise opol.OperatorPolicyError(f"the gateway config cannot be read: {exc}") from None
+        return opol.from_config(config)
+
+    def _explicit_envelope(self):
+        """A policy handed in at construction, described in the same envelope as a configured one."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        net = getattr(self._operator_policy, "network", None)
+        enabled = bool(getattr(net, "enabled", False))
+        dests = getattr(net, "allowed_destinations", None)
+        if not enabled:
+            return opol.build(opol.NONE)
+        if dests is None:
+            return opol.build(opol.UNRESTRICTED)
+        return opol.build(opol.RESTRICTED, tuple(dests))
+
+    def operator_envelope(self):
+        """The operator policy actually IN FORCE -- from the authenticated snapshot."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        if self._operator_policy is not None:
+            return self._explicit_envelope()
+        state = self.active_state()
+        if state is None:
+            return opol.build(opol.NONE)
+        return state.policy
+
     def operator_policy(self):
         """What this machine's owner allows. The highest scope in the fold."""
         if self._operator_policy is not None:
             return self._operator_policy
         from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+        from agentnode_sdk.gateway import operator_policy as opol
 
-        # A gateway defaults to no network for foreign code. The operator opens it deliberately.
-        return SandboxPolicy(network=NetworkRules(enabled=False,
-                                                  allowed_destinations=frozenset()))
+        envelope = self.operator_envelope()
+        if envelope.mode == opol.NONE:
+            # A gateway defaults to no network for foreign code. The operator opens it
+            # deliberately, and only after the opening has been measured.
+            return SandboxPolicy(network=NetworkRules(enabled=False,
+                                                      allowed_destinations=frozenset()))
+        if envelope.mode == opol.UNRESTRICTED:
+            return SandboxPolicy(network=NetworkRules(enabled=True, allowed_destinations=None))
+        return SandboxPolicy(network=NetworkRules(
+            enabled=True, allowed_destinations=frozenset(envelope.allowed_destinations)))
 
     # ------------------------------------------------------------------ capabilities
 
-    def report_binding(self) -> ReportBinding:
-        """What a conformance report about this gateway would have to be about."""
+    def report_binding(self, policy_digest: str = "") -> ReportBinding:
+        """What a conformance report about this gateway would have to be about.
+
+        `policy_digest` is supplied while a *pending* policy is being measured, so the report is
+        stamped with the policy it was taken for rather than with the one still in force.
+        """
+        from agentnode_sdk.gateway.boot import boot_identity
+
+        from agentnode_sdk.conformance.report import SUITE_VERSION
+
         identity = self.state.identity
         availability = self.backend.check_available()
+        boot_value, _method = boot_identity()
         return ReportBinding(
             gateway_id=identity.gateway_id,
             gateway_version=identity.version,
             backend=str(availability.backend or ""),
             image_digest=str(availability.image_digest or ""),
+            boot_id=boot_value,
+            backend_version=self.runtime_version(),
+            conformance_schema=str(SUITE_VERSION),
+            operator_policy_digest=policy_digest or self.operator_envelope().digest(),
         )
 
+    def runtime_version(self) -> str:
+        """The container runtime's own version, asked once per process.
+
+        Process-lifetime rather than per-admission, and deliberately the same lifetime as
+        `check_available`, which this gateway has always cached the same way: asking a runtime
+        for its version is a subprocess, and doing that on every job would be a real cost for a
+        value that changes when a daemon is upgraded -- which restarts the daemon and, in
+        practice, the gateway with it. A runtime upgraded underneath a still-running gateway is
+        caught at its next start or measurement, not mid-process. That is a stated limit, not an
+        assumption that it cannot happen.
+        """
+        cached = getattr(self, "_runtime_version_cache", None)
+        if cached is not None:
+            return cached
+        from agentnode_sdk.conformance.runner import _runtime_version
+
+        availability = self.backend.check_available()
+        runtime = str(availability.backend or "")
+        value = ""
+        if runtime and runtime != "none":
+            try:
+                value = str(_runtime_version(runtime) or "")
+            except Exception:                                     # noqa: BLE001
+                value = ""
+        self._runtime_version_cache = value
+        return value
+
     def measure(self, options=None, now: float | None = None):
-        """Run the conformance suite against this backend and keep the result.
+        """Re-measure the policy currently configured, and put it in force if it holds.
 
         This is what closes the loop. A gate that can refuse but offers no way through is not a
         gate, it is a wall -- and the remediation the refusal names has to be a command that
-        really runs and really changes the answer, not a label. `agentnode gateway doctor
-        --measure` is this method.
-
-        The report is stored with what it is about, so it cannot later be read as evidence for a
-        different gateway, a different image, or a version that has since been upgraded.
+        really runs and really changes the answer.
         """
+        return self._transact(None, options=options, now=now)
+
+    def activate(self, proposed, options=None, now: float | None = None):
+        """Propose a policy, measure THAT policy, and put it in force only if it holds.
+
+        `EM3C-FINAL-0001` found the earlier arrangement writing the proposal to the config file
+        before the lock was held and restoring it after the lock was released, with the envelope
+        captured earlier still. Two operators changing the policy at once could therefore measure
+        one proposal and activate another, or restore a config belonging to the other command.
+        Everything that reads or writes the operator's intent now happens inside one lock, and
+        the policy that is measured is the object passed in rather than whatever the file says by
+        the time the measurement starts.
+        """
+        return self._transact(proposed, options=options, now=now)
+
+    def _config_path(self):
+        return self.state.root / "config.json"
+
+    def _write_config_for(self, envelope) -> None:
+        """Record the operator's intent, keeping every setting that is not about egress."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        path = self._config_path()
+        config = {}
+        if path.is_file():
+            try:
+                config = opol.loads_strict(path.read_text(encoding="utf-8"))
+            except (OSError, opol.OperatorPolicyError):
+                config = {}
+        if envelope.mode == opol.RESTRICTED:
+            config["egress_allowed"] = list(envelope.allowed_destinations)
+        else:
+            config.pop("egress_allowed", None)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _restore_config(self, previous: str | None) -> None:
+        path = self._config_path()
+        if previous is None:
+            if path.is_file():
+                path.unlink()
+        else:
+            path.write_text(previous, encoding="utf-8")
+
+    def _transact(self, proposed, options=None, now: float | None = None):
+        """One lock around the whole change: intent, measurement, and what becomes of both."""
         from datetime import datetime, timezone
 
         from agentnode_sdk.conformance.runner import run_conformance
+        from agentnode_sdk.gateway.activation import ActivationLock, ActivationStore
 
+        store = ActivationStore(self.state.root)
         stamp = datetime.fromtimestamp(now or time.time(), tz=timezone.utc).isoformat()
-        report = run_conformance(self.backend, generated_at=stamp, options=options)
-        self.readiness.store(report.to_dict(), self.report_binding(), now)
+        path = self._config_path()
+
+        with ActivationLock(self.state.root):
+            previous = path.read_text(encoding="utf-8") if path.is_file() else None
+            try:
+                if proposed is not None:
+                    self._write_config_for(proposed)
+                    envelope = proposed
+                else:
+                    envelope = self.configured_envelope()
+
+                # Written first, and never consulted by admission. Its only job is to say what
+                # was being measured if the process dies before it finishes.
+                store.write_pending(envelope)
+
+                report = run_conformance(
+                    self.backend, generated_at=stamp, options=options,
+                    egress_matrix=self._egress_matrix_for(envelope),
+                    # The policy's own destinations, so the check compares the matrix against
+                    # what is being permitted rather than against what the run happened to do.
+                    egress_expected=(envelope.allowed_destinations or None))
+                binding = self.report_binding(envelope.digest())
+                document = {"measured_at": now if now is not None else time.time(),
+                            "binding": binding.as_dict(), "report": report.to_dict()}
+
+                # Kept as a diagnostic copy. Readiness does not read it -- it reads the snapshot
+                # -- so a stale file here can never make a gateway look ready.
+                self.readiness.store(report.to_dict(), binding, now)
+
+                verdict = self.readiness.evaluate_document(document, binding,
+                                                           envelope.required_properties)
+                if not verdict.ready:
+                    self._restore_config(previous)
+                    store.clear_pending()
+                    return verdict
+                # Past this call the change is committed: `activate` treats its own rename as
+                # the commit point and cannot raise after it. So anything that reaches the
+                # handler below happened BEFORE the commit, and restoring the intent is right.
+                store.activate(envelope, report.to_dict(), binding.as_dict(), now)
+            except BaseException:
+                self._restore_config(previous)
+                store.clear_pending()
+                raise
         return self.readiness_now()
 
+    def _egress_matrix_for(self, envelope):
+        """Measure the allowlist this policy actually names, or return nothing measured.
+
+        `EM3C-Y6-DECISION-0001`, `D3-a`. The suite reports `egress-allowlist` as `not_checked`
+        when no matrix reaches it, and the gateway supplied none -- so a gateway that permitted
+        egress was ready on a report that had never tried to leave it. The matrix is now built
+        from the policy's own destinations, with a control that is deliberately NOT among them,
+        so the run distinguishes "the allowlist works" from "nothing has a route anywhere".
+
+        Returns None for a closed policy: there is no allowlist to measure, and inventing a
+        passing matrix for one would be the failure this exists to prevent.
+        """
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        if envelope.mode != opol.RESTRICTED or not envelope.allowed_destinations:
+            return None
+        from agentnode_sdk.conformance.runner import measure_egress
+
+        denied = next((c for c in ("example.org", "example.net", "iana.org")
+                       if c not in envelope.allowed_destinations), None)
+        if denied is None:
+            # Every control this build knows is on the allowlist, so a denial could not be told
+            # apart from a failure to reach anything. Unmeasured, and therefore not ready.
+            return None
+        # ALL of them. Measuring the first and permitting the rest was what EM3C-FINAL-0001
+        # found: the policy was reported as measured while every destination after the first
+        # was an open path nobody had tried.
+        return measure_egress(self.backend, allowed=envelope.allowed_destinations,
+                              denied=denied)
+
     def readiness_now(self):
-        """The current answer to whether this gateway may take work, with its reason."""
-        return self.readiness.evaluate(self.report_binding())
+        """The current answer to whether this gateway may take work, with its reason.
+
+        Every part of this is recomputed: the policy is re-read and re-digested, and the report
+        is judged against the properties THAT policy requires. Nothing here is remembered from
+        when the process started.
+        """
+        from agentnode_sdk.gateway.activation import SnapshotUnusable
+        from agentnode_sdk.gateway.operator_policy import OperatorPolicyError
+
+        try:
+            state = self.active_state()
+            configured = self.configured_envelope()
+        except (SnapshotUnusable, OperatorPolicyError) as exc:
+            # A policy that cannot be read is not a closed policy. It is an unknown one, and an
+            # unknown policy is not something to run foreign code under.
+            return Readiness(
+                False,
+                "this gateway cannot read the policy it is supposed to be enforcing: "
+                + str(exc) + " Nothing will be run until that is resolved.",
+                {}, (), (_MEASURE,),
+            )
+
+        if state is None:
+            return Readiness(
+                False,
+                "this gateway has not been measured yet, so it cannot say what it enforces. "
+                "Nothing will be run until it has been.",
+                {}, tuple(configured.required_properties), (_MEASURE,),
+            )
+
+        if configured.digest() != state.policy_digest:
+            # The config file was changed without going through an activation. The file is an
+            # input, not the decision -- so this is refused rather than obeyed.
+            return Readiness(
+                False,
+                "what this gateway is configured to allow is not what was measured and put into "
+                "force. A policy takes effect only after it has been measured as itself.",
+                {}, tuple(configured.required_properties), (_MEASURE,),
+            )
+
+        document = {"measured_at": state.activated_at,
+                    "binding": state.binding, "report": state.report}
+        return self.readiness.evaluate_document(
+            document, self.report_binding(state.policy_digest),
+            state.policy.required_properties)
 
     def measured_properties(self) -> dict[str, bool]:
         """What this gateway has been SHOWN to do -- from measurements, not from its own say-so.
@@ -273,6 +598,7 @@ class GatewayService:
     # ------------------------------------------------------------------ admission
 
     def authenticate(self, token: str, payload: dict[str, Any], signature: str) -> bytes:
+        self.require_private_state()
         secret = self.state.token_secret(token)
         if secret is None:
             raise ProtocolError("this client is not paired with this gateway")
@@ -289,13 +615,17 @@ class GatewayService:
         """
         for run_id in self.ledger.unfinished_runs():
             entry = self.ledger.run_entry(run_id) or {}
+            # A record rebuilt from the ledger begins where it is. It is CONSTRUCTED there
+            # rather than constructed elsewhere and then assigned, so that no state in this
+            # module is ever written except through `move_to`, and the test that reads this
+            # source can require exactly that rather than name an exception.
             record = RunRecord(
                 run_id=run_id,
                 job_id=str(entry.get("job_id", "")),
                 request_sha256=str(entry.get("request_sha256", "")),
                 owner_client_id=str(entry.get("owner_client_id", "")),
+                state="interrupted",
             )
-            record.state = "interrupted"
             record.refusal = (
                 "the gateway restarted while this job was running, so it did not finish. It has "
                 "not been started again -- submit it as a new job if you still want it run."
@@ -304,6 +634,19 @@ class GatewayService:
             self.runs[run_id] = record
             self.ledger.note_state(run_id, "interrupted")
 
+    def require_private_state(self) -> None:
+        """Re-check that the gateway's files are still private, on every path that reads them.
+
+        `EM3C-EXTERNAL-0001` found that checking once before binding leaves two windows: between
+        the check and the socket, and every moment after. Permissions are not a property of
+        startup, so this runs where the tokens are actually read. A stat is cheap; being wrong
+        here means somebody else has been able to read every token for as long as it took anyone
+        to notice.
+        """
+        from agentnode_sdk.gateway.statedir import require_private
+
+        require_private(self.state.root)
+
     def require_client(self, token: str) -> str:
         """The token hash for a paired client, or a refusal. No signature involved.
 
@@ -311,6 +654,7 @@ class GatewayService:
         still prove which client is asking, because a run's output is the output of somebody's
         code. This is the check that the status endpoint previously did not have at all.
         """
+        self.require_private_state()
         client_id = self.state.client_id_for(token)
         if client_id is None or self.state.token_secret(token) is None:
             raise ProtocolError("this client is not paired with this gateway")
@@ -396,7 +740,9 @@ class GatewayService:
         )
 
         try:
-            mandatory, optional = validate_paths(request.mandatory, request.optional)
+            # Both lists are still validated: an unknown path name is refused either way.
+            # Only `mandatory` is consulted afterwards -- see the disclosure note in admit().
+            mandatory, _optional = validate_paths(request.mandatory, request.optional)
         except PolicyPathError as exc:
             raise ProtocolError(f"this job's requirements cannot be enforced: {exc}") from exc
 
@@ -463,8 +809,13 @@ class GatewayService:
                 "the policy digest does not match the policy this job describes. "
                 "The job was not started."
             )
+        # Every narrowing is reported, not only the ones the job thought to list as optional.
+        # EM3C-EGRESS-CLASSIFY-0001 found the earlier rule hid real narrowing: a field in
+        # neither list was reduced with no delta and no refusal, so a caller holding two
+        # unequal policy digests had nothing that said which field moved. `mandatory` still
+        # decides what is REFUSED, above; it was never meant to decide what is DISCLOSED.
         return granted, properties, requested_shape, effective_shape, describe_deltas(
-            tuple(p for p in narrowed if p in optional), requested_shape, effective_shape)
+            tuple(narrowed), requested_shape, effective_shape)
 
 
     def client_policy(self, token: str):
@@ -558,7 +909,7 @@ class GatewayService:
             granted, _props, req_shape, eff_shape, deltas = self.admit(
                 request, artifact, token)
         except Exception as exc:                              # noqa: BLE001 - refusal is an answer
-            record.state = "refused"
+            record.move_to("refused")
             record.refusal = str(exc)
             record.finished_at = time.time()
             # Recorded, so a refused job cannot be retried into an acceptance by resending it.
@@ -576,6 +927,12 @@ class GatewayService:
         record.effective_policy_sha256 = digest(canonical_bytes(eff_shape))
         record.deltas = deltas
         record.artifact_sha256 = request.artifact_sha256
+
+        # Admitted, so the effective policy is settled -- which is one of the things the challenge
+        # is bound to. Issued here, once, and never again for this run: `issue_challenge` writes
+        # the binding to the ledger below, after the claim, so what it says is on disk before the
+        # container is.
+        record.challenge = ch.a_fresh_challenge()
 
         # Admitted -- so now claim it, atomically and durably, before anything starts. One
         # critical section covers both the look and the write, so two identical requests arriving
@@ -595,6 +952,23 @@ class GatewayService:
             )
             refused.finished_at = time.time()
             return refused
+
+        # The binding goes down BEFORE the job starts, so that what this gateway wrote about
+        # the challenge predates anything the run could produce. It carries the digest; the value
+        # is not in it, and `note_challenge` has no way to be handed one.
+        #
+        # A job that brought its own command is not given a challenge: its standard input is its
+        # own, and putting something on it would be altering the job. The binding says that in
+        # words rather than leaving a crossing to fail without a reason.
+        carried = not bool(request.command)
+        if not carried:
+            record.challenge = ""
+        self.ledger.note_challenge(request.run_id, ch.bind(
+            run_id=request.run_id, gateway_id=self.state.identity.gateway_id,
+            backend_instance=self.instance,
+            effective_policy_sha256=record.effective_policy_sha256,
+            value=record.challenge, delivered=carried,
+            because="" if carried else ch.BROUGHT_ITS_OWN_COMMAND).as_dict())
 
         with self._lock:
             self.runs[request.run_id] = record
@@ -622,7 +996,7 @@ class GatewayService:
             try:
                 egress = start_egress_proxy(domains)
             except Exception as exc:                          # noqa: BLE001
-                record.state = "refused"
+                record.move_to("refused")
                 record.refusal = (
                     "the restricted network this job asked for could not be set up, so it was "
                     f"not started: {exc}"
@@ -631,12 +1005,16 @@ class GatewayService:
                 return
 
         record.container_name = f"agentnode-em3c-{record.run_id[:16]}"
-        record.state = "running"
+        record.move_to("running")
         payload = base64.b64encode(artifact).decode("ascii")
-        command = list(request.command) or [
-            "python", "-c",
-            "import base64,sys;exec(base64.b64decode(sys.stdin.read()).decode())",
-        ]
+        # The client's own command if it brought one, otherwise this gateway's bootstrap -- which
+        # reads the challenge off the first line of standard input and puts it in its own process
+        # environment before running the job. On stdin rather than in an argument because
+        # `EM3C-CROSSING-DECISION-0001`, F-A-ARGV-EXPOSURE: a value on the container runtime's
+        # command line is one anybody listing processes on this host can read.
+        command = list(request.command) or ch.bootstrap(command_was_given=False)
+        if record.challenge:
+            payload = ch.on_stdin(record.challenge, self.instance, payload)
         spec = ProcessSpec(
             command=command,
             network=mode,
@@ -654,15 +1032,42 @@ class GatewayService:
             # client decided how long its code could run -- the operator ceiling bound one and
             # not the other, and the policy digest could not catch it because the digested value
             # was not the enforced one. EM3C-GATEWAY-0004 found it.
-            rc, out, err = self.backend.run_process(
+            outcome = self.backend.run_process(
                 spec, input_text=payload, timeout=float(granted.limits.wall_clock_s)
             )
+            rc, out, err = outcome
+            from agentnode_sdk.sandbox.backend import why_it_stopped
+
+            reason, native, platform = why_it_stopped(outcome)
+            record.termination_reason = reason
+            record.native_status = native
+            record.native_platform = platform
             record.exit_code = rc
             record.stdout = out or ""
             record.stderr = err or ""
             terminal = "cancelled" if record.cancel_requested.is_set() else "finished"
+            if terminal == "cancelled":
+                # `EM3C-E8-RECORD-0001`: what came back here is whatever the runtime made of a
+                # container this gateway had just destroyed -- an ordinary exit, status 137. That
+                # is not why the run stopped. It stopped because the client asked for it to, and
+                # the record says so whatever the container's death looked like from outside.
+                #
+                # And nothing that was stopped chose a status: the exit code goes, the runtime's
+                # own number is kept beside the reason, and it is kept only if something can say
+                # whose number it is. A number nobody can attribute is a number a reader guesses
+                # about, so it is not recorded at all.
+                from agentnode_sdk.gateway.protocol import CANCELLED as _CANCELLED
+
+                record.termination_reason = _CANCELLED
+                whose = platform or getattr(self.backend, "native_platform", "")
+                record.native_status = rc if whose else None
+                record.native_platform = whose if record.native_status is not None else ""
+                record.exit_code = None
         except _Cancelled:
+            from agentnode_sdk.gateway.protocol import CANCELLED
+
             terminal = "cancelled"
+            record.termination_reason = CANCELLED
             record.refusal = "cancelled by the client before it started"
         except Exception as exc:                              # noqa: BLE001
             terminal = "refused"
@@ -700,8 +1105,13 @@ class GatewayService:
                     "could not confirm the container was removed. Treat the result as unproven: "
                     "what ran is not in question, what was left behind is."
                 )
+            # The value is dropped here. What survives is the digest, in the binding the
+            # ledger holds -- so a challenge is worth nothing once its run has ended, and there is
+            # nowhere left to read it from. It was never a credential; this is what makes it also
+            # not a leftover.
+            record.challenge = ""
             # A reader that sees a terminal state must be seeing a complete record.
-            record.state = terminal
+            record.move_to(terminal)
             self.ledger.note_state(record.run_id, terminal)
 
     def _containers_named(self, prefix: str) -> tuple[bool, list[str]]:
@@ -803,15 +1213,45 @@ class GatewayService:
         if not answered:
             return None
         return not names
-    def cancel(self, run_id: str) -> RunRecord | None:
+    #: How long a cancellation waits for the run to actually stop before it answers. The worker
+    #: publishes the terminal state LAST, after cleanup -- so waiting for that state is waiting
+    #: for the abort to be established and the cleanup to be done, which is the only moment at
+    #: which a cancellation is true.
+    CANCEL_SETTLE_SECONDS = 45.0
+
+    #: How long removing a container waits for one to appear. A cancel can arrive between the
+    #: worker marking a run running and the runtime creating the container; removing nothing in
+    #: that instant would leave the payload to run to its wall clock. Named rather than buried,
+    #: because a test that has no runtime at all should not wait the length of one.
+    CONTAINER_APPEAR_SECONDS = 20.0
+
+    def cancel(self, run_id: str, settle: float | None = None):
+        """Stop a run and answer once it has stopped. Returns `(record, settled)`.
+
+        `EM3C-E6-RECORD-0001`: this used to remove the container and return immediately, while the
+        worker had not yet published the terminal state. The answer said `running` about a run
+        whose container had already been destroyed -- true of the record at that instant, and
+        false about the world. So it waits, and `settled` says whether the waiting was enough. An
+        unsettled cancellation is answered honestly rather than called terminal by default.
+
+        Idempotent from the first line: a run that has already ended is not ended again, nothing
+        is looked for, and the answer is the one the previous cancellation gave.
+        """
+        from agentnode_sdk.gateway.protocol import is_terminal
+
         record = self.runs.get(run_id)
         if record is None:
-            return None
+            return None, False
+        if is_terminal(record.state):
+            return record, True
+        deadline = time.monotonic() + (self.CANCEL_SETTLE_SECONDS if settle is None else settle)
         record.cancel_requested.set()
-        if record.state in ("finished", "refused", "cancelled"):
-            return record
         self._end_container(record)
-        return record
+        while time.monotonic() < deadline:
+            if is_terminal(record.state):
+                return record, True
+            time.sleep(0.05)
+        return record, is_terminal(record.state)
 
     def _end_container(self, record: RunRecord) -> None:
         """Remove this run's container by the identity the backend actually gave it.
@@ -830,7 +1270,7 @@ class GatewayService:
         # returning would leave the payload to run to its wall clock, which is not what the client
         # asked for -- so wait briefly for it to appear. Bounded, because a container that never
         # appears is a run that never started, and the record already says so.
-        deadline = time.monotonic() + 20.0
+        deadline = time.monotonic() + self.CONTAINER_APPEAR_SECONDS
         names: list[str] = []
         while time.monotonic() < deadline:
             answered, names = self._containers_named(record.container_name)
@@ -860,6 +1300,15 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
     def _send(self, code: int, body: dict) -> None:
+        # Every answer carries the gateway's identity, including refusals. `EM3C-EXTERNAL-0008`
+        # found that error bodies were consumed before the client checked who sent them, so a
+        # server at a changed address could hand back text that a person would read and act on.
+        # An error is a message like any other, and the client cannot check what is not there.
+        if isinstance(body, dict) and "gateway" not in body:
+            try:
+                body = self.service.stamp(dict(body))
+            except Exception:                                 # noqa: BLE001
+                pass
         data = json.dumps(body).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -895,7 +1344,24 @@ class _Handler(BaseHTTPRequestHandler):
             raise ProtocolError("the request body is larger than this gateway accepts")
         return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
 
+    def _state_is_private(self) -> bool:
+        """Re-checked per request, so the exposure is one request rather than one poll interval.
+
+        The watcher below closes the socket, but polls; `EM3C-EXTERNAL-0004` was right that a poll
+        interval is a window. This makes the window a single request, and the token file checks its
+        own directory again before it is read, so nothing is disclosed inside that window either.
+        """
+        from agentnode_sdk.gateway.statedir import inspect as inspect_dir
+
+        verdict = inspect_dir(self.service.state.root)
+        if verdict.ok:
+            return True
+        self._send(503, refusal("this gateway has stopped accepting work: " + verdict.reason))
+        return False
+
     def do_GET(self):
+        if not self._state_is_private():
+            return None
         if self.path == "/v1/hello":
             return self._send(200, self.service.hello())
         if self.path.startswith("/v1/jobs/"):
@@ -908,27 +1374,33 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 self.service.require_client(token)
             except ProtocolError as exc:
-                return self._send(403, {"error": str(exc)})
+                return self._send(403, refusal(str(exc)))
             record = self.service.owned_run(run_id, token)
             if record is None:
-                return self._send(404, self.service.stamp({"error": "no such run"}))
+                return self._send(404, self.service.stamp(refusal("no such run")))
             return self._send(200, self.service.sign_answer(
                 self.service.stamp(record.public()), token))
-        return self._send(404, {"error": "no such endpoint"})
+        return self._send(404, refusal("no such endpoint"))
 
     def do_POST(self):
+        if not self._state_is_private():
+            return None
         try:
             body = self._read_json()
         except (ProtocolError, ValueError) as exc:
-            return self._send(400, {"error": str(exc)})
+            return self._send(400, refusal(str(exc)))
 
         if self.path == "/v1/pair":
             try:
+                self.service.require_private_state()
+                # No source is passed, and that is the decision rather than an omission: the
+                # limits it feeds are address-free, because behind a reverse proxy every client
+                # shares the peer address and a forwarding header is set by whoever can set one.
                 token = self.service.state.redeem_pairing(
-                    body.get("code", ""), client_name=body.get("client_name", "")
+                    body.get("code", ""), client_name=body.get("client_name", ""),
                 )
             except PairingError as exc:
-                return self._send(403, {"error": str(exc)})
+                return self._send(403, refusal(str(exc)))
             identity = self.service.state.identity
             return self._send(200, {"token": token, "gateway": identity.as_dict(),
                                     "fingerprint": identity.fingerprint})
@@ -941,7 +1413,7 @@ class _Handler(BaseHTTPRequestHandler):
                 request = JobRequest.from_payload(payload)
                 artifact = base64.b64decode(body.get("artifact_b64", "") or "")
             except (ProtocolError, ValueError) as exc:
-                return self._send(403, {"error": str(exc)})
+                return self._send(403, refusal(str(exc)))
             record = self.service.submit(request, artifact, body.get("token", ""))
             return self._send(202 if record.state != "refused" else 409,
                               self.service.sign_answer(
@@ -958,10 +1430,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self.service.authenticate(token, body.get("payload") or {},
                                           body.get("signature", ""))
             except ProtocolError as exc:
-                return self._send(403, {"error": str(exc)})
+                return self._send(403, refusal(str(exc)))
             replacement = self.service.state.rotate_token(token)
             if replacement is None:
-                return self._send(403, {"error": "this client is not paired with this gateway"})
+                return self._send(403, refusal("this client is not paired with this gateway"))
             identity = self.service.state.identity
             return self._send(200, {"token": replacement, "gateway": identity.as_dict(),
                                     "fingerprint": identity.fingerprint})
@@ -973,21 +1445,27 @@ class _Handler(BaseHTTPRequestHandler):
                 self.service.authenticate(token, body.get("payload") or {},
                                           body.get("signature", ""))
             except ProtocolError as exc:
-                return self._send(403, {"error": str(exc)})
+                return self._send(403, refusal(str(exc)))
             # Being paired was never enough to cancel somebody else's run; it only looked like it
             # was, because nothing checked. Ownership is checked BEFORE the cancel, so a stranger
             # cannot stop a run and then be told it was not theirs.
             if self.service.owned_run(run_id, token) is None:
-                return self._send(404, self.service.stamp({"error": "no such run"}))
-            record = self.service.cancel(run_id)
+                return self._send(404, self.service.stamp(refusal("no such run")))
+            record, settled = self.service.cancel(run_id)
             if record is None:
-                return self._send(404, self.service.stamp({"error": "no such run"}))
+                return self._send(404, self.service.stamp(refusal("no such run")))
             # Signed with the token that authenticated, not with whatever a header claimed. The
             # two were different variables, and only one of them had been checked.
-            return self._send(200, self.service.sign_answer(
+            #
+            # 200 means it stopped; 202 means it was asked to and had not stopped by the time this
+            # gateway would wait no longer. The record is signed either way and says which state
+            # it is really in -- the status is what keeps an unsettled cancellation from reading
+            # like a finished one. No field of the answer changed, so this protocol version still
+            # says everything a client of it needs.
+            return self._send(200 if settled else 202, self.service.sign_answer(
                 self.service.stamp(record.public()), token))
 
-        return self._send(404, {"error": "no such endpoint"})
+        return self._send(404, refusal("no such endpoint"))
 
 
 def make_server(
@@ -1004,6 +1482,40 @@ def make_server(
     the pairing code and the token would be readable by anyone who can reach the machine.
     """
     context = check_bind_address(host, tls)
+    # After the transport decision, because that one is about the address the operator typed and
+    # should be what they hear about first. Checked here rather than at construction, so that
+    # building a service to inspect it is not the same act as exposing one -- this is the moment
+    # the tokens become reachable.
+    from agentnode_sdk.gateway.statedir import require_private
+
+    require_private(service.state.root)
+
+    def _watch_permissions(target) -> None:
+        """Stop serving if the gateway's directory is widened while it is up.
+
+        The check before binding is a point in time, and `EM3C-EXTERNAL-0003` was right that a
+        point in time says nothing about the next one. Reading a token already re-checks, so a
+        widened directory cannot be USED -- but the socket would stay open, accepting and refusing
+        forever without telling anyone why. This closes it instead, which is both the safer state
+        and the one an operator will notice.
+        """
+        from agentnode_sdk.gateway.statedir import inspect as inspect_dir
+
+        # A backstop, not the boundary: every request re-checks, and the token file re-checks
+        # its own directory before it is read. This exists so a gateway nobody is using does not
+        # sit there exposed until somebody happens to call it.
+        while getattr(target, "agentnode_serving", False):
+            time.sleep(2.0)
+            verdict = inspect_dir(service.state.root)
+            if not verdict.ok:
+                sys.stderr.write(
+                    "\nThe gateway's files stopped being private while it was running:\n  "
+                    + verdict.reason + "\n\nIt has stopped. To fix it:\n  "
+                    + verdict.remedy + "\n"
+                )
+                target.agentnode_serving = False
+                threading.Thread(target=target.shutdown, daemon=True).start()
+                return
     handler = type("_BoundHandler", (_Handler,), {"service": service})
     server = ThreadingHTTPServer((host, port), handler)
     # Off unless asked for. A gateway that logs every request by default writes a record of who
@@ -1017,6 +1529,8 @@ def make_server(
         server.agentnode_tls = True
     else:
         server.agentnode_tls = False
+    server.agentnode_serving = True
+    threading.Thread(target=_watch_permissions, args=(server,), daemon=True).start()
     return server
 
 

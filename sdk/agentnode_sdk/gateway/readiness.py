@@ -82,12 +82,37 @@ class ReportBinding:
     #: taken against a different image describes different software even on the same daemon.
     image_digest: str = ""
 
+    #: Which boot of this machine the measurement happened during. A reboot can bring a new
+    #: kernel, a cgroup controller that is no longer mounted, or a seccomp or apparmor policy that
+    #: loaded differently -- none of which move the image digest, and all of which change what the
+    #: container actually gets. Without this the report would describe the previous boot and still
+    #: look current.
+    boot_id: str = ""
+
+    #: The version of the runtime the measurement ran against, distinct from which runtime it is.
+    backend_version: str = ""
+
+    #: The version of the conformance schema the report speaks. A report whose vocabulary has
+    #: changed cannot be read against today's expectations and called current.
+    conformance_schema: str = ""
+
+    #: The digest of the operator policy this measurement was taken FOR. `EM3C-EXTERNAL-0017`
+    #: found readiness saying nothing about the policy underneath it: a report taken while the
+    #: gateway allowed no network was accepted as evidence after the operator opened an
+    #: allowlist. Two enforcement modes, one measurement, and nothing that noticed. A report is
+    #: now about a policy, and stops being evidence the moment that policy changes.
+    operator_policy_digest: str = ""
+
     def as_dict(self) -> dict[str, str]:
         return {
             "gateway_id": self.gateway_id,
             "gateway_version": self.gateway_version,
             "backend": self.backend,
             "image_digest": self.image_digest,
+            "boot_id": self.boot_id,
+            "backend_version": self.backend_version,
+            "conformance_schema": self.conformance_schema,
+            "operator_policy_digest": self.operator_policy_digest,
         }
 
     def mismatches(self, other: "ReportBinding") -> tuple[str, ...]:
@@ -165,11 +190,35 @@ class ReadinessGate:
 
     # ------------------------------------------------------------------ the decision
 
-    def evaluate(self, binding: ReportBinding, now: float | None = None) -> Readiness:
-        now = time.time() if now is None else now
-        blank = {name: False for name in PROPERTY_CHECKS}
+    def evaluate(self, binding: ReportBinding, required: tuple[str, ...] | None = None,
+                 now: float | None = None) -> Readiness:
+        """Whether the stored measurement proves what THIS policy needs proved.
 
-        document = self.load()
+        `required` is the set the active operator policy demands, which is why it is a parameter
+        rather than a constant: an allowlist policy and a closed one need different things
+        measured, and a gateway that asked the same question of both would accept a report taken
+        under one as evidence for the other -- `EM3C-Y6-DECISION-0001`, `D2`.
+
+        A required property this build has no check for is unproven, not waived. That is what
+        keeps a mode nobody has implemented a measurement for -- `network_unrestricted` today --
+        from being ready by omission.
+        """
+        return self.evaluate_document(self.load(), binding, required, now)
+
+    def evaluate_document(self, document, binding: ReportBinding,
+                          required: tuple[str, ...] | None = None,
+                          now: float | None = None) -> Readiness:
+        """The same judgement, on a document the caller supplies.
+
+        Split out because the report that decides readiness lives inside the authenticated
+        active-state snapshot (`EM3C-Y6-DECISION-0001`, `D4-a`), while this file on its own is
+        kept as a diagnostic copy. The judging is identical either way; only where the document
+        came from differs, and that is the caller's business.
+        """
+        now = time.time() if now is None else now
+        required = tuple(ALWAYS_REQUIRED) if required is None else tuple(required)
+        blank = {name: False for name in sorted(set(PROPERTY_CHECKS) | set(required))}
+
         if document is None:
             return Readiness(
                 False,
@@ -184,10 +233,31 @@ class ReadinessGate:
         })
         drift = binding.mismatches(stored)
         if drift:
+            rebooted = drift == ("boot_id",)
+            # Only when it is the ONLY thing that moved. A report that is also from another
+            # machine is not explained by a policy change, and saying so would describe the
+            # smaller problem and hide the larger one.
+            policy_changed = drift == ("operator_policy_digest",)
+            if policy_changed:
+                # The most likely reason to be here, and the one worth its own sentence: the
+                # measurement is fine, it is just not a measurement of what is now configured.
+                return Readiness(
+                    False,
+                    "what this gateway allows has changed since it was last measured, so the "
+                    "measurement describes a different policy. Nothing runs until the policy in "
+                    "force has been measured as itself.",
+                    blank, tuple(sorted(set(PROPERTY_CHECKS) | set(required))), (_MEASURE_STEP,),
+                    measured_at=document.get("measured_at"),
+                )
             return Readiness(
                 False,
-                "the stored measurement describes something else (" + ", ".join(drift) +
-                " differ), so it says nothing about what is running here.",
+                ("this machine has restarted since it was last measured, and a restart can change "
+                 "what a container actually gets -- a new kernel, a cgroup controller that is no "
+                 "longer mounted, a policy that loaded differently. The old measurement is not "
+                 "wrong, it just describes the previous boot.")
+                if rebooted else
+                ("the stored measurement describes something else (" + ", ".join(drift) +
+                 " differ), so it says nothing about what is running here."),
                 blank, tuple(sorted(PROPERTY_CHECKS)), (_MEASURE_STEP,),
                 measured_at=document.get("measured_at"),
             )
@@ -215,7 +285,13 @@ class ReadinessGate:
         # suite had found: a check that could not see its input, failing closed but still blind.
         properties: dict[str, bool] = {}
         unproven: list[str] = []
-        for name, check_ids in PROPERTY_CHECKS.items():
+        for name in sorted(set(PROPERTY_CHECKS) | set(required)):
+            check_ids = PROPERTY_CHECKS.get(name)
+            if not check_ids:
+                # Required, and nothing in this build measures it. Unproven, and therefore false.
+                properties[name] = False
+                unproven.append(name)
+                continue
             holds = True
             for check_id in check_ids:
                 result = results.get(check_id)
@@ -230,7 +306,7 @@ class ReadinessGate:
             if not holds:
                 unproven.append(name)
 
-        missing_core = [p for p in ALWAYS_REQUIRED if not properties.get(p)]
+        missing_core = [p for p in required if not properties.get(p)]
         if missing_core:
             return Readiness(
                 False,

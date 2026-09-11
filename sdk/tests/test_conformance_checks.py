@@ -30,7 +30,12 @@ GOOD_HOST = {
     "refusal_message": "no container runtime found. Install Docker or Podman, then run "
                        "agentnode sandbox pull",
     "egress_matrix": {"direct_1_1_1_1": "blocked:OSError", "direct_8_8_8_8": "blocked:OSError",
-                      "allowed_via_proxy": "ALLOWED:200", "denied_via_proxy": "refused:HTTPError"},
+                      "allowed_hosts": ["example.com"],
+                      "allowed:example.com": "ALLOWED:200",
+                      "denied_via_proxy": "refused:HTTPError"},
+    # What the POLICY permits, stated by the caller. Without it the check has nothing to hold the
+    # run against and reports that, rather than accepting the run's own account of itself.
+    "egress_expected": ["example.com"],
     "env_baseline": ["HOME", "HOSTNAME", "LANG", "PATH", "PYTHON_VERSION"],
     "cancel": {"name": "c", "was_running": True, "gone_after": True, "still_listed": ""},
     "credential_lifecycle": {"name": "AGENTNODE_CONFORMANCE_RELEASED",
@@ -38,7 +43,12 @@ GOOD_HOST = {
                              "leftovers": []},
 }
 GOOD_STRESS = {
-    "wallclock": {"sleep": 30, "timeout": 5.0, "elapsed": 5.1, "rc": -1,
+    # `EM3C-E4-CLASSIFY-0001`: this sample carried rc=-1, the number that used to mean "the
+    # ceiling stopped it" and that a Windows client read as 4294967295. What a backend reports
+    # now is a REASON, and no exit code, because nothing exited.
+    "wallclock": {"sleep": 30, "timeout": 5.0, "elapsed": 5.1, "rc": None,
+                  "reason": "timeout", "native_status": -9,
+                  "native_platform": "linux-container",
                   "timeout_marker_seen": True, "timeout_signal": True,
                   "stderr_tail": "[sandbox timed out after 5.0s]"},
     "memory": {"requested_mb": 768, "rc": 137, "killed": True, "stdout_tail": ""},
@@ -67,8 +77,15 @@ def bad_context():
               "backend_loss": {"available": True, "refused": False, "error_type": None,
                                "reason": ""},
               "refusal_message": "error",
-              "egress_matrix": {"direct_1_1_1_1": "BYPASS", "allowed_via_proxy": "refused:X",
+              # A run that DID measure, and measured a backend that is not sealing anything:
+              # a direct route open, the sealed destination unreachable, the unsealed one
+              # allowed. Leaving out `allowed_hosts` here would make the check say "not
+              # measured", which is a different answer from "measured and bad".
+              "egress_matrix": {"direct_1_1_1_1": "BYPASS",
+                                "allowed_hosts": ["example.com"],
+                                "allowed:example.com": "refused:X",
                                 "denied_via_proxy": "ALLOWED:200"},
+              "egress_expected": ["example.com"],
               "env_baseline": ["HOME", "PATH"],
               "cancel": {"name": "c", "was_running": True, "gone_after": False,
                          "still_listed": "agentnode-conformance-x-cancel"},
@@ -153,14 +170,16 @@ class TestTheRunnerAgainstDoubles:
     def test_a_good_double_passes_every_check_it_can_reach(self):
         report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
                                  options=SuiteOptions(include_outside=False),
-                                 egress_matrix=GOOD_HOST["egress_matrix"])
+                                 egress_matrix=GOOD_HOST["egress_matrix"],
+                                 egress_expected=GOOD_HOST["egress_expected"])
         unproven = [(r.check_id, r.outcome.value, r.evidence) for r in report.unproven]
         assert unproven == []
 
     def test_but_a_double_is_never_conformant(self):
         report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
                                  options=SuiteOptions(include_outside=False),
-                                 egress_matrix=GOOD_HOST["egress_matrix"])
+                                 egress_matrix=GOOD_HOST["egress_matrix"],
+                                 egress_expected=GOOD_HOST["egress_expected"])
         assert report.is_test_double
         assert not report.is_conformant
         assert "TEST DOUBLE" in report.summary_line()
@@ -431,7 +450,8 @@ class TestTheCheckInventoryCannotShrinkQuietly:
     def test_a_report_covers_every_required_check(self):
         report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
                                  options=SuiteOptions(include_outside=False),
-                                 egress_matrix=GOOD_HOST["egress_matrix"])
+                                 egress_matrix=GOOD_HOST["egress_matrix"],
+                                 egress_expected=GOOD_HOST["egress_expected"])
         produced = [r.check_id for r in report.results]
         assert produced == list(REQUIRED_CHECK_IDS), (
             "a run produced a different set of checks than the suite is required to make")
@@ -540,7 +560,8 @@ class TestAConfiguredCeilingIsNotAnEnforcedOne:
     def test_a_report_missing_the_stress_run_is_not_conformant(self):
         report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
                                  options=SuiteOptions(include_outside=False, include_stress=False),
-                                 egress_matrix=GOOD_HOST["egress_matrix"])
+                                 egress_matrix=GOOD_HOST["egress_matrix"],
+                                 egress_expected=GOOD_HOST["egress_expected"])
         assert not report.is_conformant
         # a double is never conformant anyway, so the substantive claim is that the check itself
         # is unproven rather than passing
@@ -664,3 +685,133 @@ class TestAnEndingMustBeAttributableToTheCeiling:
                           "ended_by_the_ceiling": True, "killed": True,
                           "stderr_tail": "MemoryError"})
         assert r.outcome is Outcome.PASS
+
+
+class TestAnAllowlistIsOnlyAsMeasuredAsItsWorstEntry:
+    """EM3C-FINAL-0001: a policy naming several hosts was reported as measured after one of them
+    was exercised, leaving every other permitted destination an open path nobody had tried.
+    """
+
+    def _result(self, matrix, expected=None):
+        from agentnode_sdk.conformance.checks import check_egress_allowlist
+
+        host = dict(GOOD_HOST)
+        host["egress_matrix"] = matrix
+        host["egress_expected"] = (list(matrix.get("allowed_hosts") or [])
+                                   if expected is None else list(expected))
+        return check_egress_allowlist(Context(readings=copy.deepcopy(doubles.GOOD_READINGS),
+                                              declared=dict(GOOD_DECLARED), host=host))
+
+    BLOCKED = {"direct_1_1_1_1": "blocked:OSError", "direct_8_8_8_8": "blocked:OSError",
+               "direct_unproxied": "blocked:OSError", "denied_via_proxy": "refused:URLError"}
+    THREE = ["a.example", "b.example", "c.example"]
+
+    def _matrix(self, results, hosts=None):
+        matrix = dict(self.BLOCKED)
+        matrix["allowed_hosts"] = list(self.THREE if hosts is None else hosts)
+        matrix.update({"allowed:" + h: v for h, v in results.items()})
+        return matrix
+
+    def test_all_three_reachable_passes(self):
+        """The control. Without it, a check that failed everything would pass every test below."""
+        result = self._result(self._matrix({h: "ALLOWED:200" for h in self.THREE}))
+        assert result.outcome == "pass", result.detail
+
+    def test_one_unreachable_of_three_fails(self):
+        results = {h: "ALLOWED:200" for h in self.THREE}
+        results["c.example"] = "refused:URLError"
+        assert self._result(self._matrix(results)).outcome != "pass",             "a destination that was never reachable was passed over"
+
+    def test_the_first_one_failing_also_fails(self):
+        results = {h: "ALLOWED:200" for h in self.THREE}
+        results["a.example"] = "refused:URLError"
+        assert self._result(self._matrix(results)).outcome != "pass"
+
+    def test_a_destination_with_no_result_at_all_fails(self):
+        """The half EM3C-FINAL-0003 found: a partial matrix is not a complete one, and counting
+        the results present can never notice the one that is absent."""
+        results = {h: "ALLOWED:200" for h in self.THREE if h != "c.example"}
+        assert self._result(self._matrix(results)).outcome != "pass",             "a policy naming three destinations passed on two results"
+
+    def test_a_matrix_naming_no_allowed_destination_fails(self):
+        assert self._result(self._matrix({}, hosts=[])).outcome != "pass"
+
+    def test_a_matrix_that_never_says_what_it_measured_is_not_checked(self):
+        """Without the list, complete and partial look identical, so neither is claimed."""
+        result = self._result(dict(self.BLOCKED), expected=self.THREE)
+        assert result.outcome == "not_checked", result.outcome
+
+    def test_a_run_with_no_stated_policy_is_not_checked(self):
+        """EM3C-FINAL-0004: filling the expectation in from the matrix made the comparison
+        compare the run with itself, so omitting it silently weakened the binding."""
+        from agentnode_sdk.conformance.checks import check_egress_allowlist
+
+        matrix = self._matrix({h: "ALLOWED:200" for h in self.THREE})
+        host = dict(GOOD_HOST)
+        host["egress_matrix"] = matrix
+        host.pop("egress_expected", None)
+        result = check_egress_allowlist(Context(readings=copy.deepcopy(doubles.GOOD_READINGS),
+                                                declared=dict(GOOD_DECLARED), host=host))
+        assert result.outcome == "not_checked", result.outcome
+        assert "which destinations the policy permits" in result.evidence
+
+    def test_measuring_hosts_the_policy_did_not_name_fails(self):
+        """A run that wandered off the policy is not evidence about the policy."""
+        matrix = self._matrix({h: "ALLOWED:200" for h in self.THREE})
+        host = dict(GOOD_HOST)
+        host["egress_matrix"] = matrix
+        host["egress_expected"] = ["a.example", "b.example"]
+        from agentnode_sdk.conformance.checks import check_egress_allowlist
+        result = check_egress_allowlist(Context(readings=copy.deepcopy(doubles.GOOD_READINGS),
+                                                declared=dict(GOOD_DECLARED), host=host))
+        assert result.outcome != "pass"
+
+    def test_the_expected_set_matching_passes(self):
+        """The control for the one above."""
+        matrix = self._matrix({h: "ALLOWED:200" for h in self.THREE})
+        host = dict(GOOD_HOST)
+        host["egress_matrix"] = matrix
+        host["egress_expected"] = list(self.THREE)
+        from agentnode_sdk.conformance.checks import check_egress_allowlist
+        result = check_egress_allowlist(Context(readings=copy.deepcopy(doubles.GOOD_READINGS),
+                                                declared=dict(GOOD_DECLARED), host=host))
+        assert result.outcome == "pass", result.detail
+
+    def test_a_bypass_still_fails_even_when_every_destination_worked(self):
+        matrix = self._matrix({h: "ALLOWED:200" for h in self.THREE})
+        matrix["direct_1_1_1_1"] = "BYPASS"
+        assert self._result(matrix).outcome != "pass"
+
+
+class TestTheRunnerDoesNotInventThePolicy:
+    """EM3C-FINAL-0004: `run_conformance` filled `egress_expected` in from the matrix's own
+    `allowed_hosts` when the caller omitted it, so the policy comparison compared the run with
+    itself. A caller could weaken the binding by leaving it out, which is the opposite of what a
+    binding is for.
+    """
+
+    def _egress(self, report):
+        return next(r for r in report.results if r.check_id == "egress-allowlist")
+
+    def test_a_run_with_no_stated_policy_is_not_checked(self):
+        report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False),
+                                 egress_matrix=GOOD_HOST["egress_matrix"])
+        result = self._egress(report)
+        assert result.outcome.value == "not_checked", result.outcome.value
+        assert "which destinations the policy permits" in result.evidence
+
+    def test_a_run_with_a_stated_policy_is_checked(self):
+        """The control. Without it, a runner that never checked egress would pass the test above."""
+        report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False),
+                                 egress_matrix=GOOD_HOST["egress_matrix"],
+                                 egress_expected=GOOD_HOST["egress_expected"])
+        assert self._egress(report).outcome.value == "pass"
+
+    def test_a_stated_policy_the_run_did_not_cover_is_refused(self):
+        report = run_conformance(doubles.GoodBackendDouble(), generated_at="t",
+                                 options=SuiteOptions(include_outside=False),
+                                 egress_matrix=GOOD_HOST["egress_matrix"],
+                                 egress_expected=["example.com", "other.example"])
+        assert self._egress(report).outcome.value != "pass"

@@ -42,12 +42,157 @@ from typing import Any
 
 #: Bumped when the meaning of a field changes. A gateway refuses a version it does not implement
 #: rather than guessing, because guessing is how a client ends up believing a property holds.
-PROTOCOL_VERSION = "em3c/1"
+PROTOCOL_VERSION = "em3c/2"
+
+#: What this build used to speak. Kept so a refusal can say what changed rather than only that
+#: something did. `em3c/1` carried a timeout as the exit code -1, and a client speaking it would
+#: read a killed run as one that exited -- so this version is refused rather than accommodated,
+#: which is the safe direction when the difference is "did this finish or was it stopped".
+SUPERSEDED_VERSIONS = ("em3c/1",)
+
+#: Why a run stopped, as a meaning rather than as a number. `EM3C-E4-CLASSIFY-0001`: a run ended
+#: by its own wall clock was reported as exit code -1, which a Windows client then observed as
+#: 4294967295 -- so the client could not tell a timeout from an ordinary failure, and two numbers
+#: had to be treated as the same thing to make it work. A process that was killed did not exit,
+#: and has no exit code; what it has is a reason.
+EXITED = "exited"
+TIMED_OUT = "timeout"
+CANCELLED = "cancelled"
+TERMINATION_REASONS = (EXITED, TIMED_OUT, CANCELLED)
+
+#: What a run that has not stopped says about why it stopped: nothing.
+#:
+#: `EM3C-E8-RECORD-0001`: the field defaulted to `EXITED`, so a queued run and a running run both
+#: reported a reason for stopping, and a cancelled run kept whatever the destroyed container's
+#: exit had looked like. A default that names one of the things a field can mean is a claim
+#: nobody made. This one names none of them.
+NOT_STOPPED = ""
+
+#: The CLI's own status when a run ended on its limit. 124 is what `timeout(1)` uses, it fits in
+#: the range every platform can carry, and it is a documented constant rather than a sentinel
+#: that happens to survive the trip.
+TIMEOUT_EXIT_STATUS = 124
+
 
 #: Every state from which a run will never move again. One list, shared, because a client that
 #: does not recognise a terminal state waits for it forever -- which is how "unverified" was
 #: first met: the run had ended and the client polled until it timed out.
 TERMINAL_STATES = ("finished", "refused", "cancelled", "unverified", "interrupted")
+
+#: Where a run starts, and the one place it can be before it is terminal.
+QUEUED = "accepted"
+RUNNING = "running"
+STATES = (QUEUED, RUNNING) + TERMINAL_STATES
+
+#: How far along a state is. `EM3C-E6-RECORD-0001` found a client showing a run as running after
+#: the gateway had already cancelled it and removed its container. Nothing was stopping a state
+#: from going backwards, because nothing had ever been asked to: every place that set one just
+#: assigned it. A state may raise this number and may never lower it, and nothing leaves the top.
+_STAGE = {QUEUED: 0, RUNNING: 1}
+_STAGE.update({state: 2 for state in TERMINAL_STATES})
+
+
+def stage_of(state: str) -> int:
+    """How far along a state is, or a refusal. An unknown state is not quietly ranked lowest."""
+    if state not in _STAGE:
+        raise ProtocolError(
+            f"{state!r} is not a state this build knows, and a state it cannot place is one it "
+            "cannot say anything about the order of")
+    return _STAGE[state]
+
+
+def is_terminal(state: str) -> bool:
+    return stage_of(state) == 2
+
+
+def may_move(old: str, new: str) -> bool:
+    """Whether a run in `old` may become `new`. Forward only, and never out of a terminal state.
+
+    Staying put is allowed: the same state arriving twice is not a move. What is refused is going
+    backwards -- and going anywhere at all once a run is terminal, because a terminal state that
+    can be replaced is not one a reader can act on.
+    """
+    before, after = stage_of(old), stage_of(new)
+    if before == 2:
+        return old == new
+    return after >= before
+
+
+def refuse_move(old: str, new: str) -> None:
+    """Raise unless this move is allowed. Fails closed: nothing is silently kept or dropped."""
+    if not may_move(old, new):
+        raise ProtocolError(
+            f"a run in {old!r} cannot become {new!r}. A state moves forward or stays where it is, "
+            "and a terminal state is where it stops; anything else means two answers about the "
+            "same run disagree and a reader cannot tell which one is now")
+
+
+#: What a run's end amounts to, said the way a person says it. The wire carries a state and a
+#: reason; these four are what those two together mean, and they exist so the distinction is
+#: answerable from the record rather than reconstructed by whoever is reading it.
+SUCCEEDED = "succeeded"
+CANCELLED_OUTCOME = "cancelled"
+TIMED_OUT_OUTCOME = "timed_out"
+FAILED = "failed"
+OUTCOMES = (SUCCEEDED, CANCELLED_OUTCOME, TIMED_OUT_OUTCOME, FAILED)
+
+
+def what_disagrees(state: str, termination_reason: str, exit_code, native_status,
+                   native_platform: str) -> str:
+    """Empty when these say one thing about how a run ended. Otherwise, what does not fit.
+
+    One rule, in the place that defines the words, so that the gateway writing a record and the
+    reader judging one cannot come to different conclusions about the same five fields.
+    """
+    try:
+        stopped = is_terminal(state)
+    except ProtocolError:
+        # A state this build cannot place is refused where states are read, and that refusal is
+        # not this function's to make twice. What IS this function's is the agreement between
+        # these fields, and there is no agreement to judge against a state nobody can place.
+        return ""
+    if not stopped:
+        if termination_reason != NOT_STOPPED:
+            return ("this run is " + state + " and says it stopped because "
+                    + str(termination_reason) + ". A run that has not stopped has no reason for "
+                    "having stopped")
+        if exit_code is not None:
+            return ("this run is " + state + " and carries an exit status. Nothing that is still "
+                    "running has exited")
+        return ""
+    if termination_reason not in TERMINATION_REASONS:
+        return ("this run stopped for " + repr(str(termination_reason)[:24]) + ", which is not a "
+                "reason this build knows, so what happened to it cannot be read")
+    if state == "cancelled" and termination_reason != CANCELLED:
+        return ("this run is cancelled and says it stopped because " + termination_reason
+                + ". A run that was cancelled stopped because it was cancelled, whatever the "
+                "runtime made of the container it was in")
+    if termination_reason != EXITED and exit_code is not None:
+        return ("this run is recorded as " + termination_reason + " AND as having exited "
+                + repr(exit_code) + ". Nothing that was stopped chose a status, so one of the two "
+                "is not what happened")
+    if native_status is not None and not str(native_platform or ""):
+        return ("a native status was recorded without saying which platform produced it, so the "
+                "number cannot be read as anything")
+    return ""
+
+
+def outcome_of(state: str, termination_reason: str = NOT_STOPPED) -> str:
+    """The outcome of a run in this state, or "" while it still has none.
+
+    About the RUN, not about the program it carried: a run that completed and delivered a result
+    succeeded, whatever number the program returned. Every terminal state maps to exactly one of
+    the four, and a state that is not terminal maps to none of them.
+    """
+    if not is_terminal(state):
+        return ""
+    if state == "cancelled":
+        return CANCELLED_OUTCOME
+    if termination_reason == TIMED_OUT:
+        return TIMED_OUT_OUTCOME
+    if state == "finished":
+        return SUCCEEDED
+    return FAILED
 
 #: How far apart the two clocks may be before a request is refused as stale. Wide enough for an
 #: ordinary skew, narrow enough that a captured request stops being useful quickly.
@@ -91,9 +236,73 @@ def policy_digest(granted: Any) -> str:
     return digest(canonical_bytes(policy_shape(granted)))
 
 
+#: What every answer carries because the gateway stamped it, and what it carries in addition
+#: when it belongs to a paired client. Named here, once, because two things need to agree about
+#: it: the gateway that adds them and anything that later reads an answer back. `EM3C-E3-CLASSIFY-0001`
+#: found an evidence reader that had been given its own list of an INNER object's fields while
+#: the client receives this envelope, so the reader refused every real answer.
+STAMP_FIELDS = ("gateway", "fingerprint", "protocol")
+SIGNATURE_FIELDS = ("binding", "signature")
+
+
+#: What an answer carries INSTEAD of a run when there is no run to describe. Named here for the
+#: same reason as the stamp: the gateway writes it and something else reads it back, and two
+#: lists of one thing drift. `EM3C-EVIDENCE-0014`: the reader had this one of its own.
+ERROR_FIELDS = ("error",)
+
+
+def refusal(reason: str) -> dict[str, Any]:
+    """The body of an answer that has no run to describe. The only place it is built."""
+    return {"error": str(reason)}
+
+
+def stamp_fields(identity) -> dict[str, Any]:
+    """The three fields `GatewayService.stamp` adds. The only place they are built."""
+    return {"gateway": identity.as_dict(),
+            "fingerprint": identity.fingerprint,
+            "protocol": PROTOCOL_VERSION}
+
+
+def binding_fields() -> tuple[str, ...]:
+    """The keys of a response binding, from the function that builds one."""
+    return tuple(response_binding(
+        gateway_id="", version="", job_id="", run_id="", artifact_sha256="",
+        request_policy_sha256="", effective_policy_sha256="", result=""))
+
+
+#: Everything an answer says about what HAPPENED, as opposed to which job it was about. One
+#: list, because the signature covers it and the reader recomputes it, and two lists of the same
+#: thing drift. `EM3C-EVIDENCE-0020`: the signature covered the identifiers, both policy digests
+#: and a digest of stdout -- so the state, the exit code, the reason a run stopped, the native
+#: status, the cleanup and the timestamps could all be changed on the way to the client and the
+#: binding still recomputed to what was signed.
+OUTCOME_FIELDS = ("state", "exit_code", "termination_reason", "native_status", "native_platform",
+                  "cleanup_verified", "refusal", "stdout", "stderr", "policy_deltas",
+                  "started_at", "finished_at")
+
+#: Which run an answer is about, and where what it ran printed. Named here because this is where
+#: the format is defined: anything that needs to reach into an answer for one of these asks for
+#: the name rather than spelling it, so a rename here breaks its callers instead of leaving them
+#: quietly reading a field that no longer exists.
+RUN_ID_FIELD = "run_id"
+STDOUT_FIELD = "stdout"
+assert STDOUT_FIELD in OUTCOME_FIELDS
+
+
+def outcome_digest(body: dict[str, Any]) -> str:
+    """A digest over what an answer says happened.
+
+    Absent is not the same as empty: a field the answer does not carry is recorded as absent, so
+    removing one changes the digest rather than looking like a field that was there and blank.
+    """
+    return digest(canonical_bytes(
+        {name: body[name] if name in body else None for name in OUTCOME_FIELDS}))
+
+
 def response_binding(*, gateway_id: str, version: str, job_id: str, run_id: str,
                      artifact_sha256: str, request_policy_sha256: str,
-                     effective_policy_sha256: str, result: Any) -> dict[str, Any]:
+                     effective_policy_sha256: str, result: Any,
+                     outcome: dict[str, Any] | None = None) -> dict[str, Any]:
     """The exact tuple a response is authenticated over.
 
     Everything a client needs in order to know that THIS answer belongs to THIS job on THIS
@@ -111,6 +320,9 @@ def response_binding(*, gateway_id: str, version: str, job_id: str, run_id: str,
         "request_policy_sha256": request_policy_sha256,
         "effective_policy_sha256": effective_policy_sha256,
         "result_sha256": digest(canonical_bytes({"result": result})),
+        # What happened, not only which job it was. Without this, an answer's outcome is
+        # unauthenticated and the binding recomputes to what was signed anyway.
+        "outcome_sha256": outcome_digest(outcome or {}),
     }
 
 

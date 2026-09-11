@@ -296,8 +296,15 @@ def via_proxy(url, key):
 
 direct_ip("1.1.1.1", "direct_1_1_1_1")
 direct_ip("8.8.8.8", "direct_8_8_8_8")
-direct_name("https://%(allowed)s", "direct_unproxied")
-via_proxy("https://%(allowed)s", "allowed_via_proxy")
+ALLOWED = json.loads(%(allowed_json)r)
+# Recorded so a reader can tell WHICH destinations were measured, not merely how many results
+# there are. A count on its own cannot distinguish a complete matrix from a partial one.
+R["allowed_hosts"] = list(ALLOWED)
+direct_name("https://" + ALLOWED[0], "direct_unproxied")
+for _i, _host in enumerate(ALLOWED):
+    # Every permitted destination, not just the first. A policy naming three hosts and
+    # measuring one leaves two permitted paths nobody exercised.
+    via_proxy("https://" + _host, "allowed:" + _host)
 via_proxy("https://%(denied)s", "denied_via_proxy")
 print("AGENTNODE_EGRESS_MATRIX " + json.dumps(R))
 '''
@@ -305,8 +312,19 @@ print("AGENTNODE_EGRESS_MATRIX " + json.dumps(R))
 EGRESS_MARKER = "AGENTNODE_EGRESS_MATRIX "
 
 
-def egress_matrix_source(allowed: str, denied: str) -> str:
-    return EGRESS_MATRIX_SOURCE % {"allowed": allowed, "denied": denied}
+def egress_matrix_source(allowed, denied: str) -> str:
+    """The probe, for every destination a policy permits.
+
+    `allowed` may be one host or several. `EM3C-FINAL-0001` found the gateway measuring only the
+    first of an allowlist, which left every other permitted destination unexercised while the
+    policy was reported as measured.
+    """
+    import json as _json
+
+    hosts = [allowed] if isinstance(allowed, str) else list(allowed)
+    if not hosts:
+        raise ValueError("an allowlist with no destinations has nothing to measure")
+    return EGRESS_MATRIX_SOURCE % {"allowed_json": _json.dumps(hosts), "denied": denied}
 
 
 def parse_egress(stdout: str) -> dict:

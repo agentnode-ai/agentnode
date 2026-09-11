@@ -34,6 +34,11 @@ def _root(args) -> Path:
     return (Path(home) if home else Path.home() / ".agentnode") / "gateway"
 
 
+#: The one command that closes every refusal here. A gate that names no way through is a
+#: wall, so the remediation is a command that really runs and really changes the answer.
+_MEASURE_CMD = "agentnode gateway doctor --measure"
+
+
 def _config_path(root: Path) -> Path:
     return root / "config.json"
 
@@ -54,6 +59,32 @@ def _save_config(root: Path, config: dict) -> None:
     _config_path(root).write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _operator_policy(root: Path):
+    """The ceiling this machine's owner set, or None to keep the built-in default.
+
+    EM3C-EGRESS-CLASSIFY-0001 found the gateway had a deliberate "the operator opens it"
+    default with no way for an operator to open it: `gateway start` never passed a policy, so
+    the no-network default was the only reachable setting and `remote run --allow` could not
+    be granted by any published command. This reads the setting the operator saved.
+
+    Returning None rather than an all-denying policy matters: it keeps the default in ONE
+    place, in the service, instead of restating it here where the two could drift apart.
+    """
+    allowed = _load_config(root).get("egress_allowed")
+    if not allowed:
+        return None
+
+    from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+    from agentnode_sdk.sandbox.egress import validate_allowed_domains
+
+    hosts = tuple(str(h) for h in allowed)
+    # Validated on the way in AND here, because a config file can be edited by hand between
+    # the two. An unenforceable ceiling must not become a running gateway.
+    validate_allowed_domains(hosts)
+    return SandboxPolicy(network=NetworkRules(enabled=True,
+                                              allowed_destinations=frozenset(hosts)))
+
+
 def _service(root: Path):
     from agentnode_sdk.gateway.identity import GatewayState
     from agentnode_sdk.gateway.server import GatewayService
@@ -62,7 +93,8 @@ def _service(root: Path):
     from agentnode_sdk import __version__ as version
 
     state = GatewayState(root, version=str(version))
-    return state, GatewayService(state, backend=ContainerBackend())
+    return state, GatewayService(state, backend=ContainerBackend(),
+                                 operator_policy=_operator_policy(root))
 
 
 def _tls_from(config: dict, args):
@@ -186,6 +218,147 @@ def cmd_start(args) -> int:
     return 0
 
 
+def _egress_show(root, verbose: bool = False) -> int:
+    """What is actually in force, and whether it matches what is configured."""
+    from agentnode_sdk.gateway import operator_policy as opol
+    from agentnode_sdk.gateway.activation import ActivationStore, SnapshotUnusable
+
+    print()
+    try:
+        state = ActivationStore(root).load_active()
+    except SnapshotUnusable as exc:
+        print(f"  This gateway's active state cannot be trusted: {exc}")
+        print("  Nothing runs until it has been measured again.")
+        print(f"  Next:  {_MEASURE_CMD}")
+        return 1
+
+    try:
+        configured = opol.from_config(_load_config(root))
+    except opol.OperatorPolicyError as exc:
+        print(f"  The saved policy cannot be read: {exc}")
+        return 1
+
+    if state is None:
+        print("  Nothing is in force yet: this gateway has not been measured.")
+        print("  Jobs reach nothing until it has been.")
+        print(f"  Next:  {_MEASURE_CMD}")
+        return 1
+
+    active = state.policy
+    if active.mode == opol.RESTRICTED:
+        print("  Jobs on this gateway may reach:")
+        for host in active.allowed_destinations:
+            print(f"    {host}")
+        print()
+        print("  A job still has to ask for a host, and may ask for fewer than these.")
+        print("  It can never be granted one that is not on this list.")
+    else:
+        print("  Jobs on this gateway reach nothing. No network at all.")
+        print("  To allow a host:  agentnode gateway egress --allow example.com")
+
+    if configured.digest() != state.policy_digest:
+        print()
+        print("  A different policy is saved than the one in force. The saved one has not been")
+        print("  measured, so it is not being enforced and nothing will run under it.")
+        print(f"  Next:  {_MEASURE_CMD}")
+        return 1
+
+    if verbose:
+        print()
+        # The mode belongs in the diagnostic block for the same reason the digests do: the prose
+        # above says what a job may reach, and prose is what a reader has to interpret. External
+        # evidence has to record the policy's own word for its mode rather than derive it from a
+        # sentence that could be reworded (`EM3C-EVIDENCE-0003`).
+        print(f"  network mode          : {active.mode}")
+        print(f"  activation generation : {state.generation}")
+        print(f"  policy digest         : {state.policy_digest}")
+        print(f"  configured digest     : {configured.digest()}")
+        print(f"  digests agree         : {configured.digest() == state.policy_digest}")
+        print(f"  measured properties   : {', '.join(active.required_properties)}")
+    return 0
+
+
+def cmd_egress(args) -> int:
+    """Show or set what jobs on this gateway may reach.
+
+    Setting is one operation for the person typing it and a transaction underneath
+    (`EM3C-Y6-DECISION-0001`): the proposal is saved as pending, the protections that proposal
+    needs are measured against it, and only a complete measurement puts it into force. Nothing
+    here says the change is saved, active or protecting anything until that has happened -- the
+    whole finding this answers was a command stating a grant it did not have.
+    """
+    root = _root(args)
+    allow = tuple(getattr(args, "allow", None) or ())
+    clear = bool(getattr(args, "none", False))
+    verbose = bool(getattr(args, "verbose", False))
+
+    if allow and clear:
+        print()
+        print("  --allow and --none ask for opposite things. Pick one.")
+        return 2
+
+    if not allow and not clear:
+        return _egress_show(root, verbose)
+
+    from agentnode_sdk.gateway import operator_policy as opol
+
+    try:
+        proposed = (opol.build(opol.RESTRICTED, allow) if allow else opol.build(opol.NONE))
+    except opol.OperatorPolicyError as exc:
+        print()
+        print(f"  That cannot be enforced as an allowlist: {exc}")
+        print("  Nothing was changed.")
+        return 2
+
+    print()
+    print("  Proposed policy saved as pending. The current policy is still the one in force.")
+    print("  Measuring the protections this policy needs before anything changes:")
+    for name in proposed.required_properties:
+        print(f"    {name}")
+    print()
+
+    # The whole change -- recording the intent, measuring it, and putting it in force or putting
+    # the previous one back -- happens inside the gateway's own activation lock, against this
+    # exact proposal. EM3C-FINAL-0001 found this command writing the config file before the lock
+    # was taken and restoring it after the lock was released, so two operators changing the
+    # policy at once could measure one proposal and activate another.
+    from agentnode_sdk.gateway.activation import ActivationStranded
+
+    _state, service = _service(root)
+    try:
+        verdict = service.activate(proposed)
+    except ActivationStranded as exc:
+        # The one failure that does not leave the previous policy usable. Saying "nothing was
+        # changed" here would be false, which is what EM3C-FINAL-0005 found being said.
+        print()
+        print(f"  {bold('This gateway needs measuring again before it will run anything.')}")
+        print(f"  {exc}")
+        print(f"  Next:  {_MEASURE_CMD}")
+        return 1
+    except Exception as exc:                                      # noqa: BLE001
+        print(f"  The measurement could not be run: {exc}")
+        # Accurate because the change commits at a single rename this path never reached, and
+        # because a rename that failed after the generation was advanced puts that advance back.
+        # EM3C-FINAL-0003 found this sentence printed where the snapshot HAD been replaced;
+        # EM3C-FINAL-0005 found it printed where the previous snapshot had been left behind the
+        # anchor. Both of those paths now say something else.
+        print("  The previous policy remains in force. Nothing was changed.")
+        return 1
+
+    if not verdict.ready:
+        print(f"  Measurement failed: {verdict.reason}")
+        if verdict.unproven:
+            print("  Not established:")
+            for name in verdict.unproven:
+                print(f"    {name}")
+        print()
+        print("  The previous policy remains in force. Nothing was changed.")
+        return 1
+
+    print("  Measurements passed. The new policy is now in force.")
+    return _egress_show(root, verbose)
+
+
 def cmd_status(args) -> int:
     root = _root(args)
     if not _config_path(root).is_file() and not (root / "identity.json").is_file():
@@ -255,7 +428,55 @@ def cmd_doctor(args) -> int:
         for step in readiness.next_steps:
             print(f"    {step}")
         return 1
+
+    _say_remote_access(root, _load_config(root))
     return 0
+
+
+def _say_remote_access(root: Path, config: dict) -> None:
+    """Whether anyone else can reach this, and what to do about it.
+
+    A gateway on loopback is not a problem to be fixed -- it is the right answer for someone
+    running it on their own machine. It is only worth raising because the person who wants a
+    second machine to use it has no way to find out what to do next except by being told.
+    """
+    import shutil
+
+    print()
+    if config.get("tls_cert"):
+        print(f"  {bold('Reachable from other machines')} over its own certificate.")
+        return
+
+    print(f"  {bold('This sandbox is reachable from this machine only.')}")
+    print("  That is the safe default and is all you need if you are the only one using it.")
+    print()
+    print("  To let another machine use it, the connection has to be encrypted -- a pairing code")
+    print("  and an access token cross it, and neither survives being read on the way.")
+    print()
+    if shutil.which("tailscale"):
+        print("  Tailscale is installed here, which is the simplest route:")
+        print("    tailscale serve --bg 8099")
+        print("  That publishes an https:// address on your private network. Nothing is exposed")
+        print("  to the internet, and there is no certificate for you to manage.")
+    else:
+        print("  The simplest route needs no domain name and no open port:")
+        print("    install Tailscale (or another private tunnel), then:")
+        print("      tailscale serve --bg 8099")
+        print()
+        print("  If you would rather use a reverse proxy you already run, leave the gateway on")
+        print("  127.0.0.1 and give Caddy this, replacing the name with your own:")
+        print()
+        print("      sandbox.example.com {")
+        print("          reverse_proxy 127.0.0.1:8099")
+        print("      }")
+        print()
+        print("  Caddy handles the certificate for you -- that is Caddy doing it, not AgentNode:")
+        print("  this gateway never obtains or renews a certificate itself and has no plans to.")
+        print("  For nginx, use proxy_pass http://127.0.0.1:8099; inside a server block that")
+        print("  already terminates TLS. Either way the gateway keeps its default address.")
+        print()
+        print(dim("  These commands have not been run by this build. They are the shapes that"))
+        print(dim("  work; your own network is what decides whether they do."))
 
 
 def cmd_pair(args) -> int:
@@ -337,20 +558,110 @@ def cmd_revoke(args) -> int:
     return 0
 
 
+def cmd_verify(args) -> int:
+    """The gateway half of the external run.
+
+    A single command, because the person running it is checking whether this works at all and
+    should not also be assembling one.
+    """
+    from agentnode_sdk.tools import external_check
+
+    return external_check.main(["--role", "gateway"])
+
+
+def binding_for_the_client(state, ledger, run_id: str, token: str) -> dict | None:
+    """The binding this gateway wrote down for one run, for the client that submitted that run.
+
+    `EM3C-CROSSING-0001`, F-C5-CROSS-CLIENT-READ: holding a run id was enough, whoever was
+    holding it. The rule lives here, in one function, rather than inside the command -- so that
+    anything else which has to answer this question asks the same rule instead of writing its own.
+
+    None covers both "no such run" and "not yours". Separating them would let anybody holding a
+    token learn which run ids are real, which is the thing the check is for.
+    """
+    asking = state.client_id_for(token)
+    owner = str((ledger.run_entry(run_id) or {}).get("owner_client_id") or "")
+    if not asking or not owner or asking != owner:
+        return None
+    return ledger.challenge_for(run_id)
+
+
+def cmd_challenge(args) -> int:
+    """What this gateway wrote down about the challenge it issued for ONE run.
+
+    Read-only in the strongest sense available: it opens the ledger, takes one entry, prints it,
+    and writes nothing. `EM3C-CROSSING-DECISION-0001`, F-A-READ-SURFACE -- so it answers about the
+    run it is asked about and about nothing else. There is no listing and no way to ask for every
+    run.
+
+    And it answers to the client that SUBMITTED that run. `EM3C-CROSSING-0001`,
+    F-C5-CROSS-CLIENT-READ: holding a run id used to be enough, whoever was holding it, so one
+    client could read what this gateway wrote down about another client's work. Who is asking
+    arrives on standard input, never as an argument, because a credential on a command line is one
+    anybody listing processes can read. A run belonging to somebody else is answered exactly like
+    a run that does not exist -- same words, same status -- because telling those apart would let
+    anybody holding a token learn which run ids are real.
+
+    What it CANNOT print is the challenge itself. The value is not in the ledger: only its digest
+    was ever written there, and the value is dropped when the run ends. That is what makes this a
+    second channel rather than a second copy of the first -- somebody holding this output cannot
+    produce the value, they can only be told whether a value they already hold is the right one.
+    """
+    import json
+    import sys as _sys
+
+    from agentnode_sdk.gateway.identity import GatewayState
+    from agentnode_sdk.gateway.ledger import Ledger
+
+    from agentnode_sdk import __version__ as version
+
+    root = _root(args)
+    run_id = str(getattr(args, "run", "") or "")
+    if not run_id:
+        print()
+        print("  Which run? Pass --run <id>. This answers about one run and never lists them.")
+        return 2
+
+    # Who is asking. `EM3C-CROSSING-0001`, F-C5-CROSS-CLIENT-READ: holding a run id was enough to
+    # read that run's binding, so anybody who could run this command could read about a run that
+    # was not theirs. The token arrives on STANDARD INPUT and never as an argument -- a credential
+    # on a command line is one anybody listing processes can read, which is the same objection
+    # that put the challenge on stdin.
+    token = (_sys.stdin.read() if not _sys.stdin.isatty() else "").strip()
+    if not token:
+        print()
+        print("  Who is asking? This answers to the client that submitted the run. Send its")
+        print("  token on standard input -- never as an argument.")
+        return 2
+
+    binding = binding_for_the_client(
+        GatewayState(root, version=str(version)), Ledger(root / "ledger.json"), run_id, token)
+    if binding is None:
+        print()
+        print(f"  This gateway has nothing written down for a run {run_id}.")
+        return 1
+    print(json.dumps(binding, sort_keys=True, indent=2))
+    return 0
+
+
 def dispatch(args) -> int:
     action = getattr(args, "gateway_command", None)
     handlers = {
         "init": cmd_init,
         "start": cmd_start,
         "status": cmd_status,
+        "egress": cmd_egress,
         "doctor": cmd_doctor,
         "pair": cmd_pair,
         "clients": cmd_clients,
         "revoke": cmd_revoke,
+        "verify": cmd_verify,
+        "challenge": cmd_challenge,
     }
     handler = handlers.get(action)
     if handler is None:
-        print("  Usage: agentnode gateway {init|start|status|doctor|pair|clients|revoke}")
+        print("  Usage: agentnode gateway "
+              "{init|start|status|egress|doctor|pair|clients|revoke|verify}")
         return 2
     try:
         return handler(args)

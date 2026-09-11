@@ -160,6 +160,30 @@ class Ledger:
             self._write_locked()
             return True
 
+    def note_challenge(self, run_id: str, binding: dict) -> None:
+        """Write down what this gateway issued for a run, before the job starts.
+
+        Durable and on disk before the container is, so that what it says predates anything the
+        run could produce. The document holds the challenge's DIGEST; the value is not here and
+        this method has no way to be given it -- `challenge.bind` does not put it in one.
+        """
+        with self._lock, ProcessLock(self.path):
+            self._load()
+            entry = self._data["runs"].get(str(run_id))
+            if entry is None:
+                return
+            entry["challenge"] = dict(binding)
+            self._write_locked()
+
+    def challenge_for(self, run_id: str) -> dict | None:
+        """What was written down for one run, or nothing. One run: never a listing."""
+        with self._lock:
+            entry = self._data["runs"].get(str(run_id))
+            if not isinstance(entry, dict):
+                return None
+            binding = entry.get("challenge")
+            return dict(binding) if isinstance(binding, dict) else None
+
     def note_state(self, run_id: str, state: str) -> None:
         with self._lock, ProcessLock(self.path):
             self._load()

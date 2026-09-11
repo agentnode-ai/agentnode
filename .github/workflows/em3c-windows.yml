@@ -1,0 +1,193 @@
+# The Windows gate.
+#
+# EM3C-E4-CLASSIFY-0001: the external run E4 died because `subprocess.run(input=<str>, text=True)`
+# on Windows turns every LF into CRLF, and the far side's shell received `$'hostname\r'`. Every
+# test that was meant to establish "remote work arrives unchanged" stopped at the argument handed
+# to a replaced transport, so the string never crossed a real process boundary -- and the boundary
+# was where it was rewritten.
+#
+# EM3C-E5-CLASSIFY-0001 was the same shape one layer out. Three Linux paths were exported in Git
+# Bash and read by a Windows process; the MSYS layer rewrote them in between, and the run asked a
+# Linux machine about `C:/Program Files/Git/home/em3ce1/...`. Again nothing caught it, because
+# again the tests examined values inside one process rather than what a second process received.
+#
+# Linux cannot catch either. There is no translation there to catch, so those tests pass on a
+# Linux runner whether the defect is present or not. This lane exists so the properties are
+# established where they can fail, and it is required rather than advisory: an external run is not
+# permitted on green Linux CI alone.
+name: EM-3C Windows boundary
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "sdk/agentnode_sdk/tools/**"
+      - "sdk/agentnode_sdk/gateway/**"
+      - "sdk/agentnode_sdk/sandbox/**"
+      - "sdk/tests/test_transport_bytes.py"
+      - "sdk/tests/test_external_config.py"
+      - "sdk/tests/test_start_boundary.py"
+      - "sdk/tests/test_start_rehearsal.py"
+      - "sdk/tests/test_evidence.py"
+      - "sdk/tests/test_verification_run.py"
+      - ".github/workflows/em3c-windows.yml"
+  push:
+    branches:
+      - main
+      - "em3c/**"
+      - "em3c-*/**"
+
+jobs:
+  the-boundary:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
+
+      # This lane is worth nothing on a machine that does not do the conversion, so the machine
+      # is asked first and the lane stops if the answer is no. `bash` here IS Git Bash, which is
+      # what the fifth external run was started from.
+      - name: This runner does convert a POSIX path
+        shell: bash
+        run: |
+          set -o pipefail
+          arrived="$(EM3C_PROBE=/home/em3ce1/em3c-state-e6 python -c "import os;print(os.environ['EM3C_PROBE'])")"
+          echo "a POSIX path through this shell arrives as: $arrived"
+          if [ "$arrived" = "/home/em3ce1/em3c-state-e6" ]; then
+            echo "this runner did not convert it, so this lane cannot establish what it exists to"
+            exit 1
+          fi
+
+      # The one E4 was about: a real child process on a real Windows machine, given the real
+      # payload through the real code, answering with the hex of what it actually received.
+      - name: What crosses a real Windows process boundary
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_transport_bytes.py 2>&1 | tee bytes.txt
+          grep -qE "^19 passed" bytes.txt || {
+            echo "the transport tests did not all pass"; exit 1; }
+
+      # The one E5 was about: the three real remote paths sent through the real entry point into
+      # a real child, compared against what that child received -- and, in the same file, the
+      # conversion itself demonstrated, so a pass here means the boundary held rather than that
+      # nothing was ever converted. Started under Git Bash on purpose.
+      - name: What a real child receives through the configuration boundary
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_start_boundary.py 2>&1 | tee boundary.txt
+          if ! grep -qE "^21 passed" boundary.txt; then
+            echo "the start-boundary tests did not all pass"
+            exit 1
+          fi
+          if grep -q "skipped" boundary.txt; then
+            echo "something was skipped, and on this runner nothing in that file may be"
+            exit 1
+          fi
+
+      # The whole start rehearsed on this platform: launcher, configuration, runner, and the
+      # bytes of the first remote command.
+      - name: The whole start, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_start_rehearsal.py 2>&1 | tee rehearsal.txt
+          grep -qE "^20 passed" rehearsal.txt || {
+            echo "the start rehearsal did not pass on Windows"; exit 1; }
+
+      - name: What the configuration accepts and refuses
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_external_config.py 2>&1 | tee config.txt
+          grep -qE "^54 passed" config.txt || {
+            echo "the configuration tests did not all pass on Windows"; exit 1; }
+
+      # And the same properties as the driver exercises them, so the two cannot drift apart.
+      - name: The external-run driver, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs -p no:randomly tests/test_verification_run.py 2>&1 | tee driver.txt
+          grep -qE "^34 passed, 1 skipped" driver.txt || {
+            echo "the driver tests did not come out as this lane expects"; exit 1; }
+          # The one skip is the POSIX-only case, and it is named rather than tolerated: the
+          # opposite skip belongs to the Linux lane, and between them every case runs somewhere.
+          grep -q "this platform does rewrite it" driver.txt || {
+            echo "the skipped case is not the one this lane expects"; tail -5 driver.txt; exit 1; }
+
+      # The evidence contract too: it decides what a timeout means, and the number that used to
+      # stand for one is exactly what Windows reported differently.
+      - name: The evidence contract, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_evidence.py 2>&1 | tee evidence.txt
+          grep -qE "^[0-9]+ passed" evidence.txt || {
+            echo "the evidence tests did not all pass on Windows"; exit 1; }
+
+      - name: What state a run is in, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs -p no:randomly tests/test_cancel_consistency.py 2>&1 | tee cancel.txt
+          grep -qE "^39 passed, 1 skipped" cancel.txt || {
+            echo "the cancellation tests did not come out as this lane expects"; exit 1; }
+          grep -q "needs a container runtime" cancel.txt || {
+            echo "the skipped case is not the one this lane expects"; tail -5 cancel.txt; exit 1; }
+
+      - name: The reason a run stopped, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_stop_reason.py 2>&1 | tee stop.txt
+          grep -qE "^32 passed" stop.txt || {
+            echo "the stop-reason tests did not all pass"; exit 1; }
+
+      - name: The challenge a gateway issues, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_challenge.py 2>&1 | tee challenge.txt
+          grep -qE "^44 passed" challenge.txt || {
+            echo "the challenge tests did not all pass"; exit 1; }
+
+      - name: What a channel knows, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_verification_channels.py 2>&1 | tee channels.txt
+          grep -qE "^42 passed" channels.txt || {
+            echo "the channel tests did not all pass"; exit 1; }
+
+      - name: What this lane established
+        if: always()
+        shell: bash
+        run: |
+          echo "Windows boundary lane on ${{ github.sha }}"
+          tail -2 bytes.txt boundary.txt rehearsal.txt config.txt driver.txt evidence.txt \
+            2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: em3c-windows-boundary
+          path: |
+            sdk/bytes.txt
+            sdk/boundary.txt
+            sdk/rehearsal.txt
+            sdk/config.txt
+            sdk/driver.txt
+            sdk/evidence.txt
+            sdk/cancel.txt
+            sdk/channels.txt
+            sdk/challenge.txt
+          retention-days: 14
