@@ -17,13 +17,16 @@ from __future__ import annotations
 
 import http.server
 import json
+import socket
 import ssl
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 from agentnode_sdk.gateway import certificate as tls
+from tests.test_em3c_gateway import StandInBackend
 from agentnode_sdk.gateway import client as gc
 from agentnode_sdk.gateway.invitation import NotAnInvitation, read, write
 from agentnode_sdk.gateway.pinning import PinnedConnection, WrongCertificate, opener_for
@@ -687,3 +690,137 @@ class TestTakingAnInvitationBack:
         code = state.start_pairing(now=1000.0)
         with pytest.raises(PairingError):
             state.redeem_pairing(code, now=1000.0 + PAIRING_TTL_SECONDS + 1)
+
+
+class TestWhatAPlaintextRequestGetsFromATlsListener:
+    """Refusing to BIND without a certificate is not the same as what happens once it is bound.
+
+    The first is about configuration and is tested elsewhere. This is about the wire: an http://
+    request arriving at an https:// listener must not be answered, must not be redirected to
+    somewhere it could be answered, and must not have anything of the exchange come back in the
+    clear. A gateway that politely redirected would be one a client could be walked down to
+    plaintext by anything able to answer first.
+    """
+
+    def _a_tls_gateway(self, tmp_path):
+        from agentnode_sdk.gateway.server import GatewayService, GatewayState, make_server
+        from agentnode_sdk.gateway.transport import TlsFiles
+
+        cert, key, pin = tls.make(tmp_path, "127.0.0.1")
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        server = make_server(service, port=0, host="127.0.0.1",
+                             tls=TlsFiles(certfile=str(cert), keyfile=str(key)))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, pin
+
+    def test_a_plaintext_request_is_not_answered(self, tmp_path):
+        server, _pin = self._a_tls_gateway(tmp_path)
+        try:
+            port = server.server_address[1]
+            raw = socket.create_connection(("127.0.0.1", port), timeout=5)
+            raw.sendall(b"GET /v1/hello HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            raw.settimeout(5)
+            try:
+                answer = raw.recv(4096)
+            except (TimeoutError, OSError):
+                answer = b""
+            finally:
+                raw.close()
+            assert b"HTTP/1." not in answer, (
+                "an http request to an https listener was answered in the clear: %r" % answer[:120])
+            assert b"gateway_id" not in answer
+            assert b"301" not in answer and b"302" not in answer, (
+                "it redirected, which is a way to be walked down to plaintext")
+        finally:
+            server.shutdown()
+
+    def test_and_the_same_listener_answers_over_tls(self, tmp_path):
+        """The control: the refusal above must be about the plaintext, not about a dead port."""
+        server, pin = self._a_tls_gateway(tmp_path)
+        try:
+            url = f"https://127.0.0.1:{server.server_address[1]}"
+            hello = gc.hello(url, pin=pin)
+            assert hello.get("protocol")
+        finally:
+            server.shutdown()
+
+
+class TestThePrivateKeyIsInNothingThatLeavesTheMachine:
+    """A key that never appears in an answer is a property, not a hope.
+
+    Modes and inspection say who could open the file. They say nothing about whether the software
+    puts its contents into something it hands out -- an answer, a log line, a record, a doctor
+    report. Those are different questions and only the second one is about disclosure.
+    """
+
+    def _made(self, tmp_path):
+        cert, key, pin = tls.make(tmp_path, "127.0.0.1")
+        return cert, key, pin, Path(key).read_text(encoding="utf-8")
+
+    def _looks_like_a_key(self, text: str) -> bool:
+        return "PRIVATE KEY" in text or "BEGIN EC" in text
+
+    def test_no_answer_carries_it(self, tmp_path):
+        from agentnode_sdk.gateway.server import GatewayService, GatewayState
+        from agentnode_sdk.gateway.transport import TlsFiles
+
+        cert, key, pin, secret = self._made(tmp_path)
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        said = json.dumps(service.hello())
+        assert not self._looks_like_a_key(said)
+        assert secret.strip() not in said
+        # The fingerprint is public and is expected to travel; the key is not.
+        assert pin not in secret
+
+    def test_nor_the_gateway_status_an_operator_prints(self, tmp_path, capsys):
+        from agentnode_sdk.cli import gateway_commands
+
+        cert, key, pin, secret = self._made(tmp_path)
+
+        class Args:
+            dir = str(tmp_path)
+            tls_self_signed = True
+            tls_cert = tls_key = None
+            advertise = "127.0.0.1"
+
+        gateway_commands.cmd_init(Args())
+        printed = capsys.readouterr().out
+        assert not self._looks_like_a_key(printed), "gateway init printed key material"
+
+    def test_nor_the_invitation_handed_to_a_person(self, tmp_path):
+        """Checked DECODED, which is the part that took a counter-check to notice.
+
+        An invitation is base64. Looking for "PRIVATE KEY" in the encoded string finds nothing
+        even when the key is right there inside it, so the first version of this test would have
+        passed an invitation that carried one. What has to be inspected is what the invitation
+        SAYS, not how it is spelled.
+        """
+        from agentnode_sdk.gateway import invitation
+
+        _cert, _key, pin, secret = self._made(tmp_path)
+        handed = invitation.write("https://127.0.0.1:8099", "AAAA-BBBB-CCCC", pin)
+        inside = json.dumps(invitation.details(handed))
+        assert not self._looks_like_a_key(inside), inside[:200]
+        assert not self._looks_like_a_key(handed)
+        for line in secret.splitlines():
+            if len(line.strip()) > 20:
+                assert line.strip() not in inside
+
+    def test_nor_a_record_of_use(self, tmp_path):
+        from agentnode_sdk.gateway import meter
+
+        _cert, _key, _pin, secret = self._made(tmp_path)
+        meter.record(tmp_path, run_id="r", client_id="c", started_at=1.0, finished_at=2.0,
+                     cpu=1.0, memory_mb=512, wall_clock_s=60, state="finished",
+                     outcome="succeeded", bytes_out=1, worker_topology="x",
+                     allowance_sha256="a" * 64)
+        written = (Path(tmp_path) / meter.METER_NAME).read_text(encoding="utf-8")
+        assert not self._looks_like_a_key(written)
+
+    def test_and_the_test_would_notice_if_it_did(self, tmp_path):
+        """The counter-case for this whole class: prove the detector detects."""
+        _cert, _key, _pin, secret = self._made(tmp_path)
+        assert self._looks_like_a_key(secret), "the check cannot see a key even when handed one"
