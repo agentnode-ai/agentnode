@@ -729,10 +729,99 @@ def cmd_challenge(args) -> int:
     return 0
 
 
+def cmd_stop(args) -> int:
+    """Stop taking work, at once, until somebody lifts it deliberately."""
+    from agentnode_sdk.gateway.allowance import stop_everything
+
+    reason = str(getattr(args, "reason", "") or "").strip()
+    if not reason:
+        print()
+        print("  Why? Whatever you say here is what every client is told:")
+        print('    agentnode gateway stop --reason "upgrading the sandbox image"')
+        return 2
+    at = stop_everything(_root(args), reason)
+    print()
+    print(f"  {bold('This gateway is not taking work.')}")
+    print("  Every job sent to it is refused with what you just said. Runs already going are")
+    print("  left to finish -- stopping one of those is  agentnode remote cancel.")
+    print(f"  {dim(str(at))}")
+    print()
+    print("  To take work again:  agentnode gateway resume")
+    return 0
+
+
+def cmd_resume(args) -> int:
+    """Take work again. As deliberate as stopping was."""
+    from agentnode_sdk.gateway.allowance import start_again
+
+    if not start_again(_root(args)):
+        print()
+        print("  This gateway was not stopped, so there was nothing to lift.")
+        return 1
+    print()
+    print(f"  {bold('Taking work again.')}")
+    return 0
+
+
+def cmd_limits(args) -> int:
+    """Show or set what one client may use."""
+    from agentnode_sdk.gateway.allowance import Allowance, read_allowance, write_allowance
+
+    root = _root(args)
+    now = read_allowance(root)
+    asked = {name: getattr(args, name, None) for name in
+             ("concurrent_runs", "runs_per_window", "seconds_per_window")}
+    if all(value is None for value in asked.values()):
+        print()
+        print(f"  {bold('What one client may use')}")
+        for name, value in now.as_dict().items():
+            if name == "window_seconds":
+                print(f"    window               : {value / 3600:.0f} hours")
+            else:
+                print(f"    {name:<21}: {value if value else 'no limit'}")
+        print()
+        print("  To change one:")
+        print("    agentnode gateway limits --runs-per-window 200")
+        return 0
+    changed = Allowance(**{**now.as_dict(),
+                           **{k: int(v) for k, v in asked.items() if v is not None}})
+    write_allowance(root, changed)
+    print()
+    print(f"  {bold('Set.')} It applies to the next job, not to runs already going.")
+    for name, value in changed.as_dict().items():
+        if name != "window_seconds":
+            print(f"    {name:<21}: {value if value else 'no limit'}")
+    return 0
+
+
+def cmd_used(args) -> int:
+    """What each client has used. What an operator asks before changing a limit."""
+    from agentnode_sdk.gateway import meter
+
+    totals = meter.summarise(_root(args))
+    if not totals:
+        print()
+        print("  Nothing has run here yet.")
+        return 0
+    print()
+    print(f"  {bold('What each client has used')}")
+    print(f"    {'client':<16} {'runs':>6} {'seconds':>10} {'bytes out':>12}")
+    for who, what in sorted(totals.items()):
+        print(f"    {who[:16]:<16} {what['runs']:>6} {what['seconds']:>10.1f} "
+              f"{what['bytes_out']:>12}")
+    print()
+    print(dim("  This is a record of use. Nothing here is priced and nothing is charged."))
+    return 0
+
+
 def dispatch(args) -> int:
     action = getattr(args, "gateway_command", None)
     handlers = {
         "init": cmd_init,
+        "stop": cmd_stop,
+        "resume": cmd_resume,
+        "limits": cmd_limits,
+        "used": cmd_used,
         "start": cmd_start,
         "status": cmd_status,
         "egress": cmd_egress,

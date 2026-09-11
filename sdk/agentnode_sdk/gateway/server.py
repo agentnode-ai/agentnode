@@ -47,6 +47,7 @@ from agentnode_sdk.gateway.readiness import (
     describe_missing,
 )
 from agentnode_sdk.gateway.transport import TlsFiles, check_bind_address
+from agentnode_sdk.gateway.allowance import OverTheCeiling, Stopped, why_it_is_stopped
 from agentnode_sdk.worker import CouldNotRestrictTheNetwork, JobFailed, Job as WorkerJob
 from agentnode_sdk.worker import Limits as WorkerLimits
 from agentnode_sdk.worker import WorkerUnreachable
@@ -747,6 +748,63 @@ class GatewayService:
             limits=Limits(wall_clock_s=max(1, int(getattr(request, "wall_clock_s", 60)))),
         )
 
+    def allowance(self):
+        """What the operator allows one client. Read on every admission, never held.
+
+        A ceiling lowered while a gateway is running takes effect on the next job. A run already
+        in flight is left to finish: stopping one is what the stop is for, and a quota is not a
+        cancellation.
+        """
+        from agentnode_sdk.gateway.allowance import read_allowance
+
+        return read_allowance(self.state.root)
+
+    @property
+    def use(self):
+        """What each client has used lately, durably."""
+        from agentnode_sdk.gateway.allowance import USE_NAME, Use
+
+        held = getattr(self, "_use", None)
+        if held is None:
+            held = Use(self.state.root / USE_NAME)
+            self._use = held
+        return held
+
+    def within_its_allowance(self, client_id: str, asking_for: int) -> None:
+        """Raise `OverTheCeiling` if this client may not have another run right now."""
+        from agentnode_sdk.gateway.protocol import is_terminal
+
+        allowed = self.allowance()
+        if not client_id:
+            # Nothing to count against. Admission refuses an unpaired caller elsewhere; this is
+            # not the place that decides that, and counting against "" would pool every client.
+            return
+        if allowed.concurrent_runs:
+            with self._lock:
+                going = sum(1 for r in self.runs.values()
+                            if r.owner_client_id == client_id and not is_terminal(r.state))
+            if going >= allowed.concurrent_runs:
+                raise OverTheCeiling(
+                    "concurrent_runs",
+                    "this client already has %d runs going and may have %d at once. Wait for one "
+                    "to finish." % (going, allowed.concurrent_runs))
+        if allowed.runs_per_window or allowed.seconds_per_window:
+            runs, seconds = self.use.so_far(client_id)
+            lifts = self.use.oldest(client_id) + allowed.window_seconds
+            if allowed.runs_per_window and runs >= allowed.runs_per_window:
+                raise OverTheCeiling(
+                    "runs_per_window",
+                    "this client has started %d runs and may start %d in this window. The oldest "
+                    "stops counting in %.0f seconds." % (runs, allowed.runs_per_window,
+                                                         max(0.0, lifts - time.time())),
+                    lifts_at=lifts)
+            if allowed.seconds_per_window and seconds + asking_for > allowed.seconds_per_window:
+                raise OverTheCeiling(
+                    "seconds_per_window",
+                    "this client has used %.0f of %d seconds in this window and this job asks for "
+                    "up to %d more." % (seconds, allowed.seconds_per_window, asking_for),
+                    lifts_at=lifts)
+
     def admit(self, request: JobRequest, artifact: bytes,
               token: str = "") -> tuple:
         """Everything that must hold before a container exists. Raises to refuse.
@@ -754,12 +812,24 @@ class GatewayService:
         Order matters: the cheap structural checks come before anything that costs work, and
         nothing here has a side effect that would survive a refusal.
         """
+        # Before anything else costs anything. `ALPHA-ALLOWANCE`: an operator's stop is the
+        # first question asked of every job, and a gateway that cannot tell whether it has been
+        # stopped answers it as stopped.
+        halted = why_it_is_stopped(self.state.root)
+        if halted:
+            raise Stopped(halted)
+
         check_freshness(request.issued_at)
         # Both stores. The in-memory one has the tighter window; the durable one is what
         # still knows about a captured request after a restart.
         if request.nonce and self.ledger.knows_nonce(request.nonce):
             raise ProtocolError("this request has already been used (replay)")
         self.nonces.check_and_remember(request.nonce)
+
+        # What this client has already used, against what the operator allows it. Before the
+        # artefact is digested, because refusing over a ceiling should not cost the work of
+        # hashing something that is not going to run.
+        self.within_its_allowance(self.state.client_id_for(token) or "", request.wall_clock_s)
 
         actual = digest(artifact)
         if actual != request.artifact_sha256:
@@ -1019,6 +1089,11 @@ class GatewayService:
             value=record.challenge, delivered=carried,
             because="" if carried else ch.BROUGHT_ITS_OWN_COMMAND).as_dict())
 
+        # Counted before it runs, so a gateway that dies mid-run has still counted it. A run
+        # nobody counted is one a client could have for free by crashing the gateway.
+        if record.owner_client_id:
+            self.use.note(record.owner_client_id, request.run_id)
+
         with self._lock:
             self.runs[request.run_id] = record
         thread = threading.Thread(target=self._run, args=(request, artifact, granted, record),
@@ -1152,6 +1227,12 @@ class GatewayService:
             # nowhere left to read it from. It was never a credential; this is what makes it also
             # not a leftover.
             record.challenge = ""
+            # Counted and written down BEFORE the terminal state is published, for the same
+            # reason cleanup is: a reader that sees a terminal state must be seeing a complete
+            # record, and a client that saw one and immediately sent another job would otherwise
+            # be admitted against a count that had not yet included the run it just finished.
+            # The test for one line per run found this the first time it was written.
+            self.write_down_what_it_used(record, granted, terminal)
             # A reader that sees a terminal state must be seeing a complete record.
             record.move_to(terminal)
             self.ledger.note_state(record.run_id, terminal)
@@ -1167,6 +1248,38 @@ class GatewayService:
     #: that instant would leave the payload to run to its wall clock. Named rather than buried,
     #: because a test that has no runtime at all should not wait the length of one.
     CONTAINER_APPEAR_SECONDS = 20.0
+
+    def write_down_what_it_used(self, record, granted, terminal: str) -> None:
+        """One line about one run, for an operator who has to say who used what.
+
+        Everything here is a number or a name this gateway already published. Nothing of the
+        job's content and nothing of anybody's credential: see `gateway/meter.py`, where the
+        fields are declared and a test walks a real line looking for every secret there is.
+        """
+        from agentnode_sdk.gateway import meter
+        from agentnode_sdk.gateway.protocol import outcome_of
+
+        started = float(record.started_at or 0.0)
+        finished = float(record.finished_at or started)
+        if record.owner_client_id:
+            self.use.finished(record.owner_client_id, record.run_id, max(0.0, finished - started))
+        try:
+            meter.record(
+                self.state.root,
+                run_id=record.run_id, client_id=record.owner_client_id,
+                started_at=started, finished_at=finished,
+                cpu=float(granted.limits.cpu), memory_mb=int(granted.limits.memory_mb),
+                wall_clock_s=int(granted.limits.wall_clock_s),
+                # The state it is ENDING in, which the record does not carry yet: publishing
+                # it is the last thing that happens, after this.
+                state=terminal, outcome=outcome_of(terminal, record.termination_reason),
+                bytes_out=len(record.stdout or "") + len(record.stderr or ""),
+                worker_topology=self.worker.topology,
+                allowance_sha256=self.allowance().digest())
+        except OSError:                                       # pragma: no cover - a full disk
+            # A run that happened is not un-happened by a meter that could not be written, and
+            # refusing to publish the terminal state over it would lose the run instead.
+            pass
 
     def cancel(self, run_id: str, settle: float | None = None):
         """Stop a run and answer once it has stopped. Returns `(record, settled)`.

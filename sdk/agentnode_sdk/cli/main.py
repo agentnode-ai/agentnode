@@ -274,6 +274,28 @@ def main(argv: list[str] | None = None) -> int:
     gw_challenge.add_argument("--dir", default=None)
     gw_challenge.add_argument("--run", default="", metavar="ID",
                               help="The run to answer about. One run; there is no listing.")
+    gw_stop = gw_sub.add_parser(
+        "stop", help="Stop taking work at once, until somebody lifts it")
+    gw_stop.add_argument("--dir", default=None)
+    gw_stop.add_argument("--reason", default="",
+                         help="What every client is told. Required: a stop with no reason is one "
+                              "nobody can act on")
+    gw_resume = gw_sub.add_parser("resume", help="Take work again")
+    gw_resume.add_argument("--dir", default=None)
+
+    gw_limits = gw_sub.add_parser("limits", help="Show or set what one client may use")
+    gw_limits.add_argument("--dir", default=None)
+    gw_limits.add_argument("--concurrent-runs", dest="concurrent_runs", type=int, default=None,
+                           help="How many runs one client may have going at once. 0 = no limit")
+    gw_limits.add_argument("--runs-per-window", dest="runs_per_window", type=int, default=None,
+                           help="How many it may start in a window. 0 = no limit")
+    gw_limits.add_argument("--seconds-per-window", dest="seconds_per_window", type=int,
+                           default=None,
+                           help="How many seconds of sandbox time it may use. 0 = no limit")
+
+    gw_used = gw_sub.add_parser("used", help="What each client has used")
+    gw_used.add_argument("--dir", default=None)
+
     gw_egress = gw_sub.add_parser(
         "egress", help="What the code this gateway runs is allowed to reach")
     gw_egress.add_argument("--dir", default=None)
