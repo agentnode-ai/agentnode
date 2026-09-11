@@ -121,6 +121,14 @@ class Allowance:
         ).hexdigest()
 
 
+class CannotReadWhatWasUsed(OSError):
+    """Raised instead of reading a damaged ledger as an empty one.
+
+    Its own type because the caller must tell it from an absent file: absent means nothing has
+    run yet, and unreadable means things have run and this gateway cannot see how many.
+    """
+
+
 class CannotReadTheCeilings(OSError):
     """Raised instead of guessing what an operator meant to allow.
 
@@ -227,11 +235,32 @@ class Use:
         self._lock = threading.Lock()
 
     def _load(self) -> dict:
+        """What has been used. An unreadable file RAISES rather than reading as nothing.
+
+        This is the third place in this gateway where the permissive fallback was the bug, and it
+        is the same bug each time: an empty ledger means "this client has used nothing", which is
+        exactly the state somebody who had exhausted their allowance would like it to be in.
+        Damaging one file would have restored every client's full window, on a gateway that went
+        on looking like it was counting.
+
+        Absent is the only case that starts empty, and it is the honest one: nothing has run yet.
+        """
+        if not self.path.exists():
+            return {}
         try:
             body = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        return body if isinstance(body, dict) else {}
+        except (OSError, ValueError) as exc:
+            raise CannotReadWhatWasUsed(
+                "this gateway cannot read what its clients have already used ("
+                + str(exc)[:120] + "), so it cannot tell whether the next job is within anyone's "
+                "allowance. It will not take work until it can. The file is " + str(self.path)
+                + "; removing it starts the counting again deliberately rather than by accident."
+            ) from exc
+        if not isinstance(body, dict):
+            raise CannotReadWhatWasUsed(
+                "what this gateway has recorded about use is not an object, so it cannot be read "
+                "as a count of anything. " + str(self.path))
+        return body
 
     def _forget(self, body: dict, now: float) -> dict:
         kept = {}

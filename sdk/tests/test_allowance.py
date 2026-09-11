@@ -1151,3 +1151,124 @@ class TestARefusedRequestDoesNotConsumeAllowance:
         before = service.use.so_far(who)[0]
         a_run(conn, service, "counted")
         assert service.use.so_far(who)[0] == before + 1
+
+
+class TestADamagedLedgerIsNotAnEmptyOne:
+    """The third time this gateway wrote the same bug, and the same reason each time.
+
+    An empty ledger means "this client has used nothing" — which is exactly the state somebody
+    who had exhausted their allowance would like it to be in. Damaging one file would have
+    restored every client's full window on a gateway that went on looking like it was counting.
+    """
+
+    def test_an_unreadable_ledger_stops_this_gateway(self, tmp_path):
+        from agentnode_sdk.gateway.allowance import CannotReadWhatWasUsed, Use
+
+        path = tmp_path / "use.json"
+        path.write_text("this is not json", encoding="utf-8")
+        with pytest.raises(CannotReadWhatWasUsed):
+            Use(path).so_far("c1")
+
+    def test_one_that_is_not_an_object_stops_it_too(self, tmp_path):
+        from agentnode_sdk.gateway.allowance import CannotReadWhatWasUsed, Use
+
+        path = tmp_path / "use.json"
+        path.write_text("[1, 2, 3]", encoding="utf-8")
+        with pytest.raises(CannotReadWhatWasUsed):
+            Use(path).so_far("c1")
+
+    def test_but_no_ledger_at_all_means_nothing_has_run(self, tmp_path):
+        from agentnode_sdk.gateway.allowance import Use
+
+        assert Use(tmp_path / "never-written.json").so_far("c1") == (0, 0.0)
+
+    def test_and_a_client_that_had_used_its_window_is_not_let_through(self, tmp_path):
+        """The consequence, stated as a test: damage must not restore an exhausted allowance."""
+        from agentnode_sdk.gateway.allowance import CannotReadWhatWasUsed, Use
+
+        use = Use(tmp_path / "use.json", window=3600.0)
+        for i in range(3):
+            use.note("c1", "r%d" % i)
+        assert use.so_far("c1")[0] == 3
+        (tmp_path / "use.json").write_text("{corrupted", encoding="utf-8")
+        with pytest.raises(CannotReadWhatWasUsed):
+            use.so_far("c1")
+
+
+class TestARunThatCouldNotBeRecordedStopsTheGateway:
+    """A run that ended and was never written down disappeared from the account of what ran.
+
+    Leaving the client hanging would be worse, so the run still reaches its terminal state. But a
+    gateway that cannot write down what it ran must not go on running things, so it stops itself
+    — durably, visibly, and reversibly.
+    """
+
+    @pytest.fixture()
+    def service(self, tmp_path):
+        state = GatewayState(str(tmp_path), version="test")
+        return GatewayService(state, backend=StandInBackend())
+
+    def test_it_stops_taking_work(self, service, capsys):
+        from agentnode_sdk.gateway.allowance import why_it_is_stopped
+        from agentnode_sdk.gateway.server import RunRecord
+
+        record = RunRecord(run_id="r" * 32, job_id="j")
+        assert not why_it_is_stopped(service.state.root)
+        service.could_not_record(record, OSError("the disk is full"))
+        halted = why_it_is_stopped(service.state.root)
+        assert halted, "a gateway that cannot account for a run went on taking work"
+        assert "could not write down" in halted
+
+    def test_and_says_which_run_and_why(self, service):
+        from agentnode_sdk.gateway.allowance import why_it_is_stopped
+        from agentnode_sdk.gateway.server import RunRecord
+
+        record = RunRecord(run_id="abcdef0123456789" * 2, job_id="j")
+        service.could_not_record(record, OSError("the disk is full"))
+        halted = why_it_is_stopped(service.state.root)
+        assert "abcdef012345" in halted
+        assert "disk is full" in halted
+
+    def test_the_run_still_reaches_a_terminal_state(self):
+        """Structural: the write is guarded, and move_to happens after it either way."""
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        text = inspect.getsource(server.GatewayService._run)
+        after = text.split("write_down_what_it_used")[-1]
+        assert "could_not_record" in after
+        assert "record.move_to(terminal)" in after
+
+    def test_and_a_gateway_whose_meter_works_is_not_stopped(self, service):
+        """The counter-case: this must not stop a gateway that recorded the run perfectly."""
+        from agentnode_sdk.gateway.allowance import why_it_is_stopped
+
+        assert not why_it_is_stopped(service.state.root)
+
+
+class TestWhoCanReadTheRecordOfUse:
+    """Established rather than assumed from where the file sits."""
+
+    def test_it_is_created_owner_only(self, tmp_path):
+        from agentnode_sdk.gateway import meter
+
+        meter.record(tmp_path, run_id="r", client_id="c", started_at=1.0, finished_at=2.0,
+                     cpu=1.0, memory_mb=512, wall_clock_s=60, state="finished",
+                     outcome="succeeded", bytes_out=1, worker_topology="x",
+                     allowance_sha256="a" * 64)
+        path = Path(tmp_path) / meter.METER_NAME
+        if os.name != "nt":
+            assert (path.stat().st_mode & 0o077) == 0, "somebody else can read what clients used"
+        import inspect
+        assert "0o600" in inspect.getsource(meter.record), "it is not created owner-only"
+
+
+class TestCountingIsNotCharging:
+    """Said where a reader of the module will meet it, because the file invites the assumption."""
+
+    def test_the_module_says_so(self):
+        from agentnode_sdk.gateway import meter
+
+        assert "Counting is not charging." in meter.__doc__
+        assert "nothing here prices anything" in meter.__doc__ or "prices nothing" in meter.__doc__

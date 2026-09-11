@@ -1312,7 +1312,16 @@ class GatewayService:
             # record, and a client that saw one and immediately sent another job would otherwise
             # be admitted against a count that had not yet included the run it just finished.
             # The test for one line per run found this the first time it was written.
-            self.write_down_what_it_used(record, granted, terminal)
+            try:
+                self.write_down_what_it_used(record, granted, terminal)
+            except Exception as exc:                          # noqa: BLE001
+                # A run that ended and was never recorded is a run that disappeared from the
+                # account of what this gateway has done. Leaving the client hanging would be
+                # worse, so the run still reaches its terminal state -- but a gateway that cannot
+                # write down what it ran must not go on running things, so it stops itself.
+                # That is durable (a file), visible (every client is told), and an operator lifts
+                # it deliberately once the cause is fixed.
+                self.could_not_record(record, exc)
             # A reader that sees a terminal state must be seeing a complete record.
             record.move_to(terminal)
             self.ledger.note_state(record.run_id, terminal)
@@ -1328,6 +1337,27 @@ class GatewayService:
     #: that instant would leave the payload to run to its wall clock. Named rather than buried,
     #: because a test that has no runtime at all should not wait the length of one.
     CONTAINER_APPEAR_SECONDS = 20.0
+
+    def could_not_record(self, record, exc: Exception) -> None:
+        """A run ended and its line was not written. Say so durably, and stop taking work.
+
+        The alternative is a gateway that keeps running jobs it cannot account for, with nothing
+        anywhere saying which ones are missing -- and a usage record whose gaps are invisible is
+        not a usage record. Stopping is the fail-closed answer and it is reversible:
+        `agentnode gateway resume` once whatever prevented the write is fixed.
+        """
+        from agentnode_sdk.gateway.allowance import stop_everything
+
+        detail = ("run %s ended and this gateway could not write down what it used (%s). It has "
+                  "stopped taking work rather than run anything else it cannot account for."
+                  % (record.run_id[:12], str(exc)[:160]))
+        record.refusal = record.refusal or detail
+        sys.stderr.write("\n  " + detail + "\n")
+        sys.stderr.flush()
+        try:
+            stop_everything(self.state.root, detail)
+        except Exception:                                     # noqa: BLE001 - never mask the first
+            pass
 
     def write_down_what_it_used(self, record, granted, terminal: str) -> None:
         """One line about one run, for an operator who has to say who used what.
