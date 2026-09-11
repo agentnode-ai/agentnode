@@ -308,10 +308,12 @@ def cmd_run(args) -> int:
             print(f"    {delta.get('field')}: asked {delta.get('requested')!r}, "
                   f"got {delta.get('effective')!r}")
 
-    from agentnode_sdk.gateway.protocol import EXITED, TIMED_OUT, TIMEOUT_EXIT_STATUS
+    from agentnode_sdk.gateway.protocol import TIMED_OUT, TIMEOUT_EXIT_STATUS
 
     state = final.get("state")
-    reason = str(final.get("termination_reason") or EXITED)
+    # Whatever the answer said, and nothing where it said nothing. `EM3C-E8-RECORD-0001`: this
+    # read the field "or exited", so a client could print a reason the gateway had never given.
+    reason = str(final.get("termination_reason") or "")
     if reason == TIMED_OUT:
         # Read from what it MEANS, never from a number. `EM3C-E4-CLASSIFY-0001`: this returned
         # the gateway's exit code, which for a timeout was -1, which Windows then reported as
@@ -365,7 +367,7 @@ def cmd_cancel(args) -> int:
         print(f"  Ask again, or look:  agentnode remote status --run {args.run}")
         return 1
     outcome = outcome_of(str(record.get("state") or ""),
-                         str(record.get("termination_reason") or "exited"))
+                         str(record.get("termination_reason") or ""))
     print(f"  It stopped. State: {record.get('state')} ({outcome}).")
     return 0
 

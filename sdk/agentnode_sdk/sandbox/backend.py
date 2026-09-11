@@ -70,6 +70,11 @@ class SandboxBackend(ABC):
     """An isolation backend. P0.1 implements detection + pure command wrapping;
     actual execution (`run_process`/`run_mcp_process`) is P0.3/P0.2."""
 
+    #: Whose numbers this backend's statuses are, for a record that keeps one. Empty here on
+    #: purpose: a backend that cannot say is not made to say something, and a number nobody can
+    #: attribute is not recorded. `EM3C-E8-RECORD-0001`.
+    native_platform = ""
+
     @abstractmethod
     def check_available(self) -> SandboxAvailability:
         """Probe (cached) whether this backend can isolate execution."""

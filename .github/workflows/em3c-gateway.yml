@@ -119,6 +119,15 @@ jobs:
           grep -qE "^40 passed" em3c-cancel.txt || {
             echo "the cancellation tests did not come out as this lane expects"; exit 1; }
 
+      # Why a run stopped. EM3C-E8-RECORD-0001 found a cancelled run whose own signed answer
+      # said it had exited, and a running job already giving a reason for having stopped.
+      - name: The reason a run stopped
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_stop_reason.py 2>&1 | tee em3c-stop.txt
+          grep -qE "^32 passed" em3c-stop.txt || {
+            echo "the stop-reason tests did not all pass"; exit 1; }
+
       # The value this gateway makes for one run: what it is bound to, where it travels, and
       # what is kept. EM3C-E7-RECORD-0001 found the crossing before this one comparing a
       # container's identity with its host's, which are correctly different.

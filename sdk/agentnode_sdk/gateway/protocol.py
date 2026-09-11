@@ -60,6 +60,14 @@ TIMED_OUT = "timeout"
 CANCELLED = "cancelled"
 TERMINATION_REASONS = (EXITED, TIMED_OUT, CANCELLED)
 
+#: What a run that has not stopped says about why it stopped: nothing.
+#:
+#: `EM3C-E8-RECORD-0001`: the field defaulted to `EXITED`, so a queued run and a running run both
+#: reported a reason for stopping, and a cancelled run kept whatever the destroyed container's
+#: exit had looked like. A default that names one of the things a field can mean is a claim
+#: nobody made. This one names none of them.
+NOT_STOPPED = ""
+
 #: The CLI's own status when a run ended on its limit. 124 is what `timeout(1)` uses, it fits in
 #: the range every platform can carry, and it is a documented constant rather than a sentinel
 #: that happens to survive the trip.
@@ -129,7 +137,47 @@ FAILED = "failed"
 OUTCOMES = (SUCCEEDED, CANCELLED_OUTCOME, TIMED_OUT_OUTCOME, FAILED)
 
 
-def outcome_of(state: str, termination_reason: str = EXITED) -> str:
+def what_disagrees(state: str, termination_reason: str, exit_code, native_status,
+                   native_platform: str) -> str:
+    """Empty when these say one thing about how a run ended. Otherwise, what does not fit.
+
+    One rule, in the place that defines the words, so that the gateway writing a record and the
+    reader judging one cannot come to different conclusions about the same five fields.
+    """
+    try:
+        stopped = is_terminal(state)
+    except ProtocolError:
+        # A state this build cannot place is refused where states are read, and that refusal is
+        # not this function's to make twice. What IS this function's is the agreement between
+        # these fields, and there is no agreement to judge against a state nobody can place.
+        return ""
+    if not stopped:
+        if termination_reason != NOT_STOPPED:
+            return ("this run is " + state + " and says it stopped because "
+                    + str(termination_reason) + ". A run that has not stopped has no reason for "
+                    "having stopped")
+        if exit_code is not None:
+            return ("this run is " + state + " and carries an exit status. Nothing that is still "
+                    "running has exited")
+        return ""
+    if termination_reason not in TERMINATION_REASONS:
+        return ("this run stopped for " + repr(str(termination_reason)[:24]) + ", which is not a "
+                "reason this build knows, so what happened to it cannot be read")
+    if state == "cancelled" and termination_reason != CANCELLED:
+        return ("this run is cancelled and says it stopped because " + termination_reason
+                + ". A run that was cancelled stopped because it was cancelled, whatever the "
+                "runtime made of the container it was in")
+    if termination_reason != EXITED and exit_code is not None:
+        return ("this run is recorded as " + termination_reason + " AND as having exited "
+                + repr(exit_code) + ". Nothing that was stopped chose a status, so one of the two "
+                "is not what happened")
+    if native_status is not None and not str(native_platform or ""):
+        return ("a native status was recorded without saying which platform produced it, so the "
+                "number cannot be read as anything")
+    return ""
+
+
+def outcome_of(state: str, termination_reason: str = NOT_STOPPED) -> str:
     """The outcome of a run in this state, or "" while it still has none.
 
     About the RUN, not about the program it carried: a run that completed and delivered a result

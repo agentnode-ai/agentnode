@@ -128,7 +128,15 @@ def _remove_quietly(path: str, directory: str) -> None:
             pass
 
 
+#: Whose a status number is, when this backend keeps one beside a reason. Named once, here,
+#: rather than spelled at each place that writes it. `EM3C-E8-RECORD-0001`.
+CONTAINER_PLATFORM = "linux-container"
+
+
 class ContainerBackend(SandboxBackend):
+    #: What this backend's numbers belong to, for a record that keeps one.
+    native_platform = CONTAINER_PLATFORM
+
     def __init__(self, runtime: str | None = None, image: str = _BASE_IMAGE) -> None:
         self._runtime = runtime          # force a runtime (tests); else auto-detect
         self._image = image
@@ -501,7 +509,7 @@ class ContainerBackend(SandboxBackend):
             return Outcome(None, out or "",
                            (err or "") + "\n[sandbox timed out after " + str(timeout) + "s]",
                            reason=TIMED_OUT, native_status=proc.returncode,
-                           platform="linux-container")
+                           platform=CONTAINER_PLATFORM)
 
         removed = _run_runtime([runtime, "rm", "-f", ident], timeout=_KILL_TIMEOUT)
         if removed is None:
@@ -530,7 +538,7 @@ class ContainerBackend(SandboxBackend):
                 return Outcome(None, out or "",
                                (err or "") + "\n[sandbox timed out after " + str(timeout) + "s]",
                                reason=TIMED_OUT, native_status=proc.returncode,
-                               platform="linux-container")
+                               platform=CONTAINER_PLATFORM)
             time.sleep(0.1)
         raise SandboxContainmentError(
             f"container {ident[:12]} (resolved by {how}) could not be shown to be gone after being "

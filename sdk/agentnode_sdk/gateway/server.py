@@ -97,7 +97,11 @@ class RunRecord:
     #: wall clock was reported as exit code -1, a Windows client read 4294967295, and the two had
     #: to be called equal for anything to work. A killed process has no exit code; it has a
     #: reason. The runtime's own number is kept beside it, with the platform it belongs to.
-    termination_reason: str = "exited"
+    #:
+    #: `EM3C-E8-RECORD-0001`: this defaulted to `"exited"`, so a run that had not stopped said why
+    #: it had stopped, and a cancelled run kept whatever the destroyed container's exit looked
+    #: like. Nothing has to set it for it to be right now, because empty claims nothing.
+    termination_reason: str = ""
     native_status: int | None = None
     native_platform: str = ""
     stdout: str = ""
@@ -1042,6 +1046,23 @@ class GatewayService:
             record.stdout = out or ""
             record.stderr = err or ""
             terminal = "cancelled" if record.cancel_requested.is_set() else "finished"
+            if terminal == "cancelled":
+                # `EM3C-E8-RECORD-0001`: what came back here is whatever the runtime made of a
+                # container this gateway had just destroyed -- an ordinary exit, status 137. That
+                # is not why the run stopped. It stopped because the client asked for it to, and
+                # the record says so whatever the container's death looked like from outside.
+                #
+                # And nothing that was stopped chose a status: the exit code goes, the runtime's
+                # own number is kept beside the reason, and it is kept only if something can say
+                # whose number it is. A number nobody can attribute is a number a reader guesses
+                # about, so it is not recorded at all.
+                from agentnode_sdk.gateway.protocol import CANCELLED as _CANCELLED
+
+                record.termination_reason = _CANCELLED
+                whose = platform or getattr(self.backend, "native_platform", "")
+                record.native_status = rc if whose else None
+                record.native_platform = whose if record.native_status is not None else ""
+                record.exit_code = None
         except _Cancelled:
             from agentnode_sdk.gateway.protocol import CANCELLED
 

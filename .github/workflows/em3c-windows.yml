@@ -144,6 +144,14 @@ jobs:
           grep -q "needs a container runtime" cancel.txt || {
             echo "the skipped case is not the one this lane expects"; tail -5 cancel.txt; exit 1; }
 
+      - name: The reason a run stopped, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_stop_reason.py 2>&1 | tee stop.txt
+          grep -qE "^32 passed" stop.txt || {
+            echo "the stop-reason tests did not all pass"; exit 1; }
+
       - name: The challenge a gateway issues, on Windows
         shell: bash
         run: |

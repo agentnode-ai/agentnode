@@ -246,6 +246,7 @@ def _production() -> dict:
         from agentnode_sdk.gateway.protocol import (
             ERROR_FIELDS, EXITED, PROTOCOL_VERSION, SIGNATURE_FIELDS, STAMP_FIELDS,
             TERMINATION_REASONS, TIMED_OUT, binding_fields, refusal, response_binding,
+            what_disagrees,
         )
         from agentnode_sdk.gateway.server import RunRecord
 
@@ -278,6 +279,7 @@ def _production() -> dict:
             "protocol": PROTOCOL_VERSION,
             "error": tuple(ERROR_FIELDS),
             "reasons": tuple(TERMINATION_REASONS),
+            "what_disagrees": what_disagrees,
             "exited": EXITED,
             "timed_out": TIMED_OUT,
             "response_binding": response_binding,
@@ -880,23 +882,17 @@ def _run_findings(step, where) -> list[Finding]:
 
     # Why the run stopped. `EM3C-E4-CLASSIFY-0001`: this was an integer, and the two integers
     # that meant "stopped by its own limit" on the two platforms had to be treated as equal.
+    # `EM3C-E8-RECORD-0001`: the rule that these five fields have to say one thing lives in the
+    # protocol, so that what the gateway writes and what this reads cannot be judged differently.
+    # Nothing is defaulted here: a record that did not carry the field did not say it exited.
     production = _production()
-    reason = record.get("termination_reason", production["exited"])
-    if reason not in production["reasons"]:
-        problems.append(Finding(
-            where, EVIDENCE_ERROR,
-            f"the record says this run stopped for {str(reason)[:24]!r}, which is not a reason "
-            "this build knows, so what happened to it cannot be read"))
-    elif reason != production["exited"] and record.get("exit_code") is not None:
-        problems.append(Finding(
-            where, FAIL,
-            f"this run is recorded as {reason} AND as having exited {record.get('exit_code')!r}. "
-            "Nothing that was stopped chose a status, so one of the two is not what happened"))
-    if record.get("native_status") is not None and not str(record.get("native_platform") or ""):
-        problems.append(Finding(
-            where, EVIDENCE_ERROR,
-            "a native status was recorded without saying which platform produced it, so the "
-            "number cannot be read as anything"))
+    reason = record.get("termination_reason", "")
+    disagreement = production["what_disagrees"](
+        str(record.get("state") or ""), reason, record.get("exit_code"),
+        record.get("native_status"), str(record.get("native_platform") or ""))
+    if disagreement:
+        unreadable = "cannot be read" in disagreement
+        problems.append(Finding(where, EVIDENCE_ERROR if unreadable else FAIL, disagreement))
 
     if step.get("expect_timeout"):
         if reason != production["timed_out"]:
