@@ -255,7 +255,12 @@ grep -q memory "/sys/fs/cgroup/user.slice/user-$WORKER_UID.slice/cgroup.controll
 ok "the session's memory controller is delegated, which is what makes a ceiling bind"
 ok "units installed"
 
-systemctl enable --now agentnode-worker.service
+# `enable --now` STARTS a stopped service and does nothing at all to a running one. A re-run that
+# installed a new wheel would then leave the old process serving from memory, with the new code on
+# disk and every check saying it was deployed. The worker was restarted by chance here (its unit
+# changed); the gateway was not, and ran an hour-old build while its file had the fix in it.
+systemctl enable agentnode-worker.service >/dev/null
+systemctl restart agentnode-worker.service
 sleep 3
 if ! systemctl is-active --quiet agentnode-worker.service; then
   printf '\n!! the worker did not start. What it said:\n\n'
@@ -264,13 +269,25 @@ if ! systemctl is-active --quiet agentnode-worker.service; then
 fi
 ok "worker is running, which means it hit a ceiling and the ceiling held"
 
-systemctl enable --now agentnode-gateway.service
+systemctl enable agentnode-gateway.service >/dev/null
+systemctl restart agentnode-gateway.service
 sleep 3
 systemctl is-active --quiet agentnode-gateway.service || {
   journalctl -u agentnode-gateway.service -n 30 --no-pager | sed 's/^/   /'
   die "the gateway did not start"
 }
 ok "gateway is running"
+
+# Running is not the same as running THIS code. Both processes must have started after the file
+# they run was written, or the deployment did nothing it appeared to do.
+BUILT_AT=$(stat -c %Y "$("$PREFIX/venv/bin/python3" -c 'import agentnode_sdk.gateway.server as m; print(m.__file__)')")
+for unit in agentnode-worker agentnode-gateway; do
+  started=$(date -d "$(systemctl show "$unit" -p ActiveEnterTimestamp --value)" +%s 2>/dev/null || echo 0)
+  if [ "$started" -lt "$BUILT_AT" ]; then
+    die "$unit has been running since before this code was installed, so it is serving the old build"
+  fi
+done
+ok "both services started after the code they run was written"
 
 # ---------------------------------------------------------------------------------------------
 say "what is actually true now, read back rather than assumed"

@@ -158,7 +158,10 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
     # finishing together must not both claim one sequence number. Two lines with the same `seq`
     # and the same `prev` is a fork, and a fork is what the chain exists to make visible.
     with _writing(root):
-        so_far = read(root)
+        # The last CHAINED line, not the last line. A log that predates the chain ends in lines
+        # with no `seq`, and pointing the first chained line at one of those would make the chain
+        # start somewhere `verify` cannot begin -- it starts at GENESIS or it does not start.
+        so_far = [r for r in read(root) if "seq" in r]
         previous = so_far[-1] if so_far else None
         line["seq"] = (int(previous.get("seq", 0)) + 1) if previous else 1
         line["prev"] = _digest_of(_without_signature(previous)) if previous else GENESIS
@@ -221,8 +224,23 @@ def verify(root: str | os.PathLike[str]) -> dict:
         return {"ok": False, "lines": len(lines), "at": 0,
                 "detail": "there is no public key beside this log, so nothing in it can be "
                           "checked, and a log that cannot be checked is not evidence"}
+    # Lines written before this gateway kept a chain carry no `seq`. They cannot be signed now --
+    # signing them today would be this gateway vouching for what it did not record at the time,
+    # which is forging, not migrating. So they are counted and named as unchecked, and they are
+    # allowed only at the FRONT: an unchained line appearing later means one was replaced.
+    before_the_chain = 0
+    for line in lines:
+        if "seq" in line:
+            break
+        before_the_chain += 1
+    chained = lines[before_the_chain:]
+    if not chained:
+        return {"ok": False, "lines": len(lines), "at": 0, "unchecked": before_the_chain,
+                "detail": "all %d line(s) here were written before this gateway kept a chain, so "
+                          "none of them can be checked" % len(lines)}
+
     expected_prev, expected_seq = GENESIS, 1
-    for index, line in enumerate(lines, start=1):
+    for index, line in enumerate(chained, start=before_the_chain + 1):
         where = {"ok": False, "lines": len(lines), "at": index,
                  "run_id": str(line.get("run_id", ""))[:32]}
         if int(line.get("seq", 0)) != expected_seq:
@@ -266,7 +284,13 @@ def verify(root: str | os.PathLike[str]) -> dict:
                           "%s line(s) have been taken off the end"
                           % (expected_seq - 1, head.get("seq"),
                              int(head.get("seq", 0)) - (expected_seq - 1))}
-    return {"ok": True, "lines": len(lines),
+    if before_the_chain:
+        return {"ok": True, "lines": len(lines), "unchecked": before_the_chain,
+                "detail": "the %d line(s) after the first %d are signed, point at the one before "
+                          "each, and end where they are supposed to. The first %d were written "
+                          "before this gateway kept a chain and cannot be checked at all"
+                          % (len(chained), before_the_chain, before_the_chain)}
+    return {"ok": True, "lines": len(lines), "unchecked": 0,
             "detail": "every line is signed, points at the one before it, and the log ends "
                       "where it is supposed to"}
 

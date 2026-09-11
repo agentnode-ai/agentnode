@@ -9,9 +9,11 @@ retained). A pass there is a review of the decision, not a claim that these risk
 
 ## HIGH — the control plane and the worker share a kernel
 
-Two accounts on one machine are not a tenancy boundary. A sandbox escape reaches this host, and
-this host is where the control plane's pairing state, signing identity, client tokens and ledger
-live. The account separation raises the cost of that; it does not make it impossible.
+Two accounts on one kernel are **not isolation**. The worker's account can drive a container
+runtime, which is its whole purpose, and a sandbox escape therefore reaches this host — the host
+that holds the control plane's pairing state, signing identity, every client's token and the
+ledger. The account separation raises the cost of that; it does not make it impossible, and
+nothing here should be read as saying it does.
 
 Nothing built on this topology may be described as production-ready, multi-tenant, or isolated
 between control plane and worker. Before live operation the worker belongs on its own machine,
@@ -37,6 +39,15 @@ host.
 That is partly self-correcting: the worker measures its own ceiling before it agrees to serve and
 refuses if the ceiling does not hold, so a host where this is untrue fails closed rather than
 quietly. The privilege questions have no such guard and have to be asked again.
+
+## Not claimed anywhere
+
+This arrangement is not production-ready, not multi-tenant, and not escape-proof between the
+control plane and the worker. And relocating the worker to its own machine is not something the
+shipped code can do: `from_address` speaks unix sockets and refuses every other scheme in as many
+words. What exists is the seam — no product code names a host, an account or a path — so when a
+remote transport is written it is a configuration value that changes and not the product. The seam
+existing is not the move being possible, and the deployment says which one it is.
 
 ## What is not on this list
 

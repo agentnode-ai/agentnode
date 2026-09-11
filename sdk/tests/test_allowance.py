@@ -720,3 +720,95 @@ class TestTheRecordOfUseCanBeShownNotToHaveChanged:
 
         assert "tamper-EVIDENT" in meter.__doc__
         assert "does NOT establish" in meter.__doc__
+
+
+class TestAClientIsToldTheSandboxWasStoppedRatherThanBlamingItsCode:
+    """"cancelled" on its own reads as something the person did.
+
+    A person told their run was cancelled goes and looks at their code. A person told the sandbox
+    was stopped by whoever runs it goes and asks them. The difference is one field, and it only
+    helps if it reaches the client rather than staying in the gateway.
+    """
+
+    def test_the_reason_reaches_the_client(self):
+        from agentnode_sdk.gateway.server import RunRecord
+
+        record = RunRecord(run_id="r" * 32, job_id="j")
+        record.state = "cancelled"
+        record.halted_by = "replacing the sandbox image"
+        assert record.public()["halted_by"] == "replacing the sandbox image"
+
+    def test_and_the_client_says_it_instead_of_the_bare_state(self, capsys):
+        import inspect
+
+        from agentnode_sdk.cli import remote_commands
+
+        text = inspect.getsource(remote_commands)
+        assert 'halted_by' in text
+        assert "stopped by whoever runs it" in text
+        assert "Nothing about your code is known from this" in text
+
+    def test_an_ordinary_cancellation_still_reads_as_one(self):
+        """The counter-case: this must not turn every cancellation into an operator's doing."""
+        from agentnode_sdk.gateway.server import RunRecord
+
+        record = RunRecord(run_id="r" * 32, job_id="j")
+        record.state = "cancelled"
+        assert record.public()["halted_by"] == ""
+
+
+class TestALogThatStartedBeforeTheChainDid:
+    """Signing old lines now would be this gateway vouching for what it did not record then.
+
+    So they are not signed, they are named, and the part of the file that is evidence is
+    separated from the part that is not. What must not happen is that an unchained line becomes a
+    way around the chain.
+    """
+
+    def _mixed(self, tmp_path, before=2, after=3):
+        from agentnode_sdk.gateway import meter
+
+        path = Path(tmp_path) / meter.METER_NAME
+        old = [{"run_id": "old%d" % i, "client_id": "c", "started_at": 1.0, "finished_at": 2.0,
+                "seconds": 1.0, "cpu": 1.0, "memory_mb": 512, "wall_clock_s": 60,
+                "state": "finished", "outcome": "succeeded", "bytes_out": 1,
+                "worker_topology": "x", "allowance_sha256": "a" * 64} for i in range(before)]
+        path.write_text("\n".join(json.dumps(o, sort_keys=True, separators=(",", ":"))
+                                  for o in old) + "\n", encoding="utf-8")
+        for i in range(after):
+            meter.record(tmp_path, run_id="new%d" % i, client_id="c", started_at=1.0,
+                         finished_at=2.0, cpu=1.0, memory_mb=512, wall_clock_s=60,
+                         state="finished", outcome="succeeded", bytes_out=1,
+                         worker_topology="x", allowance_sha256="a" * 64)
+        return meter
+
+    def test_the_chained_part_checks_out_and_the_rest_is_named(self, tmp_path):
+        meter = self._mixed(tmp_path)
+        held = meter.verify(tmp_path)
+        assert held["ok"] is True
+        assert held["unchecked"] == 2
+        assert "cannot be checked at all" in held["detail"]
+
+    def test_a_log_that_is_all_from_before_is_not_called_verified(self, tmp_path):
+        """Otherwise stripping every line's signature would be the way past the chain."""
+        meter = self._mixed(tmp_path, before=3, after=0)
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert "cannot be checked" in held["detail"]
+
+    def test_an_unchained_line_in_the_middle_is_not_allowed(self, tmp_path):
+        """They are tolerated at the FRONT only; later on, one means a line was replaced."""
+        meter = self._mixed(tmp_path, before=1, after=3)
+        path = Path(tmp_path) / meter.METER_NAME
+        rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        stripped = {k: v for k, v in rows[2].items() if k not in ("seq", "prev", "signature")}
+        rows[2] = stripped
+        path.write_text("\n".join(json.dumps(r, sort_keys=True, separators=(",", ":"))
+                                  for r in rows) + "\n", encoding="utf-8")
+        assert meter.verify(tmp_path)["ok"] is False
+
+    def test_and_the_count_of_what_is_evidence_is_honest(self, tmp_path):
+        meter = self._mixed(tmp_path, before=2, after=3)
+        held = meter.verify(tmp_path)
+        assert held["lines"] == 5
+        assert held["unchecked"] == 2

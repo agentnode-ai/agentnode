@@ -866,6 +866,12 @@ def cmd_used(args) -> int:
         if held["ok"]:
             print(f"  {bold('This record has not been altered.')}")
             print(f"  {held['lines']} line(s); {held['detail']}.")
+            if held.get("unchecked"):
+                print()
+                print(f"  {bold('Not all of it.')} The first {held['unchecked']} line(s) predate")
+                print("  the chain and are not evidence of anything. They were left unsigned on")
+                print("  purpose: signing them now would be this gateway vouching for what it")
+                print("  did not record at the time.")
             print()
             print(dim("  Tamper-evident, which is a smaller claim than tamper-proof: nobody"))
             print(dim("  without this gateway's meter key can change the file without the change"))

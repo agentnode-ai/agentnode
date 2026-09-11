@@ -406,6 +406,15 @@ def cmd_run(args) -> int:
         print(f"  {final.get('refusal')}")
         return 1
     print()
+    # "cancelled" on its own reads as something the person did. When the operator's switch is
+    # what ended it, saying so is the difference between a person looking at their code and a
+    # person looking at the sandbox.
+    halted = str(final.get("halted_by") or "")
+    if halted:
+        print(f"  {bold('Did not finish.')} The sandbox was stopped by whoever runs it:")
+        print(f"  {halted}")
+        print("  Nothing about your code is known from this -- it was ended part-way.")
+        return 1
     print(f"  {bold('Did not finish.')} {final.get('refusal') or state}")
     return 1
 
