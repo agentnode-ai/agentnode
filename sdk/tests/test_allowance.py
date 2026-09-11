@@ -1028,3 +1028,126 @@ class TestASecondsCeilingSaysWhenItLifts:
 
         over = OverTheCeiling("seconds_per_window", "used too much", lifts_at=1234.0)
         assert over.lifts_at == 1234.0
+
+
+class TestTakingASlotAndCheckingItAreOneStep:
+    """The concurrent ceiling had the same shape of bug as the window one, one layer up.
+
+    `Use.claim` made the DURABLE counter atomic. The count of what a client has GOING was still
+    read under the lock, then the whole of admission happened, and only afterwards was the run
+    inserted into the registry — so two requests arriving together both saw a free slot and a
+    ceiling of one admitted two. The race test only covered the durable counter; the concurrent
+    test was sequential, which is why nothing caught it.
+    """
+
+    @pytest.fixture()
+    def service(self, tmp_path):
+        state = GatewayState(str(tmp_path), version="test")
+        return GatewayService(state, backend=StandInBackend())
+
+    def _reserve_many(self, service, how_many, ceiling):
+        from agentnode_sdk.gateway.allowance import Allowance, OverTheCeiling, write_allowance
+        from agentnode_sdk.gateway.server import RunRecord
+
+        write_allowance(service.state.root, Allowance(concurrent_runs=ceiling))
+        admitted, refused = [], []
+        ready = threading.Barrier(how_many)
+
+        def one(i):
+            record = RunRecord(run_id="r%02d" % i, job_id="j")
+            record.state = "running"
+            record.owner_client_id = "c1"
+            ready.wait()                                       # all of them at the same instant
+            try:
+                service.reserve("c1", record.run_id, record, 60)
+                admitted.append(i)
+            except OverTheCeiling:
+                refused.append(i)
+
+        threads = [threading.Thread(target=one, args=(i,)) for i in range(how_many)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return admitted, refused
+
+    def test_a_ceiling_of_one_admits_one_of_eight_simultaneous(self, service):
+        admitted, refused = self._reserve_many(service, how_many=8, ceiling=1)
+        assert len(admitted) == 1, f"a ceiling of one admitted {len(admitted)}: {admitted}"
+        assert len(refused) == 7
+
+    def test_a_ceiling_of_three_admits_three_of_twelve(self, service):
+        admitted, _ = self._reserve_many(service, how_many=12, ceiling=3)
+        assert len(admitted) == 3, f"a ceiling of three admitted {len(admitted)}"
+
+    def test_and_the_registry_holds_exactly_what_was_admitted(self, service):
+        """A refused reservation must not have left a record behind either."""
+        admitted, _ = self._reserve_many(service, how_many=8, ceiling=2)
+        assert len(service.runs) == len(admitted) == 2
+
+
+class TestARefusedRequestDoesNotConsumeAllowance:
+    """The claim used to be taken at the TOP of admission, before most of the checks.
+
+    A request whose artefact digest did not match — or which failed any later check — was refused
+    and kept the run it had claimed. Sending malformed requests would then spend a client's whole
+    window without ever running anything. The claim happens at the commit point now, after
+    everything that can refuse.
+    """
+
+    def test_a_request_refused_after_the_ceiling_check_leaves_the_count_alone(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        who = state.client_id_for(conn.token) or ""
+        before = service.use.so_far(who)
+
+        # A property this gateway cannot prove. That check lives BELOW the allowance look in
+        # `admit`, so this is a request that gets past the ceiling and is then refused.
+        answer = gc.submit(conn, b"print('x')", granted=_granted(service, wall_clock_s=30),
+                           required_properties=("a-property-nobody-measures",),
+                           run_id="refused-one", wall_clock_s=30)
+        assert answer.get("state") == "refused", answer
+        time.sleep(0.5)
+        assert service.use.so_far(who) == before, (
+            "a refused request consumed allowance: %s -> %s"
+            % (before, service.use.so_far(who)))
+
+    def test_and_enough_refusals_do_not_exhaust_a_window(self, a_gateway):
+        """The consequence that made it worth finding: malformed requests as a denial of service.
+
+        If each refusal spent a run, somebody could empty a client's whole window without ever
+        running anything -- and the client would be locked out by traffic it never sent.
+        """
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        who = state.client_id_for(conn.token) or ""
+        write_allowance(state.root, Allowance(runs_per_window=3))
+        for i in range(6):
+            gc.submit(conn, b"print('x')", granted=_granted(service, wall_clock_s=30),
+                      required_properties=("a-property-nobody-measures",),
+                      run_id="refused-%d" % i, wall_clock_s=30)
+        time.sleep(0.5)
+        assert service.use.so_far(who)[0] == 0, "refusals ate the window"
+        # and a real job is still admitted afterwards
+        assert a_run(conn, service, "still-allowed")
+
+    def test_the_claim_happens_at_the_commit_point(self):
+        """Structural: nothing in admission may refuse after the claim is taken."""
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        admitting = inspect.getsource(server.GatewayService.admit)
+        assert "run_id=request.run_id" not in admitting, "the claim is still taken inside admit"
+        assert "claims nothing" in admitting
+        submitting = inspect.getsource(server.GatewayService.submit)
+        assert "self.reserve(" in submitting
+
+    def test_and_a_successful_request_does_consume_it(self, a_gateway):
+        """The counter-case: the accounting must still happen for runs that are admitted."""
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        who = state.client_id_for(conn.token) or ""
+        before = service.use.so_far(who)[0]
+        a_run(conn, service, "counted")
+        assert service.use.so_far(who)[0] == before + 1

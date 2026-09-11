@@ -791,7 +791,7 @@ class GatewayService:
             self._use = held
         return held
 
-    def within_its_allowance(self, client_id: str, asking_for: int, run_id: str = "") -> str:
+    def within_its_allowance(self, client_id: str, asking_for: int) -> str:
         """Raise `OverTheCeiling` if this client may not have another run right now.
 
         With a `run_id`, the looking and the claiming happen inside ONE transaction: two requests
@@ -818,34 +818,35 @@ class GatewayService:
                     "concurrent_runs",
                     "this client already has %d runs going and may have %d at once. Wait for one "
                     "to finish." % (going, allowed.concurrent_runs))
-        def judge(runs: int, seconds: float, oldest: float) -> None:
-            lifts = oldest + allowed.window_seconds
-            if allowed.runs_per_window and runs >= allowed.runs_per_window:
-                raise OverTheCeiling(
-                    "runs_per_window",
-                    "this client has started %d runs and may start %d in this window. The oldest "
-                    "stops counting in %.0f seconds." % (runs, allowed.runs_per_window,
-                                                         max(0.0, lifts - time.time())),
-                    lifts_at=lifts)
-            if allowed.seconds_per_window and seconds + asking_for > allowed.seconds_per_window:
-                raise OverTheCeiling(
-                    "seconds_per_window",
-                    "this client has used %.0f of %d seconds in this window and this job asks "
-                    "for up to %d more. The oldest stops counting in %.0f seconds."
-                    % (seconds, allowed.seconds_per_window, asking_for,
-                       max(0.0, lifts - time.time())),
-                    lifts_at=lifts)
-
         if allowed.runs_per_window or allowed.seconds_per_window:
-            if run_id:
-                # One transaction: judged and claimed under the same lock.
-                self.use.claim(client_id, run_id, judge)
-            else:
-                runs, seconds = self.use.so_far(client_id)
-                judge(runs, seconds, self.use.oldest(client_id))
-        elif run_id:
-            self.use.note(client_id, run_id)
+            runs, seconds = self.use.so_far(client_id)
+            self._judge_window(allowed, runs, seconds, self.use.oldest(client_id), asking_for)
         return granted
+
+    def _judge_window(self, allowed, runs: int, seconds: float, oldest: float,
+                      asking_for: int) -> None:
+        """Whether a client may start another run in this window. One definition, two callers.
+
+        The early look in `within_its_allowance` and the authoritative claim in `reserve` have to
+        agree about what "over a ceiling" means; two copies of this would be two answers, and the
+        more permissive one would be the one that decided.
+        """
+        lifts = oldest + allowed.window_seconds
+        if allowed.runs_per_window and runs >= allowed.runs_per_window:
+            raise OverTheCeiling(
+                "runs_per_window",
+                "this client has started %d runs and may start %d in this window. The oldest "
+                "stops counting in %.0f seconds." % (runs, allowed.runs_per_window,
+                                                     max(0.0, lifts - time.time())),
+                lifts_at=lifts)
+        if allowed.seconds_per_window and seconds + asking_for > allowed.seconds_per_window:
+            raise OverTheCeiling(
+                "seconds_per_window",
+                "this client has used %.0f of %d seconds in this window and this job asks "
+                "for up to %d more. The oldest stops counting in %.0f seconds."
+                % (seconds, allowed.seconds_per_window, asking_for,
+                   max(0.0, lifts - time.time())),
+                lifts_at=lifts)
 
     def admit(self, request: JobRequest, artifact: bytes,
               token: str = "") -> tuple:
@@ -871,10 +872,14 @@ class GatewayService:
         # What this client has already used, against what the operator allows it. Before the
         # artefact is digested, because refusing over a ceiling should not cost the work of
         # hashing something that is not going to run.
-        # Claimed here, not later: the run is counted in the same breath as the ceiling is
-        # checked, and the ceilings that were applied are carried on the run from this moment.
+        # An EARLY LOOK, which claims nothing. It is here so that a client already over a ceiling
+        # is refused before this gateway spends the work of hashing an artefact that is not going
+        # to run. It is advisory by construction: the authoritative check-and-claim happens at the
+        # commit point in `reserve`, because a claim taken here would be kept by a request that
+        # one of the checks BELOW went on to refuse -- and a refused request must not consume the
+        # allowance it was refused for.
         granted_digest = self.within_its_allowance(
-            self.state.client_id_for(token) or "", request.wall_clock_s, run_id=request.run_id)
+            self.state.client_id_for(token) or "", request.wall_clock_s)
 
         actual = digest(artifact)
         if actual != request.artifact_sha256:
@@ -1142,12 +1147,15 @@ class GatewayService:
             value=record.challenge, delivered=carried,
             because="" if carried else ch.BROUGHT_ITS_OWN_COMMAND).as_dict())
 
-        # Already counted, inside the same transaction that judged it -- see
-        # `within_its_allowance`. Counting here as a separate step is what let two requests
-        # arriving together both pass one ceiling.
-
-        with self._lock:
-            self.runs[request.run_id] = record
+        # THE COMMIT POINT. Everything that must be true at the moment this run becomes real
+        # happens here, in one critical section, and nothing after it can refuse.
+        #
+        # Two things were wrong before and are the reason this is one call. The concurrent count
+        # was read under the lock and the record inserted under the lock LATER, with the whole of
+        # admission in between -- so two requests arriving together both saw a free slot and a
+        # ceiling of one admitted two. And the window claim was taken at the top of admission, so
+        # a request that a later check refused kept the allowance it had claimed.
+        self.reserve(record.owner_client_id, request.run_id, record, request.wall_clock_s)
         thread = threading.Thread(target=self._run, args=(request, artifact, granted, record),
                                   daemon=True)
         thread.start()
@@ -1353,6 +1361,41 @@ class GatewayService:
             # A run that happened is not un-happened by a meter that could not be written, and
             # refusing to publish the terminal state over it would lose the run instead.
             pass
+
+    def reserve(self, client_id: str, run_id: str, record, asking_for: int) -> None:
+        """Take the slot and the allowance, or raise -- as one indivisible step.
+
+        The count of what a client has going and the insertion of the new run are the same
+        decision, so they are made without letting go of the lock in between. Reading the count,
+        doing a page of other work, and then inserting is how a ceiling of one admits two.
+        """
+        from agentnode_sdk.gateway.protocol import is_terminal
+
+        allowed = self.allowance()
+        if not client_id:
+            with self._lock:
+                self.runs[run_id] = record
+            return
+
+        def judge(runs: int, seconds: float, oldest: float) -> None:
+            self._judge_window(allowed, runs, seconds, oldest, asking_for)
+
+        with self._lock:
+            if allowed.concurrent_runs:
+                going = sum(1 for r in self.runs.values()
+                            if r.owner_client_id == client_id and not is_terminal(r.state))
+                if going >= allowed.concurrent_runs:
+                    raise OverTheCeiling(
+                        "concurrent_runs",
+                        "this client already has %d runs going and may have %d at once. Wait "
+                        "for one to finish." % (going, allowed.concurrent_runs))
+            if allowed.runs_per_window or allowed.seconds_per_window:
+                # Raises before anything is written if this client is over a window ceiling.
+                self.use.claim(client_id, run_id, judge)
+            else:
+                self.use.note(client_id, run_id)
+            # Taken in the same breath as it was checked.
+            self.runs[run_id] = record
 
     def stop_what_is_running(self, why: str, settle: float | None = None) -> list:
         """End every run that has not ended, because the operator stopped this gateway.
