@@ -17,9 +17,20 @@ Group=agentnode-gateway
 # socket. Not docker, and not anything else.
 SupplementaryGroups=agentnode-bridge
 
+# Where the worker is, and where this listens, are both deployment configuration and nothing
+# else. Moving the worker to its own machine is one value in this file becoming a tls:// address;
+# no product code knows or asks which host it is on, and the topology in every record is derived
+# from that address rather than declared beside it.
+#
+# The bind address defaults to 127.0.0.1 there: a gateway is reachable from this machine only
+# until somebody decides otherwise, and deciding otherwise is editing that file and opening a
+# port, both on purpose.
+EnvironmentFile=/etc/agentnode/gateway.env
+
 ExecStart=/opt/agentnode/venv/bin/agentnode gateway start \
     --dir /var/lib/agentnode/state \
-    --port 8099
+    --host ${AGENTNODE_HOST} \
+    --port ${AGENTNODE_PORT}
 
 Restart=always
 RestartSec=2

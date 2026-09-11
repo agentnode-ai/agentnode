@@ -175,7 +175,12 @@ def cmd_status(args) -> int:
     print()
     print(f"  {bold(saved.name)}  {dim(saved.url)}")
     try:
-        hello = gc.hello(saved.url)
+        # WITH the certificate this client pinned when it paired. Asking without it was the one
+        # request in the whole exchange that went to whatever answered -- and on a gateway with
+        # a self-signed certificate it did not even get that far: ordinary CA verification
+        # failed, and the failure was reported as "that is not the sandbox you paired with",
+        # which is a different and much more alarming thing than "this request forgot to pin".
+        hello = gc.hello(saved.url, pin=saved.certificate_sha256)
         # `hello` is unauthenticated -- it has to be, since it is what an unpaired client asks
         # first. But this connection already knows which gateway it paired with, and
         # EM3C-EXTERNAL-0011 found the answer being read out to the user without that comparison:

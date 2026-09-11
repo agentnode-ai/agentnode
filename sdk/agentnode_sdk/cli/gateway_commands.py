@@ -151,6 +151,23 @@ def cmd_init(args) -> int:
         from agentnode_sdk.gateway import certificate as tls
 
         root.mkdir(parents=True, exist_ok=True)
+        # A port here is the easy mistake, and it used to be a silent one: the certificate was
+        # made for a name with a colon in it, every invitation carried that name, and the first
+        # sign of trouble was on somebody else's machine, where the client refused an address it
+        # could not parse. The port is not this gateway's to advertise -- it is in the address
+        # the invitation builds -- so say so now rather than at the far end.
+        if ":" in advertise and not advertise.count(":") > 1:      # not an IPv6 literal
+            host, _, tail = advertise.partition(":")
+            print()
+            print(f"  {bold('An address here, without a port.')}")
+            print(f"  The port is added when an invitation is made, so {advertise!r} would put")
+            print(f"  a colon into the certificate and into every invitation, and the client at")
+            print("  the other end would refuse it. What you probably want:")
+            print(f"    agentnode gateway init --tls-self-signed --advertise {host}")
+            if tail and tail != "8099":
+                print(f"  and then start it with  --port {tail}")
+            return 2
+
         cert, key, pin = tls.make(root, advertise)
         config["advertise"] = advertise
         print()
@@ -224,7 +241,7 @@ def cmd_start(args) -> int:
 
     url = public_url_for(host, server.server_address[1], bool(server.agentnode_tls))
     readiness = service.readiness_now()
-    available = service.backend.check_available().available
+    available = service.worker.can_it_isolate().available
 
     print()
     print(f"  {bold('Sandbox gateway running')} at {url}")
@@ -396,7 +413,7 @@ def cmd_status(args) -> int:
         print("  No gateway is set up here. Run: agentnode gateway init")
         return 1
     state, service = _service(root)
-    availability = service.backend.check_available()
+    availability = service.worker.can_it_isolate()
     readiness = service.readiness_now()
     clients = state.paired_clients()
 
@@ -425,18 +442,25 @@ def cmd_status(args) -> int:
 def cmd_doctor(args) -> int:
     root = _root(args)
     state, service = _service(root)
-    availability = service.backend.check_available()
+    availability = service.worker.can_it_isolate()
 
     print()
     print(f"  {bold('Checking this machine')}")
     print()
     if not availability.available:
-        print("  There is no usable container runtime here, so nothing can be isolated.")
+        print("  There is no usable container runtime for this gateway to send work to,")
+        print("  so nothing can be isolated.")
         print(f"  {availability.reason}")
         print()
-        print("  Install Docker or Podman, then run this again.")
+        if getattr(service.worker, "address", ""):
+            print(f"  This gateway does not run containers itself. Its worker is at")
+            print(f"    {service.worker.address}")
+            print("  so that is the machine to look at, not this one.")
+        else:
+            print("  Install Docker or Podman, then run this again.")
         return 1
-    print(f"  A container runtime is available ({availability.backend}).")
+    where = getattr(service.worker, "address", "") or "in this process"
+    print(f"  A container runtime is available ({availability.backend}), {where}.")
 
     if getattr(args, "measure", False):
         print("  Measuring what it actually enforces. This runs several short containers")
@@ -484,13 +508,24 @@ def _say_remote_access(root: Path, config: dict) -> None:
     print("  To let another machine use it, the connection has to be encrypted -- a pairing code")
     print("  and an access token cross it, and neither survives being read on the way.")
     print()
+    # This gateway can make its own certificate, and a client pins it when it pairs. That is
+    # fewer moving parts than anything below and needs nothing installed, so it goes first --
+    # it used to be missing here entirely, and the advice led with "install Tailscale" for a
+    # job the gateway already does.
+    print("  This gateway can make its own certificate, and the invitation tells the client")
+    print("  which one to expect -- so no certificate authority is involved and nothing else")
+    print("  answering at that address can take its place:")
+    print("    agentnode gateway init --tls-self-signed --advertise <the address people reach>")
+    print("    agentnode gateway start --host 0.0.0.0")
+    print("  Then open the port, deliberately, to the people who should have it.")
+    print()
+    print("  The alternatives, if you would rather not open one:")
     if shutil.which("tailscale"):
-        print("  Tailscale is installed here, which is the simplest route:")
+        print("  Tailscale is installed here:")
         print("    tailscale serve --bg 8099")
         print("  That publishes an https:// address on your private network. Nothing is exposed")
         print("  to the internet, and there is no certificate for you to manage.")
     else:
-        print("  The simplest route needs no domain name and no open port:")
         print("    install Tailscale (or another private tunnel), then:")
         print("      tailscale serve --bg 8099")
         print()

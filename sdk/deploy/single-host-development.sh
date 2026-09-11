@@ -184,6 +184,10 @@ ok "worker.env points at /run/user/$WORKER_UID"
 cat > "$CONF/gateway.env" <<EOF
 # Written by single-host-development.sh.
 AGENTNODE_PORT=$PORT
+# 127.0.0.1 unless the operator says otherwise. Letting another machine reach this is a decision
+# somebody makes on purpose: change this, restart the service, and open the port -- three
+# deliberate steps, none of which happen because something was installed.
+AGENTNODE_HOST=${AGENTNODE_HOST:-127.0.0.1}
 EOF
 chmod 0644 "$CONF/gateway.env"
 

@@ -489,3 +489,72 @@ class TestWhatThisDoesNotEstablish:
             said = inspect.getdoc(module) or ""
             for phrase in must_say:
                 assert phrase in said, (module.__name__, phrase)
+
+
+class TestEveryRequestToAPairedGatewayIsPinned:
+    """Pinning that some requests do and others do not is not pinning.
+
+    Found by running the real client against a real gateway: `remote test` worked and `remote
+    status` failed, because status asked `hello` without the certificate the client had pinned
+    when it paired. Against a gateway with a self-signed certificate that request cannot
+    succeed at all -- and its failure was reported as "that is not the sandbox you paired with",
+    which describes an attack rather than a forgotten argument.
+    """
+
+    def _calls(self):
+        import inspect
+
+        from agentnode_sdk.cli import remote_commands
+
+        return inspect.getsource(remote_commands)
+
+    def test_no_command_asks_a_saved_gateway_without_its_certificate(self):
+        import re
+
+        # Every hello() against a SAVED connection, with what was passed to it.
+        for call in re.findall(r"gc\.hello\([^)]*\)", self._calls()):
+            if "saved" in call:
+                assert "pin=" in call, f"this request is not pinned: {call}"
+
+    def test_and_the_one_before_pairing_is_pinned_to_the_invitation(self):
+        import re
+
+        for call in re.findall(r"gc\.hello\([^)]*\)", self._calls()):
+            assert "pin=" in call, f"an unpinned request to a gateway: {call}"
+
+
+class TestAnAddressToAdvertiseIsCheckedWhereItIsTyped:
+    """The failure used to happen on somebody else's machine, which is the worst place for it.
+
+    `--advertise 127.0.0.1:8099` was accepted, put a colon in the certificate's name and in every
+    invitation the gateway then issued, and the first complaint came from a client refusing to
+    parse the address. The operator who made the mistake never saw it.
+    """
+
+    def _init(self, tmp_path, advertise):
+        from agentnode_sdk.cli import gateway_commands
+
+        class Args:
+            dir = str(tmp_path)
+            tls_self_signed = True
+            tls_cert = tls_key = None
+
+        Args.advertise = advertise
+        return gateway_commands.cmd_init(Args())
+
+    def test_an_address_with_a_port_is_refused_at_once(self, tmp_path, capsys):
+        assert self._init(tmp_path, "127.0.0.1:8099") == 2
+        said = capsys.readouterr().out
+        assert "without a port" in said
+        assert "--advertise 127.0.0.1" in said, "it did not show the corrected command"
+
+    def test_and_it_says_where_the_port_goes_instead(self, tmp_path, capsys):
+        self._init(tmp_path, "sandbox.example:9000")
+        assert "--port 9000" in capsys.readouterr().out
+
+    def test_a_plain_address_is_accepted(self, tmp_path):
+        assert self._init(tmp_path, "127.0.0.1") == 0
+
+    def test_and_an_ipv6_literal_is_not_mistaken_for_one(self, tmp_path):
+        """Colons are how IPv6 is spelled; refusing those would refuse the address itself."""
+        assert self._init(tmp_path, "2001:db8::1") == 0
