@@ -117,7 +117,8 @@ class LocalWorker(Worker):
         from agentnode_sdk.conformance.runner import run_conformance
 
         return run_conformance(self.backend, generated_at=generated_at, options=options,
-                               egress_matrix=egress_matrix, egress_expected=egress_expected)
+                               egress_matrix=egress_matrix,
+                               egress_expected=egress_expected).to_dict()
 
     def measure_egress(self, *, allowed, denied):
         from agentnode_sdk.conformance.runner import measure_egress

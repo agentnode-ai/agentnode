@@ -256,12 +256,46 @@ class GatewayService:
 
     @property
     def worker(self):
-        """Whatever runs foreign code. Here for now; elsewhere later, without this class caring."""
-        if self._worker is None:
-            from agentnode_sdk.worker.local import LocalWorker
+        """Whatever runs foreign code. Here for now; elsewhere later, without this class caring.
 
-            self._worker = LocalWorker(self.backend)
+        Where it is comes from the gateway's configuration and from nowhere else: `worker_address`
+        and `worker_key`, which are a deployment's business. With neither, the worker is in this
+        process -- which is what every caller had before there was a word for it, and what a test
+        with a stand-in backend still wants.
+
+        `ALPHA-BOUNDARY-0001`: this property is the whole of "moving the worker is configuration".
+        Nothing else in the product names a socket, a path, an account or a host.
+        """
+        if self._worker is None:
+            address = str(self.config.get("worker_address") or "")
+            if address:
+                from agentnode_sdk.worker import protocol as wire
+                from agentnode_sdk.worker.remote import from_address
+
+                self._worker = from_address(
+                    address, wire.read_key(str(self.config.get("worker_key") or "")))
+            else:
+                from agentnode_sdk.worker.local import LocalWorker
+
+                self._worker = LocalWorker(self.backend)
         return self._worker
+
+    @property
+    def config(self) -> dict:
+        """What this gateway was configured with, read from its own directory.
+
+        Read rather than held: `agentnode gateway start` and everything else are separate
+        processes, and a configuration held from construction would be the one that was there when
+        whichever process happened to start first came up.
+        """
+        import json as _json
+
+        path = self.state.root / "config.json"
+        try:
+            loaded = _json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
 
     def active_state(self):
         """The authenticated policy-and-report pair currently in force, or None.
@@ -469,11 +503,11 @@ class GatewayService:
                     egress_expected=(envelope.allowed_destinations or None))
                 binding = self.report_binding(envelope.digest())
                 document = {"measured_at": now if now is not None else time.time(),
-                            "binding": binding.as_dict(), "report": report.to_dict()}
+                            "binding": binding.as_dict(), "report": report}
 
                 # Kept as a diagnostic copy. Readiness does not read it -- it reads the snapshot
                 # -- so a stale file here can never make a gateway look ready.
-                self.readiness.store(report.to_dict(), binding, now)
+                self.readiness.store(report, binding, now)
 
                 verdict = self.readiness.evaluate_document(document, binding,
                                                            envelope.required_properties)
@@ -484,7 +518,7 @@ class GatewayService:
                 # Past this call the change is committed: `activate` treats its own rename as
                 # the commit point and cannot raise after it. So anything that reaches the
                 # handler below happened BEFORE the commit, and restoring the intent is right.
-                store.activate(envelope, report.to_dict(), binding.as_dict(), now)
+                store.activate(envelope, report, binding.as_dict(), now)
             except BaseException:
                 self._restore_config(previous)
                 store.clear_pending()

@@ -1,0 +1,69 @@
+[Unit]
+# The account that runs foreign code. On a deployed gateway this is the ONLY account that may
+# drive a container runtime, and it is not the account the gateway runs as.
+#
+# ALPHA-BOUNDARY-0001 decided that foreign code belongs on a different machine from the process
+# holding every client's token material and this gateway's signing identity. Until it gets there,
+# this is two accounts on one kernel. That is not isolation: this account can drive a container
+# runtime, and on a machine where that means the `docker` group it is root-equivalent -- so an
+# escape from a sandbox reaches the host, and the host is where the control plane is. The unit
+# below narrows what this process can do; it does not and cannot change that.
+Description=AgentNode sandbox worker (single-host development topology)
+Documentation=https://agentnode.ai/docs/sandbox
+After=network-online.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=agentnode-worker
+Group=agentnode-worker
+# The one thing this account has that the gateway's does not.
+SupplementaryGroups=docker
+
+ExecStart=/opt/agentnode/venv/bin/agentnode worker serve \
+    --socket unix:///run/agentnode/worker.sock \
+    --key /etc/agentnode/worker.key \
+    --for-user agentnode-gateway
+
+Restart=always
+RestartSec=2
+
+# Where the socket goes. systemd makes it, owns it to this account, and gives the group the
+# gateway is in the only other way in.
+RuntimeDirectory=agentnode
+RuntimeDirectoryMode=0750
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=no
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# A unix socket to the container runtime, a unix socket of its own, and the network the runtime
+# needs to pull an image. Nothing else, and no port of its own.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# It writes nowhere except its own runtime directory. In particular it cannot reach the
+# gateway's state directory, which is where the pairing state, the signing identity, the client
+# tokens and the ledger are.
+ReadWritePaths=/run/agentnode
+InaccessiblePaths=-/var/lib/agentnode
+
+[Install]
+WantedBy=multi-user.target

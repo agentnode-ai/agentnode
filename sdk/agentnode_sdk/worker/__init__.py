@@ -273,10 +273,12 @@ class Worker(ABC):
 
     @abstractmethod
     def measure(self, *, generated_at, options, egress_matrix, egress_expected):
-        """Measure what this worker really enforces, and return the report.
+        """Measure what this worker really enforces, and return the report AS A DOCUMENT.
 
         The measurement belongs where the runtime is. A control plane that measured a worker it
-        could not reach would be reporting on something it had not touched."""
+        could not reach would be reporting on something it had not touched -- and a report that
+        came back as an object with methods on it would be a report that could not have come from
+        another machine."""
 
     @abstractmethod
     def measure_egress(self, *, allowed, denied):

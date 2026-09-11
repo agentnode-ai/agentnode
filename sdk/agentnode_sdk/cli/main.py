@@ -243,6 +243,12 @@ def main(argv: list[str] | None = None) -> int:
     # setup/repair UX is Sprint B.
     # `gateway` and `remote` are new top-level groups. Nothing existing is renamed, moved or
     # given a new default -- the V1 surface is structurally frozen, so this is additive only.
+    from agentnode_sdk.cli import worker_commands
+
+    # The account that runs foreign code, which on a deployed gateway is not the account the
+    # gateway runs as. `ALPHA-BOUNDARY-0001`.
+    worker_commands.add_parser(sub)
+
     gw = sub.add_parser("gateway", help="Run a sandbox other machines can send work to")
     gw_sub = gw.add_subparsers(dest="gateway_command")
     gw_init = gw_sub.add_parser("init", help="Set this machine up as a sandbox gateway")
@@ -388,6 +394,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             mcp_parser.print_help()
             return 0
+        if args.command == "worker":
+            from agentnode_sdk.cli.worker_commands import dispatch as worker_dispatch
+            return worker_dispatch(args)
+
         if args.command == "gateway":
             from agentnode_sdk.cli.gateway_commands import dispatch as gateway_dispatch
             return gateway_dispatch(args)

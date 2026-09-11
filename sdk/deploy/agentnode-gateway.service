@@ -1,0 +1,59 @@
+[Unit]
+# The control plane. It holds the pairing state, this gateway's signing identity, every paired
+# client's token material and the replay ledger -- and it cannot drive a container runtime.
+#
+# That last part is the point. This account is in no group that can reach docker or podman, and
+# the only way it gets code run is by asking the worker over a socket. ALPHA-BOUNDARY-0001.
+Description=AgentNode gateway (control plane)
+Documentation=https://agentnode.ai/docs/sandbox
+After=network-online.target agentnode-worker.service
+Wants=agentnode-worker.service
+
+[Service]
+Type=simple
+User=agentnode-gateway
+Group=agentnode-gateway
+# The only supplementary group it has, and the only thing that group can reach: the worker's
+# socket. Not docker, and not anything else.
+SupplementaryGroups=agentnode-bridge
+
+ExecStart=/opt/agentnode/venv/bin/agentnode gateway start \
+    --dir /var/lib/agentnode/state \
+    --port 8099
+
+Restart=always
+RestartSec=2
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# It serves clients and it speaks to the worker's socket. Nothing else.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# Its own state and nothing more. The state directory is where the secrets are, and the gateway
+# stops itself if that directory ever stops being private -- see gateway/securedir.py.
+StateDirectory=agentnode
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/agentnode
+
+[Install]
+WantedBy=multi-user.target
