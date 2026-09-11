@@ -102,6 +102,14 @@ def _tls_from(config: dict, args):
 
     cert = getattr(args, "tls_cert", None) or config.get("tls_cert")
     key = getattr(args, "tls_key", None) or config.get("tls_key")
+    if not cert and not key:
+        # What `gateway init --tls-self-signed` left in this gateway's own directory. Found
+        # rather than configured, so that an operator who made one does not also have to say
+        # where it is -- and so that a gateway with one never serves in the clear by omission.
+        root = _root(args)
+        made, its_key = root / "tls-cert.pem", root / "tls-key.pem"
+        if made.exists() and its_key.exists():
+            cert, key = str(made), str(its_key)
     if cert and key:
         return TlsFiles(certfile=str(cert), keyfile=str(key))
     return None
@@ -129,6 +137,29 @@ def cmd_init(args) -> int:
 
     cert = getattr(args, "tls_cert", None)
     key = getattr(args, "tls_key", None)
+    if getattr(args, "tls_self_signed", False):
+        if cert or key:
+            print("  Either this gateway makes a certificate for itself, or you give it one.")
+            return 2
+        advertise = str(getattr(args, "advertise", "") or "").strip()
+        if not advertise:
+            print()
+            print("  What address will people connect to? That name or address goes in the")
+            print("  certificate and in every invitation this gateway issues:")
+            print("    agentnode gateway init --tls-self-signed --advertise sandbox.example")
+            return 2
+        from agentnode_sdk.gateway import certificate as tls
+
+        root.mkdir(parents=True, exist_ok=True)
+        cert, key, pin = tls.make(root, advertise)
+        config["advertise"] = advertise
+        print()
+        print(f"  {bold('A certificate for this gateway, made by this gateway.')}")
+        print(f"  Clients pin it when they pair, so nothing else answering at {advertise}")
+        print("  can take their place. No certificate authority is involved and none is needed:")
+        print("  the invitation is what says which certificate to expect.")
+        print(f"  {dim(pin)}")
+
     if bool(cert) != bool(key):
         print("  A certificate needs its key. Pass both --tls-cert and --tls-key, or neither.")
         return 2
@@ -494,6 +525,26 @@ def cmd_pair(args) -> int:
         return 1
 
     code = state.start_pairing()
+    config = _load_config(root)
+    where, pin = _where_and_what_to_expect(root, config, args)
+    if where and pin:
+        from agentnode_sdk.gateway.invitation import write as an_invitation
+
+        print()
+        print(f"  {bold('Give this to the person connecting:')}")
+        print()
+        print("      " + an_invitation(where, code, pin))
+        print()
+        print("  It carries the address, the code, and which certificate to expect -- so their")
+        print("  client can tell this sandbox from anything else answering there. It works once")
+        print("  and expires in 15 minutes.")
+        print("  On their machine:")
+        print("    agentnode remote connect <paste it here>")
+        print()
+        print(dim("  Hand it over the way you would a key. Anyone who sees it before the person"))
+        print(dim("  you meant can pair as them."))
+        return 0
+
     print()
     print(f"  {bold('Give this code to the person connecting:')}")
     print()
@@ -505,7 +556,41 @@ def cmd_pair(args) -> int:
     print()
     print(dim("  Read it out or type it in. Do not paste it into a chat -- anyone who sees it"))
     print(dim("  before the person you meant can use it instead of them."))
+    if not pin:
+        print()
+        print(dim("  This gateway has no certificate, so there is nothing for their client to"))
+        print(dim("  pin and it can only be reached from this machine. To change that:"))
+        print(dim("    agentnode gateway init --tls-self-signed --advertise <address>"))
     return 0
+
+
+def _where_and_what_to_expect(root, config, args):
+    """The address to put in an invitation and the certificate a client should expect.
+
+    Both come from what this gateway was configured with, not from what is running: a code is
+    issued by a different process from the one that serves, and asking the running one would mean
+    an operator could not hand out an invitation before starting it.
+    """
+    from pathlib import Path as _Path
+
+    cert = str(config.get("tls_cert") or "")
+    if not cert:
+        candidate = root / "tls-cert.pem"
+        cert = str(candidate) if candidate.exists() else ""
+    if not cert or not _Path(cert).exists():
+        return "", ""
+    from agentnode_sdk.gateway import certificate as tls
+
+    try:
+        pin = tls.fingerprint(_Path(cert).read_bytes())
+    except Exception:                                         # noqa: BLE001
+        return "", ""
+    advertise = str(getattr(args, "advertise", "") or config.get("advertise") or "").strip()
+    if not advertise:
+        return "", pin
+    port = int(getattr(args, "port", None) or config.get("port") or 8099)
+    host = "[" + advertise + "]" if ":" in advertise and not advertise.startswith("[") else advertise
+    return "https://%s:%d" % (host, port), pin
 
 
 def cmd_clients(args) -> int:

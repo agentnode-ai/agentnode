@@ -256,6 +256,12 @@ def main(argv: list[str] | None = None) -> int:
     gw_init.add_argument("--tls-cert", dest="tls_cert", default=None,
                          help="Certificate, so machines elsewhere can reach it securely")
     gw_init.add_argument("--tls-key", dest="tls_key", default=None, help="Its private key")
+    gw_init.add_argument("--tls-self-signed", dest="tls_self_signed", action="store_true",
+                         help="Make a certificate for this gateway. Clients pin it when they "
+                              "pair, so no certificate authority is involved")
+    gw_init.add_argument("--advertise", default="",
+                         help="The address people will connect to. It goes in the certificate "
+                              "and in every invitation this gateway issues")
     gw_start = gw_sub.add_parser("start", help="Start accepting work")
     gw_start.add_argument("--dir", default=None)
     gw_start.add_argument("--host", default=None, help="Address to listen on (default 127.0.0.1)")
@@ -289,8 +295,12 @@ def main(argv: list[str] | None = None) -> int:
     gw_doctor.add_argument("--measure", action="store_true",
                            help="Measure it for real, by running short containers")
     gw_doctor.add_argument("--verbose", action="store_true", help="Show the underlying detail")
-    gw_pair = gw_sub.add_parser("pair", help="Show a one-time code so someone can connect")
+    gw_pair = gw_sub.add_parser("pair", help="Show a one-time invitation so someone can connect")
     gw_pair.add_argument("--dir", default=None)
+    gw_pair.add_argument("--advertise", default="",
+                         help="Override the address in the invitation, for a gateway reached at "
+                              "more than one")
+    gw_pair.add_argument("--port", type=int, default=None)
     gw_clients = gw_sub.add_parser("clients", help="Who is connected")
     gw_clients.add_argument("--dir", default=None)
     gw_revoke = gw_sub.add_parser("revoke", help="Disconnect a client, at once")
@@ -303,8 +313,10 @@ def main(argv: list[str] | None = None) -> int:
     rm = sub.add_parser("remote", help="Send work to a sandbox on another machine")
     rm_sub = rm.add_subparsers(dest="remote_command")
     rm_connect = rm_sub.add_parser("connect", help="Pair with a sandbox gateway")
-    rm_connect.add_argument("url", help="Its address, e.g. https://sandbox.example.com")
-    rm_connect.add_argument("--code", required=True, help="The one-time code you were given")
+    rm_connect.add_argument("url", help="An invitation, or the gateway's address with --code")
+    rm_connect.add_argument("--code", default="",
+                            help="The one-time code, when you were given an address and a code "
+                                 "rather than an invitation")
     rm_connect.add_argument("--as", dest="as_name", default="", help="A name to remember it by")
     rm_sub.add_parser("list", help="Which sandboxes you can send work to")
     rm_use = rm_sub.add_parser("use", help="Choose the one used by default")
