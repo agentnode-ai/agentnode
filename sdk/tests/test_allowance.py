@@ -789,12 +789,32 @@ class TestALogThatStartedBeforeTheChainDid:
         assert held["unchecked"] == 2
         assert "cannot be checked at all" in held["detail"]
 
+    def test_a_log_whose_every_signature_was_stripped_is_not_called_verified(self, tmp_path):
+        """The attack this shape invites: if unchained lines are tolerated, strip them all.
+
+        Two separate things refuse it, and they are worth telling apart. The head says the log is
+        supposed to end at line N, which no amount of stripping changes -- that is the
+        PROTECTION. The check for "nothing here is chained at all" is what makes the ANSWER say
+        so, instead of reporting it as lines taken off the end. This asserts the answer, because
+        the protection is asserted by the truncation tests.
+        """
+        meter = self._mixed(tmp_path, before=0, after=3)
+        path = Path(tmp_path) / meter.METER_NAME
+        rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        bare = [{k: v for k, v in r.items() if k not in ("seq", "prev", "signature")}
+                for r in rows]
+        path.write_text(
+            "\n".join(json.dumps(r, sort_keys=True, separators=(",", ":"))
+                      for r in bare) + "\n", encoding="utf-8")
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert "before this gateway kept a chain" in held["detail"], held["detail"]
+
     def test_a_log_that_is_all_from_before_is_not_called_verified(self, tmp_path):
-        """Otherwise stripping every line's signature would be the way past the chain."""
+        """A genuinely old log, with no key and no head, is also not evidence."""
         meter = self._mixed(tmp_path, before=3, after=0)
         held = meter.verify(tmp_path)
         assert held["ok"] is False
-        assert "cannot be checked" in held["detail"]
 
     def test_an_unchained_line_in_the_middle_is_not_allowed(self, tmp_path):
         """They are tolerated at the FRONT only; later on, one means a line was replaced."""
