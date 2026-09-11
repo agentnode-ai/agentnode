@@ -80,10 +80,18 @@ def _path_of(address: str) -> str:
 class SocketWorker(Worker):
     """The control plane's end of the line."""
 
-    def __init__(self, address: str, key: bytes, connect_timeout: float = 10.0) -> None:
+    def __init__(self, address: str, key: bytes, connect_timeout: float = 10.0,
+                 run_margin: float = RUN_MARGIN_SECONDS) -> None:
         self.address = address
         self._key = key
         self.connect_timeout = connect_timeout
+        #: How long past a job's OWN wall clock this gateway keeps waiting before it decides the
+        #: worker has said nothing. It cannot be small: a worker running a job legitimately says
+        #: nothing until the job is done, so the wait has to cover the job first. It is a
+        #: parameter because how much slack a deployment allows is a property of the deployment
+        #: -- and because a test cannot otherwise establish what happens after it elapses
+        #: without waiting out the default.
+        self.run_margin = run_margin
         self._described: dict | None = None
 
     # ------------------------------------------------------------------ the line itself
@@ -196,7 +204,7 @@ class SocketWorker(Worker):
         params = dict(job.as_message())
         params["artifact"] = wire.as_text(job.artifact)
         got = self._ask("run", {"job": params},
-                        wait=float(job.limits.wall_clock_s) + RUN_MARGIN_SECONDS)
+                        wait=float(job.limits.wall_clock_s) + self.run_margin)
         if not isinstance(got, dict):
             raise WorkerUnreachable("the sandbox worker did not say what happened to the job")
         return Outcome(

@@ -39,7 +39,7 @@ from agentnode_sdk.worker import (
     WorkerUnreachable,
 )
 from agentnode_sdk.worker import protocol as wire
-from agentnode_sdk.worker.remote import SocketWorker, topology_of
+from agentnode_sdk.worker.remote import RUN_MARGIN_SECONDS, SocketWorker, topology_of
 from agentnode_sdk.worker import service
 from agentnode_sdk.worker.service import DIRECTORY_MODE, SOCKET_MODE, Bench
 
@@ -951,3 +951,133 @@ class TestAskingARuntimeWhetherItHoldsACeiling:
         assert enforceable is True
         _, no_swap = self._facts(monkeypatch, {"MemoryLimit": (0, "linux|true|false")})
         assert no_swap is False, "a ceiling without swap accounting is not a ceiling"
+
+
+@needs_unix
+class TestAWorkerThatTakesTheCallAndSaysNothing:
+    """The failures that look most like success from the gateway's side.
+
+    A worker that is DOWN is obvious: the connection is refused. A worker that accepts the
+    connection and then never answers, or answers after the moment has passed, leaves the gateway
+    holding an open socket and nothing to read. What must never happen is that silence becomes a
+    job that ran -- in either direction. Not a job that succeeded, and not a job that ran and
+    failed, because a client told "your code failed" will change the code.
+    """
+
+    def _a_socket_that(self, tmp_path, behaviour):
+        """A listener that accepts and then does whatever `behaviour` does with the connection."""
+        path = str(tmp_path / "w.sock")
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(path)
+        listener.listen(4)
+        keep = []
+
+        def answer():
+            while True:
+                try:
+                    conn, _ = listener.accept()
+                except OSError:
+                    return
+                keep.append(conn)
+                try:
+                    behaviour(conn)
+                except OSError:
+                    pass
+
+        thread = threading.Thread(target=answer, daemon=True)
+        thread.start()
+        return "unix://" + path, listener, keep
+
+    def _worker(self, address):
+        return SocketWorker(address, KEY, connect_timeout=1.5, run_margin=2.0)
+
+    def test_a_worker_that_accepts_and_never_answers_is_not_a_job_that_ran(self, tmp_path):
+        address, listener, _keep = self._a_socket_that(tmp_path, lambda conn: None)
+        try:
+            worker = self._worker(address)
+            with pytest.raises(WorkerUnreachable) as refused:
+                worker.run(a_job(limits=Limits(wall_clock_s=1)))
+            # The type IS the classification. A gateway that caught JobFailed here would tell a
+            # client its code failed, and a client told that changes the code -- for a worker
+            # that never said anything about the code at all.
+            assert not isinstance(refused.value, JobFailed), (
+                "silence from the worker is being presented as a job that ran and failed")
+        finally:
+            listener.close()
+
+    def test_and_what_it_waits_comes_from_the_job_rather_than_from_nowhere(self, tmp_path):
+        """A silent worker must not hold the gateway open indefinitely.
+
+        The bound cannot be a small constant: a worker legitimately running a job says nothing
+        until the job is done, so the gateway has to be willing to wait at least the job's own
+        wall clock. What is established here is that the wait is DERIVED from that -- a job
+        allowed less time is given up on sooner -- rather than being unbounded.
+        """
+        address, listener, _keep = self._a_socket_that(tmp_path, lambda conn: None)
+        try:
+            worker = self._worker(address)
+            started = time.time()
+            with pytest.raises(WorkerUnreachable):
+                worker.run(a_job(limits=Limits(wall_clock_s=1)))
+            waited = time.time() - started
+            # The number is diagnosis; the raise above is the evidence that it stopped at all.
+            # This only shows it stopped near the job's own bound and not at some other one.
+            ceiling = 1 + worker.run_margin
+            assert waited < ceiling + 10, (
+                f"it waited {waited:.0f}s for a job allowed 1s, so the wait is not the job's")
+        finally:
+            listener.close()
+
+    def test_an_answer_that_arrives_after_the_moment_has_passed_is_refused(self):
+        """Late is not merely slow: the message was authenticated for a moment that is gone."""
+        body = {"protocol": wire.PROTOCOL, "request_id": "r", "nonce": "n1", "method": "run",
+                "issued_at": time.time(), "deadline": time.time() - 0.5, "params": {}}
+        with pytest.raises(wire.ProtocolError) as refused:
+            wire.check(body, wire.Seen())
+        assert refused.value.code == wire.DEADLINE_PASSED
+
+    def test_and_neither_silence_nor_lateness_can_be_read_as_success(self, tmp_path):
+        """The whole point: no path through here produces an Outcome nobody computed."""
+        address, listener, _keep = self._a_socket_that(tmp_path, lambda conn: conn.close())
+        try:
+            worker = self._worker(address)
+            with pytest.raises(WorkerUnreachable):
+                worker.run(a_job(limits=Limits(wall_clock_s=1)))
+        finally:
+            listener.close()
+
+
+class TestTheWireDescribesEveryFieldItAccepts:
+    """A field the receiver does not describe is refused, not ignored.
+
+    Ignoring one is how two builds come to disagree about what a message meant while both think
+    they understood it: the sender puts in something that matters to it, the receiver drops it,
+    and the job runs under terms neither agreed to. It also keeps the message that was
+    authenticated and the message that was acted on the same message.
+    """
+
+    def _message(self, **extra):
+        body = {"protocol": wire.PROTOCOL, "request_id": "r", "nonce": "n-%d" % len(extra),
+                "method": "run", "issued_at": time.time(), "deadline": time.time() + 30,
+                "params": {}}
+        body.update(extra)
+        return body
+
+    def test_a_field_this_build_does_not_describe(self):
+        with pytest.raises(wire.ProtocolError) as refused:
+            wire.check(self._message(priority="high"), wire.Seen())
+        assert refused.value.code == wire.MALFORMED
+        assert "priority" in str(refused.value)
+
+    def test_and_it_says_which_one(self):
+        with pytest.raises(wire.ProtocolError) as refused:
+            wire.check(self._message(shell="/bin/sh"), wire.Seen())
+        assert "shell" in str(refused.value)
+
+    def test_the_fields_it_does_describe_are_accepted(self):
+        wire.check(self._message(), wire.Seen())
+
+    def test_and_the_list_is_declared_in_one_place(self):
+        """So that adding a field is a decision in a place a reviewer reads."""
+        assert set(wire.FIELDS) == {"protocol", "request_id", "nonce", "method", "issued_at",
+                                    "deadline", "params"}

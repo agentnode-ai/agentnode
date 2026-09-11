@@ -67,6 +67,10 @@ NONCE_MEMORY_SECONDS = FRESHNESS_SECONDS * 4
 
 #: The only things that may be asked. A closed list, because a method a receiver does not know is
 #: refused by name rather than dispatched to whatever happens to be there.
+#: Every field a request may carry, and nothing else. Named here rather than checked field by
+#: field, so that adding one is a decision somebody makes in a place a reviewer reads.
+FIELDS = ("protocol", "request_id", "nonce", "method", "issued_at", "deadline", "params")
+
 METHODS = ("describe", "run", "stop", "gone", "measure", "measure_egress")
 
 #: Every way this can go wrong, named. A caller gets one of these and never a sentence to parse.
@@ -279,6 +283,18 @@ def check(body: dict[str, Any], seen: Seen, now: float | None = None) -> None:
         raise ProtocolError(UNKNOWN_METHOD, str(body["method"])[:40])
     if not isinstance(body.get("params"), dict):
         raise ProtocolError(BAD_PARAMS, "parameters are an object")
+    # A field this build does not describe is refused rather than ignored. Ignoring it is how two
+    # builds come to disagree about what a message meant while both believe they understood it:
+    # the sender puts something in that matters to it, the receiver drops it silently, and the
+    # job runs under terms nobody agreed. Refusing is also what keeps the message that was
+    # AUTHENTICATED and the message that was ACTED ON the same message.
+    extra = sorted(set(body) - set(FIELDS))
+    if extra:
+        raise ProtocolError(
+            MALFORMED,
+            "this message carries " + ", ".join(repr(f) for f in extra[:4]) + ", which this "
+            "build does not describe. A receiver that ignored them would be acting on less than "
+            "it was sent")
 
 
 # ------------------------------------------------------------------------------ bytes in JSON
