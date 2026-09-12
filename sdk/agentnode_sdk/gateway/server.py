@@ -189,6 +189,28 @@ class RunRecord:
         }
 
 
+#: How long recovery waits for an interrupted run's container to be listed. A container that was
+#: going to appear did so before the restart, so this is one or two listings rather than the
+#: window a live cancel needs against a runtime that is still creating one.
+RECOVERY_APPEAR_SECONDS = 1.0
+
+#: A ceiling on the whole recovery sweep. Starting up must not be held open by a runtime that is
+#: slow to answer about every run in a long ledger. Runs not reached keep `cleanup_verified` at
+#: None, which reads as "nobody could ask" rather than "nothing was left behind".
+RECOVERY_BUDGET_SECONDS = 30.0
+
+
+def container_name_for(run_id: str) -> str:
+    """The name this gateway gives a run's container.
+
+    Derived from the run id and nothing else, so a gateway that has lost its memory can still
+    name what it started. The admission path and the recovery path both call THIS: a recovery
+    that spelled the name even slightly differently would address nothing, find nothing, and
+    report that as nothing having been left behind.
+    """
+    return "agentnode-em3c-" + str(run_id)[:16]
+
+
 class GatewayService:
     """The decisions. Kept apart from HTTP so they can be tested without a socket."""
 
@@ -684,6 +706,11 @@ class GatewayService:
         never change again, and they are emphatically NOT re-executed: the client asked once,
         and the gateway does not get to decide it should happen a second time.
         """
+        budget = time.monotonic() + RECOVERY_BUDGET_SECONDS
+        for run_id in self.ledger.runs_left_unswept():
+            if time.monotonic() >= budget:
+                break
+            self._ask_again_about(run_id)
         for run_id in self.ledger.unfinished_runs():
             entry = self.ledger.run_entry(run_id) or {}
             # A record rebuilt from the ledger begins where it is. It is CONSTRUCTED there
@@ -702,8 +729,76 @@ class GatewayService:
                 "not been started again -- submit it as a new job if you still want it run."
             )
             record.finished_at = time.time()
+            record.container_name = container_name_for(run_id)
             self.runs[run_id] = record
             self.ledger.note_state(run_id, "interrupted")
+            if time.monotonic() < budget:
+                self._clean_up_what_it_left(record)
+
+    def _clean_up_what_it_left(self, record: RunRecord) -> None:
+        """Ask the worker to remove the sandbox an interrupted run left running.
+
+        Calling the run interrupted answers its client; it does not stop anything. The worker is
+        a separate service with its own lifetime, and the gateway's registry of live runs is in
+        memory, so a restart leaves a container running with nothing anywhere that refers to it.
+        This was measured rather than reasoned about: on the deployed alpha both services were
+        restarted while a run was in flight, the run was correctly marked interrupted, and the
+        container was still up afterwards with nobody accounting for it.
+
+        The gateway does not touch a runtime to do this -- it asks the worker, by the name it
+        chose itself, and the worker addresses nothing outside that run's own prefix.
+
+        Nothing here may stop the gateway starting. A worker that cannot be reached leaves
+        `cleanup_verified` at None, which already means "nobody could ask" rather than "nothing
+        was left behind"; that difference is the entire reason the third state exists, and a
+        restart is exactly when it is true.
+        """
+        try:
+            removed = self.worker.stop(
+                record.run_id, record.container_name, RECOVERY_APPEAR_SECONDS
+            )
+        except Exception:                                            # noqa: BLE001
+            return
+        if removed:
+            record.cleanup_verified = True
+            self.ledger.note_cleanup(record.run_id, True)
+            return
+        # `stop` says False both when there was nothing to remove and when it could not ask, so
+        # it is not on its own an answer about what is left. Asking settles which one happened.
+        try:
+            record.cleanup_verified = self.worker.gone(
+                record.container_name, patiently=False
+            ).verified
+        except Exception:                                            # noqa: BLE001
+            record.cleanup_verified = None
+        self.ledger.note_cleanup(record.run_id, record.cleanup_verified)
+
+    def _ask_again_about(self, run_id: str) -> None:
+        """A sandbox an earlier start could not confirm gone is asked about again.
+
+        The run is already interrupted and already answered; what is unsettled is whether
+        anything is still running. Asking costs one question to a worker that is, this time,
+        probably up -- and not asking means a gateway that restarted while its worker was down
+        leaves a container running for as long as the machine does.
+        """
+        record = self.runs.get(run_id)
+        if record is None:
+            entry = self.ledger.run_entry(run_id) or {}
+            record = RunRecord(
+                run_id=run_id,
+                job_id=str(entry.get("job_id", "")),
+                request_sha256=str(entry.get("request_sha256", "")),
+                owner_client_id=str(entry.get("owner_client_id", "")),
+                state="interrupted",
+            )
+            record.refusal = (
+                "the gateway restarted while this job was running, so it did not finish. It has "
+                "not been started again -- submit it as a new job if you still want it run."
+            )
+            record.finished_at = time.time()
+            record.container_name = container_name_for(run_id)
+            self.runs[run_id] = record
+        self._clean_up_what_it_left(record)
 
     def require_private_state(self) -> None:
         """Re-check that the gateway's files are still private, on every path that reads them.
@@ -1164,7 +1259,7 @@ class GatewayService:
     def _run(self, request: JobRequest, artifact: bytes, granted, record: RunRecord) -> None:
         from agentnode_sdk.sandbox.composition import network_mode
         mode, domains = network_mode(granted)
-        record.container_name = f"agentnode-em3c-{record.run_id[:16]}"
+        record.container_name = container_name_for(record.run_id)
         record.move_to("running")
         payload = base64.b64encode(artifact).decode("ascii")
         # The client's own command if it brought one, otherwise this gateway's bootstrap -- which

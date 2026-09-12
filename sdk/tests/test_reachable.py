@@ -478,6 +478,224 @@ class TestItRunsAsAServiceUnderItsOwnAccount:
             assert phrase in flowed, phrase
 
 
+class TestARestartDoesNotLeaveASandboxRunning:
+    """What happens to a run that was in flight when the services were restarted.
+
+    Measured on the deployed alpha before this existed, against an expectation written down
+    first: a job was started, both units were restarted, and four of the five things that had to
+    hold did. The client got a definite answer rather than a hang, nothing was reported as
+    finished that nobody watched finish, the signed record of use still verified with its lines
+    intact, and both services came back. The fifth did not. The container was still up, and the
+    gateway's registry of live runs is in memory, so nothing anywhere referred to it any more.
+
+    Calling the run interrupted answers its client. It does not stop anything: the worker is a
+    separate service with its own lifetime, which is the same property that makes the worker
+    movable. So the gateway asks it to remove what the run left, by the name the gateway itself
+    chose -- reconstructable after a restart precisely because it is derived from the run id.
+    """
+
+    def _a_gateway(self, td, worker):
+        from agentnode_sdk.gateway.server import GatewayService
+        from agentnode_sdk.gateway.identity import GatewayState
+
+        return GatewayService(GatewayState(td, version="test"), worker=worker)
+
+    def _cut_short(self, service, run_id="cut-short-by-a-restart"):
+        """A run the ledger last saw mid-flight, which is exactly what a restart leaves."""
+        service.ledger.claim(run_id, "nonce-" + run_id, "sha", "a-client")
+        return run_id
+
+    def test_the_sandbox_a_cut_short_run_left_is_removed(self, tmp_path):
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        run_id = self._cut_short(self._a_gateway(tmp_path, AWorkerThatAnswers()))
+
+        second = AWorkerThatAnswers()
+        service = self._a_gateway(tmp_path, second)
+
+        assert [asked[0] for asked in second.stopped] == [run_id], (
+            "a run interrupted by a restart was marked interrupted and its container left running"
+        )
+        assert service.runs[run_id].cleanup_verified is True
+
+    def test_it_asks_about_the_name_the_running_path_actually_gives_a_container(self, tmp_path):
+        """The two paths must agree on the name, or recovery addresses nothing and says so.
+
+        This is the failure that would be invisible: a recovery asking about a name no container
+        ever had gets an honest empty listing back, reports nothing left behind, and leaves the
+        sandbox running. So the name is not compared against a literal written here -- it is
+        compared against the name a job CARRIES to the worker on the ordinary running path.
+        """
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        source = inspect.getsource(server)
+        assignments = [line.split("=", 1)[1].strip()
+                       for line in source.splitlines()
+                       if line.strip().startswith("record.container_name =")]
+        assert assignments, "nothing assigns a container name any more"
+        assert set(assignments) == {"container_name_for(record.run_id)",
+                                    "container_name_for(run_id)"}, (
+            "a container name is spelled out somewhere instead of coming from the one function, "
+            "so the two paths can drift apart: %s" % assignments
+        )
+
+    def test_a_worker_that_cannot_be_asked_does_not_stop_the_gateway_starting(self, tmp_path):
+        """And leaves "nobody could ask", which is not "nothing was left behind".
+
+        A restart is exactly when a worker may not be up yet, and a gateway that refused to start
+        because of it would turn one interrupted run into no service at all.
+        """
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        run_id = self._cut_short(self._a_gateway(tmp_path, AWorkerThatAnswers()))
+
+        class AWorkerNobodyCanReach(AWorkerThatAnswers):
+            def stop(self, run_id, container_name, appear_seconds):
+                raise ConnectionRefusedError("nothing is listening on the worker's socket")
+
+            def gone(self, container_name, patiently=True):
+                raise ConnectionRefusedError("nothing is listening on the worker's socket")
+
+        service = self._a_gateway(tmp_path, AWorkerNobodyCanReach())
+
+        assert service.runs[run_id].state == "interrupted"
+
+    def test_and_what_nobody_could_ask_is_not_recorded_as_an_answer(self, tmp_path):
+        """None, not True. An operator reading True stops looking for the container.
+
+        There are TWO ways the asking fails and they are separate lines of code: the removal
+        itself may be unreachable, or the removal may answer "I removed nothing" and the question
+        of what is left then be unreachable. A first version of this test only covered the first,
+        so the second was never executed by it -- a counter-check that put a wrong answer on that
+        line kept the test green, which is how it was found. Both shapes are here now.
+        """
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        lost = ConnectionRefusedError("nothing is listening on the worker's socket")
+
+        class NothingAnswersAtAll(AWorkerThatAnswers):
+            def stop(self, run_id, container_name, appear_seconds):
+                raise lost
+
+            def gone(self, container_name, patiently=True):
+                raise lost
+
+        class ItRemovedNothingAndThenWentAway(AWorkerThatAnswers):
+            def stop(self, run_id, container_name, appear_seconds):
+                self.stopped.append((run_id, container_name, appear_seconds))
+                return False
+
+            def gone(self, container_name, patiently=True):
+                raise lost
+
+        for worker in (NothingAnswersAtAll(), ItRemovedNothingAndThenWentAway()):
+            directory = tmp_path / type(worker).__name__
+            directory.mkdir()
+            run_id = self._cut_short(self._a_gateway(directory, AWorkerThatAnswers()))
+
+            service = self._a_gateway(directory, worker)
+
+            assert service.runs[run_id].cleanup_verified is None, (
+                "a cleanup nobody could even ask about was recorded as an answer, with %s"
+                % type(worker).__name__
+            )
+
+    def test_a_sandbox_that_is_still_there_is_not_reported_as_gone(self, tmp_path):
+        """False and None are different answers and an operator acts differently on each."""
+        from agentnode_sdk.worker import Gone
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        run_id = self._cut_short(self._a_gateway(tmp_path, AWorkerThatAnswers()))
+
+        class AWorkerThatCannotRemoveIt(AWorkerThatAnswers):
+            def stop(self, run_id, container_name, appear_seconds):
+                self.stopped.append((run_id, container_name, appear_seconds))
+                return False
+
+            def gone(self, container_name, patiently=True):
+                return Gone(answered=True, left=(container_name + "-abc123",))
+
+        service = self._a_gateway(tmp_path, AWorkerThatCannotRemoveIt())
+
+        assert service.runs[run_id].cleanup_verified is False
+
+    def test_a_run_that_had_already_finished_is_left_alone(self, tmp_path):
+        """Nothing is asked about runs that ended, or the sweep would reach every old run."""
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        first = self._a_gateway(tmp_path, AWorkerThatAnswers())
+        run_id = self._cut_short(first)
+        first.ledger.note_state(run_id, "finished")
+
+        second = AWorkerThatAnswers()
+        self._a_gateway(tmp_path, second)
+
+        assert second.stopped == []
+
+    def test_a_sandbox_an_earlier_start_could_not_confirm_is_asked_about_again(self, tmp_path):
+        """The gap the deployed run exposed, after the first fix and before this one.
+
+        A run is marked interrupted by the restart that cuts it short, which is also the only
+        moment its container was asked about. A gateway coming up before its worker -- which is
+        exactly when a machine reboots -- could not ask, so the run was no longer mid-flight and
+        nothing would ever look at it again. The container would then outlive everything that
+        referred to it, which is the same defect one step further out.
+        """
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        lost = ConnectionRefusedError("nothing is listening on the worker's socket")
+
+        class NothingAnswersAtAll(AWorkerThatAnswers):
+            def stop(self, run_id, container_name, appear_seconds):
+                raise lost
+
+            def gone(self, container_name, patiently=True):
+                raise lost
+
+        run_id = self._cut_short(self._a_gateway(tmp_path, AWorkerThatAnswers()))
+        # The restart that interrupts it happens with no worker to ask.
+        first = self._a_gateway(tmp_path, NothingAnswersAtAll())
+        assert first.runs[run_id].cleanup_verified is None
+
+        # The next one has a worker again.
+        later = AWorkerThatAnswers()
+        service = self._a_gateway(tmp_path, later)
+
+        assert [asked[0] for asked in later.stopped] == [run_id], (
+            "a sandbox nobody could ask about was never asked about again"
+        )
+        assert service.runs[run_id].cleanup_verified is True
+
+    def test_and_one_already_confirmed_gone_is_not_asked_about_twice(self, tmp_path):
+        """True is the only answer that ends the asking, and it has to end it, or every start
+        interrogates the runtime about every run it ever interrupted."""
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        run_id = self._cut_short(self._a_gateway(tmp_path, AWorkerThatAnswers()))
+        first = AWorkerThatAnswers()
+        self._a_gateway(tmp_path, first)
+        assert [asked[0] for asked in first.stopped] == [run_id]
+
+        second = AWorkerThatAnswers()
+        self._a_gateway(tmp_path, second)
+
+        assert second.stopped == [], "a sandbox already confirmed gone was asked about again"
+
+    def test_and_it_is_still_not_started_again(self, tmp_path):
+        """Cleaning up after a run is not re-running it. The client asked once."""
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        run_id = self._cut_short(self._a_gateway(tmp_path, AWorkerThatAnswers()))
+
+        second = AWorkerThatAnswers()
+        service = self._a_gateway(tmp_path, second)
+
+        assert second.ran == [], "an interrupted run was executed again while being cleaned up"
+        assert service.runs[run_id].state == "interrupted"
+
+
 class TestWhatThisDoesNotEstablish:
 
     def test_the_limits_are_where_a_reader_will_meet_them(self):

@@ -49,6 +49,11 @@ NONCE_RETENTION_SECONDS = 60 * 60
 #: Run ids are kept long enough that "ask again" keeps working across a restart and a night.
 RUN_RETENTION_SECONDS = 30 * 24 * 60 * 60
 
+#: How long an interrupted run whose sandbox was never confirmed gone keeps being asked about on
+#: every start. Long enough to cover a worker that was down for a while; short enough that a start
+#: does not interrogate a runtime about a month of history.
+SWEEP_AGAIN_WITHIN_SECONDS = 24 * 60 * 60
+
 
 class Ledger:
     """A small durable record of what this gateway has already accepted."""
@@ -199,6 +204,40 @@ class Ledger:
             return sorted(
                 run_id for run_id, entry in self._data["runs"].items()
                 if str(entry.get("state")) in ("accepted", "running")
+            )
+
+    def note_cleanup(self, run_id: str, verified: bool | None) -> None:
+        """Whether what a run left behind was confirmed gone. Durable, because the answer
+        decides whether anyone ever asks again."""
+        with self._lock, ProcessLock(self.path):
+            self._load()
+            entry = self._data["runs"].get(str(run_id))
+            if entry is None:
+                return
+            entry["cleanup"] = verified
+            self._write_locked()
+
+    def runs_left_unswept(self, now: float | None = None) -> list[str]:
+        """Interrupted runs whose sandbox nobody has confirmed is gone.
+
+        A run is marked interrupted by the restart that cut it short, which is also when its
+        container is asked about. If the worker could not be reached at that moment -- a gateway
+        coming up before its worker is exactly when that happens -- the container is still there
+        and the run is no longer mid-flight, so nothing would ever look at it again. This is what
+        the next restart looks at.
+
+        Only True stops the asking. False is "something is still there" and None is "nobody could
+        ask"; neither is an answer that should end the search. Bounded by age, because a run old
+        enough that its host has been rebooted since is not one to keep questioning a runtime
+        about on every start.
+        """
+        now = time.time() if now is None else now
+        with self._lock:
+            return sorted(
+                run_id for run_id, entry in self._data["runs"].items()
+                if str(entry.get("state")) == "interrupted"
+                and entry.get("cleanup") is not True
+                and float(entry.get("first_seen", 0)) > now - SWEEP_AGAIN_WITHIN_SECONDS
             )
 
 
