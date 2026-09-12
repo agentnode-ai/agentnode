@@ -352,11 +352,22 @@ class TestWhatIsHandedOver:
         """An error message is something people paste into issues."""
         secret = "d" * 64
         one = write("https://sandbox.example:8099", "THE-SECRET-CODE", secret)
+        cut = one[:45]
         try:
-            read(one[:45])
+            read(cut)
         except NotAnInvitation as exc:
-            assert "THE-SECRET-CODE" not in str(exc)
-            assert secret not in str(exc)
+            said = str(exc)
+            assert "THE-SECRET-CODE" not in said
+            assert secret not in said
+            # And not the invitation itself. Looking only for the decoded values is the same
+            # mistake this file made once before in the other direction: an invitation is base64,
+            # so a refusal that pasted the whole thing back would contain the code and the
+            # certificate while containing neither of those strings, and this test would have
+            # passed it. What must not be repeated is what it was GIVEN.
+            assert cut not in said, "the refusal pasted back the invitation it was handed"
+            assert cut[len("agentnode-invite-"):][:16] not in said
+        else:
+            raise AssertionError("a truncated invitation was accepted")
 
 
 # ------------------------------------------------------------------- pairing without a shell
@@ -985,8 +996,14 @@ class TestThePrivateKeyIsInNothingThatLeavesTheMachine:
         from agentnode_sdk.gateway.server import GatewayService, GatewayState
         from agentnode_sdk.gateway.transport import TlsFiles
 
-        cert, key, pin, secret = self._made(tmp_path)
+        # The certificate is made INSIDE the gateway's own state directory, which is where a
+        # real one lives. Built beside it instead, this test would be asking whether an answer
+        # carries a key the gateway has no way of reaching -- true whatever the code did, and a
+        # counter-check that put the key into the answer left it green.
         state = GatewayState(str(tmp_path / "state"), version="test")
+        cert, key, pin = tls.make(Path(state.root), "127.0.0.1")
+        secret = Path(key).read_text(encoding="utf-8")
+        assert Path(key).parent == Path(state.root)
         service = GatewayService(state, backend=StandInBackend())
         said = json.dumps(service.hello())
         assert not self._looks_like_a_key(said)
