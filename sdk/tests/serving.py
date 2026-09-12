@@ -97,3 +97,105 @@ def quiet_again(down_to: int, seconds: float = 8.0) -> int:
     while time.monotonic() < deadline and threading.active_count() > down_to:
         time.sleep(0.05)
     return threading.active_count()
+
+
+# ------------------------------------------------------- where a serving thread came from
+#
+# Counting threads says something is wrong and nothing about what. A count cannot be told apart
+# from a fixture that is legitimately still serving, which is exactly the ambiguity that stopped
+# the previous round concluding anything. So each serving thread carries where it was started,
+# and the question at the end becomes "which line made this one" rather than "is eleven too many".
+
+_REAL_START = threading.Thread.start
+
+#: Thread targets worth remembering the birthplace of. Handler threads matter as much as serving
+#: ones: a request thread still blocked after its server is gone is holding a socket.
+SERVING_SHAPES = ("serve_forever", "process_request", "answer", "_answer")
+
+
+def _is_interesting(thread) -> bool:
+    target = getattr(thread, "_target", None)
+    named = "%s %s" % (getattr(target, "__qualname__", "") or getattr(target, "__name__", ""),
+                       thread.name)
+    return any(shape in named for shape in SERVING_SHAPES)
+
+
+def _remember_where_it_started(self):
+    try:
+        if _is_interesting(self):
+            import os
+            import traceback as _tb
+
+            self._agentnode_born = (
+                os.environ.get("PYTEST_CURRENT_TEST", "(outside a test)"),
+                "".join(_tb.format_stack(limit=12)[:-1]),
+            )
+    except Exception:                                         # noqa: BLE001 - never break a start
+        pass
+    return _REAL_START(self)
+
+
+def remember_births() -> None:
+    """Installed once, from conftest. Idempotent."""
+    if threading.Thread.start is not _remember_where_it_started:
+        threading.Thread.start = _remember_where_it_started
+
+
+def outstanding() -> list:
+    """Serving and handler threads still alive. Asked AFTER every fixture has been torn down,
+    where the answer is unambiguous: nothing owns these, so each one is a leak."""
+    return [t for t in threading.enumerate()
+            if t is not threading.main_thread()
+            and (any(s in t.name for s in SERVING_SHAPES) or hasattr(t, "_agentnode_born"))]
+
+
+def describe(threads) -> str:
+    """Name, owner, birthplace and what it is doing now -- for each, not as a total."""
+    import sys
+    import traceback as _tb
+
+    frames = sys._current_frames()
+    out = []
+    for t in threads:
+        born_in, birthplace = getattr(t, "_agentnode_born", ("(not recorded)", ""))
+        stack = "".join(_tb.format_stack(frames[t.ident])) if t.ident in frames else "(gone)"
+        out.append(
+            "\n--- %s  (daemon=%s, alive=%s)\n"
+            "    started during: %s\n"
+            "    started at:\n%s"
+            "    doing now:\n%s" % (t.name, t.daemon, t.is_alive(), born_in,
+                                    _indent(birthplace), _indent(stack)))
+    return "".join(out)
+
+
+def _indent(text: str) -> str:
+    return "".join("      " + line + "\n" for line in (text or "").splitlines())
+
+
+# ------------------------------------------------------------------ the worker's own socket
+#
+# The gateway is not the only thing in this product that serves. The worker's `Bench` listens on a
+# unix socket in its own `serve_forever`, and the late measurement found six of those still
+# blocked in `accept()` after the session had ended -- one per test that opened a bench, each
+# holding a listening socket, none of them owned. `stop_serving()` has always existed and clears
+# the serving flag BEFORE closing the socket, so `accept()` raises and the loop returns rather
+# than spinning. Nobody was calling it.
+
+
+def owned_bench(bench):
+    """Start a worker bench serving, with the running test responsible for stopping it."""
+    thread = threading.Thread(target=bench.serve_forever, daemon=True)
+    thread.start()
+    if _owner is not None:
+        _owner.callback(stop_bench, bench, thread)
+    return thread
+
+
+def stop_bench(bench, thread=None, seconds: float = PATIENCE) -> None:
+    """Give a bench back: stop serving, then wait -- with a deadline -- for the loop to notice."""
+    try:
+        bench.stop_serving()
+    except Exception:                                         # noqa: BLE001 - already stopped
+        pass
+    if thread is not None:
+        thread.join(timeout=seconds)

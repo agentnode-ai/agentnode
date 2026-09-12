@@ -454,3 +454,55 @@ def _servers_have_an_owner():
             yield stack
         finally:
             serving._owner = previous
+
+
+# ---------------------------------------------------------------- the lifecycle gate
+#
+# Threads were counted per test before, which cannot tell a leak from a session fixture that is
+# legitimately still serving -- and that ambiguity is why the previous round could not conclude.
+# The count is taken here instead, after the whole session and every fixture it owned has been
+# torn down. At this point nothing owns anything, so any serving or handler thread still alive is
+# unowned by definition, and each one is reported with where it was started rather than as a total.
+#
+# The process ending is NOT the proof. This runs while the process is still alive and asks what
+# it is still holding.
+
+
+def pytest_configure(config):
+    from tests import serving
+
+    serving.remember_births()
+
+
+def _write_the_lifecycle_report(text: str) -> str:
+    where = os.environ.get("AGENTNODE_LIFECYCLE_REPORT") or "lifecycle-at-the-end.txt"
+    try:
+        with open(where, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except OSError:                                           # pragma: no cover
+        pass
+    return where
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Late enough that session and class fixtures have already been finalised."""
+    import time as _time
+
+    from tests import serving
+
+    # Bounded, never assumed: a thread told to stop gets a moment to actually stop.
+    deadline = _time.monotonic() + 10.0
+    left = serving.outstanding()
+    while left and _time.monotonic() < deadline:
+        _time.sleep(0.2)
+        left = serving.outstanding()
+
+    if not left:
+        return
+    report = ("%d serving or handler thread(s) outlived the session and every fixture that could "
+              "have owned one.\n%s" % (len(left), serving.describe(left)))
+    where = _write_the_lifecycle_report(report)
+    print("\n" + report[:4000])
+    print("\n  full report: %s" % where)
+    if os.environ.get("AGENTNODE_LIFECYCLE_GATE") and exitstatus == 0:
+        session.exitstatus = 1
