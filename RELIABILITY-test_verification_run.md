@@ -48,3 +48,40 @@ The session gateway's submit and wait paths carry that dump now.
 Until a CI occurrence has been captured with the dump attached and classified from it, **this
 lane's result is not a product-release gate**, and it is not to be re-run until green. A green
 obtained by repetition says nothing about the fault and hides the next one.
+
+
+## The leaks, measured before and after (2026-09-12)
+
+The trail said 298 tests left something behind: descriptors 12 → 390 at the end of a run, threads
+1 → 12. That is verification noise whatever else it is, and noise of that shape hides the next
+lifecycle fault, so it was fixed rather than left instrumented.
+
+The cause was not a missing `close()` -- that has always existed. It was that a `GatewayState`
+nobody closed could never give its descriptor back at all, which is a leak in production too: this
+service is about to hold one state per user and per device instead of one per process, and there
+would be no call site to blame. The state now releases the descriptor when it is dropped as well
+as when it is closed, the finalizer is DETACHED on an explicit close (closing a descriptor number
+twice can close somebody else's file, because the number is reused the moment it is free), and the
+state is a context manager.
+
+Measured on the same suite, same machine, before and after:
+
+    descriptors at the end   390  ->  17      (peak 391 -> 67)
+    threads at the end        12  ->  11      (peak  15 -> 14)
+
+`tests/test_lifecycle_release.py` holds it down: the descriptor comes back when closed, when
+dropped, and from a `with`; the finalizer does not fire after an explicit close; every terminal
+state in `TERMINAL_STATES` leaves the same nothing behind; and ten cycles do not cost more than
+the first. That last one is the property the trail found missing, and it is stated as growth --
+counts coming DOWN as stragglers finish is the opposite of the fault and must not fail it.
+
+### What is still open
+
+Threads. Five `serve_forever` and three handler threads are alive at the end of a run, from test
+helpers that start a server and never shut it down. One of each is the session gateway and is
+legitimate. A finalizer cannot fix the rest, because a running thread holds a reference to the
+server it is serving, so nothing collects it -- these have to be shut down by the code that
+started them, across roughly a dozen helpers.
+
+That is ordinary work and it is NOT done yet. It is smaller than it was and it is bounded, and it
+does not block the access layer.

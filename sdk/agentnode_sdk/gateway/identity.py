@@ -29,6 +29,7 @@ import secrets
 import time
 import tempfile
 import threading
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -100,6 +101,15 @@ class GatewayIdentity:
         ).hexdigest()
 
 
+def _give_back_the_descriptor(fd: int, where: str) -> None:
+    """What happens to a state nobody closed. Quiet, because a finalizer that raises during
+    interpreter shutdown produces noise nobody can act on."""
+    try:
+        os.close(fd)
+    except OSError:                                           # pragma: no cover - already gone
+        pass
+
+
 class GatewayState:
     """The gateway's own files: its identity, its tokens, its live pairing code.
 
@@ -124,9 +134,17 @@ class GatewayState:
         # descriptor is re-judged before each use, so a change of owner or mode on that inode is
         # caught before the next secret is touched.
         self._dir_fd = None
+        self._release = None
         self.state_verifiable = securedir.SUPPORTED
         if securedir.SUPPORTED:
             self._dir_fd = securedir.open_state_dir(self.root)
+            # Held descriptors need a way back even when nobody says close(). `close()` is the
+            # right way and stays the documented one; this is what happens when a state is simply
+            # dropped -- one process holding a state per user or per device would otherwise run
+            # out of descriptors with no call site to blame. Measured: a test run left 390 of
+            # them open, one per state ever constructed.
+            self._release = weakref.finalize(
+                self, _give_back_the_descriptor, self._dir_fd, str(self.root))
         self._pairing_lock = threading.Lock()
         self._pairing_path = self.root / "pairing.json"
         # The counters go through the same verified descriptor as every other secret: one of
@@ -428,8 +446,13 @@ class GatewayState:
         self._harden(path)
 
     def close(self) -> None:
-        """Give up the held descriptor. Safe to call twice."""
+        """Give up the held descriptor. Safe to call twice, and after the finalizer has run."""
         fd, self._dir_fd = self._dir_fd, None
+        release, self._release = self._release, None
+        if release is not None:
+            # Detached rather than left to fire later: closing a descriptor number twice can
+            # close somebody ELSE's file, because the number is reused the moment it is free.
+            release.detach()
         if fd is not None:
             try:
                 import os as _os
@@ -437,6 +460,12 @@ class GatewayState:
                 _os.close(fd)
             except OSError:
                 pass
+
+    def __enter__(self) -> "GatewayState":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
 
     def _fd(self) -> int:
         """The held descriptor, re-judged, and confirmed to still be what the name refers to.
