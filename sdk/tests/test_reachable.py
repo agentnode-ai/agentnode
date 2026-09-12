@@ -1,0 +1,1290 @@
+"""Reaching a gateway without a tunnel, and knowing which gateway was reached.
+
+Everything the remote gateway established so far was reached through an ssh tunnel by one operator
+who had a key. A sandbox people are meant to be able to use cannot be reached that way, and the
+three routes this build already documents each start by requiring something: a private tunnel, a
+domain name, or a certificate you already have.
+
+What every client already does before it can send anything is pair, out of band, with something a
+person handed over. So that something carries the certificate's digest, and the client pins it
+before it sends the code. What authenticates the gateway is then what authorised the client.
+
+The TLS here is real: a real certificate this build made, a real server serving it, and a real
+handshake. What is not real is a network -- everything is on loopback, because what is being
+established is which certificate a client will talk to, and that is the same question on any wire.
+"""
+from __future__ import annotations
+
+import http.server
+import json
+import os
+import socket
+import ssl
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from agentnode_sdk.gateway import certificate as tls
+from tests.test_em3c_gateway import StandInBackend
+from agentnode_sdk.gateway import client as gc
+from agentnode_sdk.gateway.invitation import NotAnInvitation, read, write
+from agentnode_sdk.gateway.pinning import PinnedConnection, WrongCertificate, opener_for
+
+
+@pytest.fixture()
+def a_certificate(tmp_path):
+    cert, key, pin = tls.make(tmp_path / "one", "127.0.0.1")
+    return cert, key, pin
+
+
+@pytest.fixture()
+def another_certificate(tmp_path):
+    cert, key, pin = tls.make(tmp_path / "two", "127.0.0.1")
+    return cert, key, pin
+
+
+class ASmallServer:
+    """Something that serves TLS and counts what reached it.
+
+    It answers everything the same way, because what these tests are about is whether a request
+    arrived at all -- not what came back.
+    """
+
+    def __init__(self, cert, key):
+        self.reached: list[str] = []
+        server = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_a):
+                pass
+
+            def _answer(self):
+                server.reached.append(self.path)
+                body = json.dumps({"ok": True}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = _answer
+            do_POST = _answer
+
+        self.http = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(cert), str(key))
+        self.http.socket = context.wrap_socket(self.http.socket, server_side=True)
+        self.thread = threading.Thread(target=self.http.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def url(self) -> str:
+        return "https://127.0.0.1:%d" % self.http.server_address[1]
+
+    def stop(self):
+        self.http.shutdown()
+        self.thread.join(timeout=10)
+
+
+# --------------------------------------------------------- the certificate is the gateway's own
+
+
+class TestTheCertificateIsTheGatewaysOwn:
+
+    def test_it_is_made_where_the_gateway_keeps_its_secrets(self, tmp_path):
+        cert, key, _pin = tls.make(tmp_path, "sandbox.example")
+        assert cert.parent == tmp_path and key.parent == tmp_path
+        assert cert.name == tls.CERT_NAME and key.name == tls.KEY_NAME
+
+    def test_the_key_is_readable_by_nobody_else(self, tmp_path):
+        import os
+        import sys
+
+        _cert, key, _pin = tls.make(tmp_path, "sandbox.example")
+        if sys.platform == "win32":
+            pytest.skip("this platform's file modes are advisory; the Linux lane checks them")
+        assert (os.stat(key).st_mode & 0o077) == 0, "somebody else can read this gateway's key"
+
+    def test_the_pin_is_over_the_certificate_and_not_over_the_file(self, tmp_path):
+        """PEM is a text wrapper. A pin that moved when a file was copied through the wrong tool
+        would be a pin nobody could rely on."""
+        cert, _key, pin = tls.make(tmp_path, "sandbox.example")
+        text = cert.read_bytes()
+        assert tls.fingerprint(text) == pin
+        assert tls.fingerprint(text.replace(b"\n", b"\r\n")) == pin
+
+    def test_a_key_that_is_not_its_key(self, tmp_path):
+        cert, _key, _pin = tls.make(tmp_path / "a", "one.example")
+        _other, key, _p = tls.make(tmp_path / "b", "two.example")
+        assert tls.belongs_together(cert, key) is False
+
+    def test_and_one_that_is(self, tmp_path):
+        cert, key, _pin = tls.make(tmp_path, "one.example")
+        assert tls.belongs_together(cert, key) is True
+
+    def test_it_cannot_sign_another_certificate(self, tmp_path):
+        """A client pinning it is pinning one key, not an authority that could issue more."""
+        from cryptography import x509
+
+        cert, _key, _pin = tls.make(tmp_path, "one.example")
+        loaded = x509.load_pem_x509_certificate(cert.read_bytes())
+        basic = loaded.extensions.get_extension_for_class(x509.BasicConstraints).value
+        assert basic.ca is False
+
+    def test_two_gateways_are_two_certificates(self, tmp_path):
+        _c1, _k1, one = tls.make(tmp_path / "a", "same.example")
+        _c2, _k2, two = tls.make(tmp_path / "b", "same.example")
+        assert one != two
+
+
+class TestNothingIsServedInTheClear:
+    """A gateway a stranger could reach without a certificate does not start."""
+
+    def test_binding_where_a_stranger_could_reach_it_needs_one(self):
+        from agentnode_sdk.gateway.transport import InsecureTransportError, check_bind_address
+
+        for where in ("0.0.0.0", "::", "116.203.32.193"):
+            with pytest.raises(InsecureTransportError) as caught:
+                check_bind_address(where, tls=None)
+            assert "without encryption" in str(caught.value)
+
+    def test_and_there_is_no_setting_that_permits_it(self):
+        """A boundary with a documented way around it is a default. The variable that used to
+        permit this is kept only so it can be shown to be inert."""
+        import os
+
+        from agentnode_sdk.gateway.transport import (
+            LEGACY_PLAINTEXT_ENV,
+            InsecureTransportError,
+            TransportRules,
+            check_bind_address,
+        )
+
+        was = os.environ.get(LEGACY_PLAINTEXT_ENV)
+        os.environ[LEGACY_PLAINTEXT_ENV] = "1"
+        try:
+            with pytest.raises(InsecureTransportError):
+                check_bind_address("0.0.0.0", tls=None)
+        finally:
+            if was is None:
+                os.environ.pop(LEGACY_PLAINTEXT_ENV, None)
+            else:
+                os.environ[LEGACY_PLAINTEXT_ENV] = was
+        # And the rules can only tighten: there is no field that would loosen this.
+        assert not hasattr(TransportRules(), "allow_plain_anywhere")
+
+    def test_a_certificate_that_will_not_load_stops_it_rather_than_serving(self, tmp_path):
+        from agentnode_sdk.gateway.transport import InsecureTransportError, TlsFiles
+
+        nothing = tmp_path / "not-a-certificate.pem"
+        nothing.write_text("this is not a certificate", encoding="utf-8")
+        with pytest.raises(InsecureTransportError) as caught:
+            TlsFiles(certfile=str(nothing), keyfile=str(nothing)).context()
+        assert "was not started" in str(caught.value)
+
+    def test_a_gateway_that_made_one_serves_it_without_being_told_where_it_is(self, tmp_path):
+        """A gateway with a certificate never serves in the clear by omission."""
+        import types
+
+        from agentnode_sdk.cli.gateway_commands import _tls_from
+
+        tls.make(tmp_path, "127.0.0.1")
+        found = _tls_from({}, types.SimpleNamespace(dir=str(tmp_path)))
+        assert found is not None
+        assert found.context() is not None
+
+
+class TestTheKeyIsTheGatewaysAlone:
+    """The mode goes on as the file is created, not after it exists."""
+
+    def test_it_is_created_with_its_permissions_and_not_narrowed_afterwards(self, tmp_path,
+                                                                           monkeypatch):
+        from agentnode_sdk.gateway import certificate as module
+
+        opened = []
+        real_open = module.os.open
+
+        def watching(path, flags, mode=0o777):
+            opened.append((str(path), oct(mode)))
+            return real_open(path, flags, mode)
+
+        monkeypatch.setattr(module.os, "open", watching)
+        tls.make(tmp_path, "one.example")
+        keys = [mode for path, mode in opened if path.endswith(tls.KEY_NAME)]
+        assert keys == [oct(0o600)], opened
+
+
+# ------------------------------------------------------- the client knows which gateway it is
+
+
+class TestTheClientKnowsWhichGatewayItReached:
+
+    def test_it_talks_to_the_certificate_it_was_told_about(self, a_certificate):
+        cert, key, pin = a_certificate
+        server = ASmallServer(cert, key)
+        try:
+            status, _body = gc._get(server.url + "/v1/hello", pin=pin)
+            assert status == 200
+            assert server.reached == ["/v1/hello"]
+        finally:
+            server.stop()
+
+    def test_and_to_nothing_else(self, a_certificate, another_certificate):
+        """The request is refused, and NOTHING reaches the far side -- not the path, not a
+        header, not a byte."""
+        cert, key, _pin = a_certificate
+        _other, _otherkey, other_pin = another_certificate
+        server = ASmallServer(cert, key)
+        try:
+            with pytest.raises(gc.GatewayClientError) as caught:
+                gc._get(server.url + "/v1/hello", pin=other_pin)
+            assert "different certificate" in str(caught.value)
+            assert server.reached == [], "something was sent to a gateway it did not recognise"
+        finally:
+            server.stop()
+
+    def test_a_connection_with_nothing_to_expect_refuses_to_be_made(self, a_certificate):
+        cert, key, _pin = a_certificate
+        server = ASmallServer(cert, key)
+        try:
+            connection = PinnedConnection("127.0.0.1", server.http.server_address[1], pin="")
+            with pytest.raises(WrongCertificate) as caught:
+                connection.connect()
+            assert "nothing to check" in str(caught.value)
+        finally:
+            server.stop()
+
+    def test_the_check_happens_before_anything_is_written(self, a_certificate,
+                                                          another_certificate):
+        """Established rather than asserted: the connection is opened and then asked to send,
+        and the refusal comes from opening it."""
+        cert, key, _pin = a_certificate
+        _o, _ok, other_pin = another_certificate
+        server = ASmallServer(cert, key)
+        try:
+            connection = PinnedConnection("127.0.0.1", server.http.server_address[1],
+                                          pin=other_pin)
+            with pytest.raises(WrongCertificate):
+                connection.connect()
+            assert server.reached == []
+        finally:
+            server.stop()
+
+    def test_the_permissive_context_cannot_be_had_without_the_check(self):
+        """The context does not verify a chain, because the pin is the verification. One like
+        that is only safe with the check attached, so the two are not separable."""
+        import inspect
+
+        from agentnode_sdk.gateway import pinning
+
+        source = inspect.getsource(pinning)
+        assert "CERT_NONE" in source
+        # It is built inside the connection that performs the check, and there is no function
+        # here that hands one out.
+        assert source.count("ssl.SSLContext(") == 1
+        assert "def context(" not in source
+        made = inspect.getsource(pinning.PinnedConnection.__init__)
+        assert "CERT_NONE" in made
+
+    def test_a_pin_is_to_a_key_and_says_so(self):
+        import inspect
+
+        from agentnode_sdk.gateway import pinning
+
+        said = inspect.getdoc(pinning) or ""
+        assert "pin is to a KEY" in said
+        assert "reason to open a port" in said
+
+
+# ----------------------------------------------------------------------- what is handed over
+
+
+class TestWhatIsHandedOver:
+
+    def test_it_carries_where_the_code_and_what_to_expect(self):
+        one = write("https://sandbox.example:8099", "ABCD-EFGH-IJKL", "a" * 64)
+        assert read(one) == ("https://sandbox.example:8099", "ABCD-EFGH-IJKL", "a" * 64)
+
+    def test_an_address_full_of_colons_survives(self):
+        """An IPv6 literal. A reader that split on punctuation would work until somebody
+        deployed it properly."""
+        where = "https://[2a01:4f8:1c1a:47dd::1]:8099"
+        assert read(write(where, "CODE", "b" * 64))[0] == where
+
+    def test_one_with_nothing_to_expect_is_refused(self):
+        """Not treated as "no pinning wanted": accepting it would make the check optional in
+        exactly the situation where it matters."""
+        import base64
+
+        body = json.dumps({"where": "https://x", "code": "y"}).encode()
+        without = "agentnode-invite-1." + base64.urlsafe_b64encode(body).decode().rstrip("=")
+        with pytest.raises(NotAnInvitation) as caught:
+            read(without)
+        assert "which certificate to expect" in str(caught.value)
+
+    def test_one_that_was_cut_short(self):
+        one = write("https://sandbox.example:8099", "CODE", "c" * 64)
+        with pytest.raises(NotAnInvitation) as caught:
+            read(one[:40])
+        assert "cut short" in str(caught.value)
+
+    def test_something_that_is_not_one_at_all(self):
+        with pytest.raises(NotAnInvitation) as caught:
+            read("https://sandbox.example:8099")
+        assert "does not look like an invitation" in str(caught.value)
+
+    def test_a_certificate_that_is_not_a_digest(self):
+        import base64
+
+        body = json.dumps({"where": "https://x", "code": "y", "certificate": "nope"}).encode()
+        odd = "agentnode-invite-1." + base64.urlsafe_b64encode(body).decode().rstrip("=")
+        with pytest.raises(NotAnInvitation) as caught:
+            read(odd)
+        assert "not a sha256" in str(caught.value)
+
+    def test_writing_one_without_a_certificate_is_refused_at_the_gateway_too(self):
+        with pytest.raises(NotAnInvitation):
+            write("https://sandbox.example:8099", "CODE", "")
+
+    def test_what_it_refuses_never_repeats_what_it_was_given(self):
+        """An error message is something people paste into issues."""
+        secret = "d" * 64
+        one = write("https://sandbox.example:8099", "THE-SECRET-CODE", secret)
+        cut = one[:45]
+        try:
+            read(cut)
+        except NotAnInvitation as exc:
+            said = str(exc)
+            assert "THE-SECRET-CODE" not in said
+            assert secret not in said
+            # And not the invitation itself. Looking only for the decoded values is the same
+            # mistake this file made once before in the other direction: an invitation is base64,
+            # so a refusal that pasted the whole thing back would contain the code and the
+            # certificate while containing neither of those strings, and this test would have
+            # passed it. What must not be repeated is what it was GIVEN.
+            assert cut not in said, "the refusal pasted back the invitation it was handed"
+            assert cut[len("agentnode-invite-"):][:16] not in said
+        else:
+            raise AssertionError("a truncated invitation was accepted")
+
+
+# ------------------------------------------------------------------- pairing without a shell
+
+
+class TestPairingDoesNotNeedAShell:
+
+    def test_what_the_operator_runs_and_what_the_person_runs(self):
+        """Two commands, neither of which needs the other machine."""
+        import inspect
+
+        from agentnode_sdk.cli import gateway_commands, remote_commands
+
+        issuing = inspect.getsource(gateway_commands.cmd_pair)
+        assert "an_invitation(where, code, pin" in issuing
+        taking = inspect.getsource(remote_commands.cmd_connect)
+        assert "an_invitation(given)" in taking
+        for shape in ("ssh", "scp", "tailscale"):
+            assert shape not in taking, shape
+
+    def test_the_code_is_still_single_use_and_still_expires(self):
+        from agentnode_sdk.gateway.identity import PAIRING_TTL_SECONDS, new_pairing_code
+
+        assert PAIRING_TTL_SECONDS <= 15 * 60
+        assert len({new_pairing_code() for _ in range(200)}) == 200
+
+    def test_every_attempt_costs_budget_whether_it_succeeds_or_not(self, tmp_path):
+        """Counting FAILURES is not counting attempts, and the difference is the attack.
+
+        A lockout that only counts wrong guesses can be walked around by an attacker whose
+        guesses are not wrong in the way it recognises; the budget exists because grinding has
+        to be bounded even then. R4 asks whether reachability weakened this, so it is exercised
+        rather than read out of the source.
+
+        The ceiling comes from `Budget.allowance` itself. Taking it from what the code happened
+        to do would be writing down the answer and calling it the question -- the test would
+        agree with any number the implementation produced, including one.
+        """
+        from agentnode_sdk.gateway.identity import GatewayState, PairingError
+        from agentnode_sdk.gateway.throttle import Budget
+
+        allowed = Budget().allowance
+        assert allowed > 1
+
+        state = GatewayState(str(tmp_path), version="test")
+        state.identity                                  # the marker the counters are anchored to
+
+        # Every attempt is a SUCCESS: each one redeems a freshly issued code. Nothing here is a
+        # wrong guess, so a counter that only noticed failures would never fire.
+        spent = 0
+        for _ in range(allowed + 5):
+            code = state.start_pairing()
+            try:
+                state.redeem_pairing(code)
+            except PairingError as exc:
+                assert "not accepting pairings" in str(exc) or "too many" in str(exc).lower(), exc
+                break
+            spent += 1
+        else:
+            raise AssertionError(
+                "pairing went on past %d successful attempts without the budget stopping it"
+                % (allowed + 5))
+
+        assert spent <= allowed, (
+            "%d attempts were served where the budget allows %d" % (spent, allowed))
+        assert spent >= allowed - 1, (
+            "the budget stopped at %d of its own allowance of %d, which is a different limit "
+            "than the one it declares" % (spent, allowed))
+
+    def test_and_a_wrong_guess_costs_the_same_as_a_right_one(self, tmp_path):
+        """The counter-case that makes the one above mean something: attempts, not failures."""
+        from agentnode_sdk.gateway.identity import GatewayState, PairingError
+        from agentnode_sdk.gateway.throttle import Budget
+
+        allowed = Budget().allowance
+        # Reading the ceiling from the code is the right way to avoid writing the answer down --
+        # but on its own it makes the test agree with ANY declared number, including one large
+        # enough to bound nothing. A counter-check that raised the allowance to 100000 passed
+        # this whole class, so the declared value is checked as well as obeyed.
+        assert allowed <= 100, (
+            "an allowance of %d is not a bound on grinding, whatever it is called" % allowed)
+
+        state = GatewayState(str(tmp_path), version="test")
+        state.identity
+
+        # A wrong guess can be stopped by either of two things -- the failure lockout or the
+        # attempt budget -- and which one fires first is not what this asserts. What it asserts
+        # is that wrong guesses STOP, within the same allowance, rather than being free because
+        # the code they presented was never valid.
+        stopped_at = None
+        for n in range(allowed + 5):
+            state.start_pairing()
+            try:
+                state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ")
+            except PairingError as exc:
+                said = str(exc).lower()
+                if "does not match" not in said:
+                    stopped_at = n
+                    break
+        assert stopped_at is not None, (
+            "wrong guesses went on for %d rounds without anything stopping them" % (allowed + 5))
+        assert stopped_at <= allowed
+
+    def test_an_invitation_is_not_written_into_anything(self):
+        """It is the thing that would let somebody else pair as you."""
+        import inspect
+
+        from agentnode_sdk.cli import gateway_commands
+
+        source = inspect.getsource(gateway_commands.cmd_pair)
+        for shape in ("logging.", "logger", "open(", ".write("):
+            assert shape not in source, shape
+
+
+# --------------------------------------------------------------- what this does not establish
+
+
+class TestItRunsAsAServiceUnderItsOwnAccount:
+    """The units are the deployment. What they say is checkable without deploying them."""
+
+    def units(self):
+        from pathlib import Path
+
+        here = Path(__file__).resolve().parent.parent / "deploy"
+        return ((here / "agentnode-gateway.service").read_text(encoding="utf-8"),
+                (here / "agentnode-worker.service").read_text(encoding="utf-8"))
+
+    def test_the_control_plane_is_in_no_group_that_can_drive_a_runtime(self):
+        gateway, _worker = self.units()
+        groups = [line.split("=", 1)[1] for line in gateway.splitlines()
+                  if line.startswith("SupplementaryGroups=")]
+        for named in groups:
+            assert "docker" not in named, named
+            assert "podman" not in named, named
+        assert "User=agentnode-gateway" in gateway
+        assert "User=root" not in gateway
+
+    def test_and_the_worker_is_the_one_that_can(self):
+        _gateway, worker = self.units()
+        assert "User=agentnode-worker" in worker
+
+    def test_and_it_does_it_without_a_root_equivalent_group(self):
+        """The worker used to be in the docker group. That was the wrong shape.
+
+        Membership of the docker group is root on the host: anything in it can start a
+        privileged container bind-mounting `/`. Giving it to the one account whose entire job is
+        running foreign code means a sandbox escape owns the machine in a single step -- and the
+        machine is where the control plane's signing identity and every client's token are.
+
+        Rootless podman does the same work with no such group, so neither account has one.
+        """
+        gateway, worker = self.units()
+        for unit, which in ((worker, "worker"), (gateway, "gateway")):
+            for group in ("docker", "wheel", "sudo", "root"):
+                assert f"SupplementaryGroups={group}" not in unit, (
+                    f"the {which} unit puts its account in the {group} group")
+                assert ("Group=" + group) not in unit.replace("agentnode-", "")
+
+    def test_and_the_worker_keeps_its_own_primary_group(self):
+        """Not the shared one, however tempting: rootless podman stops working outright.
+
+        newuidmap refuses to map subordinate ids when the calling process's gid is not the one
+        in the account's passwd entry -- "Target process is owned by a different user" -- and
+        then no container starts. The shared group has to be supplementary, and the socket gets
+        it from its directory's setgid bit instead.
+        """
+        _gateway, worker = self.units()
+        assert "Group=agentnode-worker" in worker
+        assert "SupplementaryGroups=agentnode-bridge" in worker
+
+    def test_and_the_socket_directory_is_not_left_to_systemd(self):
+        """RuntimeDirectory= would recreate it with the unit's own group, which is the wrong one."""
+        _gateway, worker = self.units()
+        # A SETTING, not the word: the comment above it in the unit explains why it is absent.
+        settings = [l for l in worker.splitlines() if l and not l.startswith("#")]
+        assert not [l for l in settings if l.startswith("RuntimeDirectory")], settings
+
+    def test_neither_runs_as_a_person_who_has_to_be_logged_in(self):
+        for unit in self.units():
+            assert "Restart=always" in unit
+            assert "WantedBy=multi-user.target" in unit
+
+    def test_the_worker_cannot_reach_the_control_planes_directory(self):
+        _gateway, worker = self.units()
+        assert "InaccessiblePaths=-/var/lib/agentnode" in worker
+        assert "ReadWritePaths=/run/agentnode" in worker
+
+    def test_what_the_deployment_says_it_is_not(self):
+        from pathlib import Path
+
+        said = (Path(__file__).resolve().parent.parent / "deploy" / "README.md").read_text(
+            encoding="utf-8")
+        # The line wrapping in a document is not what is being established; the claims are.
+        flowed = " ".join(said.split())
+        for phrase in ("this is not isolation", "root-equivalent", "single-host-development",
+                       "may be described as production-safe"):
+            assert phrase in flowed, phrase
+
+
+class TestARestartDoesNotLeaveASandboxRunning:
+    """What happens to a run that was in flight when the services were restarted.
+
+    Measured on the deployed alpha before this existed, against an expectation written down
+    first: a job was started, both units were restarted, and four of the five things that had to
+    hold did. The client got a definite answer rather than a hang, nothing was reported as
+    finished that nobody watched finish, the signed record of use still verified with its lines
+    intact, and both services came back. The fifth did not. The container was still up, and the
+    gateway's registry of live runs is in memory, so nothing anywhere referred to it any more.
+
+    Calling the run interrupted answers its client. It does not stop anything: the worker is a
+    separate service with its own lifetime, which is the same property that makes the worker
+    movable. So the gateway asks it to remove what the run left, by the name the gateway itself
+    chose -- reconstructable after a restart precisely because it is derived from the run id.
+    """
+
+    def _a_gateway(self, td, worker):
+        from agentnode_sdk.gateway.server import GatewayService
+        from agentnode_sdk.gateway.identity import GatewayState
+
+        return GatewayService(GatewayState(td, version="test"), worker=worker)
+
+    def _cut_short(self, service, run_id="cut-short-by-a-restart"):
+        """A run the ledger last saw mid-flight, which is exactly what a restart leaves."""
+        service.ledger.claim(run_id, "nonce-" + run_id, "sha", "a-client")
+        return run_id
+
+    def test_the_sandbox_a_cut_short_run_left_is_removed(self, tmp_path):
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        run_id = self._cut_short(self._a_gateway(tmp_path, AWorkerThatAnswers()))
+
+        second = AWorkerThatAnswers()
+        service = self._a_gateway(tmp_path, second)
+
+        assert [asked[0] for asked in second.stopped] == [run_id], (
+            "a run interrupted by a restart was marked interrupted and its container left running"
+        )
+        assert service.runs[run_id].cleanup_verified is True
+
+    def test_it_asks_about_the_name_the_running_path_actually_gives_a_container(self, tmp_path):
+        """The two paths must agree on the name, or recovery addresses nothing and says so.
+
+        This is the failure that would be invisible: a recovery asking about a name no container
+        ever had gets an honest empty listing back, reports nothing left behind, and leaves the
+        sandbox running. So the name is not compared against a literal written here -- it is
+        compared against the name a job CARRIES to the worker on the ordinary running path.
+        """
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        source = inspect.getsource(server)
+        assignments = [line.split("=", 1)[1].strip()
+                       for line in source.splitlines()
+                       if line.strip().startswith("record.container_name =")]
+        assert assignments, "nothing assigns a container name any more"
+        assert set(assignments) == {"container_name_for(record.run_id)",
+                                    "container_name_for(run_id)"}, (
+            "a container name is spelled out somewhere instead of coming from the one function, "
+            "so the two paths can drift apart: %s" % assignments
+        )
+
+    def test_a_worker_that_cannot_be_asked_does_not_stop_the_gateway_starting(self, tmp_path):
+        """And leaves "nobody could ask", which is not "nothing was left behind".
+
+        A restart is exactly when a worker may not be up yet, and a gateway that refused to start
+        because of it would turn one interrupted run into no service at all.
+        """
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        run_id = self._cut_short(self._a_gateway(tmp_path, AWorkerThatAnswers()))
+
+        class AWorkerNobodyCanReach(AWorkerThatAnswers):
+            def stop(self, run_id, container_name, appear_seconds):
+                raise ConnectionRefusedError("nothing is listening on the worker's socket")
+
+            def gone(self, container_name, patiently=True):
+                raise ConnectionRefusedError("nothing is listening on the worker's socket")
+
+        service = self._a_gateway(tmp_path, AWorkerNobodyCanReach())
+
+        assert service.runs[run_id].state == "interrupted"
+
+    def test_and_what_nobody_could_ask_is_not_recorded_as_an_answer(self, tmp_path):
+        """None, not True. An operator reading True stops looking for the container.
+
+        There are TWO ways the asking fails and they are separate lines of code: the removal
+        itself may be unreachable, or the removal may answer "I removed nothing" and the question
+        of what is left then be unreachable. A first version of this test only covered the first,
+        so the second was never executed by it -- a counter-check that put a wrong answer on that
+        line kept the test green, which is how it was found. Both shapes are here now.
+        """
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        lost = ConnectionRefusedError("nothing is listening on the worker's socket")
+
+        class NothingAnswersAtAll(AWorkerThatAnswers):
+            def stop(self, run_id, container_name, appear_seconds):
+                raise lost
+
+            def gone(self, container_name, patiently=True):
+                raise lost
+
+        class ItRemovedNothingAndThenWentAway(AWorkerThatAnswers):
+            def stop(self, run_id, container_name, appear_seconds):
+                self.stopped.append((run_id, container_name, appear_seconds))
+                return False
+
+            def gone(self, container_name, patiently=True):
+                raise lost
+
+        for worker in (NothingAnswersAtAll(), ItRemovedNothingAndThenWentAway()):
+            directory = tmp_path / type(worker).__name__
+            directory.mkdir()
+            run_id = self._cut_short(self._a_gateway(directory, AWorkerThatAnswers()))
+
+            service = self._a_gateway(directory, worker)
+
+            assert service.runs[run_id].cleanup_verified is None, (
+                "a cleanup nobody could even ask about was recorded as an answer, with %s"
+                % type(worker).__name__
+            )
+
+    def test_a_sandbox_that_is_still_there_is_not_reported_as_gone(self, tmp_path):
+        """False and None are different answers and an operator acts differently on each."""
+        from agentnode_sdk.worker import Gone
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        run_id = self._cut_short(self._a_gateway(tmp_path, AWorkerThatAnswers()))
+
+        class AWorkerThatCannotRemoveIt(AWorkerThatAnswers):
+            def stop(self, run_id, container_name, appear_seconds):
+                self.stopped.append((run_id, container_name, appear_seconds))
+                return False
+
+            def gone(self, container_name, patiently=True):
+                return Gone(answered=True, left=(container_name + "-abc123",))
+
+        service = self._a_gateway(tmp_path, AWorkerThatCannotRemoveIt())
+
+        assert service.runs[run_id].cleanup_verified is False
+
+    def test_a_run_that_had_already_finished_is_left_alone(self, tmp_path):
+        """Nothing is asked about runs that ended, or the sweep would reach every old run."""
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        first = self._a_gateway(tmp_path, AWorkerThatAnswers())
+        run_id = self._cut_short(first)
+        first.ledger.note_state(run_id, "finished")
+
+        second = AWorkerThatAnswers()
+        self._a_gateway(tmp_path, second)
+
+        assert second.stopped == []
+
+    def test_a_sandbox_an_earlier_start_could_not_confirm_is_asked_about_again(self, tmp_path):
+        """The gap the deployed run exposed, after the first fix and before this one.
+
+        A run is marked interrupted by the restart that cuts it short, which is also the only
+        moment its container was asked about. A gateway coming up before its worker -- which is
+        exactly when a machine reboots -- could not ask, so the run was no longer mid-flight and
+        nothing would ever look at it again. The container would then outlive everything that
+        referred to it, which is the same defect one step further out.
+        """
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        lost = ConnectionRefusedError("nothing is listening on the worker's socket")
+
+        class NothingAnswersAtAll(AWorkerThatAnswers):
+            def stop(self, run_id, container_name, appear_seconds):
+                raise lost
+
+            def gone(self, container_name, patiently=True):
+                raise lost
+
+        run_id = self._cut_short(self._a_gateway(tmp_path, AWorkerThatAnswers()))
+        # The restart that interrupts it happens with no worker to ask.
+        first = self._a_gateway(tmp_path, NothingAnswersAtAll())
+        assert first.runs[run_id].cleanup_verified is None
+
+        # The next one has a worker again.
+        later = AWorkerThatAnswers()
+        service = self._a_gateway(tmp_path, later)
+
+        assert [asked[0] for asked in later.stopped] == [run_id], (
+            "a sandbox nobody could ask about was never asked about again"
+        )
+        assert service.runs[run_id].cleanup_verified is True
+
+    def test_and_one_already_confirmed_gone_is_not_asked_about_twice(self, tmp_path):
+        """True is the only answer that ends the asking, and it has to end it, or every start
+        interrogates the runtime about every run it ever interrupted."""
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        run_id = self._cut_short(self._a_gateway(tmp_path, AWorkerThatAnswers()))
+        first = AWorkerThatAnswers()
+        self._a_gateway(tmp_path, first)
+        assert [asked[0] for asked in first.stopped] == [run_id]
+
+        second = AWorkerThatAnswers()
+        self._a_gateway(tmp_path, second)
+
+        assert second.stopped == [], "a sandbox already confirmed gone was asked about again"
+
+    def test_and_it_is_still_not_started_again(self, tmp_path):
+        """Cleaning up after a run is not re-running it. The client asked once."""
+        from tests.test_socket_worker import AWorkerThatAnswers
+
+        run_id = self._cut_short(self._a_gateway(tmp_path, AWorkerThatAnswers()))
+
+        second = AWorkerThatAnswers()
+        service = self._a_gateway(tmp_path, second)
+
+        assert second.ran == [], "an interrupted run was executed again while being cleaned up"
+        assert service.runs[run_id].state == "interrupted"
+
+
+class TestAServerThatHasStoppedStopsItsWatchers:
+    """Two threads watch every gateway. Both used to outlive it.
+
+    `agentnode_serving` gates the stop-file watcher and the permissions watcher, and nothing
+    cleared it except the second one deciding to halt -- so `shutdown()` stopped serving and left
+    both running, waking every second or two for the life of the process and reading files in a
+    directory that may since have been removed.
+
+    One server leaking two threads is easy to miss. This suite starts dozens, and the symptom was
+    an unrelated submission timing out after thirty seconds, on one Python version at a time,
+    about half the time.
+    """
+
+    def _a_server(self, tmp_path):
+        from agentnode_sdk.gateway.server import GatewayService, GatewayState, make_server
+
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        server = make_server(service, port=0, host="127.0.0.1")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread
+
+    def test_shutting_it_down_ends_them(self, tmp_path):
+        server, thread = self._a_server(tmp_path)
+        assert server.agentnode_serving is True
+        before = threading.active_count()
+        server.shutdown()
+        thread.join(timeout=10)
+
+        assert server.agentnode_serving is False, "the watchers were told nothing"
+        # They sleep up to two seconds between looks, so give them three to notice and end.
+        deadline = time.time() + 6
+        while time.time() < deadline and threading.active_count() > before - 1:
+            time.sleep(0.25)
+        assert threading.active_count() <= before - 1, (
+            "threads outlived the server they were watching: %d before, %d after"
+            % (before, threading.active_count()))
+
+    def test_and_closing_it_does_too(self, tmp_path):
+        """A server closed without being shut down first is the same leak."""
+        server, _thread = self._a_server(tmp_path)
+        server.server_close()
+        assert server.agentnode_serving is False
+        server.shutdown()
+
+
+class TestWhatThisDoesNotEstablish:
+
+    def test_the_limits_are_where_a_reader_will_meet_them(self):
+        import inspect
+
+        from agentnode_sdk.gateway import certificate, pinning
+
+        for module, must_say in (
+            (pinning, ("pin is to a KEY", "reason to open a port")),
+            (certificate, ("not who owns it", "reason to open a port",
+                           "pin to a KEY")),
+        ):
+            said = inspect.getdoc(module) or ""
+            for phrase in must_say:
+                assert phrase in said, (module.__name__, phrase)
+
+
+class TestEveryRequestToAPairedGatewayIsPinned:
+    """Pinning that some requests do and others do not is not pinning.
+
+    Found by running the real client against a real gateway: `remote test` worked and `remote
+    status` failed, because status asked `hello` without the certificate the client had pinned
+    when it paired. Against a gateway with a self-signed certificate that request cannot
+    succeed at all -- and its failure was reported as "that is not the sandbox you paired with",
+    which describes an attack rather than a forgotten argument.
+    """
+
+    def _calls(self):
+        import inspect
+
+        from agentnode_sdk.cli import remote_commands
+
+        return inspect.getsource(remote_commands)
+
+    def test_no_command_asks_a_saved_gateway_without_its_certificate(self):
+        import re
+
+        # Every hello() against a SAVED connection, with what was passed to it.
+        for call in re.findall(r"gc\.hello\([^)]*\)", self._calls()):
+            if "saved" in call:
+                assert "pin=" in call, f"this request is not pinned: {call}"
+
+    def test_and_the_one_before_pairing_is_pinned_to_the_invitation(self):
+        import re
+
+        for call in re.findall(r"gc\.hello\([^)]*\)", self._calls()):
+            assert "pin=" in call, f"an unpinned request to a gateway: {call}"
+
+
+class TestAnAddressToAdvertiseIsCheckedWhereItIsTyped:
+    """The failure used to happen on somebody else's machine, which is the worst place for it.
+
+    `--advertise 127.0.0.1:8099` was accepted, put a colon in the certificate's name and in every
+    invitation the gateway then issued, and the first complaint came from a client refusing to
+    parse the address. The operator who made the mistake never saw it.
+    """
+
+    def _init(self, tmp_path, advertise):
+        from agentnode_sdk.cli import gateway_commands
+
+        class Args:
+            dir = str(tmp_path)
+            tls_self_signed = True
+            tls_cert = tls_key = None
+
+        Args.advertise = advertise
+        return gateway_commands.cmd_init(Args())
+
+    def test_an_address_with_a_port_is_refused_at_once(self, tmp_path, capsys):
+        assert self._init(tmp_path, "127.0.0.1:8099") == 2
+        said = capsys.readouterr().out
+        assert "without a port" in said
+        assert "--advertise 127.0.0.1" in said, "it did not show the corrected command"
+
+    def test_and_it_says_where_the_port_goes_instead(self, tmp_path, capsys):
+        self._init(tmp_path, "sandbox.example:9000")
+        assert "--port 9000" in capsys.readouterr().out
+
+    def test_a_plain_address_is_accepted(self, tmp_path):
+        assert self._init(tmp_path, "127.0.0.1") == 0
+
+    def test_and_an_ipv6_literal_is_not_mistaken_for_one(self, tmp_path):
+        """Colons are how IPv6 is spelled; refusing those would refuse the address itself."""
+        assert self._init(tmp_path, "2001:db8::1") == 0
+
+
+class TestAnInvitationIsOneTimeShortLivedWithdrawableAndCheckable:
+    """Four properties, and each one is a different way of being handed to the wrong person.
+
+    An invitation travels out of band -- read aloud, pasted into a chat, photographed off a
+    screen. Every one of those can reach further than intended, so the question is never "can it
+    leak" but "for how long does a leak matter, and what can be done once it has".
+    """
+
+    def _invitation(self, **changes):
+        from agentnode_sdk.gateway import invitation
+
+        made = dict(where="https://127.0.0.1:8099", code="AAAA-BBBB-CCCC",
+                    certificate_sha256="a" * 64, expires=time.time() + 900,
+                    gateway_id="gw-1234567890")
+        made.update(changes)
+        return invitation.write(made.pop("where"), made.pop("code"),
+                                made.pop("certificate_sha256"), **made)
+
+    def test_it_says_when_it_stops_working(self):
+        from agentnode_sdk.gateway import invitation
+
+        carried = invitation.details(self._invitation())
+        assert carried["expires"] > time.time()
+
+    def test_and_a_client_refuses_an_expired_one_without_contacting_anything(self, capsys,
+                                                                            monkeypatch):
+        """Contacting the far end first makes an expired invitation look like a broken network."""
+        from agentnode_sdk.cli import remote_commands
+
+        def nobody_should_call_this(*_a, **_k):
+            raise AssertionError("it contacted the gateway before checking the expiry")
+
+        from agentnode_sdk.gateway import client as gateway_client
+
+        monkeypatch.setattr(gateway_client, "hello", nobody_should_call_this)
+
+        class Args:
+            url = self._invitation(expires=time.time() - 600)
+            code = ""
+            name = ""
+
+        assert remote_commands.cmd_connect(Args()) == 2
+        said = capsys.readouterr().out
+        assert "has expired" in said
+        assert "nothing was contacted" in said
+
+    def test_it_names_the_gateway_it_was_written_for(self):
+        from agentnode_sdk.gateway import invitation
+
+        assert invitation.details(self._invitation())["gateway"] == "gw-1234567890"
+
+    def test_an_older_invitation_does_not_pair_with_a_rebuilt_gateway(self, capsys, monkeypatch):
+        """It would otherwise appear to work, and attach the client to something nobody meant."""
+        from agentnode_sdk.cli import remote_commands
+
+        from agentnode_sdk.gateway import client as gateway_client
+
+        monkeypatch.setattr(
+            gateway_client, "hello",
+            lambda url, pin="": {"gateway": {"gateway_id": "a-different-gateway"},
+                                 "protocol": "em3c/2"})
+
+        class Args:
+            url = self._invitation()
+            code = ""
+            name = ""
+
+        assert remote_commands.cmd_connect(Args()) == 1
+        said = capsys.readouterr().out
+        assert "not the gateway this invitation was written for" in said
+
+    def test_the_essentials_are_still_three(self):
+        """Older invitations carry no expiry and no gateway, and must still be usable."""
+        from agentnode_sdk.gateway import invitation
+
+        old = invitation.write("https://x:8099", "AAAA-BBBB-CCCC", "b" * 64)
+        where, code, pin = invitation.read(old)
+        assert (where, code, pin) == ("https://x:8099", "AAAA-BBBB-CCCC", "b" * 64)
+        assert "expires" not in invitation.details(old)
+
+
+class TestTakingAnInvitationBack:
+    """Issuing another one replaces the first, but that is not the same as being able to kill it."""
+
+    def _state(self, tmp_path):
+        from agentnode_sdk.gateway.server import GatewayState
+
+        return GatewayState(str(tmp_path), version="test")
+
+    def test_a_code_that_was_withdrawn_no_longer_works(self, tmp_path):
+        from agentnode_sdk.gateway.identity import PairingError
+
+        state = self._state(tmp_path)
+        code = state.start_pairing()
+        assert state.withdraw_pairing() is True
+        with pytest.raises(PairingError):
+            state.redeem_pairing(code)
+
+    def test_withdrawing_when_there_is_nothing_says_so(self, tmp_path):
+        state = self._state(tmp_path)
+        state.start_pairing()
+        assert state.withdraw_pairing() is True
+        assert state.withdraw_pairing() is False
+
+    def test_a_code_that_was_not_withdrawn_still_works(self, tmp_path):
+        """The counter-case: withdrawal must not be the only outcome."""
+        state = self._state(tmp_path)
+        code = state.start_pairing()
+        assert state.redeem_pairing(code)
+
+    def test_and_it_is_still_one_time(self, tmp_path):
+        from agentnode_sdk.gateway.identity import PairingError
+
+        state = self._state(tmp_path)
+        code = state.start_pairing()
+        state.redeem_pairing(code)
+        with pytest.raises(PairingError):
+            state.redeem_pairing(code)
+
+    def test_and_still_expires(self, tmp_path):
+        from agentnode_sdk.gateway.identity import PAIRING_TTL_SECONDS, PairingError
+
+        state = self._state(tmp_path)
+        code = state.start_pairing(now=1000.0)
+        with pytest.raises(PairingError):
+            state.redeem_pairing(code, now=1000.0 + PAIRING_TTL_SECONDS + 1)
+
+
+class TestWhatAPlaintextRequestGetsFromATlsListener:
+    """Refusing to BIND without a certificate is not the same as what happens once it is bound.
+
+    The first is about configuration and is tested elsewhere. This is about the wire: an http://
+    request arriving at an https:// listener must not be answered, must not be redirected to
+    somewhere it could be answered, and must not have anything of the exchange come back in the
+    clear. A gateway that politely redirected would be one a client could be walked down to
+    plaintext by anything able to answer first.
+    """
+
+    def _a_tls_gateway(self, tmp_path):
+        from agentnode_sdk.gateway.server import GatewayService, GatewayState, make_server
+        from agentnode_sdk.gateway.transport import TlsFiles
+
+        cert, key, pin = tls.make(tmp_path, "127.0.0.1")
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        server = make_server(service, port=0, host="127.0.0.1",
+                             tls=TlsFiles(certfile=str(cert), keyfile=str(key)))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, pin
+
+    def test_a_plaintext_request_is_not_answered(self, tmp_path):
+        server, _pin = self._a_tls_gateway(tmp_path)
+        try:
+            port = server.server_address[1]
+            raw = socket.create_connection(("127.0.0.1", port), timeout=5)
+            raw.sendall(b"GET /v1/hello HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            raw.settimeout(5)
+            try:
+                answer = raw.recv(4096)
+            except (TimeoutError, OSError):
+                answer = b""
+            finally:
+                raw.close()
+            assert b"HTTP/1." not in answer, (
+                "an http request to an https listener was answered in the clear: %r" % answer[:120])
+            assert b"gateway_id" not in answer
+            assert b"301" not in answer and b"302" not in answer, (
+                "it redirected, which is a way to be walked down to plaintext")
+        finally:
+            server.shutdown()
+
+    def test_and_the_same_listener_answers_over_tls(self, tmp_path):
+        """The control: the refusal above must be about the plaintext, not about a dead port."""
+        server, pin = self._a_tls_gateway(tmp_path)
+        try:
+            url = f"https://127.0.0.1:{server.server_address[1]}"
+            hello = gc.hello(url, pin=pin)
+            assert hello.get("protocol")
+        finally:
+            server.shutdown()
+
+
+class TestThePrivateKeyIsInNothingThatLeavesTheMachine:
+    """A key that never appears in an answer is a property, not a hope.
+
+    Modes and inspection say who could open the file. They say nothing about whether the software
+    puts its contents into something it hands out -- an answer, a log line, a record, a doctor
+    report. Those are different questions and only the second one is about disclosure.
+    """
+
+    def _made(self, tmp_path):
+        cert, key, pin = tls.make(tmp_path, "127.0.0.1")
+        return cert, key, pin, Path(key).read_text(encoding="utf-8")
+
+    def _looks_like_a_key(self, text: str) -> bool:
+        return "PRIVATE KEY" in text or "BEGIN EC" in text
+
+    def test_no_answer_carries_it(self, tmp_path):
+        from agentnode_sdk.gateway.server import GatewayService, GatewayState
+        from agentnode_sdk.gateway.transport import TlsFiles
+
+        # The certificate is made INSIDE the gateway's own state directory, which is where a
+        # real one lives. Built beside it instead, this test would be asking whether an answer
+        # carries a key the gateway has no way of reaching -- true whatever the code did, and a
+        # counter-check that put the key into the answer left it green.
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        cert, key, pin = tls.make(Path(state.root), "127.0.0.1")
+        secret = Path(key).read_text(encoding="utf-8")
+        assert Path(key).parent == Path(state.root)
+        service = GatewayService(state, backend=StandInBackend())
+        said = json.dumps(service.hello())
+        assert not self._looks_like_a_key(said)
+        assert secret.strip() not in said
+        # The fingerprint is public and is expected to travel; the key is not.
+        assert pin not in secret
+
+    def test_nor_the_gateway_status_an_operator_prints(self, tmp_path, capsys):
+        from agentnode_sdk.cli import gateway_commands
+
+        cert, key, pin, secret = self._made(tmp_path)
+
+        class Args:
+            dir = str(tmp_path)
+            tls_self_signed = True
+            tls_cert = tls_key = None
+            advertise = "127.0.0.1"
+
+        gateway_commands.cmd_init(Args())
+        printed = capsys.readouterr().out
+        assert not self._looks_like_a_key(printed), "gateway init printed key material"
+
+    def test_nor_the_invitation_handed_to_a_person(self, tmp_path):
+        """Checked DECODED, which is the part that took a counter-check to notice.
+
+        An invitation is base64. Looking for "PRIVATE KEY" in the encoded string finds nothing
+        even when the key is right there inside it, so the first version of this test would have
+        passed an invitation that carried one. What has to be inspected is what the invitation
+        SAYS, not how it is spelled.
+        """
+        from agentnode_sdk.gateway import invitation
+
+        _cert, _key, pin, secret = self._made(tmp_path)
+        handed = invitation.write("https://127.0.0.1:8099", "AAAA-BBBB-CCCC", pin)
+        inside = json.dumps(invitation.details(handed))
+        assert not self._looks_like_a_key(inside), inside[:200]
+        assert not self._looks_like_a_key(handed)
+        for line in secret.splitlines():
+            if len(line.strip()) > 20:
+                assert line.strip() not in inside
+
+    def test_nor_a_record_of_use(self, tmp_path):
+        from agentnode_sdk.gateway import meter
+
+        _cert, _key, _pin, secret = self._made(tmp_path)
+        meter.record(tmp_path, run_id="r", client_id="c", started_at=1.0, finished_at=2.0,
+                     cpu=1.0, memory_mb=512, wall_clock_s=60, state="finished",
+                     outcome="succeeded", bytes_out=1, worker_topology="x",
+                     allowance_sha256="a" * 64)
+        written = (Path(tmp_path) / meter.METER_NAME).read_text(encoding="utf-8")
+        assert not self._looks_like_a_key(written)
+
+    def test_nor_the_doctor_report_an_operator_runs(self, tmp_path, capsys):
+        """The diagnostic. It is the output most likely to be pasted into a chat window.
+
+        `gateway doctor` exists to be handed to somebody else when something is wrong, which
+        makes it the channel where a leak would travel furthest. It reports on the certificate,
+        so it is holding the right object to leak the wrong half of it.
+        """
+        from agentnode_sdk.cli import gateway_commands
+
+        _cert, _key, _pin, secret = self._made(tmp_path)
+
+        class Args:
+            dir = str(tmp_path)
+            tls_self_signed = True
+            tls_cert = tls_key = None
+            advertise = "127.0.0.1"
+            measure = False
+
+        gateway_commands.cmd_init(Args())
+        capsys.readouterr()
+        try:
+            gateway_commands.cmd_doctor(Args())
+        except SystemExit:
+            pass
+        printed = capsys.readouterr()
+        said = printed.out + printed.err
+        assert said.strip(), "the doctor said nothing, so this test observed no channel"
+        assert not self._looks_like_a_key(said), "the doctor report carried key material"
+        for line in secret.splitlines():
+            if len(line.strip()) > 20:
+                assert line.strip() not in said
+
+    def test_nor_anything_a_running_gateway_writes(self, tmp_path, capfd):
+        """What a LIVE gateway writes while serving with the key, including when it fails.
+
+        This drives the PRODUCT path -- `make_server` with the real `TlsFiles` -- and not a
+        server built inside this test. Watching a harness would make this test unfalsifiable by
+        any change to the gateway: a counter-check could put the key into the gateway's own
+        output and this would stay green, which is the difference between a test and a decoration.
+
+        The error paths are the ones worth watching. A handshake that breaks part-way is exactly
+        where a library or a traceback is holding the private half, and a gateway that printed a
+        stack trace containing it would have disclosed it to the journal of whatever machine it
+        runs on.
+
+        `capfd` and not `capsys`, because this has to catch what is written to the file
+        descriptors by the serving THREAD and by anything below Python.
+        """
+        from agentnode_sdk.gateway.server import GatewayService, GatewayState, make_server
+        from agentnode_sdk.gateway.transport import TlsFiles
+
+        cert, key, pin = tls.make(tmp_path, "127.0.0.1")
+        secret = Path(key).read_text(encoding="utf-8")
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        # With logging OFF the gateway says nothing, and a test that watched a silent channel
+        # would pass whatever the code did. The deployed service is what this is about, so the
+        # log is turned on here the same way the deployment turns it on.
+        previous = os.environ.get("AGENTNODE_GATEWAY_LOG")
+        os.environ["AGENTNODE_GATEWAY_LOG"] = "1"
+        try:
+            server = make_server(service, port=0, host="127.0.0.1",
+                                 tls=TlsFiles(certfile=str(cert), keyfile=str(key)))
+        finally:
+            if previous is None:
+                os.environ.pop("AGENTNODE_GATEWAY_LOG", None)
+            else:
+                os.environ["AGENTNODE_GATEWAY_LOG"] = previous
+        assert getattr(server, "agentnode_log", False), "the log this test inspects is not on"
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        capfd.readouterr()
+        try:
+            opener_for(pin).open("https://127.0.0.1:%d/v1/hello" % port, timeout=10).read()
+            # ... and then break it in the two ways a stranger would.
+            plain = b"GET / HTTP/1.0" + bytes([13, 10, 13, 10])
+            half_a_handshake = bytes([22, 3, 1, 0, 5]) + b"rubbish"
+            for payload in (plain, half_a_handshake):
+                raw = socket.create_connection(("127.0.0.1", port), timeout=5)
+                try:
+                    raw.sendall(payload)
+                    raw.settimeout(3)
+                    raw.recv(64)
+                except OSError:
+                    pass
+                finally:
+                    raw.close()
+            time.sleep(0.5)
+        finally:
+            server.shutdown()
+            thread.join(timeout=10)
+
+        written = capfd.readouterr()
+        said = written.out + written.err
+        assert "gateway GET /v1/hello" in said, (
+            "the gateway did not log the request it served, so this test watched a silent "
+            "channel and would have passed whatever was written to a live one: %r" % said[:200]
+        )
+        assert not self._looks_like_a_key(said), "a running gateway wrote key material"
+        for line in secret.splitlines():
+            if len(line.strip()) > 20:
+                assert line.strip() not in said
+
+    def test_and_the_test_would_notice_if_it_did(self, tmp_path):
+        """The counter-case for this whole class: prove the detector detects."""
+        _cert, _key, _pin, secret = self._made(tmp_path)
+        assert self._looks_like_a_key(secret), "the check cannot see a key even when handed one"

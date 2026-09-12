@@ -119,6 +119,36 @@ jobs:
           grep -qE "^40 passed" em3c-cancel.txt || {
             echo "the cancellation tests did not come out as this lane expects"; exit 1; }
 
+      # What a client may consume, and the operator's stop. One case needs a kernel whose
+      # file modes are not advisory, so it is required here.
+      - name: What a client may use, and the stop
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_allowance.py 2>&1 | tee em3c-allow.txt
+          grep -qE "^93 passed" em3c-allow.txt || {
+            echo "the allowance tests did not all run here"; exit 1; }
+
+      # Reaching a gateway without a tunnel, and knowing which one answered. The one case
+      # that needs a kernel with real file modes is required here.
+      - name: A gateway a client can reach, and tell from anything else
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_reachable.py 2>&1 | tee em3c-reach.txt
+          grep -qE "^76 passed" em3c-reach.txt || {
+            echo "the reachability tests did not all run here"; exit 1; }
+
+      # The line between the control plane and the worker. On Linux the socket itself is real,
+      # so the ten cases a machine without unix sockets cannot run are required here -- and they
+      # are the ones that matter: a Windows run of unix-socket tests establishes nothing about a
+      # unix socket. "0 skipped" is the point of the pin, not the count.
+      - name: The socket between the control plane and the worker
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:randomly tests/test_socket_worker.py 2>&1 | tee em3c-socket.txt
+          grep -qE "^123 passed" em3c-socket.txt || {
+            echo "the socket tests did not all run here; a skip on Linux is a case nobody ran"
+            exit 1; }
+
       # Why a run stopped. EM3C-E8-RECORD-0001 found a cancelled run whose own signed answer
       # said it had exited, and a running job already giving a reason for having stopped.
       - name: The reason a run stopped

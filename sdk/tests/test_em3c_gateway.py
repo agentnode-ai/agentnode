@@ -945,9 +945,9 @@ class TestCredentialsNeverRideInAUrl:
         seen: list = []
         original = gc._post
 
-        def watching(url, body, timeout=30.0):
+        def watching(url, body, timeout=30.0, **how):
             seen.append(url)
-            return original(url, body, timeout)
+            return original(url, body, timeout, **how)
 
         gc._post = watching
         try:
@@ -1024,14 +1024,14 @@ class TestATerminalStateMeansTheRecordIsComplete:
     def test_cleanup_is_verified_before_the_state_is_published(self, gateway):
         base, state, service, _ = gateway
         observed: list = []
-        original = service._verify_gone
+        original = service.worker.gone
 
-        def watching(container_name):
+        def watching(container_name, patiently=True):
             # what a client would have seen if it had polled at this exact moment
             observed.append([r.state for r in service.runs.values()])
-            return original(container_name)
+            return original(container_name, patiently)
 
-        service._verify_gone = watching
+        service.worker.gone = watching
         conn = _paired(base, state)
         answer = gc.submit(conn, b"x", network="none")
         final = gc.wait_for(conn, answer["run_id"], timeout=20)
@@ -2189,8 +2189,8 @@ class TestThePairingAnswerMustDescribeItself:
 
         real_post = gc._post
 
-        def bent(url, body, timeout=30.0):
-            status, answer = real_post(url, body, timeout)
+        def bent(url, body, timeout=30.0, **how):
+            status, answer = real_post(url, body, timeout, **how)
             if url.endswith("/v1/pair") and isinstance(answer, dict):
                 answer = dict(answer, fingerprint="0" * 64)
             return status, answer
@@ -2204,8 +2204,8 @@ class TestThePairingAnswerMustDescribeItself:
         code = state.start_pairing()
         real_post = gc._post
 
-        def stripped(url, body, timeout=30.0):
-            status, answer = real_post(url, body, timeout)
+        def stripped(url, body, timeout=30.0, **how):
+            status, answer = real_post(url, body, timeout, **how)
             if url.endswith("/v1/pair") and isinstance(answer, dict):
                 answer = {k: v for k, v in answer.items() if k != "fingerprint"}
             return status, answer
@@ -2220,12 +2220,12 @@ class TestThePairingAnswerMustDescribeItself:
         state.start_pairing()
         real_post = gc._post
 
-        def hostile(url, body, timeout=30.0):
+        def hostile(url, body, timeout=30.0, **how):
             if url.endswith("/v1/pair"):
                 return 403, {"error": "PLAUSIBLE-SOUNDING-LIE",
                              "gateway": {"gateway_id": "someone", "version": "1"},
                              "fingerprint": "0" * 64}
-            return real_post(url, body, timeout)
+            return real_post(url, body, timeout, **how)
 
         monkeypatch.setattr(gc, "_post", hostile)
         with pytest.raises(gc.GatewayClientError) as exc:

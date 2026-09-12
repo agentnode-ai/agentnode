@@ -243,6 +243,12 @@ def main(argv: list[str] | None = None) -> int:
     # setup/repair UX is Sprint B.
     # `gateway` and `remote` are new top-level groups. Nothing existing is renamed, moved or
     # given a new default -- the V1 surface is structurally frozen, so this is additive only.
+    from agentnode_sdk.cli import worker_commands
+
+    # The account that runs foreign code, which on a deployed gateway is not the account the
+    # gateway runs as. `ALPHA-BOUNDARY-0001`.
+    worker_commands.add_parser(sub)
+
     gw = sub.add_parser("gateway", help="Run a sandbox other machines can send work to")
     gw_sub = gw.add_subparsers(dest="gateway_command")
     gw_init = gw_sub.add_parser("init", help="Set this machine up as a sandbox gateway")
@@ -250,6 +256,12 @@ def main(argv: list[str] | None = None) -> int:
     gw_init.add_argument("--tls-cert", dest="tls_cert", default=None,
                          help="Certificate, so machines elsewhere can reach it securely")
     gw_init.add_argument("--tls-key", dest="tls_key", default=None, help="Its private key")
+    gw_init.add_argument("--tls-self-signed", dest="tls_self_signed", action="store_true",
+                         help="Make a certificate for this gateway. Clients pin it when they "
+                              "pair, so no certificate authority is involved")
+    gw_init.add_argument("--advertise", default="",
+                         help="The address people will connect to. It goes in the certificate "
+                              "and in every invitation this gateway issues")
     gw_start = gw_sub.add_parser("start", help="Start accepting work")
     gw_start.add_argument("--dir", default=None)
     gw_start.add_argument("--host", default=None, help="Address to listen on (default 127.0.0.1)")
@@ -262,6 +274,30 @@ def main(argv: list[str] | None = None) -> int:
     gw_challenge.add_argument("--dir", default=None)
     gw_challenge.add_argument("--run", default="", metavar="ID",
                               help="The run to answer about. One run; there is no listing.")
+    gw_stop = gw_sub.add_parser(
+        "stop", help="Stop taking work at once, until somebody lifts it")
+    gw_stop.add_argument("--dir", default=None)
+    gw_stop.add_argument("--reason", default="",
+                         help="What every client is told. Required: a stop with no reason is one "
+                              "nobody can act on")
+    gw_resume = gw_sub.add_parser("resume", help="Take work again")
+    gw_resume.add_argument("--dir", default=None)
+
+    gw_limits = gw_sub.add_parser("limits", help="Show or set what one client may use")
+    gw_limits.add_argument("--dir", default=None)
+    gw_limits.add_argument("--concurrent-runs", dest="concurrent_runs", type=int, default=None,
+                           help="How many runs one client may have going at once. 0 = no limit")
+    gw_limits.add_argument("--runs-per-window", dest="runs_per_window", type=int, default=None,
+                           help="How many it may start in a window. 0 = no limit")
+    gw_limits.add_argument("--seconds-per-window", dest="seconds_per_window", type=int,
+                           default=None,
+                           help="How many seconds of sandbox time it may use. 0 = no limit")
+
+    gw_used = gw_sub.add_parser("used", help="What each client has used")
+    gw_used.add_argument("--dir", default=None)
+    gw_used.add_argument("--verify", action="store_true",
+                         help="Check that nothing in the record has been altered")
+
     gw_egress = gw_sub.add_parser(
         "egress", help="What the code this gateway runs is allowed to reach")
     gw_egress.add_argument("--dir", default=None)
@@ -283,8 +319,14 @@ def main(argv: list[str] | None = None) -> int:
     gw_doctor.add_argument("--measure", action="store_true",
                            help="Measure it for real, by running short containers")
     gw_doctor.add_argument("--verbose", action="store_true", help="Show the underlying detail")
-    gw_pair = gw_sub.add_parser("pair", help="Show a one-time code so someone can connect")
+    gw_pair = gw_sub.add_parser("pair", help="Show a one-time invitation so someone can connect")
     gw_pair.add_argument("--dir", default=None)
+    gw_pair.add_argument("--withdraw", action="store_true",
+                         help="Take back the outstanding invitation, so it no longer works")
+    gw_pair.add_argument("--advertise", default="",
+                         help="Override the address in the invitation, for a gateway reached at "
+                              "more than one")
+    gw_pair.add_argument("--port", type=int, default=None)
     gw_clients = gw_sub.add_parser("clients", help="Who is connected")
     gw_clients.add_argument("--dir", default=None)
     gw_revoke = gw_sub.add_parser("revoke", help="Disconnect a client, at once")
@@ -297,8 +339,10 @@ def main(argv: list[str] | None = None) -> int:
     rm = sub.add_parser("remote", help="Send work to a sandbox on another machine")
     rm_sub = rm.add_subparsers(dest="remote_command")
     rm_connect = rm_sub.add_parser("connect", help="Pair with a sandbox gateway")
-    rm_connect.add_argument("url", help="Its address, e.g. https://sandbox.example.com")
-    rm_connect.add_argument("--code", required=True, help="The one-time code you were given")
+    rm_connect.add_argument("url", help="An invitation, or the gateway's address with --code")
+    rm_connect.add_argument("--code", default="",
+                            help="The one-time code, when you were given an address and a code "
+                                 "rather than an invitation")
     rm_connect.add_argument("--as", dest="as_name", default="", help="A name to remember it by")
     rm_sub.add_parser("list", help="Which sandboxes you can send work to")
     rm_use = rm_sub.add_parser("use", help="Choose the one used by default")
@@ -388,6 +432,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             mcp_parser.print_help()
             return 0
+        if args.command == "worker":
+            from agentnode_sdk.cli.worker_commands import dispatch as worker_dispatch
+            return worker_dispatch(args)
+
         if args.command == "gateway":
             from agentnode_sdk.cli.gateway_commands import dispatch as gateway_dispatch
             return gateway_dispatch(args)

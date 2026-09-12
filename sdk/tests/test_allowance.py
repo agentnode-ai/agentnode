@@ -1,0 +1,1332 @@
+"""What a client may consume, and the one thing that stops everything.
+
+A gateway anybody can reach is a gateway anybody can exhaust. Until this existed the only thing
+bounding a paired client was the wall clock of a single job, and the only way to stop everything
+was to kill the process -- which loses the runs in flight rather than ending them.
+
+The gateway here is real: a real service, a real HTTP server, real pairing, real signatures, and
+the client library's own verification. What is replaced is the sandbox, because what is being
+established is what is admitted and what is refused, and that is decided before anything runs.
+"""
+from __future__ import annotations
+
+import json
+import threading
+import time
+
+import os
+from pathlib import Path
+import pytest
+
+from agentnode_sdk.gateway import client as gc
+from agentnode_sdk.gateway import meter
+from agentnode_sdk.gateway.allowance import (
+    CEILING_SAYS,
+    STOP_NAME,
+    STOPPED_SAYS,
+    Allowance,
+    OverTheCeiling,
+    Stopped,
+    Use,
+    read_allowance,
+    start_again,
+    stop_everything,
+    why_it_is_stopped,
+    write_allowance,
+)
+from agentnode_sdk.gateway.identity import GatewayState
+from agentnode_sdk.gateway.server import GatewayService, make_server
+
+from tests.test_em3c_gateway import StandInBackend, _granted, _paired, _store_measurement
+
+
+@pytest.fixture()
+def a_gateway(tmp_path):
+    """A real gateway whose sandbox returns at once."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        state = GatewayState(td, version="test")
+        backend = StandInBackend()
+        service = GatewayService(state, backend=backend)
+        _store_measurement(service)
+        service.CONTAINER_APPEAR_SECONDS = 0.5
+        server = make_server(service, port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            yield base, state, service, backend
+        finally:
+            server.shutdown()
+            thread.join(timeout=10)
+            from agentnode_sdk.gateway.protocol import is_terminal
+
+            for _ in range(300):
+                if all(is_terminal(r.state) for r in list(service.runs.values())):
+                    break
+                time.sleep(0.05)
+
+
+def a_run(conn, service, run_id, seconds=60):
+    return gc.submit(conn, b"print('x')", granted=_granted(service, wall_clock_s=seconds),
+                     run_id=run_id, wall_clock_s=seconds)
+
+
+# ------------------------------------------------------------- the operator sets the ceilings
+
+
+class TestTheOperatorSetsTheCeilings:
+
+    def test_an_alpha_starts_with_none(self, tmp_path):
+        assert read_allowance(tmp_path) == Allowance()
+        assert read_allowance(tmp_path).concurrent_runs == 0
+
+    def test_and_what_is_written_is_what_is_read(self, tmp_path):
+        write_allowance(tmp_path, Allowance(concurrent_runs=2, runs_per_window=10,
+                                            seconds_per_window=600))
+        got = read_allowance(tmp_path)
+        assert (got.concurrent_runs, got.runs_per_window, got.seconds_per_window) == (2, 10, 600)
+
+    def test_a_file_that_is_not_one_stops_this_gateway(self, tmp_path):
+        """This asserted the opposite, and the opposite was wrong.
+
+        It read: an unreadable file gives the defaults. But every ceiling DEFAULTS TO ZERO and
+        zero means unlimited -- so a corrupt or truncated file silently removed every limit the
+        operator had set, on a gateway that went on looking configured. Review found it. The
+        permissive state is never the one to fall back to.
+        """
+        from agentnode_sdk.gateway.allowance import CannotReadTheCeilings
+
+        (tmp_path / "allowance.json").write_text("not json", encoding="utf-8")
+        with pytest.raises(CannotReadTheCeilings):
+            read_allowance(tmp_path)
+
+    def test_but_no_file_at_all_is_a_gateway_nobody_has_set_limits_on(self, tmp_path):
+        """Absent and unreadable are different: one has never been configured, one cannot be read."""
+        assert read_allowance(tmp_path) == Allowance()
+
+    def test_a_file_that_is_not_an_object_stops_it_too(self, tmp_path):
+        from agentnode_sdk.gateway.allowance import CannotReadTheCeilings
+
+        (tmp_path / "allowance.json").write_text("[1, 2, 3]", encoding="utf-8")
+        with pytest.raises(CannotReadTheCeilings):
+            read_allowance(tmp_path)
+
+    def test_nothing_a_client_sends_reaches_it(self):
+        """The limits come from a file in the gateway's own directory. A job cannot name one."""
+        import inspect
+
+        from agentnode_sdk.gateway.protocol import JobRequest
+
+        fields = set(JobRequest.__dataclass_fields__)
+        for name in ("concurrent_runs", "runs_per_window", "seconds_per_window", "allowance"):
+            assert name not in fields, name
+        source = inspect.getsource(GatewayService.allowance)
+        assert "self.state.root" in source
+        assert "request" not in source
+
+    def test_it_is_read_at_admission_and_never_held(self, a_gateway):
+        """A ceiling lowered while the gateway runs applies to the next job."""
+        base, state, service, _backend = a_gateway
+        assert service.allowance().runs_per_window == 0
+        write_allowance(state.root, Allowance(runs_per_window=1))
+        assert service.allowance().runs_per_window == 1
+
+    def test_the_record_says_which_limits_were_in_force(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        write_allowance(state.root, Allowance(runs_per_window=5))
+        conn = _paired(base, state)
+        a_run(conn, service, "bound")
+        gc.wait_for(conn, "bound", timeout=20)
+        lines = meter.read(state.root)
+        assert lines and lines[-1]["allowance_sha256"] == service.allowance().digest()
+
+    def test_and_a_reader_can_see_what_they_were_without_the_file(self, a_gateway):
+        """A digest binds a record to a configuration. It cannot be turned back into numbers.
+
+        The file it stood for is exactly the thing that gets edited afterwards, so a reader
+        holding one line months later could establish only that SOMETHING was bound. The
+        configuration is CHANGED here after the run is admitted, which is the case that makes
+        the difference visible: comparing against what is configured now would agree with itself
+        whatever the record held.
+        """
+        base, state, service, _backend = a_gateway
+        write_allowance(state.root, Allowance(runs_per_window=5, seconds_per_window=600))
+        admitted_digest = service.allowance().digest()
+        conn = _paired(base, state)
+        a_run(conn, service, "resolvable")
+        gc.wait_for(conn, "resolvable", timeout=20)
+
+        # The operator edits the ceilings after the run has been admitted and finished.
+        write_allowance(state.root, Allowance(runs_per_window=99, seconds_per_window=1))
+        assert service.allowance().digest() != admitted_digest, "the edit did not take"
+
+        line = meter.read(state.root)[-1]
+        was = line["allowance_admitted_under"]
+        assert was["runs_per_window"] == 5, was
+        assert was["seconds_per_window"] == 600, was
+        assert line["allowance_sha256"] == admitted_digest
+        # And the numbers on the line are the ones that digest stands for, so the two agree
+        # rather than the line carrying a digest of one thing and the values of another.
+        assert Allowance(**was).digest() == line["allowance_sha256"]
+
+    def test_and_the_numbers_are_the_ones_it_was_admitted_under(self, a_gateway):
+        """Taken at admission, not at the end. The difference only shows when the ceilings
+        change BETWEEN the two, so this drives the metering step directly rather than racing a
+        live run to finish before an edit lands -- a race would pass whichever way it fell."""
+        from agentnode_sdk.gateway.server import RunRecord
+
+        _base, state, service, _backend = a_gateway
+        write_allowance(state.root, Allowance(runs_per_window=7, seconds_per_window=300))
+
+        record = RunRecord(run_id="admitted-under", job_id="j", owner_client_id="c")
+        record.admitted_under = service.allowance().digest()
+        record.admitted_under_values = dict(service.allowance().as_dict())
+        record.started_at = 1.0
+        record.finished_at = 2.0
+
+        # The operator lowers the ceilings while the run is between admission and its record.
+        write_allowance(state.root, Allowance(runs_per_window=1, seconds_per_window=2))
+
+        from agentnode_sdk.sandbox.contract import SandboxPolicy
+
+        service.write_down_what_it_used(record, SandboxPolicy(), "finished")
+
+        was = meter.read(state.root)[-1]["allowance_admitted_under"]
+        assert (was["runs_per_window"], was["seconds_per_window"]) == (7, 300), was
+
+
+# ------------------------------------------------------- use is counted and survives a restart
+
+
+class TestUseIsCountedAndSurvives:
+
+    def test_a_run_is_counted_before_it_runs(self, a_gateway):
+        """A run nobody counted is one a client could have for free by crashing the gateway."""
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        a_run(conn, service, "counted")
+        who = state.client_id_for(conn.token)
+        runs, _seconds = service.use.so_far(who)
+        assert runs == 1
+
+    def test_and_what_it_took_is_added_when_it_ends(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        a_run(conn, service, "timed")
+        gc.wait_for(conn, "timed", timeout=20)
+        who = state.client_id_for(conn.token)
+        runs, seconds = service.use.so_far(who)
+        assert runs == 1 and seconds >= 0.0
+
+    def test_a_restart_does_not_forget(self, tmp_path):
+        """It is on disk, so a new process sees what the old one counted."""
+        first = Use(tmp_path / "use.json")
+        first.note("client-a", "one")
+        first.finished("client-a", "one", 12.0)
+        again = Use(tmp_path / "use.json")
+        assert again.so_far("client-a") == (1, 12.0)
+
+    def test_use_is_forgotten_by_time(self, tmp_path):
+        counting = Use(tmp_path / "use.json", window=100.0)
+        counting.note("client-a", "old", now=1000.0)
+        assert counting.so_far("client-a", now=1050.0)[0] == 1
+        assert counting.so_far("client-a", now=1200.0)[0] == 0
+
+    def test_and_never_by_how_many_arrived(self, tmp_path):
+        """A counter an attacker could empty by sending enough is one they walk through."""
+        counting = Use(tmp_path / "use.json", window=10_000.0)
+        counting.note("client-a", "first", now=1000.0)
+        for i in range(200):
+            counting.note("client-a", "later-%d" % i, now=1000.0 + i)
+        assert counting.so_far("client-a", now=1300.0)[0] == 201
+
+    def test_two_clients_are_counted_apart(self, tmp_path):
+        counting = Use(tmp_path / "use.json")
+        counting.note("client-a", "one")
+        counting.note("client-b", "two")
+        counting.finished("client-b", "two", 30.0)
+        assert counting.so_far("client-a")[1] == 0.0
+        assert counting.so_far("client-b")[1] == 30.0
+
+    def test_counting_is_under_a_lock_so_two_at_once_cannot_both_slip_through(self, tmp_path):
+        counting = Use(tmp_path / "use.json")
+        done = []
+
+        def sending(n):
+            counting.note("client-a", "run-%d" % n)
+            done.append(n)
+
+        threads = [threading.Thread(target=sending, args=(n,)) for n in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+        assert len(done) == 20
+        assert counting.so_far("client-a")[0] == 20, "a count was lost to a concurrent write"
+
+
+# --------------------------------------------------------------- every ceiling refuses
+
+
+class TestEveryCeilingRefuses:
+
+    def test_more_runs_at_once_than_allowed(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        write_allowance(state.root, Allowance(concurrent_runs=1))
+        conn = _paired(base, state)
+        # One that is still going, held by never letting the backend return.
+        held = threading.Event()
+        service.runs.clear()
+        original = service.worker.run
+
+        def waiting(job):
+            held.wait(timeout=30)
+            return original(job)
+
+        service.worker.run = waiting
+        try:
+            a_run(conn, service, "going")
+            for _ in range(200):
+                if service.runs.get("going") and service.runs["going"].state == "running":
+                    break
+                time.sleep(0.05)
+            second = a_run(conn, service, "one-too-many")
+            assert second["state"] == "refused"
+            assert CEILING_SAYS in second["refusal"]
+            assert "concurrent_runs" in second["refusal"]
+        finally:
+            held.set()
+            service.worker.run = original
+
+    def test_more_runs_in_the_window_than_allowed(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        write_allowance(state.root, Allowance(runs_per_window=2))
+        conn = _paired(base, state)
+        for n in range(2):
+            answer = a_run(conn, service, "within-%d" % n)
+            assert answer["state"] != "refused", answer.get("refusal")
+            gc.wait_for(conn, "within-%d" % n, timeout=20)
+        over = a_run(conn, service, "over")
+        assert over["state"] == "refused"
+        assert "runs_per_window" in over["refusal"]
+
+    def test_more_seconds_than_allowed(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        write_allowance(state.root, Allowance(seconds_per_window=30))
+        conn = _paired(base, state)
+        over = a_run(conn, service, "too-long", seconds=60)
+        assert over["state"] == "refused"
+        assert "seconds_per_window" in over["refusal"]
+
+    def test_a_refusal_over_a_ceiling_is_told_apart_from_any_other(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        write_allowance(state.root, Allowance(runs_per_window=1))
+        conn = _paired(base, state)
+        a_run(conn, service, "first")
+        gc.wait_for(conn, "first", timeout=20)
+        over = a_run(conn, service, "second")
+        assert over["refusal"].startswith(CEILING_SAYS)
+
+        # The other kind, from a gateway that is NOT over a ceiling -- otherwise every refusal
+        # after the first would be the ceiling one and the test would be comparing it with itself.
+        write_allowance(state.root, Allowance())
+        malformed = gc.submit(conn, b"x", granted=_granted(service), run_id="third",
+                              required_properties=("a_property_nobody_measured",))
+        assert malformed["state"] == "refused"
+        assert not malformed["refusal"].startswith(CEILING_SAYS)
+        assert not malformed["refusal"].startswith(STOPPED_SAYS)
+
+    def test_and_it_is_signed_like_every_other_answer(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        write_allowance(state.root, Allowance(runs_per_window=1))
+        conn = _paired(base, state)
+        a_run(conn, service, "one")
+        gc.wait_for(conn, "one", timeout=20)
+        over = a_run(conn, service, "two")
+        # `submit` verifies what comes back; an unsigned refusal would not have got here.
+        assert over["state"] == "refused" and over.get("signature")
+
+    def test_a_client_with_nothing_counted_against_it_is_not_pooled_with_everyone(self, tmp_path):
+        """Counting an unidentified caller against "" would make every such caller share one
+        allowance, and any of them could exhaust it for the rest."""
+        import inspect
+
+        source = inspect.getsource(GatewayService.within_its_allowance)
+        assert "if not client_id" in source
+        assert "return" in source
+
+
+# ------------------------------------------------------------------ one thing stops everything
+
+
+class TestOneThingStopsEverything:
+
+    def test_a_stopped_gateway_refuses_everything(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        stop_everything(state.root, "upgrading the sandbox image")
+        answer = a_run(conn, service, "while-stopped")
+        assert answer["state"] == "refused"
+        assert "upgrading the sandbox image" in answer["refusal"]
+        assert answer["refusal"].startswith(STOPPED_SAYS)
+
+    def test_and_takes_work_again_when_it_is_lifted(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        stop_everything(state.root, "briefly")
+        assert a_run(conn, service, "no")["state"] == "refused"
+        assert start_again(state.root) is True
+        assert a_run(conn, service, "yes")["state"] != "refused"
+
+    def test_lifting_something_that_was_not_stopped(self, tmp_path):
+        assert start_again(tmp_path) is False
+
+    def test_a_gateway_that_cannot_tell_treats_itself_as_stopped(self, tmp_path, monkeypatch):
+        """Fail-closed. One that answered "not stopped" to a question it could not read would be
+        answering a question nobody asked it."""
+        stop_everything(tmp_path, "whatever")
+        import pathlib
+
+        real = pathlib.Path.read_text
+
+        def refusing(self, *a, **k):
+            if self.name == STOP_NAME:
+                raise PermissionError("this file cannot be read")
+            return real(self, *a, **k)
+
+        monkeypatch.setattr(pathlib.Path, "read_text", refusing)
+        said = why_it_is_stopped(tmp_path)
+        assert said, "a gateway that cannot tell whether it is stopped carried on"
+        assert "cannot tell" in said
+
+    def test_a_stop_file_that_says_nothing_still_stops(self, tmp_path):
+        (tmp_path / STOP_NAME).write_text("{}", encoding="utf-8")
+        assert why_it_is_stopped(tmp_path)
+
+    def test_nothing_a_client_sends_can_lift_it(self):
+        import inspect
+
+        from agentnode_sdk.gateway import allowance
+
+        lifting = inspect.getsource(allowance.start_again)
+        assert "request" not in lifting and "token" not in lifting
+        # And the only caller is the operator's command.
+        from agentnode_sdk.cli import gateway_commands
+
+        assert "start_again" in inspect.getsource(gateway_commands.cmd_resume)
+        assert "start_again" not in inspect.getsource(GatewayService)
+
+    def test_runs_already_going_are_ended_too(self, a_gateway):
+        """This asserted that they were LEFT TO FINISH, and that was the wrong target.
+
+        Two expectations lived side by side: this one, and the class that ends in-flight runs.
+        Both passed, because in this fixture a run completes before the watcher's next poll --
+        so nothing here was ever exercising the disagreement. Review named it.
+
+        The resolved target is that the stop ends them. The reason to stop a gateway AT ONCE is
+        usually the code running on it at that moment, and a switch that left it running would be
+        no switch. A lowered CEILING is the case that leaves a run alone, and that is a different
+        thing with a different trigger -- see the test below.
+        """
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        going = _a_running_record(service, "already-going")
+        stop_everything(state.root, "stopped mid-flight")
+        for _ in range(60):
+            if going.cancel_requested.is_set():
+                break
+            time.sleep(0.25)
+        assert going.cancel_requested.is_set(), "the stop left a run in flight alone"
+        assert going.halted_by == "stopped mid-flight"
+
+    def test_but_lowering_a_ceiling_leaves_one_alone(self, a_gateway):
+        """The genuinely different case, and the one the docstring is about.
+
+        A quota is not a cancellation: lowering a limit applies to the next job. Ending what is
+        already going is what the kill switch is for, and conflating the two would mean an
+        operator could not tighten a limit without stopping work.
+        """
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        going = _a_running_record(service, "under-the-old-ceiling")
+        write_allowance(state.root, Allowance(runs_per_window=1))
+        time.sleep(1.5)
+        assert not going.cancel_requested.is_set(), "a lowered ceiling cancelled a running job"
+
+
+# ----------------------------------------------------------------- a record that keeps no secret
+
+
+class TestARecordOfUseCarriesNoSecret:
+
+    def test_one_line_per_run(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        for n in range(3):
+            a_run(conn, service, "run-%d" % n)
+            gc.wait_for(conn, "run-%d" % n, timeout=20)
+        assert len(meter.read(state.root)) == 3
+
+    def test_it_says_who_used_what(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        a_run(conn, service, "measured")
+        gc.wait_for(conn, "measured", timeout=20)
+        line = meter.read(state.root)[-1]
+        assert line["client_id"] == state.client_id_for(conn.token)
+        assert line["run_id"] == "measured"
+        assert line["seconds"] >= 0.0
+        assert line["state"] == "finished"
+
+    def test_and_carries_no_secret_this_gateway_holds(self, a_gateway):
+        """Walked against the real secrets of a real gateway, not against a list of names."""
+        base, state, service, backend = a_gateway
+        conn = _paired(base, state)
+        a_run(conn, service, "no-secrets")
+        gc.wait_for(conn, "no-secrets", timeout=20)
+        written = (state.root / meter.METER_NAME).read_text(encoding="utf-8")
+
+        # The client id is NOT a secret -- naming who used what is the whole point, and a meter
+        # that could not would be one nobody could read. Everything else this gateway holds is.
+        whose = state.client_id_for(conn.token)
+        assert whose and whose in written, "the meter does not say who used it"
+
+        secrets = {conn.token}
+        for name in ("tokens.json", "identity.json"):
+            try:
+                body = json.loads((state.root / name).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            # Both the keys (which are token digests) and the values (which are everything else
+            # a gateway keeps about a client and about itself).
+            def gather(thing):
+                if isinstance(thing, dict):
+                    for key, value in thing.items():
+                        secrets.add(str(key))
+                        gather(value)
+                elif isinstance(thing, list):
+                    for item in thing:
+                        gather(item)
+                elif isinstance(thing, str):
+                    secrets.add(thing)
+
+            gather(body)
+        looked_at = 0
+        for secret in secrets:
+            if len(secret) < 16 or secret == whose:
+                continue
+            looked_at += 1
+            assert secret not in written, secret[:24]
+        assert looked_at >= 2, "this test looked at almost nothing and would pass on anything"
+
+    def test_nor_anything_the_job_wrote(self, a_gateway):
+        base, state, service, backend = a_gateway
+        conn = _paired(base, state)
+        a_run(conn, service, "quiet")
+        gc.wait_for(conn, "quiet", timeout=20)
+        written = (state.root / meter.METER_NAME).read_text(encoding="utf-8")
+        assert "RAN" not in written and "print(" not in written
+
+    def test_there_is_nowhere_to_put_anything_else(self):
+        """A meter with somewhere for "anything else" is one that will hold a secret."""
+        import inspect
+
+        taken = inspect.signature(meter.record).parameters
+        # `seconds` and `worker_topology_means` are DERIVED -- computed from what was passed,
+        # never accepted from a caller. That is the point: a caller cannot put anything of its
+        # own into either, and naming them here keeps that a decision rather than a gap.
+        derived = {"seconds", "worker_topology_means"}
+        assert set(taken) - {"root"} == set(meter.FIELDS) - derived
+        for name, parameter in taken.items():
+            assert parameter.kind is not parameter.VAR_KEYWORD, name
+
+    def test_it_is_written_for_its_owner_and_nobody_else(self, a_gateway):
+        import os
+        import sys
+
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        a_run(conn, service, "private")
+        gc.wait_for(conn, "private", timeout=20)
+        if sys.platform == "win32":
+            pytest.skip("this platform's file modes are advisory; the Linux lane checks them")
+        assert (os.stat(state.root / meter.METER_NAME).st_mode & 0o077) == 0
+
+    def test_what_an_operator_asks_of_it(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        for n in range(2):
+            a_run(conn, service, "sum-%d" % n)
+            gc.wait_for(conn, "sum-%d" % n, timeout=20)
+        totals = meter.summarise(state.root)
+        who = state.client_id_for(conn.token)
+        assert totals[who]["runs"] == 2
+
+
+class TestWhatThisDoesNotEstablish:
+
+    def test_the_limits_are_where_a_reader_will_meet_them(self):
+        import inspect
+
+        from agentnode_sdk.gateway import allowance
+
+        said = " ".join((inspect.getdoc(allowance) or "").split())
+        for phrase in ("Counting use is not billing", "bounds a PAIRED client",
+                       "protect the MACHINE from a client",
+                       "do not protect clients from each other"):
+            assert phrase in said, phrase
+
+    def test_and_the_meter_says_it_is_not_charging(self):
+        import inspect
+
+        said = " ".join((inspect.getdoc(meter) or "").split())
+        assert "it is not billing" in said
+        assert "prices nothing" in said
+
+
+def _a_running_record(service, run_id):
+    """A run this gateway believes is going, without a container behind it."""
+    from agentnode_sdk.gateway.server import RunRecord
+
+    record = RunRecord(run_id=run_id, job_id="j-" + run_id)
+    record.state = "running"
+    record.container_name = "agentnode-em3c-" + run_id
+    service.runs[run_id] = record
+    return record
+
+
+class _WorkerThatNeverSettles:
+    """Asked to stop, it says it asked. The run does not become terminal."""
+
+    def stop(self, run_id, container_name, appear_seconds):
+        return True
+
+
+class TestTheStopReachesWhatIsAlreadyRunning:
+    """A switch that leaves the current job running is not the switch an operator reached for.
+
+    The stop used to mean "admit nothing new". But the reason to stop a gateway AT ONCE is
+    usually what is running on it at that moment -- an image being replaced underneath it, a
+    client doing something that must not continue, a host that has to be freed. Leaving that
+    going is the one case the operator was trying to prevent.
+    """
+
+    @pytest.fixture()
+    def service(self, tmp_path):
+        state = GatewayState(str(tmp_path), version="test")
+        made = GatewayService(state, backend=StandInBackend())
+        made._worker = _WorkerThatNeverSettles()
+        return made
+
+    def test_every_run_that_had_not_ended_is_ended(self, service):
+        going = [_a_running_record(service, "r%d" % i) for i in range(3)]
+        done = service.stop_what_is_running("upgrading the sandbox image", settle=0.05)
+        assert len(done) == 3
+        for record in going:
+            assert record.cancel_requested.is_set(), "this one was left running"
+
+    def test_and_each_is_told_what_ended_it(self, service):
+        record = _a_running_record(service, "why")
+        service.stop_what_is_running("the operator stopped this gateway", settle=0.05)
+        assert record.halted_by == "the operator stopped this gateway"
+        assert record.public()["halted_by"] == "the operator stopped this gateway"
+
+    def test_a_run_that_had_already_ended_is_left_alone(self, service):
+        """Idempotent: stopping twice must not re-end anything, or count it twice."""
+        finished = _a_running_record(service, "done")
+        finished.state = "finished"
+        assert service.stop_what_is_running("x", settle=0.05) == []
+        assert not finished.cancel_requested.is_set()
+
+    def test_one_that_will_not_settle_is_not_counted_as_stopped(self, service):
+        """Claiming more than happened is exactly what a fail-closed switch must not do."""
+        _a_running_record(service, "stuck")
+        done = service.stop_what_is_running("x", settle=0.05)
+        assert done and done[0]["stopped"] is False
+
+    def test_and_one_that_settles_is(self, service):
+        record = _a_running_record(service, "quick")
+
+        class Settles:
+            def stop(self, run_id, container_name, appear_seconds):
+                record.state = "cancelled"
+                return True
+
+        service._worker = Settles()
+        done = service.stop_what_is_running("x", settle=2.0)
+        assert done and done[0]["stopped"] is True
+
+    def test_one_that_raises_does_not_stop_the_others(self, service):
+        """One run that cannot be reached must not leave the rest running."""
+        _a_running_record(service, "first")
+        second = _a_running_record(service, "second")
+
+        class Awkward:
+            def __init__(self):
+                self.calls = 0
+
+            def stop(self, run_id, container_name, appear_seconds):
+                self.calls += 1
+                if self.calls == 1:
+                    raise OSError("the runtime is not answering")
+                return True
+
+        service._worker = Awkward()
+        done = service.stop_what_is_running("x", settle=0.05)
+        assert len(done) == 2
+        assert any("error" in r for r in done), done
+        assert second.cancel_requested.is_set()
+
+    def test_the_gateway_acts_on_the_file_and_not_on_a_call(self):
+        """The CLI and the gateway are different processes; the file is all they share."""
+        import inspect
+
+        from agentnode_sdk.gateway import server as server_module
+
+        text = inspect.getsource(server_module.make_server)
+        assert "_watch_the_stop" in text
+        assert "why_it_is_stopped" in text
+
+
+class TestTheRecordOfUseCanBeShownNotToHaveChanged:
+    """A record that can be edited without trace is not a record, it is a note.
+
+    Each line carries the digest of the line before it and a signature over both, so removing a
+    line, reordering two, or changing a number in one shows up -- and `verify` says where it
+    first stops agreeing, because a reader told "40 and 700 are wrong" cannot tell whether the
+    second is a consequence of the first.
+    """
+
+    def _log(self, root, how_many=4):
+        from agentnode_sdk.gateway import meter
+
+        for i in range(how_many):
+            meter.record(root, run_id="run%d" % i, client_id="c1", started_at=1.0,
+                         finished_at=2.0, cpu=1.0, memory_mb=512, wall_clock_s=60,
+                         state="finished", outcome="succeeded", bytes_out=10,
+                         worker_topology="single-host-development", allowance_sha256="a" * 64)
+        return meter
+
+    def _rows(self, meter, root):
+        return [json.loads(l) for l in
+                (Path(root) / meter.METER_NAME).read_text(encoding="utf-8").splitlines()
+                if l.strip()]
+
+    def _put(self, meter, root, rows):
+        (Path(root) / meter.METER_NAME).write_text(
+            "\n".join(json.dumps(r, sort_keys=True, separators=(",", ":")) for r in rows) + "\n",
+            encoding="utf-8")
+
+    def test_a_log_nobody_touched_verifies(self, tmp_path):
+        meter = self._log(tmp_path)
+        held = meter.verify(tmp_path)
+        assert held["ok"] is True
+        assert held["lines"] == 4
+
+    def test_changing_one_number_is_seen(self, tmp_path):
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        rows[1]["bytes_out"] = 999999
+        self._put(meter, tmp_path, rows)
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert held["at"] == 2
+
+    def test_taking_a_line_out_is_seen(self, tmp_path):
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        self._put(meter, tmp_path, rows[:1] + rows[2:])
+        assert meter.verify(tmp_path)["ok"] is False
+
+    def test_putting_two_in_the_other_order_is_seen(self, tmp_path):
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        self._put(meter, tmp_path, rows[:2][::-1] + rows[2:])
+        assert meter.verify(tmp_path)["ok"] is False
+
+    def test_and_putting_it_back_exactly_verifies_again(self, tmp_path):
+        """So the check is about the bytes, not about having been touched."""
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        self._put(meter, tmp_path, rows[:2])
+        assert meter.verify(tmp_path)["ok"] is False
+        self._put(meter, tmp_path, rows)
+        assert meter.verify(tmp_path)["ok"] is True
+
+    def test_cutting_the_tail_off_is_seen(self, tmp_path):
+        """The one a chain alone cannot catch, and the obvious way to hide recent use.
+
+        Every prefix of a hash chain is itself a valid chain, so a truncated log verifies
+        perfectly against itself. Nothing inside a file can say how long that file should be,
+        which is why where it ends is written down beside it and signed.
+        """
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        self._put(meter, tmp_path, rows[:1])
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert "taken off the end" in held["detail"]
+        assert "3 line(s)" in held["detail"], held["detail"]
+
+    def test_and_the_note_saying_where_it_ends_cannot_be_forged(self, tmp_path):
+        """Otherwise whoever cut the tail off would simply rewrite it to match."""
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        self._put(meter, tmp_path, rows[:1])
+        (Path(tmp_path) / meter.HEAD_NAME).write_text(
+            json.dumps({"seq": 1, "digest": "0" * 64, "signature": "aa" * 64}), encoding="utf-8")
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert "not signed by this gateway" in held["detail"]
+
+    def test_a_log_with_no_note_at_all_is_not_called_whole(self, tmp_path):
+        meter = self._log(tmp_path)
+        (Path(tmp_path) / meter.HEAD_NAME).unlink()
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert "taken off the end would not show" in held["detail"]
+
+    def test_a_line_appended_by_something_without_the_key_is_seen(self, tmp_path):
+        """The case that matters: somebody adding use that never happened."""
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        forged = dict(rows[-1])
+        forged.update(seq=len(rows) + 1, run_id="never-ran", prev="0" * 64)
+        self._put(meter, tmp_path, rows + [forged])
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert held["at"] == len(rows) + 1
+
+    def test_a_log_with_no_public_key_beside_it_is_not_evidence(self, tmp_path):
+        """Unverifiable must not read the same as verified."""
+        meter = self._log(tmp_path)
+        (Path(tmp_path) / meter.METER_PUBLIC_NAME).unlink()
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert "cannot be checked" in held["detail"]
+
+    def test_the_private_half_is_never_beside_the_public_one_in_the_open(self, tmp_path):
+        meter = self._log(tmp_path)
+        key = Path(tmp_path) / meter.METER_KEY_NAME
+        assert key.exists()
+        if os.name != "nt":
+            assert (key.stat().st_mode & 0o077) == 0, "the meter key is readable by others"
+
+    def test_nothing_in_a_line_is_a_secret(self, tmp_path):
+        """The chain must not have smuggled anything in beside the counts.
+
+        Scanned with the one constant field taken out, and that field then checked to BE the
+        constant. It carries the sentence saying what the topology does not protect against, and
+        that sentence contains the word "token" -- so a word-scan over the whole line would trip
+        on prose while telling you nothing about secrets. Excluding it would be a hole, so it is
+        excluded and pinned instead: it can only ever hold one of the declared texts.
+        """
+        from agentnode_sdk.worker import WHAT_A_TOPOLOGY_DOES_NOT_ESTABLISH
+
+        meter = self._log(tmp_path)
+        rows = self._rows(meter, tmp_path)
+        for row in rows:
+            assert row["worker_topology_means"] in set(
+                WHAT_A_TOPOLOGY_DOES_NOT_ESTABLISH.values()), "that field is not a constant"
+        scanned = json.dumps([{k: v for k, v in r.items() if k != "worker_topology_means"}
+                              for r in rows])
+        for bad in ("token", "PRIVATE", "BEGIN", "code"):
+            assert bad not in scanned
+
+    def test_what_it_does_not_establish_is_written_down(self):
+        """A log cannot be evidence against the thing that writes it, and this says so."""
+        from agentnode_sdk.gateway import meter
+
+        assert "tamper-EVIDENT" in meter.__doc__
+        assert "does NOT establish" in meter.__doc__
+
+
+class TestAClientIsToldTheSandboxWasStoppedRatherThanBlamingItsCode:
+    """"cancelled" on its own reads as something the person did.
+
+    A person told their run was cancelled goes and looks at their code. A person told the sandbox
+    was stopped by whoever runs it goes and asks them. The difference is one field, and it only
+    helps if it reaches the client rather than staying in the gateway.
+    """
+
+    def test_the_reason_reaches_the_client(self):
+        from agentnode_sdk.gateway.server import RunRecord
+
+        record = RunRecord(run_id="r" * 32, job_id="j")
+        record.state = "cancelled"
+        record.halted_by = "replacing the sandbox image"
+        assert record.public()["halted_by"] == "replacing the sandbox image"
+
+    def test_and_the_client_says_it_instead_of_the_bare_state(self, capsys):
+        import inspect
+
+        from agentnode_sdk.cli import remote_commands
+
+        text = inspect.getsource(remote_commands)
+        assert 'halted_by' in text
+        assert "stopped by whoever runs it" in text
+        assert "Nothing about your code is known from this" in text
+
+    def test_an_ordinary_cancellation_still_reads_as_one(self):
+        """The counter-case: this must not turn every cancellation into an operator's doing."""
+        from agentnode_sdk.gateway.server import RunRecord
+
+        record = RunRecord(run_id="r" * 32, job_id="j")
+        record.state = "cancelled"
+        assert record.public()["halted_by"] == ""
+
+
+class TestALogThatStartedBeforeTheChainDid:
+    """Signing old lines now would be this gateway vouching for what it did not record then.
+
+    So they are not signed, they are named, and the part of the file that is evidence is
+    separated from the part that is not. What must not happen is that an unchained line becomes a
+    way around the chain.
+    """
+
+    def _mixed(self, tmp_path, before=2, after=3):
+        from agentnode_sdk.gateway import meter
+
+        path = Path(tmp_path) / meter.METER_NAME
+        old = [{"run_id": "old%d" % i, "client_id": "c", "started_at": 1.0, "finished_at": 2.0,
+                "seconds": 1.0, "cpu": 1.0, "memory_mb": 512, "wall_clock_s": 60,
+                "state": "finished", "outcome": "succeeded", "bytes_out": 1,
+                "worker_topology": "x", "allowance_sha256": "a" * 64} for i in range(before)]
+        path.write_text("\n".join(json.dumps(o, sort_keys=True, separators=(",", ":"))
+                                  for o in old) + "\n", encoding="utf-8")
+        for i in range(after):
+            meter.record(tmp_path, run_id="new%d" % i, client_id="c", started_at=1.0,
+                         finished_at=2.0, cpu=1.0, memory_mb=512, wall_clock_s=60,
+                         state="finished", outcome="succeeded", bytes_out=1,
+                         worker_topology="x", allowance_sha256="a" * 64)
+        return meter
+
+    def test_the_chained_part_checks_out_and_the_rest_is_named(self, tmp_path):
+        meter = self._mixed(tmp_path)
+        held = meter.verify(tmp_path)
+        assert held["ok"] is True
+        assert held["unchecked"] == 2
+        assert "cannot be checked at all" in held["detail"]
+
+    def test_a_log_whose_every_signature_was_stripped_is_not_called_verified(self, tmp_path):
+        """The attack this shape invites: if unchained lines are tolerated, strip them all.
+
+        Two separate things refuse it, and they are worth telling apart. The head says the log is
+        supposed to end at line N, which no amount of stripping changes -- that is the
+        PROTECTION. The check for "nothing here is chained at all" is what makes the ANSWER say
+        so, instead of reporting it as lines taken off the end. This asserts the answer, because
+        the protection is asserted by the truncation tests.
+        """
+        meter = self._mixed(tmp_path, before=0, after=3)
+        path = Path(tmp_path) / meter.METER_NAME
+        rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        bare = [{k: v for k, v in r.items() if k not in ("seq", "prev", "signature")}
+                for r in rows]
+        path.write_text(
+            "\n".join(json.dumps(r, sort_keys=True, separators=(",", ":"))
+                      for r in bare) + "\n", encoding="utf-8")
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+        assert "before this gateway kept a chain" in held["detail"], held["detail"]
+
+    def test_a_log_that_is_all_from_before_is_not_called_verified(self, tmp_path):
+        """A genuinely old log, with no key and no head, is also not evidence."""
+        meter = self._mixed(tmp_path, before=3, after=0)
+        held = meter.verify(tmp_path)
+        assert held["ok"] is False
+
+    def test_an_unchained_line_in_the_middle_is_not_allowed(self, tmp_path):
+        """They are tolerated at the FRONT only; later on, one means a line was replaced."""
+        meter = self._mixed(tmp_path, before=1, after=3)
+        path = Path(tmp_path) / meter.METER_NAME
+        rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        stripped = {k: v for k, v in rows[2].items() if k not in ("seq", "prev", "signature")}
+        rows[2] = stripped
+        path.write_text("\n".join(json.dumps(r, sort_keys=True, separators=(",", ":"))
+                                  for r in rows) + "\n", encoding="utf-8")
+        assert meter.verify(tmp_path)["ok"] is False
+
+    def test_and_the_count_of_what_is_evidence_is_honest(self, tmp_path):
+        meter = self._mixed(tmp_path, before=2, after=3)
+        held = meter.verify(tmp_path)
+        assert held["lines"] == 5
+        assert held["unchecked"] == 2
+
+
+class TestLookingAndClaimingAreOneTransaction:
+    """Two requests arriving together both read the same remaining allowance.
+
+    The check and the record used to be separate steps with the whole of admission between them,
+    so a ceiling of one admitted two. No amount of care at the call site closes that window --
+    only holding the lock across both does.
+    """
+
+    def test_a_ceiling_of_one_admits_one_of_two_racing_claims(self, tmp_path):
+        from agentnode_sdk.gateway.allowance import OverTheCeiling, Use
+
+        use = Use(tmp_path / "use.json", window=3600.0)
+        admitted, refused = [], []
+
+        def judge(runs, seconds, oldest):
+            if runs >= 1:
+                raise OverTheCeiling("runs_per_window", "one at a time")
+
+        def claim(which):
+            try:
+                use.claim("client", "run-%d" % which, judge)
+                admitted.append(which)
+            except OverTheCeiling:
+                refused.append(which)
+
+        threads = [threading.Thread(target=claim, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(admitted) == 1, f"both were admitted past a ceiling of one: {admitted}"
+        assert len(refused) == 1
+
+    def test_many_at_once_against_a_ceiling_of_three(self, tmp_path):
+        from agentnode_sdk.gateway.allowance import OverTheCeiling, Use
+
+        use = Use(tmp_path / "use.json", window=3600.0)
+        admitted = []
+
+        def judge(runs, seconds, oldest):
+            if runs >= 3:
+                raise OverTheCeiling("runs_per_window", "three")
+
+        def claim(which):
+            try:
+                use.claim("client", "r%d" % which, judge)
+                admitted.append(which)
+            except OverTheCeiling:
+                pass
+
+        threads = [threading.Thread(target=claim, args=(i,)) for i in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(admitted) == 3, f"a ceiling of three admitted {len(admitted)}"
+
+    def test_a_refusal_claims_nothing(self, tmp_path):
+        """A refused run must not consume the allowance it was refused for."""
+        from agentnode_sdk.gateway.allowance import OverTheCeiling, Use
+
+        use = Use(tmp_path / "use.json", window=3600.0)
+
+        def always_no(runs, seconds, oldest):
+            raise OverTheCeiling("runs_per_window", "no")
+
+        with pytest.raises(OverTheCeiling):
+            use.claim("client", "r1", always_no)
+        assert use.so_far("client") == (0, 0.0)
+
+
+class TestARunCarriesWhatItWasAdmittedUnder:
+    """A limit changed mid-flight must not rewrite what a finished run was allowed."""
+
+    def test_the_record_takes_the_digest_at_admission(self):
+        from agentnode_sdk.gateway.server import RunRecord
+
+        record = RunRecord(run_id="r" * 32, job_id="j")
+        record.admitted_under = "d" * 64
+        assert record.admitted_under == "d" * 64
+
+    def test_and_the_meter_writes_that_rather_than_what_is_configured_now(self):
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        text = inspect.getsource(server.GatewayService.write_down_what_it_used)
+        # The EXPRESSIONS, not the words. `record.admitted_under` is a prefix of
+        # `record.admitted_under_values`, so once the second existed a mutation removing the
+        # first left this passing on the spelling of the other -- which a counter-check found.
+        assert "allowance_sha256=record.admitted_under or" in text
+        assert "allowance_admitted_under=(record.admitted_under_values" in text
+        assert "admitted under, not what is configured now" in text
+
+    def test_the_digest_comes_back_from_the_check_that_applied_it(self):
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        text = inspect.getsource(server.GatewayService.within_its_allowance)
+        assert "return granted" in text
+
+
+class TestASecondsCeilingSaysWhenItLifts:
+    """A refusal that does not say when it clears is one a client can only poll against."""
+
+    def test_the_message_names_the_moment(self):
+        """Exercised rather than read: the message a client gets, not the source that makes it."""
+        from agentnode_sdk.gateway.allowance import Allowance, OverTheCeiling, write_allowance
+        from agentnode_sdk.gateway.server import GatewayService, GatewayState
+
+        state = GatewayState(str(self.root), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        write_allowance(self.root, Allowance(seconds_per_window=10))
+        service.use.note("c1", "earlier")
+        service.use.finished("c1", "earlier", 9.0)
+        with pytest.raises(OverTheCeiling) as over:
+            service.within_its_allowance("c1", asking_for=60)
+        assert over.value.which == "seconds_per_window"
+        assert "stops counting in" in str(over.value), str(over.value)
+        assert over.value.lifts_at > 0
+
+    @pytest.fixture(autouse=True)
+    def _root(self, tmp_path):
+        self.root = tmp_path
+
+    def test_and_carries_it_as_a_value_too(self):
+        from agentnode_sdk.gateway.allowance import OverTheCeiling
+
+        over = OverTheCeiling("seconds_per_window", "used too much", lifts_at=1234.0)
+        assert over.lifts_at == 1234.0
+
+
+class TestTakingASlotAndCheckingItAreOneStep:
+    """The concurrent ceiling had the same shape of bug as the window one, one layer up.
+
+    `Use.claim` made the DURABLE counter atomic. The count of what a client has GOING was still
+    read under the lock, then the whole of admission happened, and only afterwards was the run
+    inserted into the registry — so two requests arriving together both saw a free slot and a
+    ceiling of one admitted two. The race test only covered the durable counter; the concurrent
+    test was sequential, which is why nothing caught it.
+    """
+
+    @pytest.fixture()
+    def service(self, tmp_path):
+        state = GatewayState(str(tmp_path), version="test")
+        return GatewayService(state, backend=StandInBackend())
+
+    def _reserve_many(self, service, how_many, ceiling):
+        from agentnode_sdk.gateway.allowance import Allowance, OverTheCeiling, write_allowance
+        from agentnode_sdk.gateway.server import RunRecord
+
+        write_allowance(service.state.root, Allowance(concurrent_runs=ceiling))
+        admitted, refused = [], []
+        ready = threading.Barrier(how_many)
+
+        def one(i):
+            record = RunRecord(run_id="r%02d" % i, job_id="j")
+            record.state = "running"
+            record.owner_client_id = "c1"
+            ready.wait()                                       # all of them at the same instant
+            try:
+                service.reserve("c1", record.run_id, record, 60)
+                admitted.append(i)
+            except OverTheCeiling:
+                refused.append(i)
+
+        threads = [threading.Thread(target=one, args=(i,)) for i in range(how_many)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return admitted, refused
+
+    def test_a_ceiling_of_one_admits_one_of_eight_simultaneous(self, service):
+        admitted, refused = self._reserve_many(service, how_many=8, ceiling=1)
+        assert len(admitted) == 1, f"a ceiling of one admitted {len(admitted)}: {admitted}"
+        assert len(refused) == 7
+
+    def test_a_ceiling_of_three_admits_three_of_twelve(self, service):
+        admitted, _ = self._reserve_many(service, how_many=12, ceiling=3)
+        assert len(admitted) == 3, f"a ceiling of three admitted {len(admitted)}"
+
+    def test_and_the_registry_holds_exactly_what_was_admitted(self, service):
+        """A refused reservation must not have left a record behind either."""
+        admitted, _ = self._reserve_many(service, how_many=8, ceiling=2)
+        assert len(service.runs) == len(admitted) == 2
+
+
+class TestARefusedRequestDoesNotConsumeAllowance:
+    """The claim used to be taken at the TOP of admission, before most of the checks.
+
+    A request whose artefact digest did not match — or which failed any later check — was refused
+    and kept the run it had claimed. Sending malformed requests would then spend a client's whole
+    window without ever running anything. The claim happens at the commit point now, after
+    everything that can refuse.
+    """
+
+    def test_a_request_refused_after_the_ceiling_check_leaves_the_count_alone(self, a_gateway):
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        who = state.client_id_for(conn.token) or ""
+        before = service.use.so_far(who)
+
+        # A property this gateway cannot prove. That check lives BELOW the allowance look in
+        # `admit`, so this is a request that gets past the ceiling and is then refused.
+        answer = gc.submit(conn, b"print('x')", granted=_granted(service, wall_clock_s=30),
+                           required_properties=("a-property-nobody-measures",),
+                           run_id="refused-one", wall_clock_s=30)
+        assert answer.get("state") == "refused", answer
+        time.sleep(0.5)
+        assert service.use.so_far(who) == before, (
+            "a refused request consumed allowance: %s -> %s"
+            % (before, service.use.so_far(who)))
+
+    def test_and_enough_refusals_do_not_exhaust_a_window(self, a_gateway):
+        """The consequence that made it worth finding: malformed requests as a denial of service.
+
+        If each refusal spent a run, somebody could empty a client's whole window without ever
+        running anything -- and the client would be locked out by traffic it never sent.
+        """
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        who = state.client_id_for(conn.token) or ""
+        write_allowance(state.root, Allowance(runs_per_window=3))
+        for i in range(6):
+            gc.submit(conn, b"print('x')", granted=_granted(service, wall_clock_s=30),
+                      required_properties=("a-property-nobody-measures",),
+                      run_id="refused-%d" % i, wall_clock_s=30)
+        time.sleep(0.5)
+        assert service.use.so_far(who)[0] == 0, "refusals ate the window"
+        # and a real job is still admitted afterwards
+        assert a_run(conn, service, "still-allowed")
+
+    def test_the_claim_happens_at_the_commit_point(self):
+        """Structural: nothing in admission may refuse after the claim is taken."""
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        admitting = inspect.getsource(server.GatewayService.admit)
+        assert "run_id=request.run_id" not in admitting, "the claim is still taken inside admit"
+        assert "claims nothing" in admitting
+        submitting = inspect.getsource(server.GatewayService.submit)
+        assert "self.reserve(" in submitting
+
+    def test_and_a_successful_request_does_consume_it(self, a_gateway):
+        """The counter-case: the accounting must still happen for runs that are admitted."""
+        base, state, service, _backend = a_gateway
+        conn = _paired(base, state)
+        who = state.client_id_for(conn.token) or ""
+        before = service.use.so_far(who)[0]
+        a_run(conn, service, "counted")
+        assert service.use.so_far(who)[0] == before + 1
+
+
+class TestADamagedLedgerIsNotAnEmptyOne:
+    """The third time this gateway wrote the same bug, and the same reason each time.
+
+    An empty ledger means "this client has used nothing" — which is exactly the state somebody
+    who had exhausted their allowance would like it to be in. Damaging one file would have
+    restored every client's full window on a gateway that went on looking like it was counting.
+    """
+
+    def test_an_unreadable_ledger_stops_this_gateway(self, tmp_path):
+        from agentnode_sdk.gateway.allowance import CannotReadWhatWasUsed, Use
+
+        path = tmp_path / "use.json"
+        path.write_text("this is not json", encoding="utf-8")
+        with pytest.raises(CannotReadWhatWasUsed):
+            Use(path).so_far("c1")
+
+    def test_one_that_is_not_an_object_stops_it_too(self, tmp_path):
+        from agentnode_sdk.gateway.allowance import CannotReadWhatWasUsed, Use
+
+        path = tmp_path / "use.json"
+        path.write_text("[1, 2, 3]", encoding="utf-8")
+        with pytest.raises(CannotReadWhatWasUsed):
+            Use(path).so_far("c1")
+
+    def test_but_no_ledger_at_all_means_nothing_has_run(self, tmp_path):
+        from agentnode_sdk.gateway.allowance import Use
+
+        assert Use(tmp_path / "never-written.json").so_far("c1") == (0, 0.0)
+
+    def test_and_a_client_that_had_used_its_window_is_not_let_through(self, tmp_path):
+        """The consequence, stated as a test: damage must not restore an exhausted allowance."""
+        from agentnode_sdk.gateway.allowance import CannotReadWhatWasUsed, Use
+
+        use = Use(tmp_path / "use.json", window=3600.0)
+        for i in range(3):
+            use.note("c1", "r%d" % i)
+        assert use.so_far("c1")[0] == 3
+        (tmp_path / "use.json").write_text("{corrupted", encoding="utf-8")
+        with pytest.raises(CannotReadWhatWasUsed):
+            use.so_far("c1")
+
+
+class TestARunThatCouldNotBeRecordedStopsTheGateway:
+    """A run that ended and was never written down disappeared from the account of what ran.
+
+    Leaving the client hanging would be worse, so the run still reaches its terminal state. But a
+    gateway that cannot write down what it ran must not go on running things, so it stops itself
+    — durably, visibly, and reversibly.
+    """
+
+    @pytest.fixture()
+    def service(self, tmp_path):
+        state = GatewayState(str(tmp_path), version="test")
+        return GatewayService(state, backend=StandInBackend())
+
+    def test_it_stops_taking_work(self, service, capsys):
+        from agentnode_sdk.gateway.allowance import why_it_is_stopped
+        from agentnode_sdk.gateway.server import RunRecord
+
+        record = RunRecord(run_id="r" * 32, job_id="j")
+        assert not why_it_is_stopped(service.state.root)
+        service.could_not_record(record, OSError("the disk is full"))
+        halted = why_it_is_stopped(service.state.root)
+        assert halted, "a gateway that cannot account for a run went on taking work"
+        assert "could not write down" in halted
+
+    def test_and_says_which_run_and_why(self, service):
+        from agentnode_sdk.gateway.allowance import why_it_is_stopped
+        from agentnode_sdk.gateway.server import RunRecord
+
+        record = RunRecord(run_id="abcdef0123456789" * 2, job_id="j")
+        service.could_not_record(record, OSError("the disk is full"))
+        halted = why_it_is_stopped(service.state.root)
+        assert "abcdef012345" in halted
+        assert "disk is full" in halted
+
+    def test_the_run_still_reaches_a_terminal_state(self):
+        """Structural: the write is guarded, and move_to happens after it either way."""
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        text = inspect.getsource(server.GatewayService._run)
+        after = text.split("write_down_what_it_used")[-1]
+        assert "could_not_record" in after
+        assert "record.move_to(terminal)" in after
+
+    def test_and_a_gateway_whose_meter_works_is_not_stopped(self, service):
+        """The counter-case: this must not stop a gateway that recorded the run perfectly."""
+        from agentnode_sdk.gateway.allowance import why_it_is_stopped
+
+        assert not why_it_is_stopped(service.state.root)
+
+
+class TestWhoCanReadTheRecordOfUse:
+    """Established rather than assumed from where the file sits."""
+
+    def test_it_is_created_owner_only(self, tmp_path):
+        from agentnode_sdk.gateway import meter
+
+        meter.record(tmp_path, run_id="r", client_id="c", started_at=1.0, finished_at=2.0,
+                     cpu=1.0, memory_mb=512, wall_clock_s=60, state="finished",
+                     outcome="succeeded", bytes_out=1, worker_topology="x",
+                     allowance_sha256="a" * 64)
+        path = Path(tmp_path) / meter.METER_NAME
+        if os.name != "nt":
+            assert (path.stat().st_mode & 0o077) == 0, "somebody else can read what clients used"
+        import inspect
+        assert "0o600" in inspect.getsource(meter.record), "it is not created owner-only"
+
+
+class TestCountingIsNotCharging:
+    """Said where a reader of the module will meet it, because the file invites the assumption."""
+
+    def test_the_module_says_so(self):
+        from agentnode_sdk.gateway import meter
+
+        assert "Counting is not charging." in meter.__doc__
+        assert "nothing here prices anything" in meter.__doc__ or "prices nothing" in meter.__doc__

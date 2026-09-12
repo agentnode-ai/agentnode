@@ -102,6 +102,18 @@ def waiting_gateway(tmp_path):
             backend.let_go.set()
             server.shutdown()
             thread.join(timeout=10)
+            # And then wait for the RUNS. Several of these tests leave one deliberately unsettled
+            # -- that is what they are about -- and the worker publishes the terminal state last,
+            # after it has written the ledger. Letting the temporary directory go while that is
+            # still happening is the test deleting a file the gateway is holding, which on
+            # Windows is an error rather than a shrug. Nothing about the gateway is waited on
+            # here that a real operator would not also wait for when stopping one.
+            from agentnode_sdk.gateway.protocol import is_terminal as _is_terminal
+
+            for _ in range(300):
+                if all(_is_terminal(r.state) for r in list(service.runs.values())):
+                    break
+                time.sleep(0.05)
 
 
 def a_running_job(base, state, service, backend, run_id="run-under-test"):
@@ -614,7 +626,10 @@ class TestARealContainer:
                 # a formula copied into a test is a second definition waiting to disagree.
                 named = service.runs["real-cancel"].container_name
                 assert named, "the gateway never gave this run a container name"
-                answered, names = service._containers_named(named)
+                # The seam moved: whether a container is gone is the WORKER's to answer, because
+                # it is the worker that started it. ALPHA-BOUNDARY-0001.
+                left = service.worker.gone(named, patiently=False)
+                answered, names = left.answered, list(left.left)
                 assert answered and names == [], names
             finally:
                 server.shutdown()

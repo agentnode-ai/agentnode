@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from agentnode_sdk.worker import what_it_does_not_establish
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
 from agentnode_sdk.gateway import challenge as ch
 from agentnode_sdk.gateway.ledger import Ledger
@@ -47,6 +48,10 @@ from agentnode_sdk.gateway.readiness import (
     describe_missing,
 )
 from agentnode_sdk.gateway.transport import TlsFiles, check_bind_address
+from agentnode_sdk.gateway.allowance import OverTheCeiling, Stopped, why_it_is_stopped
+from agentnode_sdk.worker import CouldNotRestrictTheNetwork, JobFailed, Job as WorkerJob
+from agentnode_sdk.worker import Limits as WorkerLimits
+from agentnode_sdk.worker import WorkerUnreachable
 from agentnode_sdk.gateway.protocol import (
     refusal,
     PROTOCOL_VERSION,
@@ -102,6 +107,25 @@ class RunRecord:
     #: it had stopped, and a cancelled run kept whatever the destroyed container's exit looked
     #: like. Nothing has to set it for it to be right now, because empty claims nothing.
     termination_reason: str = ""
+    #: Set when the operator's kill switch is what ended this run, and carried into the answer so
+    #: a client is told that rather than being left to read a bare "cancelled" as its own doing.
+    halted_by: str = ""
+    #: Where this run was measured and what the thing measuring it was configured as, taken at
+    #: admission like everything else that must not change underneath a finished run. The
+    #: conformance report has bound these for a while; a JOB's own evidence did not, so a reader
+    #: holding one run's record could not tell which arrangement produced it without going to
+    #: find a separate document and hoping it was the same one.
+    worker_topology: str = ""
+    worker_configuration_sha256: str = ""
+    backend_version: str = ""
+    #: The ceilings this run was ADMITTED under, taken at admission. Sampling it at the end would
+    #: mean a limit changed while a run was going rewrote what that run is recorded as having been
+    #: allowed -- which is the one thing a record of what was allowed must not do.
+    admitted_under: str = ""
+    #: The ceilings themselves, not only their digest. A digest binds a record
+    #: to a configuration; it cannot be turned back into the numbers, and the
+    #: file it stood for is exactly the thing that gets edited afterwards.
+    admitted_under_values: dict = field(default_factory=dict)
     native_status: int | None = None
     native_platform: str = ""
     stdout: str = ""
@@ -146,6 +170,11 @@ class RunRecord:
             "state": self.state,
             "exit_code": self.exit_code,
             "termination_reason": self.termination_reason,
+            "halted_by": self.halted_by,
+            "worker_topology": self.worker_topology,
+            "worker_topology_means": what_it_does_not_establish(self.worker_topology),
+            "worker_configuration_sha256": self.worker_configuration_sha256,
+            "backend_version": self.backend_version,
             "native_status": self.native_status,
             "native_platform": self.native_platform,
             "stdout": self.stdout,
@@ -162,6 +191,28 @@ class RunRecord:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
         }
+
+
+#: How long recovery waits for an interrupted run's container to be listed. A container that was
+#: going to appear did so before the restart, so this is one or two listings rather than the
+#: window a live cancel needs against a runtime that is still creating one.
+RECOVERY_APPEAR_SECONDS = 1.0
+
+#: A ceiling on the whole recovery sweep. Starting up must not be held open by a runtime that is
+#: slow to answer about every run in a long ledger. Runs not reached keep `cleanup_verified` at
+#: None, which reads as "nobody could ask" rather than "nothing was left behind".
+RECOVERY_BUDGET_SECONDS = 30.0
+
+
+def container_name_for(run_id: str) -> str:
+    """The name this gateway gives a run's container.
+
+    Derived from the run id and nothing else, so a gateway that has lost its memory can still
+    name what it started. The admission path and the recovery path both call THIS: a recovery
+    that spelled the name even slightly differently would address nothing, find nothing, and
+    report that as nothing having been left behind.
+    """
+    return "agentnode-em3c-" + str(run_id)[:16]
 
 
 class GatewayService:
@@ -212,9 +263,16 @@ class GatewayService:
 
         return {**body, **stamp_fields(self.state.identity)}
 
-    def __init__(self, state: GatewayState, backend=None, operator_policy=None) -> None:
+    def __init__(self, state: GatewayState, backend=None, operator_policy=None,
+                 worker=None) -> None:
         self.state = state
         self._backend = backend
+        #: What runs foreign code. `ALPHA-BOUNDARY-0001`: this is the only way anything here
+        #: reaches a container runtime, so that moving the worker to another machine is a
+        #: deployment change and not a rewrite. A caller that supplies a `backend` gets a worker
+        #: on this machine wrapped around it, which is what every caller did before there was a
+        #: word for it.
+        self._worker = worker
         self._operator_policy = operator_policy
         self.nonces = NonceCache()
         self.runs: dict[str, RunRecord] = {}
@@ -223,7 +281,7 @@ class GatewayService:
         self.ledger = Ledger(self.state.root / "ledger.json")
         #: Which gateway process, and which sandbox behind it. A restart is a different instance,
         #: and a challenge says which one issued it.
-        self.instance = "%s:%s" % (type(self.backend).__name__, secrets.token_hex(8))
+        self.instance = "%s:%s" % (self.worker.instance_label(), secrets.token_hex(8))
         self.readiness = ReadinessGate(self.state.root)
         self._restore_interrupted()
         self._lock = threading.Lock()
@@ -232,11 +290,68 @@ class GatewayService:
 
     @property
     def backend(self):
+        """The sandbox backend, for a caller that is building a worker around it.
+
+        Nothing in this class may use it. Every question about a runtime goes through `worker`,
+        because a gateway that could ask one directly would be a gateway that has to be where it
+        is -- which is the thing `ALPHA-BOUNDARY-0001` decided against.
+        """
         if self._backend is None:
             from agentnode_sdk.sandbox.container_backend import ContainerBackend
 
             self._backend = ContainerBackend()
         return self._backend
+
+    @property
+    def worker(self):
+        """Whatever runs foreign code. Here for now; elsewhere later, without this class caring.
+
+        Where it is comes from the gateway's configuration and from nowhere else: `worker_address`
+        and `worker_key`, which are a deployment's business. With neither, the worker is in this
+        process -- which is what every caller had before there was a word for it, and what a test
+        with a stand-in backend still wants.
+
+        `ALPHA-BOUNDARY-0001`: this property is the ONLY place in the control plane that names
+        where the worker is. Nothing else in the product names a socket, a path, an account or a
+        host.
+
+        That is not the same as saying the worker can be moved, and this docstring used to say it
+        was. The address this reads is handed to `from_address`, which speaks unix sockets and
+        refuses every other scheme, so a worker on another machine needs a transport this build
+        does not have, and writing one is a change to the product, not to a deployment. What this
+        property establishes is that the transport is the only thing missing -- one place to
+        change, not many.
+        """
+        if self._worker is None:
+            address = str(self.config.get("worker_address") or "")
+            if address:
+                from agentnode_sdk.worker import protocol as wire
+                from agentnode_sdk.worker.remote import from_address
+
+                self._worker = from_address(
+                    address, wire.read_key(str(self.config.get("worker_key") or "")))
+            else:
+                from agentnode_sdk.worker.local import LocalWorker
+
+                self._worker = LocalWorker(self.backend)
+        return self._worker
+
+    @property
+    def config(self) -> dict:
+        """What this gateway was configured with, read from its own directory.
+
+        Read rather than held: `agentnode gateway start` and everything else are separate
+        processes, and a configuration held from construction would be the one that was there when
+        whichever process happened to start first came up.
+        """
+        import json as _json
+
+        path = self.state.root / "config.json"
+        try:
+            loaded = _json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
 
     def active_state(self):
         """The authenticated policy-and-report pair currently in force, or None.
@@ -330,17 +445,22 @@ class GatewayService:
         from agentnode_sdk.conformance.report import SUITE_VERSION
 
         identity = self.state.identity
-        availability = self.backend.check_available()
+        isolation = self.worker.can_it_isolate()
         boot_value, _method = boot_identity()
         return ReportBinding(
             gateway_id=identity.gateway_id,
             gateway_version=identity.version,
-            backend=str(availability.backend or ""),
-            image_digest=str(availability.image_digest or ""),
+            backend=isolation.backend if isolation.backend != "none" else "",
+            image_digest=self.worker.image_digest(),
             boot_id=boot_value,
             backend_version=self.runtime_version(),
             conformance_schema=str(SUITE_VERSION),
             operator_policy_digest=policy_digest or self.operator_envelope().digest(),
+            # Where this was measured, and what the worker was configured as when it was.
+            # `ALPHA-BOUNDARY-0001`: a report that does not say which of those two it describes is
+            # a report somebody will read as describing the other.
+            worker_topology=self.worker.topology,
+            worker_configuration_sha256=self.worker.configuration_sha256(),
         )
 
     def runtime_version(self) -> str:
@@ -354,21 +474,7 @@ class GatewayService:
         caught at its next start or measurement, not mid-process. That is a stated limit, not an
         assumption that it cannot happen.
         """
-        cached = getattr(self, "_runtime_version_cache", None)
-        if cached is not None:
-            return cached
-        from agentnode_sdk.conformance.runner import _runtime_version
-
-        availability = self.backend.check_available()
-        runtime = str(availability.backend or "")
-        value = ""
-        if runtime and runtime != "none":
-            try:
-                value = str(_runtime_version(runtime) or "")
-            except Exception:                                     # noqa: BLE001
-                value = ""
-        self._runtime_version_cache = value
-        return value
+        return self.worker.runtime_version()
 
     def measure(self, options=None, now: float | None = None):
         """Re-measure the policy currently configured, and put it in force if it holds.
@@ -445,19 +551,19 @@ class GatewayService:
                 # was being measured if the process dies before it finishes.
                 store.write_pending(envelope)
 
-                report = run_conformance(
-                    self.backend, generated_at=stamp, options=options,
+                report = self.worker.measure(
+                    generated_at=stamp, options=options,
                     egress_matrix=self._egress_matrix_for(envelope),
                     # The policy's own destinations, so the check compares the matrix against
                     # what is being permitted rather than against what the run happened to do.
                     egress_expected=(envelope.allowed_destinations or None))
                 binding = self.report_binding(envelope.digest())
                 document = {"measured_at": now if now is not None else time.time(),
-                            "binding": binding.as_dict(), "report": report.to_dict()}
+                            "binding": binding.as_dict(), "report": report}
 
                 # Kept as a diagnostic copy. Readiness does not read it -- it reads the snapshot
                 # -- so a stale file here can never make a gateway look ready.
-                self.readiness.store(report.to_dict(), binding, now)
+                self.readiness.store(report, binding, now)
 
                 verdict = self.readiness.evaluate_document(document, binding,
                                                            envelope.required_properties)
@@ -468,7 +574,7 @@ class GatewayService:
                 # Past this call the change is committed: `activate` treats its own rename as
                 # the commit point and cannot raise after it. So anything that reaches the
                 # handler below happened BEFORE the commit, and restoring the intent is right.
-                store.activate(envelope, report.to_dict(), binding.as_dict(), now)
+                store.activate(envelope, report, binding.as_dict(), now)
             except BaseException:
                 self._restore_config(previous)
                 store.clear_pending()
@@ -502,8 +608,7 @@ class GatewayService:
         # ALL of them. Measuring the first and permitting the rest was what EM3C-FINAL-0001
         # found: the policy was reported as measured while every destination after the first
         # was an open path nobody had tried.
-        return measure_egress(self.backend, allowed=envelope.allowed_destinations,
-                              denied=denied)
+        return self.worker.measure_egress(allowed=envelope.allowed_destinations, denied=denied)
 
     def readiness_now(self):
         """The current answer to whether this gateway may take work, with its reason.
@@ -573,7 +678,7 @@ class GatewayService:
 
     def hello(self) -> dict[str, Any]:
         identity = self.state.identity
-        availability = self.backend.check_available()
+        availability = self.worker.can_it_isolate()
         readiness = self.readiness_now()
         # Both have to hold. A runtime that is missing means nothing can run; a gateway that has
         # not been measured means nothing SHOULD run, because it cannot say what it enforces.
@@ -613,6 +718,11 @@ class GatewayService:
         never change again, and they are emphatically NOT re-executed: the client asked once,
         and the gateway does not get to decide it should happen a second time.
         """
+        budget = time.monotonic() + RECOVERY_BUDGET_SECONDS
+        for run_id in self.ledger.runs_left_unswept():
+            if time.monotonic() >= budget:
+                break
+            self._ask_again_about(run_id)
         for run_id in self.ledger.unfinished_runs():
             entry = self.ledger.run_entry(run_id) or {}
             # A record rebuilt from the ledger begins where it is. It is CONSTRUCTED there
@@ -631,8 +741,76 @@ class GatewayService:
                 "not been started again -- submit it as a new job if you still want it run."
             )
             record.finished_at = time.time()
+            record.container_name = container_name_for(run_id)
             self.runs[run_id] = record
             self.ledger.note_state(run_id, "interrupted")
+            if time.monotonic() < budget:
+                self._clean_up_what_it_left(record)
+
+    def _clean_up_what_it_left(self, record: RunRecord) -> None:
+        """Ask the worker to remove the sandbox an interrupted run left running.
+
+        Calling the run interrupted answers its client; it does not stop anything. The worker is
+        a separate service with its own lifetime, and the gateway's registry of live runs is in
+        memory, so a restart leaves a container running with nothing anywhere that refers to it.
+        This was measured rather than reasoned about: on the deployed alpha both services were
+        restarted while a run was in flight, the run was correctly marked interrupted, and the
+        container was still up afterwards with nobody accounting for it.
+
+        The gateway does not touch a runtime to do this -- it asks the worker, by the name it
+        chose itself, and the worker addresses nothing outside that run's own prefix.
+
+        Nothing here may stop the gateway starting. A worker that cannot be reached leaves
+        `cleanup_verified` at None, which already means "nobody could ask" rather than "nothing
+        was left behind"; that difference is the entire reason the third state exists, and a
+        restart is exactly when it is true.
+        """
+        try:
+            removed = self.worker.stop(
+                record.run_id, record.container_name, RECOVERY_APPEAR_SECONDS
+            )
+        except Exception:                                            # noqa: BLE001
+            return
+        if removed:
+            record.cleanup_verified = True
+            self.ledger.note_cleanup(record.run_id, True)
+            return
+        # `stop` says False both when there was nothing to remove and when it could not ask, so
+        # it is not on its own an answer about what is left. Asking settles which one happened.
+        try:
+            record.cleanup_verified = self.worker.gone(
+                record.container_name, patiently=False
+            ).verified
+        except Exception:                                            # noqa: BLE001
+            record.cleanup_verified = None
+        self.ledger.note_cleanup(record.run_id, record.cleanup_verified)
+
+    def _ask_again_about(self, run_id: str) -> None:
+        """A sandbox an earlier start could not confirm gone is asked about again.
+
+        The run is already interrupted and already answered; what is unsettled is whether
+        anything is still running. Asking costs one question to a worker that is, this time,
+        probably up -- and not asking means a gateway that restarted while its worker was down
+        leaves a container running for as long as the machine does.
+        """
+        record = self.runs.get(run_id)
+        if record is None:
+            entry = self.ledger.run_entry(run_id) or {}
+            record = RunRecord(
+                run_id=run_id,
+                job_id=str(entry.get("job_id", "")),
+                request_sha256=str(entry.get("request_sha256", "")),
+                owner_client_id=str(entry.get("owner_client_id", "")),
+                state="interrupted",
+            )
+            record.refusal = (
+                "the gateway restarted while this job was running, so it did not finish. It has "
+                "not been started again -- submit it as a new job if you still want it run."
+            )
+            record.finished_at = time.time()
+            record.container_name = container_name_for(run_id)
+            self.runs[run_id] = record
+        self._clean_up_what_it_left(record)
 
     def require_private_state(self) -> None:
         """Re-check that the gateway's files are still private, on every path that reads them.
@@ -698,6 +876,85 @@ class GatewayService:
             limits=Limits(wall_clock_s=max(1, int(getattr(request, "wall_clock_s", 60)))),
         )
 
+    def allowance(self):
+        """What the operator allows one client. Read on every admission, never held.
+
+        A ceiling lowered while a gateway is running takes effect on the next job. A run already
+        in flight is left to finish: stopping one is what the stop is for, and a quota is not a
+        cancellation.
+        """
+        from agentnode_sdk.gateway.allowance import read_allowance
+
+        return read_allowance(self.state.root)
+
+    @property
+    def use(self):
+        """What each client has used lately, durably."""
+        from agentnode_sdk.gateway.allowance import USE_NAME, Use
+
+        held = getattr(self, "_use", None)
+        if held is None:
+            held = Use(self.state.root / USE_NAME)
+            self._use = held
+        return held
+
+    def within_its_allowance(self, client_id: str, asking_for: int) -> str:
+        """Raise `OverTheCeiling` if this client may not have another run right now.
+
+        With a `run_id`, the looking and the claiming happen inside ONE transaction: two requests
+        arriving together used to read the same remaining allowance and both be admitted, because
+        the check and the record were separate steps with the whole of admission in between.
+
+        Returns the digest of the ceilings that were applied, so the run can carry what it was
+        admitted UNDER rather than what happens to be configured when it ends.
+        """
+        from agentnode_sdk.gateway.protocol import is_terminal
+
+        allowed = self.allowance()
+        granted = allowed.digest()
+        if not client_id:
+            # Nothing to count against. Admission refuses an unpaired caller elsewhere; this is
+            # not the place that decides that, and counting against "" would pool every client.
+            return granted
+        if allowed.concurrent_runs:
+            with self._lock:
+                going = sum(1 for r in self.runs.values()
+                            if r.owner_client_id == client_id and not is_terminal(r.state))
+            if going >= allowed.concurrent_runs:
+                raise OverTheCeiling(
+                    "concurrent_runs",
+                    "this client already has %d runs going and may have %d at once. Wait for one "
+                    "to finish." % (going, allowed.concurrent_runs))
+        if allowed.runs_per_window or allowed.seconds_per_window:
+            runs, seconds = self.use.so_far(client_id)
+            self._judge_window(allowed, runs, seconds, self.use.oldest(client_id), asking_for)
+        return granted
+
+    def _judge_window(self, allowed, runs: int, seconds: float, oldest: float,
+                      asking_for: int) -> None:
+        """Whether a client may start another run in this window. One definition, two callers.
+
+        The early look in `within_its_allowance` and the authoritative claim in `reserve` have to
+        agree about what "over a ceiling" means; two copies of this would be two answers, and the
+        more permissive one would be the one that decided.
+        """
+        lifts = oldest + allowed.window_seconds
+        if allowed.runs_per_window and runs >= allowed.runs_per_window:
+            raise OverTheCeiling(
+                "runs_per_window",
+                "this client has started %d runs and may start %d in this window. The oldest "
+                "stops counting in %.0f seconds." % (runs, allowed.runs_per_window,
+                                                     max(0.0, lifts - time.time())),
+                lifts_at=lifts)
+        if allowed.seconds_per_window and seconds + asking_for > allowed.seconds_per_window:
+            raise OverTheCeiling(
+                "seconds_per_window",
+                "this client has used %.0f of %d seconds in this window and this job asks "
+                "for up to %d more. The oldest stops counting in %.0f seconds."
+                % (seconds, allowed.seconds_per_window, asking_for,
+                   max(0.0, lifts - time.time())),
+                lifts_at=lifts)
+
     def admit(self, request: JobRequest, artifact: bytes,
               token: str = "") -> tuple:
         """Everything that must hold before a container exists. Raises to refuse.
@@ -705,12 +962,31 @@ class GatewayService:
         Order matters: the cheap structural checks come before anything that costs work, and
         nothing here has a side effect that would survive a refusal.
         """
+        # Before anything else costs anything. `ALPHA-ALLOWANCE`: an operator's stop is the
+        # first question asked of every job, and a gateway that cannot tell whether it has been
+        # stopped answers it as stopped.
+        halted = why_it_is_stopped(self.state.root)
+        if halted:
+            raise Stopped(halted)
+
         check_freshness(request.issued_at)
         # Both stores. The in-memory one has the tighter window; the durable one is what
         # still knows about a captured request after a restart.
         if request.nonce and self.ledger.knows_nonce(request.nonce):
             raise ProtocolError("this request has already been used (replay)")
         self.nonces.check_and_remember(request.nonce)
+
+        # What this client has already used, against what the operator allows it. Before the
+        # artefact is digested, because refusing over a ceiling should not cost the work of
+        # hashing something that is not going to run.
+        # An EARLY LOOK, which claims nothing. It is here so that a client already over a ceiling
+        # is refused before this gateway spends the work of hashing an artefact that is not going
+        # to run. It is advisory by construction: the authoritative check-and-claim happens at the
+        # commit point in `reserve`, because a claim taken here would be kept by a request that
+        # one of the checks BELOW went on to refuse -- and a refused request must not consume the
+        # allowance it was refused for.
+        granted_digest = self.within_its_allowance(
+            self.state.client_id_for(token) or "", request.wall_clock_s)
 
         actual = digest(artifact)
         if actual != request.artifact_sha256:
@@ -814,7 +1090,7 @@ class GatewayService:
         # neither list was reduced with no delta and no refusal, so a caller holding two
         # unequal policy digests had nothing that said which field moved. `mandatory` still
         # decides what is REFUSED, above; it was never meant to decide what is DISCLOSED.
-        return granted, properties, requested_shape, effective_shape, describe_deltas(
+        return granted, properties, requested_shape, effective_shape, granted_digest, describe_deltas(
             tuple(narrowed), requested_shape, effective_shape)
 
 
@@ -906,8 +1182,17 @@ class GatewayService:
                            required_properties=tuple(request.required_properties),
                            owner_client_id=self.state.client_id_for(token) or "")
         try:
-            granted, _props, req_shape, eff_shape, deltas = self.admit(
+            granted, _props, req_shape, eff_shape, granted_digest, deltas = self.admit(
                 request, artifact, token)
+            # From here the run carries what it was admitted under. A limit changed while it is
+            # going must not rewrite what this run is recorded as having been allowed.
+            record.admitted_under = granted_digest
+            record.admitted_under_values = dict(self.allowance().as_dict())
+            # Where it ran and what that was configured as, taken now rather than at the end:
+            # a worker replaced mid-flight must not rewrite what a finished run was measured on.
+            record.worker_topology = self.worker.topology
+            record.worker_configuration_sha256 = self.worker.configuration_sha256()
+            record.backend_version = self.runtime_version()
         except Exception as exc:                              # noqa: BLE001 - refusal is an answer
             record.move_to("refused")
             record.refusal = str(exc)
@@ -970,8 +1255,15 @@ class GatewayService:
             value=record.challenge, delivered=carried,
             because="" if carried else ch.BROUGHT_ITS_OWN_COMMAND).as_dict())
 
-        with self._lock:
-            self.runs[request.run_id] = record
+        # THE COMMIT POINT. Everything that must be true at the moment this run becomes real
+        # happens here, in one critical section, and nothing after it can refuse.
+        #
+        # Two things were wrong before and are the reason this is one call. The concurrent count
+        # was read under the lock and the record inserted under the lock LATER, with the whole of
+        # admission in between -- so two requests arriving together both saw a free slot and a
+        # ceiling of one admitted two. And the window claim was taken at the top of admission, so
+        # a request that a later check refused kept the allowance it had claimed.
+        self.reserve(record.owner_client_id, request.run_id, record, request.wall_clock_s)
         thread = threading.Thread(target=self._run, args=(request, artifact, granted, record),
                                   daemon=True)
         thread.start()
@@ -979,32 +1271,8 @@ class GatewayService:
 
     def _run(self, request: JobRequest, artifact: bytes, granted, record: RunRecord) -> None:
         from agentnode_sdk.sandbox.composition import network_mode
-        from agentnode_sdk.sandbox.types import ProcessSpec
-
         mode, domains = network_mode(granted)
-        egress = None
-        if mode == "egress":
-            # The same mechanism the local runners already use: an --internal network with no
-            # route out, plus a dual-homed CONNECT proxy that is the only way through. The job
-            # does not get a filtered internet -- it gets no route at all, and one door.
-            #
-            # Built here rather than declared: an earlier version refused this case outright and
-            # said so honestly, which was right at the time. Running it with open networking
-            # instead would have been the silent widening this whole design exists to refuse.
-            from agentnode_sdk.sandbox.egress import start_egress_proxy
-
-            try:
-                egress = start_egress_proxy(domains)
-            except Exception as exc:                          # noqa: BLE001
-                record.move_to("refused")
-                record.refusal = (
-                    "the restricted network this job asked for could not be set up, so it was "
-                    f"not started: {exc}"
-                )
-                record.finished_at = time.time()
-                return
-
-        record.container_name = f"agentnode-em3c-{record.run_id[:16]}"
+        record.container_name = container_name_for(record.run_id)
         record.move_to("running")
         payload = base64.b64encode(artifact).decode("ascii")
         # The client's own command if it brought one, otherwise this gateway's bootstrap -- which
@@ -1015,14 +1283,22 @@ class GatewayService:
         command = list(request.command) or ch.bootstrap(command_was_given=False)
         if record.challenge:
             payload = ch.on_stdin(record.challenge, self.instance, payload)
-        spec = ProcessSpec(
-            command=command,
+        job = WorkerJob(
+            run_id=record.run_id,
+            container_name=record.container_name,
+            command=tuple(command),
+            artifact=artifact,
+            stdin=payload,
             network=mode,
-            egress=egress.spec if egress is not None else None,
-            clean_home=True,
-            interactive=True,
-            name=record.container_name,
+            allowed_domains=tuple(domains or ()),
+            limits=WorkerLimits(
+                cpu=float(granted.limits.cpu),
+                memory_mb=int(granted.limits.memory_mb),
+                processes=int(granted.limits.processes),
+                wall_clock_s=int(granted.limits.wall_clock_s),
+            ),
         )
+        left_behind = None
         terminal = "refused"
         try:
             if record.cancel_requested.is_set():
@@ -1032,19 +1308,15 @@ class GatewayService:
             # client decided how long its code could run -- the operator ceiling bound one and
             # not the other, and the policy digest could not catch it because the digested value
             # was not the enforced one. EM3C-GATEWAY-0004 found it.
-            outcome = self.backend.run_process(
-                spec, input_text=payload, timeout=float(granted.limits.wall_clock_s)
-            )
-            rc, out, err = outcome
-            from agentnode_sdk.sandbox.backend import why_it_stopped
-
-            reason, native, platform = why_it_stopped(outcome)
-            record.termination_reason = reason
-            record.native_status = native
+            outcome = self.worker.run(job)
+            left_behind = outcome.egress_gone
+            rc, platform = outcome.exit_code, outcome.native_platform
+            record.termination_reason = outcome.reason
+            record.native_status = outcome.native_status
             record.native_platform = platform
             record.exit_code = rc
-            record.stdout = out or ""
-            record.stderr = err or ""
+            record.stdout = outcome.stdout
+            record.stderr = outcome.stderr
             terminal = "cancelled" if record.cancel_requested.is_set() else "finished"
             if terminal == "cancelled":
                 # `EM3C-E8-RECORD-0001`: what came back here is whatever the runtime made of a
@@ -1059,7 +1331,7 @@ class GatewayService:
                 from agentnode_sdk.gateway.protocol import CANCELLED as _CANCELLED
 
                 record.termination_reason = _CANCELLED
-                whose = platform or getattr(self.backend, "native_platform", "")
+                whose = platform or outcome.runtime_platform
                 record.native_status = rc if whose else None
                 record.native_platform = whose if record.native_status is not None else ""
                 record.exit_code = None
@@ -1069,23 +1341,56 @@ class GatewayService:
             terminal = "cancelled"
             record.termination_reason = CANCELLED
             record.refusal = "cancelled by the client before it started"
+        except WorkerUnreachable as exc:
+            # Not a job that failed. Nobody established whether it ran, and saying it failed
+            # would tell a client something nobody knows. `EM3C-EVIDENCE-0002` cost an external
+            # run to exactly this distinction.
+            terminal = "unverified"
+            record.refusal = (
+                "the sandbox that runs jobs for this gateway could not be reached, so what "
+                f"happened to this run is not known: {exc}. It was not established that it ran, "
+                "and it was not established that it did not."
+            )
+        except CouldNotRestrictTheNetwork as exc:
+            terminal = "refused"
+            record.refusal = (
+                "the restricted network this job asked for could not be set up, so it was "
+                f"not started: {exc}"
+            )
+        except JobFailed as exc:
+            terminal = "refused"
+            left_behind = exc.egress_gone
+            record.refusal = f"the run could not be completed: {exc}"
         except Exception as exc:                              # noqa: BLE001
             terminal = "refused"
             record.refusal = f"the run could not be completed: {exc}"
         finally:
-            if egress is not None:
-                # The proxy and its two networks are part of this run. Leaving them behind would
-                # leave a route out that nothing is using and nobody is watching.
-                from agentnode_sdk.sandbox.egress import stop_egress_proxy
-
-                try:
-                    stop_egress_proxy(egress)
-                except Exception:                             # noqa: BLE001
-                    pass
-            record.cleanup_verified = self._verify_gone(record.container_name)
-            if record.cleanup_verified and egress is not None:
-                # Cleanup means the whole run, not just the container that carried it.
-                record.cleanup_verified = self._egress_gone(egress)
+            # Asking the worker whether anything is left can itself fail, and it is MOST likely
+            # to fail in exactly the case that got us here: a worker lost during the run is a
+            # worker that cannot be asked about cleanup either. This used to be an unguarded call
+            # in a `finally`, so that exception escaped before the terminal state was published --
+            # and the run then had no terminal state at all. A client polling it waits forever on
+            # something nobody will ever finish, which is worse than either answer.
+            #
+            # Not knowing is its own answer: `cleanup_verified` stays None and the run ends
+            # `unverified`, which is the word this gateway already uses for "nobody established
+            # what happened". It is not turned into a job that failed -- nothing here says
+            # anything about the job.
+            try:
+                record.cleanup_verified = self.worker.gone(record.container_name).verified
+            except Exception as exc:                          # noqa: BLE001
+                record.cleanup_verified = None
+                if terminal not in ("refused", "cancelled"):
+                    terminal = "unverified"
+                if not record.refusal:
+                    record.refusal = (
+                        "the run ended, and this gateway could not ask the worker whether "
+                        "anything was left behind: " + str(exc)[:200])
+            if record.cleanup_verified and left_behind is not None:
+                # Cleanup means the whole run, not just the container that carried it. What a run
+                # needed BESIDES its container is on the worker's side of the line, so the worker
+                # is what says whether it is gone.
+                record.cleanup_verified = left_behind
             record.finished_at = time.time()
             # The terminal state is published LAST, and that ordering is the point. An earlier
             # version set it before this block, so a client polling in the window between the two
@@ -1110,109 +1415,25 @@ class GatewayService:
             # nowhere left to read it from. It was never a credential; this is what makes it also
             # not a leftover.
             record.challenge = ""
+            # Counted and written down BEFORE the terminal state is published, for the same
+            # reason cleanup is: a reader that sees a terminal state must be seeing a complete
+            # record, and a client that saw one and immediately sent another job would otherwise
+            # be admitted against a count that had not yet included the run it just finished.
+            # The test for one line per run found this the first time it was written.
+            try:
+                self.write_down_what_it_used(record, granted, terminal)
+            except Exception as exc:                          # noqa: BLE001
+                # A run that ended and was never recorded is a run that disappeared from the
+                # account of what this gateway has done. Leaving the client hanging would be
+                # worse, so the run still reaches its terminal state -- but a gateway that cannot
+                # write down what it ran must not go on running things, so it stops itself.
+                # That is durable (a file), visible (every client is told), and an operator lifts
+                # it deliberately once the cause is fixed.
+                self.could_not_record(record, exc)
             # A reader that sees a terminal state must be seeing a complete record.
             record.move_to(terminal)
             self.ledger.note_state(record.run_id, terminal)
 
-    def _containers_named(self, prefix: str) -> tuple[bool, list[str]]:
-        """Ask the runtime which containers carry this run's name prefix.
-
-        Returns (the runtime answered, the names). The first element matters: an empty list from a
-        command that FAILED is not an empty list of containers, and treating it as one would report
-        a container gone because we could not ask. EM-3B-R1 closed exactly that hole in the local
-        backend; the same rule applies here.
-        """
-        import subprocess
-
-        # A backend that ran the container is best placed to say whether it is gone. Where one can
-        # answer, ask it; the shell-out below is the fallback for backends that cannot. This also
-        # keeps the question honest under test: a stand-in that never started a container was
-        # previously interrogated by asking the REAL runtime about a name it had never created, so
-        # the unit suite was quietly driving docker and waiting on it.
-        asker = getattr(self.backend, "containers_named", None)
-        if asker is not None:
-            return asker(prefix)
-
-        availability = self.backend.check_available()
-        runtime = availability.backend
-        if not runtime or runtime == "none" or not prefix:
-            return False, []
-        try:
-            listed = subprocess.run(
-                [runtime, "ps", "-a", "--filter", f"name={prefix}", "--format", "{{.Names}}"],
-                capture_output=True, text=True, timeout=30,
-            )
-        except Exception:                                     # noqa: BLE001
-            return False, []
-        if listed.returncode != 0:
-            return False, []
-        return True, [n for n in listed.stdout.split() if n.startswith(prefix)]
-
-    def _egress_gone(self, handle) -> bool | None:
-        """Whether this run's proxy and its two networks are gone. None when unaskable.
-
-        Separate from the container check because they are separate objects: a container can be
-        removed while the network it sat on stays, and a leftover network with a proxy on it is a
-        route out that nothing is using and nobody is watching.
-        """
-        import subprocess
-
-        availability = self.backend.check_available()
-        runtime = availability.backend
-        if not runtime or runtime == "none":
-            return None
-        # A container is listed with .Names and a network with .Name. Asking for the wrong one
-        # makes the runtime fail the template rather than answer, which came back as "could not
-        # ask" -- unknown rather than a false yes, but still blind.
-        for kind, field, name in (("container", "{{.Names}}", handle.proxy_name),
-                                  ("network", "{{.Name}}", handle.int_net),
-                                  ("network", "{{.Name}}", handle.ext_net)):
-            try:
-                listed = subprocess.run(
-                    [runtime, kind, "ls", "--filter", f"name={name}", "--format", field],
-                    capture_output=True, text=True, timeout=30,
-                )
-            except Exception:                                 # noqa: BLE001
-                return None
-            if listed.returncode != 0:
-                return None                                   # could not ask is not "gone"
-            if any(line.strip() == name for line in listed.stdout.splitlines()):
-                return False
-        return True
-
-    def _verify_gone(self, container_name: str) -> bool | None:
-        """Absence has to be stated by the runtime, not inferred from a command that failed.
-
-        The prefix, not the exact name: the backend gives every run its own generated identity
-        (`<name>-<suffix>`), so the name this service chose is a PREFIX of the container that
-        actually ran. An earlier version of this method asked about the bare name, which matched
-        nothing -- so a cancellation removed nothing and a cleanup check reported success about a
-        container that was still running. The real container lane caught it.
-        """
-        # Removal is not instantaneous, and sampling once can catch a container mid-teardown --
-        # which would report "not gone" about something that is going. Ask repeatedly until the
-        # runtime says it is absent, or until the deadline; a listing that never succeeds stays
-        # unknown rather than becoming a "yes".
-        # Retrying is only worth anything against a runtime that ANSWERS. If there is no runtime
-        # to ask, thirty seconds of asking again produces the same "unknown" it produced at once,
-        # and every run pays for it -- which is what happened when the terminal state began waiting
-        # on this method. Distinguish the two cases before looping: unknowable now is unknowable
-        # later, while "still present" is exactly the thing that changes with time.
-        availability = self.backend.check_available()
-        if not availability.backend or availability.backend == "none":
-            return None
-
-        deadline = time.monotonic() + 30.0
-        answered = False
-        names: list[str] = ["pending"]
-        while time.monotonic() < deadline:
-            answered, names = self._containers_named(container_name)
-            if answered and not names:
-                return True
-            time.sleep(0.25)
-        if not answered:
-            return None
-        return not names
     #: How long a cancellation waits for the run to actually stop before it answers. The worker
     #: publishes the terminal state LAST, after cleanup -- so waiting for that state is waiting
     #: for the abort to be established and the cleanup to be done, which is the only moment at
@@ -1224,6 +1445,129 @@ class GatewayService:
     #: that instant would leave the payload to run to its wall clock. Named rather than buried,
     #: because a test that has no runtime at all should not wait the length of one.
     CONTAINER_APPEAR_SECONDS = 20.0
+
+    def could_not_record(self, record, exc: Exception) -> None:
+        """A run ended and its line was not written. Say so durably, and stop taking work.
+
+        The alternative is a gateway that keeps running jobs it cannot account for, with nothing
+        anywhere saying which ones are missing -- and a usage record whose gaps are invisible is
+        not a usage record. Stopping is the fail-closed answer and it is reversible:
+        `agentnode gateway resume` once whatever prevented the write is fixed.
+        """
+        from agentnode_sdk.gateway.allowance import stop_everything
+
+        detail = ("run %s ended and this gateway could not write down what it used (%s). It has "
+                  "stopped taking work rather than run anything else it cannot account for."
+                  % (record.run_id[:12], str(exc)[:160]))
+        record.refusal = record.refusal or detail
+        sys.stderr.write("\n  " + detail + "\n")
+        sys.stderr.flush()
+        try:
+            stop_everything(self.state.root, detail)
+        except Exception:                                     # noqa: BLE001 - never mask the first
+            pass
+
+    def write_down_what_it_used(self, record, granted, terminal: str) -> None:
+        """One line about one run, for an operator who has to say who used what.
+
+        Everything here is a number or a name this gateway already published. Nothing of the
+        job's content and nothing of anybody's credential: see `gateway/meter.py`, where the
+        fields are declared and a test walks a real line looking for every secret there is.
+        """
+        from agentnode_sdk.gateway import meter
+        from agentnode_sdk.gateway.protocol import outcome_of
+
+        started = float(record.started_at or 0.0)
+        finished = float(record.finished_at or started)
+        if record.owner_client_id:
+            self.use.finished(record.owner_client_id, record.run_id, max(0.0, finished - started))
+        try:
+            meter.record(
+                self.state.root,
+                run_id=record.run_id, client_id=record.owner_client_id,
+                started_at=started, finished_at=finished,
+                cpu=float(granted.limits.cpu), memory_mb=int(granted.limits.memory_mb),
+                wall_clock_s=int(granted.limits.wall_clock_s),
+                # The state it is ENDING in, which the record does not carry yet: publishing
+                # it is the last thing that happens, after this.
+                state=terminal, outcome=outcome_of(terminal, record.termination_reason),
+                bytes_out=len(record.stdout or "") + len(record.stderr or ""),
+                worker_topology=self.worker.topology,
+                # What it was admitted under, not what is configured now.
+                allowance_sha256=record.admitted_under or self.allowance().digest(),
+                allowance_admitted_under=(record.admitted_under_values
+                                          or self.allowance().as_dict()))
+        except OSError:                                       # pragma: no cover - a full disk
+            # A run that happened is not un-happened by a meter that could not be written, and
+            # refusing to publish the terminal state over it would lose the run instead.
+            pass
+
+    def reserve(self, client_id: str, run_id: str, record, asking_for: int) -> None:
+        """Take the slot and the allowance, or raise -- as one indivisible step.
+
+        The count of what a client has going and the insertion of the new run are the same
+        decision, so they are made without letting go of the lock in between. Reading the count,
+        doing a page of other work, and then inserting is how a ceiling of one admits two.
+        """
+        from agentnode_sdk.gateway.protocol import is_terminal
+
+        allowed = self.allowance()
+        if not client_id:
+            with self._lock:
+                self.runs[run_id] = record
+            return
+
+        def judge(runs: int, seconds: float, oldest: float) -> None:
+            self._judge_window(allowed, runs, seconds, oldest, asking_for)
+
+        with self._lock:
+            if allowed.concurrent_runs:
+                going = sum(1 for r in self.runs.values()
+                            if r.owner_client_id == client_id and not is_terminal(r.state))
+                if going >= allowed.concurrent_runs:
+                    raise OverTheCeiling(
+                        "concurrent_runs",
+                        "this client already has %d runs going and may have %d at once. Wait "
+                        "for one to finish." % (going, allowed.concurrent_runs))
+            if allowed.runs_per_window or allowed.seconds_per_window:
+                # Raises before anything is written if this client is over a window ceiling.
+                self.use.claim(client_id, run_id, judge)
+            else:
+                self.use.note(client_id, run_id)
+            # Taken in the same breath as it was checked.
+            self.runs[run_id] = record
+
+    def stop_what_is_running(self, why: str, settle: float | None = None) -> list:
+        """End every run that has not ended, because the operator stopped this gateway.
+
+        The stop used to mean "admit nothing new", and runs already going were left to finish.
+        That is the wrong reading of a switch somebody reaches for: the reason to stop a gateway
+        at once is usually the code that is running on it right now -- an image being replaced
+        under it, a client doing something that must not continue, a host that has to be freed.
+        A switch that leaves that running is one an operator cannot rely on.
+
+        Returns what it did to each, so a caller can say so rather than assume. A run that will
+        not settle is reported as unsettled rather than counted as stopped; this is a fail-closed
+        thing and claiming more than happened would defeat it.
+        """
+        from agentnode_sdk.gateway.protocol import is_terminal
+
+        done = []
+        for record in list(self.runs.values()):
+            if is_terminal(record.state):
+                continue
+            # Said before it is stopped, so that whatever publishes the terminal state can see
+            # why, and a client is told the gateway stopped rather than that its code was
+            # cancelled by somebody unnamed.
+            record.halted_by = why
+            try:
+                _, settled = self.cancel(record.run_id, settle=settle)
+            except Exception as exc:                          # noqa: BLE001 - one run, not all
+                done.append({"run_id": record.run_id, "stopped": False, "error": str(exc)[:200]})
+                continue
+            done.append({"run_id": record.run_id, "stopped": bool(settled),
+                         "state": record.state})
+        return done
 
     def cancel(self, run_id: str, settle: float | None = None):
         """Stop a run and answer once it has stopped. Returns `(record, settled)`.
@@ -1246,44 +1590,12 @@ class GatewayService:
             return record, True
         deadline = time.monotonic() + (self.CANCEL_SETTLE_SECONDS if settle is None else settle)
         record.cancel_requested.set()
-        self._end_container(record)
+        self.worker.stop(record.run_id, record.container_name, self.CONTAINER_APPEAR_SECONDS)
         while time.monotonic() < deadline:
             if is_terminal(record.state):
                 return record, True
             time.sleep(0.05)
         return record, is_terminal(record.state)
-
-    def _end_container(self, record: RunRecord) -> None:
-        """Remove this run's container by the identity the backend actually gave it.
-
-        Nothing outside this run's own prefix is ever addressed, and a listing that failed stops
-        the removal rather than making it guess at a name.
-        """
-        import subprocess
-
-        availability = self.backend.check_available()
-        runtime = availability.backend
-        if not runtime or runtime == "none" or not record.container_name:
-            return
-        # A cancel can arrive before the container exists: the worker marks the run "running"
-        # and then the runtime takes a moment to create it. Removing nothing at that instant and
-        # returning would leave the payload to run to its wall clock, which is not what the client
-        # asked for -- so wait briefly for it to appear. Bounded, because a container that never
-        # appears is a run that never started, and the record already says so.
-        deadline = time.monotonic() + self.CONTAINER_APPEAR_SECONDS
-        names: list[str] = []
-        while time.monotonic() < deadline:
-            answered, names = self._containers_named(record.container_name)
-            if answered and names:
-                break
-            if record.state in ("finished", "refused", "cancelled") and not names:
-                return
-            time.sleep(0.25)
-        for name in names:
-            try:
-                subprocess.run([runtime, "rm", "-f", name], capture_output=True, timeout=60)
-            except Exception:                                 # noqa: BLE001
-                pass
 
 
 class _Cancelled(Exception):
@@ -1468,6 +1780,30 @@ class _Handler(BaseHTTPRequestHandler):
         return self._send(404, refusal("no such endpoint"))
 
 
+class _ServerThatStopsItsWatchers(ThreadingHTTPServer):
+    """A server whose background threads end when it does.
+
+    Two threads watch this server for as long as `agentnode_serving` is true: one for the
+    operator's stop file and one for the state directory's permissions. Nothing used to clear
+    that flag except the privacy watcher deciding to halt, so `shutdown()` stopped serving and
+    left both threads alive -- waking every second or two, for the life of the process, reading
+    files in a directory that may since have been deleted.
+
+    One server leaking two threads is easy to miss. A test suite that starts dozens of them ends
+    up with dozens of timers running underneath everything that comes after, which is how this
+    was found: a submission to an unrelated gateway began timing out at thirty seconds, on one
+    Python version at a time, about half the time.
+    """
+
+    def shutdown(self) -> None:
+        self.agentnode_serving = False
+        super().shutdown()
+
+    def server_close(self) -> None:
+        self.agentnode_serving = False
+        super().server_close()
+
+
 def make_server(
     service: GatewayService,
     host: str = "127.0.0.1",
@@ -1517,7 +1853,7 @@ def make_server(
                 threading.Thread(target=target.shutdown, daemon=True).start()
                 return
     handler = type("_BoundHandler", (_Handler,), {"service": service})
-    server = ThreadingHTTPServer((host, port), handler)
+    server = _ServerThatStopsItsWatchers((host, port), handler)
     # Off unless asked for. A gateway that logs every request by default writes a record of who
     # ran what and when, on a machine whose operator never chose to keep one.
     server.agentnode_log = bool(os.environ.get("AGENTNODE_GATEWAY_LOG"))
@@ -1530,7 +1866,51 @@ def make_server(
     else:
         server.agentnode_tls = False
     server.agentnode_serving = True
+    def _watch_the_stop(target) -> None:
+        """Act on the operator's stop, which is a FILE and not a call into this process.
+
+        `agentnode gateway stop` runs in a different process from the gateway -- an operator at a
+        terminal, or a script -- so it cannot reach the runs held here. The file is the only thing
+        both sides share, which makes it the right place for the decision and this the right place
+        to act on it.
+
+        Polling rather than watching: a missed notification would be a kill switch that did not
+        fire, and there is no filesystem-watch API worth trusting equally on every platform this
+        runs on. A second's delay is acceptable for something an operator reaches for; silently
+        not firing is not.
+        """
+        from agentnode_sdk.gateway.allowance import why_it_is_stopped
+
+        acted_on = ""
+        while getattr(target, "agentnode_serving", False):
+            time.sleep(1.0)
+            try:
+                halted = why_it_is_stopped(service.state.root)
+            except Exception:                                 # noqa: BLE001 - never kill the loop
+                continue
+            if not halted:
+                acted_on = ""                                 # lifted; a later stop acts again
+                continue
+            if halted == acted_on:
+                continue
+            acted_on = halted
+            stopped = service.stop_what_is_running(halted)
+            if stopped:
+                unsettled = [r for r in stopped if not r.get("stopped")]
+                sys.stderr.write(
+                    ("\n  This gateway was stopped, and %d run(s) that were "
+                     "going were ended.\n") % len(stopped))
+                if unsettled:
+                    # Never counted as stopped. An operator reaching for this needs to know
+                    # which ones they still have to go and look at.
+                    sys.stderr.write(
+                        ("  %d did not confirm they had stopped: %s\n")
+                        % (len(unsettled),
+                           ", ".join(r["run_id"][:12] for r in unsettled)))
+                sys.stderr.flush()
+
     threading.Thread(target=_watch_permissions, args=(server,), daemon=True).start()
+    threading.Thread(target=_watch_the_stop, args=(server,), daemon=True).start()
     return server
 
 

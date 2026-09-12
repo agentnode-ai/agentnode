@@ -21,6 +21,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
+from agentnode_sdk.gateway.pinning import WrongCertificate
 from agentnode_sdk.gateway.transport import check_client_url
 
 from agentnode_sdk.gateway.protocol import (
@@ -46,6 +47,10 @@ class GatewayConnection:
     gateway_id: str = ""
     version: str = ""
     fingerprint: str = ""
+    #: The certificate this client paired with, as a sha256 of its DER. Every later connection is
+    #: to that certificate or to nothing. Empty for a gateway on this machine, where there is
+    #: nothing on the path to read the link and nothing to impersonate.
+    certificate_sha256: str = ""
 
     def as_dict(self) -> dict[str, str]:
         return {
@@ -54,6 +59,7 @@ class GatewayConnection:
             "gateway_id": self.gateway_id,
             "version": self.version,
             "fingerprint": self.fingerprint,
+            "certificate_sha256": self.certificate_sha256,
         }
 
 
@@ -86,58 +92,90 @@ class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_RefuseRedirects)
 
 
-def _post(url: str, body: dict, timeout: float = 30.0) -> tuple[int, dict]:
+def _opener(pin: str):
+    """The opener for this request. Pinned when there is something to pin to.
+
+    One place decides, so that a request made anywhere in this module cannot accidentally be the
+    unpinned one. A connection with no pin is one to a gateway on this machine, where a pin would
+    be protecting a link that does not leave it.
+    """
+    if not pin:
+        return _OPENER
+    from agentnode_sdk.gateway.pinning import opener_for
+
+    return opener_for(pin, _RefuseRedirects)
+
+
+def _post(url: str, body: dict, timeout: float = 30.0, pin: str = "") -> tuple[int, dict]:
     check_client_url(url)
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST",
                                  headers={"Content-Type": "application/json"})
     try:
-        with _OPENER.open(req, timeout=timeout) as resp:
+        with _opener(pin).open(req, timeout=timeout) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as exc:
         try:
             return exc.code, json.loads(exc.read().decode("utf-8") or "{}")
         except ValueError:
             return exc.code, {"error": exc.reason}
+    except WrongCertificate as exc:
+        # Not a network problem, and presenting it as one would invite somebody to retry until
+        # it worked.
+        raise GatewayClientError(str(exc)) from exc
     except urllib.error.URLError as exc:
+        # Wherever urllib wrapped it on the way out, it is still not a network problem.
+        if isinstance(getattr(exc, "reason", None), WrongCertificate):
+            raise GatewayClientError(str(exc.reason)) from exc
         raise GatewayClientError(
             f"could not reach the gateway at {url}: {exc.reason}. Check the address, and that the "
             "gateway is running on that machine."
         ) from exc
 
 
-def _get(url: str, timeout: float = 30.0, token: str = "") -> tuple[int, dict]:
+def _get(url: str, timeout: float = 30.0, token: str = "", pin: str = "") -> tuple[int, dict]:
     check_client_url(url)
     req = urllib.request.Request(url, method="GET")
     if token:
         req.add_header("X-AgentNode-Token", token)
     try:
-        with _OPENER.open(req, timeout=timeout) as resp:
+        with _opener(pin).open(req, timeout=timeout) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as exc:
         try:
             return exc.code, json.loads(exc.read().decode("utf-8") or "{}")
         except ValueError:
             return exc.code, {"error": exc.reason}
+    except WrongCertificate as exc:
+        # Not a network problem, and presenting it as one would invite somebody to retry until
+        # it worked.
+        raise GatewayClientError(str(exc)) from exc
     except urllib.error.URLError as exc:
+        if isinstance(getattr(exc, "reason", None), WrongCertificate):
+            raise GatewayClientError(str(exc.reason)) from exc
         raise GatewayClientError(
             f"could not reach the gateway at {url}: {exc.reason}."
         ) from exc
 
 
-def hello(base_url: str) -> dict[str, Any]:
+def hello(base_url: str, pin: str = "") -> dict[str, Any]:
     """What the gateway says it is and what it can do. Unauthenticated on purpose.
 
     A person needs to be able to ask "is this thing alive and ready" before they have paired with
     it, or the first failure has nothing to say.
+
+    `pin` is the certificate an invitation said to expect. Asked WITH it rather than without:
+    a first request that did not check would be the one request in the whole exchange that went
+    to whatever answered.
     """
-    status, body = _get(base_url.rstrip("/") + "/v1/hello")
+    status, body = _get(base_url.rstrip("/") + "/v1/hello", pin=pin)
     if status != 200:
         raise GatewayClientError(body.get("error", f"the gateway answered {status}"))
     return body
 
 
-def pair(base_url: str, code: str, client_name: str = "") -> GatewayConnection:
+def pair(base_url: str, code: str, client_name: str = "",
+         certificate_sha256: str = "") -> GatewayConnection:
     """Exchange a pairing code for a token. The code is spent either way.
 
     This is the one exchange with nothing to compare against: pairing is where a client learns
@@ -152,8 +190,11 @@ def pair(base_url: str, code: str, client_name: str = "") -> GatewayConnection:
     """
     import hashlib
 
+    # The pin goes in BEFORE the code goes out. A client that sent its one-time credential and
+    # checked the certificate afterwards would have handed it to whatever answered.
     status, body = _post(base_url.rstrip("/") + "/v1/pair",
-                         {"code": code, "client_name": client_name})
+                         {"code": code, "client_name": client_name},
+                         pin=certificate_sha256)
     # Before the status, and before any error text is repeated to the caller. Every answer this
     # gateway gives is stamped, refusals included, so a response that cannot describe itself is
     # not one to read anything out of -- EM3C-EXTERNAL-0015 found the refusal path being presented
@@ -179,6 +220,7 @@ def pair(base_url: str, code: str, client_name: str = "") -> GatewayConnection:
         gateway_id=gateway.get("gateway_id", ""),
         version=gateway.get("version", ""),
         fingerprint=body.get("fingerprint", ""),
+        certificate_sha256=certificate_sha256,
     )
 
 
@@ -230,7 +272,8 @@ def submit(connection: GatewayConnection, artifact: bytes, *, granted=None,
         "signature": sign(client_token_secret(connection.token), payload),
         "artifact_b64": base64.b64encode(artifact).decode("ascii"),
     }
-    status, answer = _post(connection.base_url + "/v1/jobs", body)
+    status, answer = _post(connection.base_url + "/v1/jobs", body,
+                           pin=connection.certificate_sha256)
     assert_same_gateway(connection, answer)
     if status not in (200, 202, 409):
         raise GatewayClientError(answer.get("error", f"the gateway answered {status}"))
@@ -334,7 +377,9 @@ def rotate(connection: GatewayConnection) -> GatewayConnection:
     from agentnode_sdk.gateway.identity import client_token_secret
 
     payload = {"purpose": "rotate", "nonce": new_nonce(), "issued_at": time.time()}
-    status, body = _post(f"{connection.base_url}/v1/token/rotate", {
+    status, body = _post(f"{connection.base_url}/v1/token/rotate",
+                         pin=connection.certificate_sha256,
+                         body={
         "token": connection.token,
         "payload": payload,
         "signature": sign(client_token_secret(connection.token), payload),
@@ -394,7 +439,8 @@ def not_backwards(connection: GatewayConnection, answer: dict[str, Any]) -> dict
 
 def status_of(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
     """Idempotent: asking twice gives the same answer, and asking is free."""
-    status, body = _get(f"{connection.base_url}/v1/jobs/{run_id}", token=connection.token)
+    status, body = _get(f"{connection.base_url}/v1/jobs/{run_id}", token=connection.token,
+                        pin=connection.certificate_sha256)
     # Before any field of this response is used, including the status. Not before the body is
     # read: finding the identity means parsing the body, so "read" and "used" are different
     # moments and only the second one is ours to control. An earlier version checked after the
@@ -423,7 +469,8 @@ def cancel(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
         "payload": payload,
         "signature": sign(client_token_secret(connection.token), payload),
     }
-    status, answer = _post(f"{connection.base_url}/v1/jobs/{run_id}/cancel", body)
+    status, answer = _post(f"{connection.base_url}/v1/jobs/{run_id}/cancel", body,
+                           pin=connection.certificate_sha256)
     assert_same_gateway(connection, answer)
     # 200: it stopped. 202: it was asked to and had not stopped yet. Anything else is not an
     # answer about this run.

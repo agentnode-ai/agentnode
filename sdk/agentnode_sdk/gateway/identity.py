@@ -304,6 +304,22 @@ class GatewayState:
             except OSError:
                 pass
 
+    def withdraw_pairing(self) -> bool:
+        """Take back a code that has not been used yet. True when there was one to take back.
+
+        An invitation is handed over out of band -- read aloud, pasted into a chat, photographed
+        off a screen -- and any of those can go to the wrong person, or simply go further than
+        intended. Until now the only way to deal with that was to issue another one, which
+        replaces the first; that works but requires knowing it works, and leaves an operator who
+        just wants the outstanding one dead with nothing to do about it.
+
+        The same claim-and-clear the redemption uses, so a withdrawal and a redemption racing
+        each other cannot both win.
+        """
+        with self._pairing_lock:
+            self._pairing = None
+            return self._claim_pairing_file() is not None
+
     def redeem_pairing(self, presented: str, client_name: str = "",
                        now: float | None = None) -> str:
         """Exchange a valid code for a token. The code is consumed whether or not it matched.

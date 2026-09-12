@@ -16,6 +16,7 @@ tool's job to remember and the tool's job to explain when it matters.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 from agentnode_sdk.cli.output import bold, dim
@@ -36,7 +37,8 @@ def _connection(args):
         return None, None
     return saved, GatewayConnection(base_url=saved.url, token=saved.token,
                                     gateway_id=saved.gateway_id,
-                                    fingerprint=saved.fingerprint)
+                                    fingerprint=saved.fingerprint,
+                                    certificate_sha256=saved.certificate_sha256)
 
 
 def _no_gateway() -> int:
@@ -67,9 +69,65 @@ def cmd_connect(args) -> int:
         InsecureTransportError,
     )
 
-    url = str(args.url).rstrip("/")
+    from agentnode_sdk.gateway.invitation import NotAnInvitation, PREFIX
+    from agentnode_sdk.gateway.invitation import read as an_invitation
+
+    given = str(args.url).strip()
+    code = str(getattr(args, "code", "") or "")
+    expect = ""
+    named_gateway = ""
+    if given.startswith(PREFIX):
+        from agentnode_sdk.gateway.invitation import details as what_it_carries
+
+        try:
+            carried = what_it_carries(given)
+            given, code, expect = an_invitation(given)
+        except NotAnInvitation as exc:
+            print()
+            print(f"  {bold('That invitation could not be used.')}")
+            print(f"  {exc}")
+            return 2
+        named_gateway = str(carried.get("gateway", ""))
+        # Said here, before anything is contacted. An expired invitation that fails at the far
+        # end looks like a network problem, and people debug a network that is working.
+        dies_at = float(carried.get("expires", 0) or 0)
+        if dies_at and dies_at < time.time():
+            ago = time.time() - dies_at
+            print()
+            print(f"  {bold('That invitation has expired.')}")
+            print("  It stopped working %s ago, and nothing was contacted."
+                  % ("%d minutes" % (ago // 60) if ago >= 60 else "%d seconds" % ago))
+            print("  Invitations are short-lived on purpose: one that stayed valid would be a")
+            print("  key that keeps working long after whoever was sent it has forgotten it.")
+            print()
+            print("  Ask for another:  agentnode gateway pair")
+            return 2
+    elif not code:
+        print()
+        print("  Paste the invitation you were given, or pass the address and --code:")
+        print("    agentnode remote connect agentnode-invite-1....")
+        print("    agentnode remote connect https://sandbox.example:8099 --code ABCD-EFGH-IJKL")
+        return 2
+
+    url = given.rstrip("/")
     try:
-        hello = gc.hello(url)
+        hello = gc.hello(url, pin=expect)
+        # The certificate is what makes the answer trustworthy; this is a separate question --
+        # whether the gateway that answered is the one the invitation was written for. They can
+        # differ when an old invitation is used against a gateway that has since been rebuilt,
+        # and then pairing would appear to work and the client would be attached to something
+        # nobody meant.
+        if named_gateway:
+            answered = str((hello.get("gateway") or {}).get("gateway_id", ""))
+            if answered and answered != named_gateway:
+                print()
+                print(f"  {bold('That is not the gateway this invitation was written for.')}")
+                print(f"  The invitation names {named_gateway[:12]}, and {url} calls itself")
+                print(f"  {answered[:12]}. Nothing was paired.")
+                print()
+                print("  This usually means the gateway was rebuilt after the invitation was")
+                print("  made. Ask for a new one.")
+                return 1
     except InsecureTransportError as exc:
         print()
         print(f"  {bold('Did not connect.')}")
@@ -84,7 +142,8 @@ def cmd_connect(args) -> int:
         return 1
 
     try:
-        connection = gc.pair(url, str(args.code), client_name=getattr(args, "as_name", "") or "")
+        connection = gc.pair(url, code, client_name=getattr(args, "as_name", "") or "",
+                             certificate_sha256=expect)
     except gc.GatewayClientError as exc:
         print()
         print(f"  {bold('That did not pair.')} {exc}")
@@ -93,13 +152,17 @@ def cmd_connect(args) -> int:
     name = getattr(args, "as_name", "") or _name_from(url)
     _store(args).save(SavedGateway(name=name, url=url, token=connection.token,
                                    gateway_id=connection.gateway_id,
-                                   fingerprint=connection.fingerprint))
+                                   fingerprint=connection.fingerprint,
+                                   certificate_sha256=connection.certificate_sha256))
     print()
     print(f"  {bold('Connected')} to the sandbox at {url}, saved as {bold(name)}.")
     print()
     _explain_protection(hello)
     print()
     print("  Your access is stored on this machine only, readable by you alone.")
+    if expect:
+        print("  This client will talk to that sandbox's certificate and to nothing else:")
+        print(f"  {dim(expect)}")
     print("  Next:  agentnode remote test")
     return 0
 
@@ -148,7 +211,12 @@ def cmd_status(args) -> int:
     print()
     print(f"  {bold(saved.name)}  {dim(saved.url)}")
     try:
-        hello = gc.hello(saved.url)
+        # WITH the certificate this client pinned when it paired. Asking without it was the one
+        # request in the whole exchange that went to whatever answered -- and on a gateway with
+        # a self-signed certificate it did not even get that far: ordinary CA verification
+        # failed, and the failure was reported as "that is not the sandbox you paired with",
+        # which is a different and much more alarming thing than "this request forgot to pin".
+        hello = gc.hello(saved.url, pin=saved.certificate_sha256)
         # `hello` is unauthenticated -- it has to be, since it is what an unpaired client asks
         # first. But this connection already knows which gateway it paired with, and
         # EM3C-EXTERNAL-0011 found the answer being read out to the user without that comparison:
@@ -338,6 +406,15 @@ def cmd_run(args) -> int:
         print(f"  {final.get('refusal')}")
         return 1
     print()
+    # "cancelled" on its own reads as something the person did. When the operator's switch is
+    # what ended it, saying so is the difference between a person looking at their code and a
+    # person looking at the sandbox.
+    halted = str(final.get("halted_by") or "")
+    if halted:
+        print(f"  {bold('Did not finish.')} The sandbox was stopped by whoever runs it:")
+        print(f"  {halted}")
+        print("  Nothing about your code is known from this -- it was ended part-way.")
+        return 1
     print(f"  {bold('Did not finish.')} {final.get('refusal') or state}")
     return 1
 

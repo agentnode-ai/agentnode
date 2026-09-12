@@ -144,6 +144,38 @@ jobs:
           grep -q "needs a container runtime" cancel.txt || {
             echo "the skipped case is not the one this lane expects"; tail -5 cancel.txt; exit 1; }
 
+      - name: What a client may use, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs -p no:randomly tests/test_allowance.py 2>&1 | tee allow.txt
+          grep -qE "^92 passed, 1 skipped" allow.txt || {
+            echo "the allowance tests did not come out as this lane expects"; exit 1; }
+          grep -q "modes are advisory" allow.txt || {
+            echo "the skipped case is not the one this lane expects"; exit 1; }
+
+      - name: A gateway a client can reach, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs -p no:randomly tests/test_reachable.py 2>&1 | tee reach.txt
+          grep -qE "^75 passed, 1 skipped" reach.txt || {
+            echo "the reachability tests did not come out as this lane expects"; exit 1; }
+          grep -q "modes are advisory" reach.txt || {
+            echo "the skipped case is not the one this lane expects"; exit 1; }
+
+      - name: The line between the control plane and the worker, on Windows
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs -p no:randomly tests/test_socket_worker.py 2>&1 | tee socket.txt
+          grep -qE "^113 passed, 10 skipped" socket.txt || {
+            echo "the socket tests did not come out as this lane expects"; exit 1; }
+          # All six skips are one thing: this machine has no unix sockets. The Linux lane runs
+          # exactly those six and is required.
+          grep -q "no unix sockets" socket.txt || {
+            echo "the skipped cases are not the ones this lane expects"; exit 1; }
+
       - name: The reason a run stopped, on Windows
         shell: bash
         run: |

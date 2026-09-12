@@ -102,6 +102,14 @@ def _tls_from(config: dict, args):
 
     cert = getattr(args, "tls_cert", None) or config.get("tls_cert")
     key = getattr(args, "tls_key", None) or config.get("tls_key")
+    if not cert and not key:
+        # What `gateway init --tls-self-signed` left in this gateway's own directory. Found
+        # rather than configured, so that an operator who made one does not also have to say
+        # where it is -- and so that a gateway with one never serves in the clear by omission.
+        root = _root(args)
+        made, its_key = root / "tls-cert.pem", root / "tls-key.pem"
+        if made.exists() and its_key.exists():
+            cert, key = str(made), str(its_key)
     if cert and key:
         return TlsFiles(certfile=str(cert), keyfile=str(key))
     return None
@@ -129,6 +137,46 @@ def cmd_init(args) -> int:
 
     cert = getattr(args, "tls_cert", None)
     key = getattr(args, "tls_key", None)
+    if getattr(args, "tls_self_signed", False):
+        if cert or key:
+            print("  Either this gateway makes a certificate for itself, or you give it one.")
+            return 2
+        advertise = str(getattr(args, "advertise", "") or "").strip()
+        if not advertise:
+            print()
+            print("  What address will people connect to? That name or address goes in the")
+            print("  certificate and in every invitation this gateway issues:")
+            print("    agentnode gateway init --tls-self-signed --advertise sandbox.example")
+            return 2
+        from agentnode_sdk.gateway import certificate as tls
+
+        root.mkdir(parents=True, exist_ok=True)
+        # A port here is the easy mistake, and it used to be a silent one: the certificate was
+        # made for a name with a colon in it, every invitation carried that name, and the first
+        # sign of trouble was on somebody else's machine, where the client refused an address it
+        # could not parse. The port is not this gateway's to advertise -- it is in the address
+        # the invitation builds -- so say so now rather than at the far end.
+        if ":" in advertise and not advertise.count(":") > 1:      # not an IPv6 literal
+            host, _, tail = advertise.partition(":")
+            print()
+            print(f"  {bold('An address here, without a port.')}")
+            print(f"  The port is added when an invitation is made, so {advertise!r} would put")
+            print(f"  a colon into the certificate and into every invitation, and the client at")
+            print("  the other end would refuse it. What you probably want:")
+            print(f"    agentnode gateway init --tls-self-signed --advertise {host}")
+            if tail and tail != "8099":
+                print(f"  and then start it with  --port {tail}")
+            return 2
+
+        cert, key, pin = tls.make(root, advertise)
+        config["advertise"] = advertise
+        print()
+        print(f"  {bold('A certificate for this gateway, made by this gateway.')}")
+        print(f"  Clients pin it when they pair, so nothing else answering at {advertise}")
+        print("  can take their place. No certificate authority is involved and none is needed:")
+        print("  the invitation is what says which certificate to expect.")
+        print(f"  {dim(pin)}")
+
     if bool(cert) != bool(key):
         print("  A certificate needs its key. Pass both --tls-cert and --tls-key, or neither.")
         return 2
@@ -193,7 +241,7 @@ def cmd_start(args) -> int:
 
     url = public_url_for(host, server.server_address[1], bool(server.agentnode_tls))
     readiness = service.readiness_now()
-    available = service.backend.check_available().available
+    available = service.worker.can_it_isolate().available
 
     print()
     print(f"  {bold('Sandbox gateway running')} at {url}")
@@ -365,7 +413,7 @@ def cmd_status(args) -> int:
         print("  No gateway is set up here. Run: agentnode gateway init")
         return 1
     state, service = _service(root)
-    availability = service.backend.check_available()
+    availability = service.worker.can_it_isolate()
     readiness = service.readiness_now()
     clients = state.paired_clients()
 
@@ -394,18 +442,25 @@ def cmd_status(args) -> int:
 def cmd_doctor(args) -> int:
     root = _root(args)
     state, service = _service(root)
-    availability = service.backend.check_available()
+    availability = service.worker.can_it_isolate()
 
     print()
     print(f"  {bold('Checking this machine')}")
     print()
     if not availability.available:
-        print("  There is no usable container runtime here, so nothing can be isolated.")
+        print("  There is no usable container runtime for this gateway to send work to,")
+        print("  so nothing can be isolated.")
         print(f"  {availability.reason}")
         print()
-        print("  Install Docker or Podman, then run this again.")
+        if getattr(service.worker, "address", ""):
+            print(f"  This gateway does not run containers itself. Its worker is at")
+            print(f"    {service.worker.address}")
+            print("  so that is the machine to look at, not this one.")
+        else:
+            print("  Install Docker or Podman, then run this again.")
         return 1
-    print(f"  A container runtime is available ({availability.backend}).")
+    where = getattr(service.worker, "address", "") or "in this process"
+    print(f"  A container runtime is available ({availability.backend}), {where}.")
 
     if getattr(args, "measure", False):
         print("  Measuring what it actually enforces. This runs several short containers")
@@ -453,13 +508,24 @@ def _say_remote_access(root: Path, config: dict) -> None:
     print("  To let another machine use it, the connection has to be encrypted -- a pairing code")
     print("  and an access token cross it, and neither survives being read on the way.")
     print()
+    # This gateway can make its own certificate, and a client pins it when it pairs. That is
+    # fewer moving parts than anything below and needs nothing installed, so it goes first --
+    # it used to be missing here entirely, and the advice led with "install Tailscale" for a
+    # job the gateway already does.
+    print("  This gateway can make its own certificate, and the invitation tells the client")
+    print("  which one to expect -- so no certificate authority is involved and nothing else")
+    print("  answering at that address can take its place:")
+    print("    agentnode gateway init --tls-self-signed --advertise <the address people reach>")
+    print("    agentnode gateway start --host 0.0.0.0")
+    print("  Then open the port, deliberately, to the people who should have it.")
+    print()
+    print("  The alternatives, if you would rather not open one:")
     if shutil.which("tailscale"):
-        print("  Tailscale is installed here, which is the simplest route:")
+        print("  Tailscale is installed here:")
         print("    tailscale serve --bg 8099")
         print("  That publishes an https:// address on your private network. Nothing is exposed")
         print("  to the internet, and there is no certificate for you to manage.")
     else:
-        print("  The simplest route needs no domain name and no open port:")
         print("    install Tailscale (or another private tunnel), then:")
         print("      tailscale serve --bg 8099")
         print()
@@ -482,6 +548,20 @@ def _say_remote_access(root: Path, config: dict) -> None:
 def cmd_pair(args) -> int:
     root = _root(args)
     state, service = _service(root)
+
+    if getattr(args, "withdraw", False):
+        # An invitation is handed over out of band -- read aloud, pasted into a chat,
+        # photographed off a screen -- and any of those can reach further than intended. Issuing
+        # another one replaces it, but an operator who wants the outstanding one dead should not
+        # have to create a live one to do it.
+        print()
+        if state.withdraw_pairing():
+            print(f"  {bold('That code will not work now.')}")
+            print("  Anyone still holding it gets the same answer as somebody holding a guess.")
+        else:
+            print("  There was no code outstanding, so there was nothing to take back.")
+            return 1
+        return 0
     readiness = service.readiness_now()
     if not readiness.ready:
         print()
@@ -493,7 +573,36 @@ def cmd_pair(args) -> int:
             print(f"    {step}")
         return 1
 
+    import time as _clock
+
+    from agentnode_sdk.gateway.identity import PAIRING_TTL_SECONDS
+
     code = state.start_pairing()
+    dies_at = _clock.time() + PAIRING_TTL_SECONDS
+    config = _load_config(root)
+    where, pin = _where_and_what_to_expect(root, config, args)
+    if where and pin:
+        from agentnode_sdk.gateway.invitation import write as an_invitation
+
+        print()
+        print(f"  {bold('Give this to the person connecting:')}")
+        print()
+        print("      " + an_invitation(where, code, pin, expires=dies_at,
+                                       gateway_id=state.identity.gateway_id))
+        print()
+        print("  It carries the address, the code, which certificate to expect, when it stops")
+        print("  working and which gateway it is for -- so their client can tell this sandbox")
+        print("  from anything else answering there, and can say that it has expired without")
+        print("  having to try. It works once and expires in %d minutes."
+              % (PAIRING_TTL_SECONDS // 60))
+        print("  On their machine:")
+        print("    agentnode remote connect <paste it here>")
+        print()
+        print(dim("  Hand it over the way you would a key. Anyone who sees it before the person"))
+        print(dim("  you meant can pair as them -- and if that happens, or you simply change"))
+        print(dim("  your mind:  agentnode gateway pair --withdraw"))
+        return 0
+
     print()
     print(f"  {bold('Give this code to the person connecting:')}")
     print()
@@ -505,7 +614,41 @@ def cmd_pair(args) -> int:
     print()
     print(dim("  Read it out or type it in. Do not paste it into a chat -- anyone who sees it"))
     print(dim("  before the person you meant can use it instead of them."))
+    if not pin:
+        print()
+        print(dim("  This gateway has no certificate, so there is nothing for their client to"))
+        print(dim("  pin and it can only be reached from this machine. To change that:"))
+        print(dim("    agentnode gateway init --tls-self-signed --advertise <address>"))
     return 0
+
+
+def _where_and_what_to_expect(root, config, args):
+    """The address to put in an invitation and the certificate a client should expect.
+
+    Both come from what this gateway was configured with, not from what is running: a code is
+    issued by a different process from the one that serves, and asking the running one would mean
+    an operator could not hand out an invitation before starting it.
+    """
+    from pathlib import Path as _Path
+
+    cert = str(config.get("tls_cert") or "")
+    if not cert:
+        candidate = root / "tls-cert.pem"
+        cert = str(candidate) if candidate.exists() else ""
+    if not cert or not _Path(cert).exists():
+        return "", ""
+    from agentnode_sdk.gateway import certificate as tls
+
+    try:
+        pin = tls.fingerprint(_Path(cert).read_bytes())
+    except Exception:                                         # noqa: BLE001
+        return "", ""
+    advertise = str(getattr(args, "advertise", "") or config.get("advertise") or "").strip()
+    if not advertise:
+        return "", pin
+    port = int(getattr(args, "port", None) or config.get("port") or 8099)
+    host = "[" + advertise + "]" if ":" in advertise and not advertise.startswith("[") else advertise
+    return "https://%s:%d" % (host, port), pin
 
 
 def cmd_clients(args) -> int:
@@ -644,10 +787,129 @@ def cmd_challenge(args) -> int:
     return 0
 
 
+def cmd_stop(args) -> int:
+    """Stop taking work, at once, until somebody lifts it deliberately."""
+    from agentnode_sdk.gateway.allowance import stop_everything
+
+    reason = str(getattr(args, "reason", "") or "").strip()
+    if not reason:
+        print()
+        print("  Why? Whatever you say here is what every client is told:")
+        print('    agentnode gateway stop --reason "upgrading the sandbox image"')
+        return 2
+    at = stop_everything(_root(args), reason)
+    print()
+    print(f"  {bold('This gateway is not taking work.')}")
+    print("  Every job sent to it is refused with what you just said, and every run that was")
+    print("  going has been ended -- the reason to stop a gateway at once is usually the code")
+    print("  running on it right now, and a switch that left it running would be no switch.")
+    print("  The gateway acts on this within a second or so; it is a file, and this command and")
+    print("  the gateway are different processes.")
+    print(f"  {dim(str(at))}")
+    print()
+    print("  To take work again:  agentnode gateway resume")
+    return 0
+
+
+def cmd_resume(args) -> int:
+    """Take work again. As deliberate as stopping was."""
+    from agentnode_sdk.gateway.allowance import start_again
+
+    if not start_again(_root(args)):
+        print()
+        print("  This gateway was not stopped, so there was nothing to lift.")
+        return 1
+    print()
+    print(f"  {bold('Taking work again.')}")
+    return 0
+
+
+def cmd_limits(args) -> int:
+    """Show or set what one client may use."""
+    from agentnode_sdk.gateway.allowance import Allowance, read_allowance, write_allowance
+
+    root = _root(args)
+    now = read_allowance(root)
+    asked = {name: getattr(args, name, None) for name in
+             ("concurrent_runs", "runs_per_window", "seconds_per_window")}
+    if all(value is None for value in asked.values()):
+        print()
+        print(f"  {bold('What one client may use')}")
+        for name, value in now.as_dict().items():
+            if name == "window_seconds":
+                print(f"    window               : {value / 3600:.0f} hours")
+            else:
+                print(f"    {name:<21}: {value if value else 'no limit'}")
+        print()
+        print("  To change one:")
+        print("    agentnode gateway limits --runs-per-window 200")
+        return 0
+    changed = Allowance(**{**now.as_dict(),
+                           **{k: int(v) for k, v in asked.items() if v is not None}})
+    write_allowance(root, changed)
+    print()
+    print(f"  {bold('Set.')} It applies to the next job, not to runs already going.")
+    for name, value in changed.as_dict().items():
+        if name != "window_seconds":
+            print(f"    {name:<21}: {value if value else 'no limit'}")
+    return 0
+
+
+def cmd_used(args) -> int:
+    """What each client has used. What an operator asks before changing a limit."""
+    from agentnode_sdk.gateway import meter
+
+    root = _root(args)
+    if getattr(args, "verify", False):
+        held = meter.verify(root)
+        print()
+        if held["ok"]:
+            print(f"  {bold('This record has not been altered.')}")
+            print(f"  {held['lines']} line(s); {held['detail']}.")
+            if held.get("unchecked"):
+                print()
+                print(f"  {bold('Not all of it.')} The first {held['unchecked']} line(s) predate")
+                print("  the chain and are not evidence of anything. They were left unsigned on")
+                print("  purpose: signing them now would be this gateway vouching for what it")
+                print("  did not record at the time.")
+            print()
+            print(dim("  Tamper-evident, which is a smaller claim than tamper-proof: nobody"))
+            print(dim("  without this gateway's meter key can change the file without the change"))
+            print(dim("  showing up here. It says nothing about whether the gateway is honest --"))
+            print(dim("  the process that writes a log cannot be checked by that log."))
+            return 0
+        print(f"  {bold('This record has been altered.')}")
+        print(f"  {held['detail']}.")
+        print()
+        print(f"  Everything before line {held.get('at', 0)} still checks out. From there on it")
+        print("  is not evidence of anything.")
+        return 1
+
+    totals = meter.summarise(root)
+    if not totals:
+        print()
+        print("  Nothing has run here yet.")
+        return 0
+    print()
+    print(f"  {bold('What each client has used')}")
+    print(f"    {'client':<16} {'runs':>6} {'seconds':>10} {'bytes out':>12}")
+    for who, what in sorted(totals.items()):
+        print(f"    {who[:16]:<16} {what['runs']:>6} {what['seconds']:>10.1f} "
+              f"{what['bytes_out']:>12}")
+    print()
+    print(dim("  This is a record of use. Nothing here is priced and nothing is charged."))
+    print(dim("  To check that nothing in it has been altered:  agentnode gateway used --verify"))
+    return 0
+
+
 def dispatch(args) -> int:
     action = getattr(args, "gateway_command", None)
     handlers = {
         "init": cmd_init,
+        "stop": cmd_stop,
+        "resume": cmd_resume,
+        "limits": cmd_limits,
+        "used": cmd_used,
         "start": cmd_start,
         "status": cmd_status,
         "egress": cmd_egress,

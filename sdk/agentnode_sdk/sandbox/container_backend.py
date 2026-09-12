@@ -152,17 +152,29 @@ class ContainerBackend(SandboxBackend):
 
     def _probe(self) -> SandboxAvailability:
         candidates = [self._runtime] if self._runtime else ["docker", "podman"]
+        # The first runtime that is INSTALLED is not the first runtime that WORKS. On a host with
+        # both, an account that deliberately has no access to docker -- which is what a worker
+        # account should look like, since the docker group is root-equivalent -- would have
+        # docker found, its daemon unreachable, and podman never tried. What was installed first
+        # is not a reason to stop looking.
+        #
+        # The first failure is what gets reported if nothing works, because "docker's daemon is
+        # not reachable" is more use to an operator than "no runtime", and none of this makes
+        # anything available that was not: if every candidate fails, this still refuses.
+        first_failure = None
         for rt in candidates:
             path = shutil.which(rt)
             if not path:
                 continue
             ok, probe_error = self._runtime_ok(path)
             if not ok:
-                return SandboxAvailability(
-                    available=False, backend=rt,
-                    reason=f"{rt} found but its daemon is not reachable",
-                    executable_path=path, daemon_ok=False, probe_error=probe_error,
-                )
+                if first_failure is None:
+                    first_failure = SandboxAvailability(
+                        available=False, backend=rt,
+                        reason=f"{rt} found but its daemon is not reachable",
+                        executable_path=path, daemon_ok=False, probe_error=probe_error,
+                    )
+                continue
             engine_os, mem_ok = self._engine_facts(path)
             if mem_ok is not True:
                 # EM3B-R1-REVIEW-0001 / F2. An engine that cannot account for swap does not hold
@@ -191,6 +203,8 @@ class ContainerBackend(SandboxBackend):
                 image_available=image_ok, image_digest=self._image,
                 engine_os=engine_os, memory_limit_enforceable=mem_ok,
             )
+        if first_failure is not None:
+            return first_failure
         return SandboxAvailability(
             available=False, backend="none",
             reason="no container runtime (docker or podman) found on PATH",
@@ -214,14 +228,21 @@ class ContainerBackend(SandboxBackend):
         so instead of resting on the flag having been passed.
         """
         r = _run_runtime([path, "info", "--format", "{{.OSType}}|{{.MemoryLimit}}|{{.SwapLimit}}"])
-        if r is None or r.returncode != 0:
-            return "", None
-        parts = (r.stdout or "").strip().split("|")
-        engine_os = parts[0].strip().lower() if parts else ""
-        if len(parts) >= 3:
-            mem, swap = parts[1].strip().lower(), parts[2].strip().lower()
-            if mem in ("true", "false") and swap in ("true", "false"):
-                return engine_os, (mem == "true" and swap == "true")
+        engine_os = ""
+        if r is not None and r.returncode == 0:
+            parts = (r.stdout or "").strip().split("|")
+            engine_os = parts[0].strip().lower() if parts else ""
+            if len(parts) >= 3:
+                mem, swap = parts[1].strip().lower(), parts[2].strip().lower()
+                if mem in ("true", "false") and swap in ("true", "false"):
+                    return engine_os, (mem == "true" and swap == "true")
+        # A question asked in the wrong words coming back as an ERROR is not an answer about the
+        # ceiling -- and this used to be read as one. Podman has no .MemoryLimit or .SwapLimit:
+        # those are Docker's fields, and podman does not merely leave them empty, it exits
+        # non-zero. Returning here meant every podman host reported "cannot enforce", which on a
+        # worker that refuses to serve without an enforceable ceiling means it never serves at
+        # all. The fallback below was already written for exactly this case; it was just never
+        # reached.
         # Podman has no .MemoryLimit/.SwapLimit: those are Docker's fields. Asking it in Docker's
         # words and calling the empty answer "cannot enforce" would refuse every Podman host.
         # Under cgroup v2 the memory-and-swap ceiling is accounted for by default, and that is a

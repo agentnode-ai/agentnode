@@ -103,6 +103,18 @@ class ReportBinding:
     #: now about a policy, and stops being evidence the moment that policy changes.
     operator_policy_digest: str = ""
 
+    #: Where the code this report is about actually runs, relative to the gateway that signed it.
+    #: `ALPHA-BOUNDARY-0001` decided foreign code belongs on another machine; until it moves, a
+    #: report that did not say which arrangement it was measured under would be read as describing
+    #: the other one. One of `agentnode_sdk.worker.TOPOLOGIES`.
+    worker_topology: str = ""
+
+    #: What the worker was configured as when the measurement was taken. A digest rather than the
+    #: configuration: a report is read by people who are not necessarily allowed to know what the
+    #: worker was told, and a measurement taken against a differently configured worker describes
+    #: something else even on the same machine.
+    worker_configuration_sha256: str = ""
+
     def as_dict(self) -> dict[str, str]:
         return {
             "gateway_id": self.gateway_id,
@@ -113,6 +125,8 @@ class ReportBinding:
             "backend_version": self.backend_version,
             "conformance_schema": self.conformance_schema,
             "operator_policy_digest": self.operator_policy_digest,
+            "worker_topology": self.worker_topology,
+            "worker_configuration_sha256": self.worker_configuration_sha256,
         }
 
     def mismatches(self, other: "ReportBinding") -> tuple[str, ...]:
