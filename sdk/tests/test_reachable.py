@@ -785,6 +785,53 @@ class TestARestartDoesNotLeaveASandboxRunning:
         assert service.runs[run_id].state == "interrupted"
 
 
+class TestAServerThatHasStoppedStopsItsWatchers:
+    """Two threads watch every gateway. Both used to outlive it.
+
+    `agentnode_serving` gates the stop-file watcher and the permissions watcher, and nothing
+    cleared it except the second one deciding to halt -- so `shutdown()` stopped serving and left
+    both running, waking every second or two for the life of the process and reading files in a
+    directory that may since have been removed.
+
+    One server leaking two threads is easy to miss. This suite starts dozens, and the symptom was
+    an unrelated submission timing out after thirty seconds, on one Python version at a time,
+    about half the time.
+    """
+
+    def _a_server(self, tmp_path):
+        from agentnode_sdk.gateway.server import GatewayService, GatewayState, make_server
+
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        server = make_server(service, port=0, host="127.0.0.1")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread
+
+    def test_shutting_it_down_ends_them(self, tmp_path):
+        server, thread = self._a_server(tmp_path)
+        assert server.agentnode_serving is True
+        before = threading.active_count()
+        server.shutdown()
+        thread.join(timeout=10)
+
+        assert server.agentnode_serving is False, "the watchers were told nothing"
+        # They sleep up to two seconds between looks, so give them three to notice and end.
+        deadline = time.time() + 6
+        while time.time() < deadline and threading.active_count() > before - 1:
+            time.sleep(0.25)
+        assert threading.active_count() <= before - 1, (
+            "threads outlived the server they were watching: %d before, %d after"
+            % (before, threading.active_count()))
+
+    def test_and_closing_it_does_too(self, tmp_path):
+        """A server closed without being shut down first is the same leak."""
+        server, _thread = self._a_server(tmp_path)
+        server.server_close()
+        assert server.agentnode_serving is False
+        server.shutdown()
+
+
 class TestWhatThisDoesNotEstablish:
 
     def test_the_limits_are_where_a_reader_will_meet_them(self):

@@ -134,7 +134,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_reachable.py 2>&1 | tee em3c-reach.txt
-          grep -qE "^74 passed" em3c-reach.txt || {
+          grep -qE "^76 passed" em3c-reach.txt || {
             echo "the reachability tests did not all run here"; exit 1; }
 
       # The line between the control plane and the worker. On Linux the socket itself is real,

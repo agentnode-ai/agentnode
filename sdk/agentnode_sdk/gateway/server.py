@@ -1780,6 +1780,30 @@ class _Handler(BaseHTTPRequestHandler):
         return self._send(404, refusal("no such endpoint"))
 
 
+class _ServerThatStopsItsWatchers(ThreadingHTTPServer):
+    """A server whose background threads end when it does.
+
+    Two threads watch this server for as long as `agentnode_serving` is true: one for the
+    operator's stop file and one for the state directory's permissions. Nothing used to clear
+    that flag except the privacy watcher deciding to halt, so `shutdown()` stopped serving and
+    left both threads alive -- waking every second or two, for the life of the process, reading
+    files in a directory that may since have been deleted.
+
+    One server leaking two threads is easy to miss. A test suite that starts dozens of them ends
+    up with dozens of timers running underneath everything that comes after, which is how this
+    was found: a submission to an unrelated gateway began timing out at thirty seconds, on one
+    Python version at a time, about half the time.
+    """
+
+    def shutdown(self) -> None:
+        self.agentnode_serving = False
+        super().shutdown()
+
+    def server_close(self) -> None:
+        self.agentnode_serving = False
+        super().server_close()
+
+
 def make_server(
     service: GatewayService,
     host: str = "127.0.0.1",
@@ -1829,7 +1853,7 @@ def make_server(
                 threading.Thread(target=target.shutdown, daemon=True).start()
                 return
     handler = type("_BoundHandler", (_Handler,), {"service": service})
-    server = ThreadingHTTPServer((host, port), handler)
+    server = _ServerThatStopsItsWatchers((host, port), handler)
     # Off unless asked for. A gateway that logs every request by default writes a record of who
     # ran what and when, on a machine whose operator never chose to keep one.
     server.agentnode_log = bool(os.environ.get("AGENTNODE_GATEWAY_LOG"))
