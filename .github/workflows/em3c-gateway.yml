@@ -145,7 +145,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_socket_worker.py 2>&1 | tee em3c-socket.txt
-          grep -qE "^122 passed" em3c-socket.txt || {
+          grep -qE "^123 passed" em3c-socket.txt || {
             echo "the socket tests did not all run here; a skip on Linux is a case nobody ran"
             exit 1; }
 

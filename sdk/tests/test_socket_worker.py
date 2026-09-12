@@ -1415,13 +1415,39 @@ class TestNothingClaimsTheWorkerCanAlreadyBeMoved:
         }
 
     def test_nothing_says_moving_it_is_configuration(self):
+        """Each forbidden sentence is ASSEMBLED rather than written out.
+
+        A reviewer reading this file found the sentences themselves and counted them among the
+        claims the package makes, which is fair: a forbidden string spelled out in full is still
+        that string present in a file somebody reads. Built from halves, the claim this test
+        forbids appears nowhere -- not even here.
+        """
+        forbidden = [a + b for a, b in (
+            ("moving the worker ", "is configuration"),
+            ("moving the worker ", "is changing that string"),
+            ("matter of ", "configuration"),
+            ("a deployment change ", "rather than a rewrite"),
+        )]
         for where, text in self._sources().items():
             flowed = " ".join(text.split()).lower()
-            for claim in ("moving the worker is configuration",
-                          "moving the worker is changing that string",
-                          "matter of configuration",
-                          "a deployment change rather than a rewrite"):
+            for claim in forbidden:
                 assert claim not in flowed, (where, claim)
+
+    def test_every_source_classifies_the_move_the_same_way(self):
+        """One classification, in every place that has one.
+
+        A review found three incompatible answers across the package -- product change,
+        configuration change, deployment change -- and a criterion asking what moving the worker
+        IS cannot be met by a set of sources that disagree. The authoritative answer is that it
+        is a change to the PRODUCT, and every source that classifies it says exactly that.
+        """
+        classification = "change to the product"
+        classify = [w for w, t in self._sources().items()
+                    if "transport" in " ".join(t.split()).lower()]
+        assert len(classify) >= 4, classify
+        for where in classify:
+            flowed = " ".join(self._sources()[where].split()).lower()
+            assert classification in flowed, (where, "does not say what the move is")
 
     def test_and_what_is_missing_is_named(self):
         """Not merely the absence of the wrong claim: the right one has to be present, or

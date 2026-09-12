@@ -56,3 +56,12 @@ group, the worker cannot read the control plane's directory, the control plane c
 container, the socket is reachable by one uid, and a ceiling was shown to bind before the worker
 opened it. Those are properties of the deployment, verified there — not reasons any of the above
 is smaller than it says.
+
+## Moving the worker to its own machine
+
+This topology is what it is until the worker is somewhere else, and that is **not** something
+this deployment can be configured into. The gateway reaches its worker over a unix socket, which
+cannot cross a machine, and the transport that would is not written: adding it is a change to the
+product, not to a deployment. What has been built is the seam beneath it -- no behaviour, no data
+and no record depends on where the other end is -- so the transport is the only thing to add.
+Until it exists, everything above stays true.

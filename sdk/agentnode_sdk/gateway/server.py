@@ -318,8 +318,9 @@ class GatewayService:
         That is not the same as saying the worker can be moved, and this docstring used to say it
         was. The address this reads is handed to `from_address`, which speaks unix sockets and
         refuses every other scheme, so a worker on another machine needs a transport this build
-        does not have. What this property establishes is that the transport is the only thing
-        missing -- one place to change, not many.
+        does not have, and writing one is a change to the product, not to a deployment. What this
+        property establishes is that the transport is the only thing missing -- one place to
+        change, not many.
         """
         if self._worker is None:
             address = str(self.config.get("worker_address") or "")
