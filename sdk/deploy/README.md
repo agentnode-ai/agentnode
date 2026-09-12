@@ -51,8 +51,14 @@ sudo chmod 0640 /etc/agentnode/worker.key
 
 ## Telling the gateway where its worker is
 
-This is the whole of "moving the worker is configuration". Nothing else in the product names a
+This is the only place anything names where the worker is. Nothing else in the product names a
 socket, a path, an account or a host.
+
+**It does not follow that the worker can be moved to another machine by editing this.** The
+address is handed to a transport that speaks unix sockets and refuses every other scheme, so a
+worker elsewhere needs a transport this build does not have, and writing one is a change to the
+product rather than to a deployment. What this arrangement establishes is that it would be the
+only thing to add.
 
 ```jsonc
 // /var/lib/agentnode/state/config.json

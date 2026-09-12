@@ -122,6 +122,10 @@ class RunRecord:
     #: mean a limit changed while a run was going rewrote what that run is recorded as having been
     #: allowed -- which is the one thing a record of what was allowed must not do.
     admitted_under: str = ""
+    #: The ceilings themselves, not only their digest. A digest binds a record
+    #: to a configuration; it cannot be turned back into the numbers, and the
+    #: file it stood for is exactly the thing that gets edited afterwards.
+    admitted_under_values: dict = field(default_factory=dict)
     native_status: int | None = None
     native_platform: str = ""
     stdout: str = ""
@@ -307,8 +311,15 @@ class GatewayService:
         process -- which is what every caller had before there was a word for it, and what a test
         with a stand-in backend still wants.
 
-        `ALPHA-BOUNDARY-0001`: this property is the whole of "moving the worker is configuration".
-        Nothing else in the product names a socket, a path, an account or a host.
+        `ALPHA-BOUNDARY-0001`: this property is the ONLY place in the control plane that names
+        where the worker is. Nothing else in the product names a socket, a path, an account or a
+        host.
+
+        That is not the same as saying the worker can be moved, and this docstring used to say it
+        was. The address this reads is handed to `from_address`, which speaks unix sockets and
+        refuses every other scheme, so a worker on another machine needs a transport this build
+        does not have. What this property establishes is that the transport is the only thing
+        missing -- one place to change, not many.
         """
         if self._worker is None:
             address = str(self.config.get("worker_address") or "")
@@ -1175,6 +1186,7 @@ class GatewayService:
             # From here the run carries what it was admitted under. A limit changed while it is
             # going must not rewrite what this run is recorded as having been allowed.
             record.admitted_under = granted_digest
+            record.admitted_under_values = dict(self.allowance().as_dict())
             # Where it ran and what that was configured as, taken now rather than at the end:
             # a worker replaced mid-flight must not rewrite what a finished run was measured on.
             record.worker_topology = self.worker.topology
@@ -1481,7 +1493,9 @@ class GatewayService:
                 bytes_out=len(record.stdout or "") + len(record.stderr or ""),
                 worker_topology=self.worker.topology,
                 # What it was admitted under, not what is configured now.
-                allowance_sha256=record.admitted_under or self.allowance().digest())
+                allowance_sha256=record.admitted_under or self.allowance().digest(),
+                allowance_admitted_under=(record.admitted_under_values
+                                          or self.allowance().as_dict()))
         except OSError:                                       # pragma: no cover - a full disk
             # A run that happened is not un-happened by a meter that could not be written, and
             # refusing to publish the terminal state over it would lose the run instead.

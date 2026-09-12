@@ -3,8 +3,16 @@
 `ALPHA-BOUNDARY-0001` decided that foreign code belongs on a different machine from the process
 that holds every client's token material and this gateway's signing identity. That machine is not
 being bought yet; the alpha is built on one host as a closed development environment. What has to
-be true NOW is the thing that makes the later move a deployment change rather than a rewrite: no
-behaviour of the product may depend on the worker being here.
+be true NOW is that no BEHAVIOUR of the product depends on the worker being here, so that the move
+is a transport away rather than a rewrite.
+
+Read that precisely, because a looser reading of it was wrong and a review caught it. This build
+speaks unix sockets and nothing else: `from_address` refuses every other scheme in as many words.
+So a worker on another machine is NOT something this build can be configured into -- it needs a
+transport that does not exist yet, and adding one is a change to the product, not to a
+deployment. What IS established is narrower and is the part that was expensive: the vocabulary,
+the data and the failure modes do not depend on co-location, so the transport is the only thing
+missing rather than one of many.
 
 So this module is a vocabulary and nothing else. Five questions, every one of them answerable by
 something on another machine:
@@ -35,8 +43,13 @@ inside the sandbox, which is on the worker's side of this line. See `gateway/cha
 ## What this does not establish
 
 Nothing here isolates anything. On one host the control plane and the code it sends still share a
-kernel, and a vocabulary does not change that. What it establishes is that the product does not
-know where the worker is, which is what makes moving it a matter of configuration.
+kernel, and a vocabulary does not change that.
+
+Nor does it establish that the worker can be moved. `SocketWorker` reaches a unix socket, which
+is on this machine by construction, and there is no transport here that crosses a network. The
+move needs one to be written. Nothing in this build has been exercised against a worker on
+another host, and no claim here should be read as saying otherwise: what the seam establishes is
+that such a transport would be the only thing to add, not that adding it is configuration.
 """
 from __future__ import annotations
 

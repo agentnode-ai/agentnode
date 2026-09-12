@@ -1377,6 +1377,72 @@ class TestThreeFailuresAreThreeAnswers:
                 worker._interpret(answer)
 
 
+class TestNothingClaimsTheWorkerCanAlreadyBeMoved:
+    """The seam is what has been built. The move is not, and nothing may say it is.
+
+    A review found the two claims side by side and incompatible: the module said the arrangement
+    is "what makes moving it a matter of configuration", while the transport refuses every scheme
+    but unix in as many words. Both cannot be true. A reader who believed the first would plan a
+    second machine around a change that does not exist.
+
+    What is actually established is narrower and worth keeping: the vocabulary, the data and the
+    failure modes do not depend on co-location, so a transport is the ONLY thing missing. These
+    tests hold the difference between those two statements, because it is exactly the kind of
+    sentence that drifts back when somebody tidies a docstring.
+    """
+
+    def _sources(self):
+        import inspect
+
+        from agentnode_sdk import worker
+        from agentnode_sdk.gateway import server
+
+        return {"worker/__init__.py": inspect.getdoc(worker) or "",
+                "gateway/server.py": inspect.getsource(server.GatewayService.worker.fget)}
+
+    def test_nothing_says_moving_it_is_configuration(self):
+        for where, text in self._sources().items():
+            flowed = " ".join(text.split()).lower()
+            for claim in ("moving the worker is configuration",
+                          "matter of configuration",
+                          "a deployment change rather than a rewrite"):
+                assert claim not in flowed, (where, claim)
+
+    def test_and_what_is_missing_is_named(self):
+        """Not merely the absence of the wrong claim: the right one has to be present, or
+        removing a sentence would satisfy this and leave a reader knowing nothing."""
+        from agentnode_sdk import worker
+        import inspect
+
+        said = " ".join((inspect.getdoc(worker) or "").split()).lower()
+        assert "transport" in said
+        assert "unix socket" in said or "unix sockets" in said
+        for phrase in ("does not have", "does not exist", "needs a transport"):
+            if phrase in said:
+                break
+        else:
+            raise AssertionError("it does not say the transport is missing: " + said[:400])
+
+    def test_and_the_transport_really_does_refuse_everything_else(self):
+        """The claim is checked against the code rather than against another sentence."""
+        from agentnode_sdk.worker import WorkerUnreachable
+        from agentnode_sdk.worker.remote import from_address
+
+        for address in ("tcp://10.0.0.5:9000", "https://elsewhere.example",
+                        "ssh://box/run/agentnode/worker.sock"):
+            with pytest.raises(WorkerUnreachable):
+                from_address(address, b"k" * 32)
+
+    def test_and_the_deployment_does_not_claim_it_either(self):
+        from pathlib import Path
+
+        said = (Path(__file__).resolve().parent.parent / "deploy" / "README.md").read_text(
+            encoding="utf-8")
+        flowed = " ".join(said.split())
+        assert "moving the worker is configuration" not in flowed
+        assert "does not follow that the worker can be moved" in flowed
+
+
 class TestARecordSaysWhatItsArrangementDoesNotEstablish:
     """A label means nothing to a reader who does not already know what it means.
 

@@ -63,7 +63,8 @@ METER_NAME = "use-log.jsonl"
 #: purpose, in a place a reviewer reads, rather than a keyword appearing at a call site.
 FIELDS = ("run_id", "client_id", "started_at", "finished_at", "seconds",
           "cpu", "memory_mb", "wall_clock_s", "state", "outcome", "bytes_out",
-          "worker_topology", "worker_topology_means", "allowance_sha256")
+          "worker_topology", "worker_topology_means", "allowance_sha256",
+          "allowance_admitted_under")
 
 #: What binds one line to the one before it. Not in FIELDS: those are what a line SAYS, these are
 #: what makes it hard to change, and keeping them apart stops a reader mistaking one for the
@@ -128,7 +129,8 @@ def public_key(root: str | os.PathLike[str]) -> bytes:
 def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started_at: float,
            finished_at: float, cpu: float, memory_mb: int, wall_clock_s: int, state: str,
            outcome: str, bytes_out: int, worker_topology: str,
-           allowance_sha256: str) -> Path:
+           allowance_sha256: str,
+           allowance_admitted_under: dict | None = None) -> Path:
     """Write one line about one run.
 
     Every value is named. There is deliberately no parameter that takes free-form content: a
@@ -153,6 +155,12 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
         # and that is the reason the label is there at all.
         "worker_topology_means": what_it_does_not_establish(worker_topology),
         "allowance_sha256": str(allowance_sha256),
+        # The digest says WHICH ceilings, and a digest cannot be turned back into numbers. A
+        # reader holding one line has to be able to see what was actually in force when the run
+        # was admitted, months later, without a copy of a configuration file that has since been
+        # edited -- otherwise the binding proves only that something was bound.
+        "allowance_admitted_under": {k: v for k, v in sorted(
+            dict(allowance_admitted_under or {}).items())},
     }
     assert set(line) == set(FIELDS), "a line has exactly the fields this module declares"
     path = Path(root) / METER_NAME

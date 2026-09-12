@@ -142,6 +142,49 @@ class TestTheOperatorSetsTheCeilings:
         lines = meter.read(state.root)
         assert lines and lines[-1]["allowance_sha256"] == service.allowance().digest()
 
+    def test_and_a_reader_can_see_what_they_were_without_the_file(self, a_gateway):
+        """A digest binds a record to a configuration. It cannot be turned back into numbers.
+
+        The file it stood for is exactly the thing that gets edited afterwards, so a reader
+        holding one line months later could establish only that SOMETHING was bound. The
+        configuration is CHANGED here after the run is admitted, which is the case that makes
+        the difference visible: comparing against what is configured now would agree with itself
+        whatever the record held.
+        """
+        base, state, service, _backend = a_gateway
+        write_allowance(state.root, Allowance(runs_per_window=5, seconds_per_window=600))
+        admitted_digest = service.allowance().digest()
+        conn = _paired(base, state)
+        a_run(conn, service, "resolvable")
+        gc.wait_for(conn, "resolvable", timeout=20)
+
+        # The operator edits the ceilings after the run has been admitted and finished.
+        write_allowance(state.root, Allowance(runs_per_window=99, seconds_per_window=1))
+        assert service.allowance().digest() != admitted_digest, "the edit did not take"
+
+        line = meter.read(state.root)[-1]
+        was = line["allowance_admitted_under"]
+        assert was["runs_per_window"] == 5, was
+        assert was["seconds_per_window"] == 600, was
+        assert line["allowance_sha256"] == admitted_digest
+        # And the numbers on the line are the ones that digest stands for, so the two agree
+        # rather than the line carrying a digest of one thing and the values of another.
+        assert Allowance(**was).digest() == line["allowance_sha256"]
+
+    def test_and_the_numbers_are_the_ones_it_was_admitted_under(self, a_gateway):
+        """The counter-case: taking them from the configuration CURRENT at the end would
+        pass the test above only by accident, so this one lowers the ceiling mid-flight."""
+        base, state, service, _backend = a_gateway
+        write_allowance(state.root, Allowance(runs_per_window=7, seconds_per_window=300))
+        conn = _paired(base, state)
+        record = service.runs.get("mid-flight")
+        a_run(conn, service, "mid-flight")
+        write_allowance(state.root, Allowance(runs_per_window=1, seconds_per_window=2))
+        gc.wait_for(conn, "mid-flight", timeout=20)
+
+        was = meter.read(state.root)[-1]["allowance_admitted_under"]
+        assert (was["runs_per_window"], was["seconds_per_window"]) == (7, 300), was
+
 
 # ------------------------------------------------------- use is counted and survives a restart
 
