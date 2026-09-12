@@ -159,7 +159,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -rs -p no:randomly tests/test_reachable.py 2>&1 | tee reach.txt
-          grep -qE "^60 passed, 1 skipped" reach.txt || {
+          grep -qE "^69 passed, 1 skipped" reach.txt || {
             echo "the reachability tests did not come out as this lane expects"; exit 1; }
           grep -q "modes are advisory" reach.txt || {
             echo "the skipped case is not the one this lane expects"; exit 1; }
