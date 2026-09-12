@@ -432,3 +432,25 @@ def _reliability_trail(request):
         yield
     finally:
         reliability.record(trail, name, "after")
+
+
+# ---------------------------------------------------------------- who owns a started server
+#
+# The ownership boundary for anything a test starts. Servers registered through
+# `tests.serving.owned()` are stopped here whether the test passed, failed, raised, or was
+# interrupted half way through setting something up -- which is the case that used to leave a
+# listening socket and a thread behind with nobody able to reach either.
+
+
+@pytest.fixture(autouse=True)
+def _servers_have_an_owner():
+    import contextlib as _contextlib
+
+    from tests import serving
+
+    with _contextlib.ExitStack() as stack:
+        previous, serving._owner = serving._owner, stack
+        try:
+            yield stack
+        finally:
+            serving._owner = previous

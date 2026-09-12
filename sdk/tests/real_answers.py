@@ -27,6 +27,7 @@ from agentnode_sdk.sandbox.backend import Outcome
 from agentnode_sdk.gateway.server import GatewayService, make_server
 
 from tests.test_em3c_gateway import StandInBackend, _granted, _store_measurement
+from tests import serving
 from tests import reliability
 
 
@@ -68,7 +69,7 @@ class RealGateway:
         self.service = GatewayService(self.state, backend=self.backend)
         _store_measurement(self.service)
         self.server = make_server(self.service, port=0)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        serving.owned(self.server)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.connection = gc.pair(self.base, self.state.start_pairing(), client_name="evidence")
 

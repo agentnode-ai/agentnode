@@ -203,6 +203,94 @@ class TestRepeatedCyclesDoNotGrow:
         assert threads[-1] <= threads[0], threads
 
 
+class TestTheServingCommandItselfGivesEverythingBack:
+    """The product path, run for real, not a helper standing in for it.
+
+    `cmd_start` is what an operator actually runs and what the systemd unit runs. The other tests
+    here build a gateway the way a test does; this one drives the command, lets it serve, stops it
+    the way a person stops it, and then asks whether the process is holding anything it was not
+    holding before.
+
+    A finalizer would hide exactly this. A state the command forgot would still be collected
+    eventually and the descriptor would still come back, and the test would pass while the
+    production path leaked for as long as the process lived. So the command is required to give
+    things back BY NAME, and the finalizer is kept out of the measurement by checking while the
+    command's own objects are still referenced.
+    """
+
+    def test_it_closes_its_state_and_its_socket_when_it_is_stopped(self, tmp_path, monkeypatch):
+        """Serve for real, then stop it the way stopping it really happens.
+
+        The first version of this replaced `serve_forever` outright, and that deadlocked:
+        `shutdown()` waits on an event only `serve_forever`'s own loop ever sets, so a stand-in
+        that never entered the loop left the command waiting for ever. Worth keeping, because it
+        is also the shape of a real hazard -- shutdown() called on a server that is not serving
+        does not return.
+
+        So the server really serves, and a timer stops it from outside, which is what Ctrl-C and
+        `systemctl stop` both come down to.
+        """
+        import socket as _socket
+        import threading as _threading
+
+        from agentnode_sdk.cli import gateway_commands
+        from agentnode_sdk.gateway import server as srv
+
+        root = tmp_path / "served"
+        finder = _socket.socket()
+        finder.bind(("127.0.0.1", 0))
+        free = finder.getsockname()[1]
+        finder.close()
+
+        class Args:
+            dir = str(root)
+            tls_self_signed = True
+            tls_cert = tls_key = None
+            advertise = "127.0.0.1"
+            host = "127.0.0.1"
+            port = free
+            measure = False
+
+        assert gateway_commands.cmd_init(Args()) == 0
+
+        settle()
+        before_fds = descriptors()
+        before_threads = _threading.active_count()
+
+        made = {}
+        real_make = srv.make_server
+
+        def remember_and_stop_it_shortly(*a, **kw):
+            server = real_make(*a, **kw)
+            made["server"] = server
+            _threading.Timer(1.5, server.shutdown).start()
+            return server
+
+        monkeypatch.setattr(srv, "make_server", remember_and_stop_it_shortly)
+
+        assert gateway_commands.cmd_start(Args()) == 0
+        assert "server" in made, "the command never built a server"
+
+        left = quiet_again(before_threads)
+        settle()
+        assert descriptors() <= before_fds, (
+            "the serving command kept %d descriptors after it stopped"
+            % (descriptors() - before_fds))
+        assert left <= before_threads, (
+            "the serving command left %d threads running" % (left - before_threads))
+
+    def test_and_it_does_that_without_relying_on_the_finalizer(self):
+        """The net is not the lifecycle. The command names what it gives back."""
+        import inspect
+
+        from agentnode_sdk.cli import gateway_commands
+
+        serving_source = inspect.getsource(gateway_commands.cmd_start)
+        tail = serving_source.split("finally:", 1)[1]
+        for released in ("server.shutdown()", "server.server_close()", "state.close()"):
+            assert released in tail, released
+
+
 class TestTheProductionPathsGiveThingsBackToo:
     """Item 6: it is not enough that close() exists and the tests call it."""
 

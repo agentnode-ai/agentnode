@@ -46,6 +46,8 @@ from agentnode_sdk.gateway.protocol import (
 from agentnode_sdk.gateway.server import GatewayService, make_server
 from agentnode_sdk.sandbox.types import SandboxAvailability
 
+from tests import serving
+
 
 class StandInBackend:
     """Records what it was asked to run. It never runs anything."""
@@ -488,7 +490,7 @@ class TestTheOperatorPolicyWins:
         svc = GatewayService(state, backend=RecordingBackend(),
                              operator_policy=SandboxPolicy(limits=Limits(wall_clock_s=7)))
         server = make_server(svc, port=0)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        serving.owned(server)
         url = f"http://127.0.0.1:{server.server_address[1]}"
         try:
             conn2 = gc.pair(url, state.start_pairing())
@@ -563,7 +565,7 @@ class TestMandatoryAndOptionalNarrowing:
                              operator_policy=SandboxPolicy(
                                  limits=Limits(wall_clock_s=wall_clock_s)))
         server = make_server(svc, port=0)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        serving.owned(server)
         return svc, server, "http://127.0.0.1:%d" % server.server_address[1]
 
     def test_narrowing_a_mandatory_field_refuses_before_the_container(self, gateway):
@@ -798,7 +800,7 @@ class TestARedirectIsASecondDestination:
             do_POST = _redirect
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        serving.owned(server)
         return server, seen, "http://127.0.0.1:%d" % server.server_address[1]
 
     def test_a_redirect_to_plaintext_off_the_machine_is_not_followed(self):
@@ -830,7 +832,7 @@ class TestARedirectIsASecondDestination:
                 self.wfile.write(body)
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        serving.owned(server)
         return server, got, "http://127.0.0.1:%d" % server.server_address[1]
 
     def test_a_redirect_does_not_carry_the_token_onward(self):
@@ -1530,7 +1532,7 @@ class TestNothingRunsOnAnUnmeasuredGateway:
         state = GatewayState(td, version="test")
         service = GatewayService(state, backend=backend or StandInBackend())
         server = make_server(service, port=0)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        serving.owned(server)
         return state, service, server, "http://127.0.0.1:%d" % server.server_address[1]
 
     def test_an_unmeasured_gateway_is_not_ready_and_runs_nothing(self):
@@ -1695,7 +1697,7 @@ class TestUnknownCleanupIsNotSuccess:
             service = GatewayService(state, backend=CannotSay())
             _store_measurement(service)
             server = make_server(service, port=0)
-            threading.Thread(target=server.serve_forever, daemon=True).start()
+            serving.owned(server)
             base = "http://127.0.0.1:%d" % server.server_address[1]
             try:
                 conn = gc.pair(base, state.start_pairing())
@@ -1721,7 +1723,7 @@ class TestUnknownCleanupIsNotSuccess:
             service = GatewayService(state, backend=CannotSay())
             _store_measurement(service)
             server = make_server(service, port=0)
-            threading.Thread(target=server.serve_forever, daemon=True).start()
+            serving.owned(server)
             base = "http://127.0.0.1:%d" % server.server_address[1]
             try:
                 conn = gc.pair(base, state.start_pairing())
@@ -1754,7 +1756,7 @@ class TestEveryRemediationIsInvocableAndChangesTheAnswer:
             state = GatewayState(td, version="test")
             service = GatewayService(state, backend=backend)
             server = make_server(service, port=0)
-            threading.Thread(target=server.serve_forever, daemon=True).start()
+            serving.owned(server)
             base = "http://127.0.0.1:%d" % server.server_address[1]
             try:
                 before = gc.hello(base)
@@ -1799,7 +1801,7 @@ class TestEveryRemediationIsInvocableAndChangesTheAnswer:
             _store_measurement(service, only=("outside-host-process", "not-root",
                                               "network-mode", "limit-memory"))
             server = make_server(service, port=0)
-            threading.Thread(target=server.serve_forever, daemon=True).start()
+            serving.owned(server)
             base = "http://127.0.0.1:%d" % server.server_address[1]
             try:
                 conn = gc.pair(base, state.start_pairing())
@@ -1856,7 +1858,7 @@ class TestRestrictedEgress:
                                  operator_policy=operator)
         _store_measurement(service)
         server = make_server(service, port=0)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        serving.owned(server)
         return state, service, server, "http://127.0.0.1:%d" % server.server_address[1]
 
     @pytest.mark.parametrize("destination,why", [
@@ -2436,7 +2438,7 @@ class TestARestartDoesNotForget:
         # process too, and the restarted gateway recognises it as its own rather than re-running.
         _store_measurement(service)
         server = make_server(service, port=0)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        serving.owned(server)
         return state, service, server, "http://127.0.0.1:%d" % server.server_address[1]
 
     def _signed_body(self, service, conn, run_id, artifact=b"x"):
@@ -2598,7 +2600,7 @@ class TestTheVerticalFlowForReal:
                     + (NEWLINE.join(lines) or "    (no results at all)")
                 )
             server = make_server(service, port=0)
-            threading.Thread(target=server.serve_forever, daemon=True).start()
+            serving.owned(server)
             base = f"http://127.0.0.1:{server.server_address[1]}"
             try:
                 yield base, state, service
@@ -2767,7 +2769,7 @@ class TestRestrictedEgressForReal:
             if not readiness.ready:
                 pytest.fail("conformance could not be measured: " + readiness.reason)
             server = make_server(service, port=0)
-            threading.Thread(target=server.serve_forever, daemon=True).start()
+            serving.owned(server)
             base = "http://127.0.0.1:%d" % server.server_address[1]
             try:
                 yield base, state, service
@@ -3035,7 +3037,7 @@ class TestEveryNarrowingIsDisclosed:
         svc = GatewayService(state, backend=StandInBackend(), operator_policy=operator)
         _store_measurement(svc)
         server = make_server(svc, port=0)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        serving.owned(server)
         return svc, server, f"http://127.0.0.1:{server.server_address[1]}"
 
     def _ceiling(self):

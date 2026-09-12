@@ -262,7 +262,14 @@ def cmd_start(args) -> int:
         print()
         print("  Stopped. Nothing is listening any more.")
     finally:
+        # Everything this command owns, given back in order and by name. The state holds a
+        # directory descriptor and the server holds a listening socket and two watcher threads;
+        # a finalizer exists for the ones nobody remembers, but it is a net and not the way
+        # things are meant to end. `shutdown()` before `server_close()` because that is what
+        # tells the watchers to stop -- closing the socket does not.
+        server.shutdown()
         server.server_close()
+        state.close()
     return 0
 
 

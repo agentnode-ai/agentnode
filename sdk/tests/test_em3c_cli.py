@@ -25,6 +25,8 @@ from agentnode_sdk.gateway.server import GatewayService, make_server
 
 from tests.test_em3c_gateway import StandInBackend, _store_measurement
 
+from tests import serving
+
 
 @pytest.fixture()
 def home(tmp_path, monkeypatch):
@@ -42,7 +44,7 @@ def running_gateway(tmp_path):
     service = GatewayService(state, backend=StandInBackend())
     _store_measurement(service)
     server = make_server(service, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    serving.owned(server)
     url = "http://127.0.0.1:%d" % server.server_address[1]
     try:
         yield url, state, service
@@ -55,7 +57,7 @@ def unmeasured_gateway(tmp_path):
     state = GatewayState(tmp_path / "gw-raw", version="test")
     service = GatewayService(state, backend=StandInBackend())
     server = make_server(service, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    serving.owned(server)
     url = "http://127.0.0.1:%d" % server.server_address[1]
     try:
         yield url, state, service
@@ -572,7 +574,7 @@ class TestTheCommandsSayWhatWasGrantedNotWhatWasAsked:
         service = GatewayService(state, backend=StandInBackend(), operator_policy=closed)
         _store_measurement(service)
         server = make_server(service, port=0)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        serving.owned(server)
         url = "http://127.0.0.1:%d" % server.server_address[1]
         try:
             yield url, state, service
@@ -632,7 +634,7 @@ class TestTheCommandsSayWhatWasGrantedNotWhatWasAsked:
         service = GatewayService(state, backend=StandInBackend(), operator_policy=open_policy)
         _store_measurement(service)
         server = make_server(service, port=0)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        serving.owned(server)
         url = "http://127.0.0.1:%d" % server.server_address[1]
         try:
             _connect(url, state)
