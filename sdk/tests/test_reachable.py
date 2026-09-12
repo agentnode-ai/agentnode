@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import os
 import socket
 import ssl
 import threading
@@ -1037,6 +1038,110 @@ class TestThePrivateKeyIsInNothingThatLeavesTheMachine:
                      allowance_sha256="a" * 64)
         written = (Path(tmp_path) / meter.METER_NAME).read_text(encoding="utf-8")
         assert not self._looks_like_a_key(written)
+
+    def test_nor_the_doctor_report_an_operator_runs(self, tmp_path, capsys):
+        """The diagnostic. It is the output most likely to be pasted into a chat window.
+
+        `gateway doctor` exists to be handed to somebody else when something is wrong, which
+        makes it the channel where a leak would travel furthest. It reports on the certificate,
+        so it is holding the right object to leak the wrong half of it.
+        """
+        from agentnode_sdk.cli import gateway_commands
+
+        _cert, _key, _pin, secret = self._made(tmp_path)
+
+        class Args:
+            dir = str(tmp_path)
+            tls_self_signed = True
+            tls_cert = tls_key = None
+            advertise = "127.0.0.1"
+            measure = False
+
+        gateway_commands.cmd_init(Args())
+        capsys.readouterr()
+        try:
+            gateway_commands.cmd_doctor(Args())
+        except SystemExit:
+            pass
+        printed = capsys.readouterr()
+        said = printed.out + printed.err
+        assert said.strip(), "the doctor said nothing, so this test observed no channel"
+        assert not self._looks_like_a_key(said), "the doctor report carried key material"
+        for line in secret.splitlines():
+            if len(line.strip()) > 20:
+                assert line.strip() not in said
+
+    def test_nor_anything_a_running_gateway_writes(self, tmp_path, capfd):
+        """What a LIVE gateway writes while serving with the key, including when it fails.
+
+        This drives the PRODUCT path -- `make_server` with the real `TlsFiles` -- and not a
+        server built inside this test. Watching a harness would make this test unfalsifiable by
+        any change to the gateway: a counter-check could put the key into the gateway's own
+        output and this would stay green, which is the difference between a test and a decoration.
+
+        The error paths are the ones worth watching. A handshake that breaks part-way is exactly
+        where a library or a traceback is holding the private half, and a gateway that printed a
+        stack trace containing it would have disclosed it to the journal of whatever machine it
+        runs on.
+
+        `capfd` and not `capsys`, because this has to catch what is written to the file
+        descriptors by the serving THREAD and by anything below Python.
+        """
+        from agentnode_sdk.gateway.server import GatewayService, GatewayState, make_server
+        from agentnode_sdk.gateway.transport import TlsFiles
+
+        cert, key, pin = tls.make(tmp_path, "127.0.0.1")
+        secret = Path(key).read_text(encoding="utf-8")
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        # With logging OFF the gateway says nothing, and a test that watched a silent channel
+        # would pass whatever the code did. The deployed service is what this is about, so the
+        # log is turned on here the same way the deployment turns it on.
+        previous = os.environ.get("AGENTNODE_GATEWAY_LOG")
+        os.environ["AGENTNODE_GATEWAY_LOG"] = "1"
+        try:
+            server = make_server(service, port=0, host="127.0.0.1",
+                                 tls=TlsFiles(certfile=str(cert), keyfile=str(key)))
+        finally:
+            if previous is None:
+                os.environ.pop("AGENTNODE_GATEWAY_LOG", None)
+            else:
+                os.environ["AGENTNODE_GATEWAY_LOG"] = previous
+        assert getattr(server, "agentnode_log", False), "the log this test inspects is not on"
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        capfd.readouterr()
+        try:
+            opener_for(pin).open("https://127.0.0.1:%d/v1/hello" % port, timeout=10).read()
+            # ... and then break it in the two ways a stranger would.
+            plain = b"GET / HTTP/1.0" + bytes([13, 10, 13, 10])
+            half_a_handshake = bytes([22, 3, 1, 0, 5]) + b"rubbish"
+            for payload in (plain, half_a_handshake):
+                raw = socket.create_connection(("127.0.0.1", port), timeout=5)
+                try:
+                    raw.sendall(payload)
+                    raw.settimeout(3)
+                    raw.recv(64)
+                except OSError:
+                    pass
+                finally:
+                    raw.close()
+            time.sleep(0.5)
+        finally:
+            server.shutdown()
+            thread.join(timeout=10)
+
+        written = capfd.readouterr()
+        said = written.out + written.err
+        assert "gateway GET /v1/hello" in said, (
+            "the gateway did not log the request it served, so this test watched a silent "
+            "channel and would have passed whatever was written to a live one: %r" % said[:200]
+        )
+        assert not self._looks_like_a_key(said), "a running gateway wrote key material"
+        for line in secret.splitlines():
+            if len(line.strip()) > 20:
+                assert line.strip() not in said
 
     def test_and_the_test_would_notice_if_it_did(self, tmp_path):
         """The counter-case for this whole class: prove the detector detects."""
