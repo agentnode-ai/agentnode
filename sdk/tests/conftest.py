@@ -408,3 +408,27 @@ def build_score(
     )
     write_score(score)
     return score
+
+
+# ---------------------------------------------------------------- reliability trail
+#
+# A fault that accumulates over a run -- a leaked thread, a leaked descriptor -- is invisible in
+# the test that finally trips over it and obvious in a line going up. One has already been found
+# this way and fixed. Off unless AGENTNODE_DIAGNOSE is set, so a developer running one test pays
+# nothing for it.
+
+
+@pytest.fixture(autouse=True)
+def _reliability_trail(request):
+    from tests import reliability
+
+    if not reliability.enabled():
+        yield
+        return
+    trail = os.environ.get("AGENTNODE_DIAGNOSE_TRAIL") or reliability.TRAIL_NAME
+    name = request.node.nodeid
+    reliability.record(trail, name, "before")
+    try:
+        yield
+    finally:
+        reliability.record(trail, name, "after")

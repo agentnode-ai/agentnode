@@ -27,6 +27,7 @@ from agentnode_sdk.sandbox.backend import Outcome
 from agentnode_sdk.gateway.server import GatewayService, make_server
 
 from tests.test_em3c_gateway import StandInBackend, _granted, _store_measurement
+from tests import reliability
 
 
 class Backend(StandInBackend):
@@ -74,12 +75,37 @@ class RealGateway:
     def close(self):
         self.server.shutdown()
 
+    def saying_what_it_was_doing(self, what: str):
+        """Turn a timeout here into a description of why it timed out.
+
+        Every failure of this kind in CI has been a request to this gateway not coming back
+        within thirty seconds, and a bare `TimeoutError: timed out` cannot be told apart from a
+        machine that was simply busy. The stacks say which: a server thread blocked on something
+        names it, and no blocked thread at all says the opposite. Re-running until it passes
+        would answer neither.
+        """
+        import contextlib
+        import time as _time
+
+        @contextlib.contextmanager
+        def watching():
+            started = _time.monotonic()
+            try:
+                yield
+            except TimeoutError as exc:
+                raise TimeoutError(str(exc) + reliability.what_was_it_doing(
+                    what, _time.monotonic() - started)) from exc
+
+        return watching()
+
     def a_finished_run(self, artifact: bytes = b"print('EXT-OK')") -> dict:
         """Submit a job, wait for it, and return the answer the client verified."""
-        answer = gc.submit(self.connection, artifact,
-                           granted=_granted(self.service, token=self.connection.token))
+        with self.saying_what_it_was_doing("a submission to the session gateway"):
+            answer = gc.submit(self.connection, artifact,
+                               granted=_granted(self.service, token=self.connection.token))
         run_id = answer["run_id"]
-        return gc.wait_for(self.connection, run_id, timeout=30.0)
+        with self.saying_what_it_was_doing("waiting for run " + str(run_id)):
+            return gc.wait_for(self.connection, run_id, timeout=30.0)
 
     def a_run_its_limit_ended(self, artifact: bytes = b"print('never mind')") -> dict:
         """A real submission the sandbox stops at its limit, answered by the real gateway."""
