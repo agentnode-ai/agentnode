@@ -1392,18 +1392,33 @@ class TestNothingClaimsTheWorkerCanAlreadyBeMoved:
     """
 
     def _sources(self):
+        """Every reader-facing place that describes the seam.
+
+        Three of these were corrected one at a time, each after a review found the next one still
+        saying it. So this is a LIST rather than a pair, and the test below walks all of it: a
+        claim corrected in two files out of four is a claim still being made.
+        """
         import inspect
+        from pathlib import Path
 
         from agentnode_sdk import worker
+        from agentnode_sdk.worker import remote
         from agentnode_sdk.gateway import server
 
-        return {"worker/__init__.py": inspect.getdoc(worker) or "",
-                "gateway/server.py": inspect.getsource(server.GatewayService.worker.fget)}
+        deploy = Path(__file__).resolve().parent.parent / "deploy"
+        return {
+            "worker/__init__.py": inspect.getdoc(worker) or "",
+            "worker/remote.py": inspect.getdoc(remote) or "",
+            "gateway/server.py": inspect.getsource(server.GatewayService.worker.fget),
+            "deploy/README.md": (deploy / "README.md").read_text(encoding="utf-8"),
+            "deploy/RISKS.md": (deploy / "RISKS.md").read_text(encoding="utf-8"),
+        }
 
     def test_nothing_says_moving_it_is_configuration(self):
         for where, text in self._sources().items():
             flowed = " ".join(text.split()).lower()
             for claim in ("moving the worker is configuration",
+                          "moving the worker is changing that string",
                           "matter of configuration",
                           "a deployment change rather than a rewrite"):
                 assert claim not in flowed, (where, claim)

@@ -1,9 +1,16 @@
-"""A worker somewhere else. Today that is a socket on this machine; the code does not care.
+"""A worker reached over a socket. Today that socket is always on this machine.
 
-What decides where the worker is, is an address in the gateway's configuration and nothing else.
-`unix:///run/agentnode/worker.sock` is a worker on this host; a `tcp://` address would be one on
-another. No product code names a path, an account or a host -- moving the worker is changing that
-string, which is what `ALPHA-BOUNDARY-0001` needs to be true before the second machine exists.
+What decides where the worker is, is an address in the gateway's configuration and nothing else:
+no product code names a path, an account or a host. That is what `ALPHA-BOUNDARY-0001` needs to
+be true before the second machine exists, and it is true.
+
+**It does not follow that the worker can be moved by changing that string, and an earlier version
+of this docstring said it did.** `from_address` below speaks `unix://` and `unix+stream://` and
+refuses every other scheme in as many words -- there is no `tcp://` here, and a worker on another
+machine needs a transport that has not been written. Writing it is a change to the product, not
+to a deployment. What IS established is that it would be the only thing to add: one function to
+extend, with the vocabulary, the data, the failure modes and the record all indifferent to where
+the other end is.
 
 ## Where the topology in the record comes from
 
