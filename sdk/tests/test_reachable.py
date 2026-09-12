@@ -394,6 +394,83 @@ class TestPairingDoesNotNeedAShell:
         assert PAIRING_TTL_SECONDS <= 15 * 60
         assert len({new_pairing_code() for _ in range(200)}) == 200
 
+    def test_every_attempt_costs_budget_whether_it_succeeds_or_not(self, tmp_path):
+        """Counting FAILURES is not counting attempts, and the difference is the attack.
+
+        A lockout that only counts wrong guesses can be walked around by an attacker whose
+        guesses are not wrong in the way it recognises; the budget exists because grinding has
+        to be bounded even then. R4 asks whether reachability weakened this, so it is exercised
+        rather than read out of the source.
+
+        The ceiling comes from `Budget.allowance` itself. Taking it from what the code happened
+        to do would be writing down the answer and calling it the question -- the test would
+        agree with any number the implementation produced, including one.
+        """
+        from agentnode_sdk.gateway.identity import GatewayState, PairingError
+        from agentnode_sdk.gateway.throttle import Budget
+
+        allowed = Budget().allowance
+        assert allowed > 1
+
+        state = GatewayState(str(tmp_path), version="test")
+        state.identity                                  # the marker the counters are anchored to
+
+        # Every attempt is a SUCCESS: each one redeems a freshly issued code. Nothing here is a
+        # wrong guess, so a counter that only noticed failures would never fire.
+        spent = 0
+        for _ in range(allowed + 5):
+            code = state.start_pairing()
+            try:
+                state.redeem_pairing(code)
+            except PairingError as exc:
+                assert "not accepting pairings" in str(exc) or "too many" in str(exc).lower(), exc
+                break
+            spent += 1
+        else:
+            raise AssertionError(
+                "pairing went on past %d successful attempts without the budget stopping it"
+                % (allowed + 5))
+
+        assert spent <= allowed, (
+            "%d attempts were served where the budget allows %d" % (spent, allowed))
+        assert spent >= allowed - 1, (
+            "the budget stopped at %d of its own allowance of %d, which is a different limit "
+            "than the one it declares" % (spent, allowed))
+
+    def test_and_a_wrong_guess_costs_the_same_as_a_right_one(self, tmp_path):
+        """The counter-case that makes the one above mean something: attempts, not failures."""
+        from agentnode_sdk.gateway.identity import GatewayState, PairingError
+        from agentnode_sdk.gateway.throttle import Budget
+
+        allowed = Budget().allowance
+        # Reading the ceiling from the code is the right way to avoid writing the answer down --
+        # but on its own it makes the test agree with ANY declared number, including one large
+        # enough to bound nothing. A counter-check that raised the allowance to 100000 passed
+        # this whole class, so the declared value is checked as well as obeyed.
+        assert allowed <= 100, (
+            "an allowance of %d is not a bound on grinding, whatever it is called" % allowed)
+
+        state = GatewayState(str(tmp_path), version="test")
+        state.identity
+
+        # A wrong guess can be stopped by either of two things -- the failure lockout or the
+        # attempt budget -- and which one fires first is not what this asserts. What it asserts
+        # is that wrong guesses STOP, within the same allowance, rather than being free because
+        # the code they presented was never valid.
+        stopped_at = None
+        for n in range(allowed + 5):
+            state.start_pairing()
+            try:
+                state.redeem_pairing("ZZZZ-ZZZZ-ZZZZ")
+            except PairingError as exc:
+                said = str(exc).lower()
+                if "does not match" not in said:
+                    stopped_at = n
+                    break
+        assert stopped_at is not None, (
+            "wrong guesses went on for %d rounds without anything stopping them" % (allowed + 5))
+        assert stopped_at <= allowed
+
     def test_an_invitation_is_not_written_into_anything(self):
         """It is the thing that would let somebody else pair as you."""
         import inspect
