@@ -172,15 +172,26 @@ class TestTheOperatorSetsTheCeilings:
         assert Allowance(**was).digest() == line["allowance_sha256"]
 
     def test_and_the_numbers_are_the_ones_it_was_admitted_under(self, a_gateway):
-        """The counter-case: taking them from the configuration CURRENT at the end would
-        pass the test above only by accident, so this one lowers the ceiling mid-flight."""
-        base, state, service, _backend = a_gateway
+        """Taken at admission, not at the end. The difference only shows when the ceilings
+        change BETWEEN the two, so this drives the metering step directly rather than racing a
+        live run to finish before an edit lands -- a race would pass whichever way it fell."""
+        from agentnode_sdk.gateway.server import RunRecord
+
+        _base, state, service, _backend = a_gateway
         write_allowance(state.root, Allowance(runs_per_window=7, seconds_per_window=300))
-        conn = _paired(base, state)
-        record = service.runs.get("mid-flight")
-        a_run(conn, service, "mid-flight")
+
+        record = RunRecord(run_id="admitted-under", job_id="j", owner_client_id="c")
+        record.admitted_under = service.allowance().digest()
+        record.admitted_under_values = dict(service.allowance().as_dict())
+        record.started_at = 1.0
+        record.finished_at = 2.0
+
+        # The operator lowers the ceilings while the run is between admission and its record.
         write_allowance(state.root, Allowance(runs_per_window=1, seconds_per_window=2))
-        gc.wait_for(conn, "mid-flight", timeout=20)
+
+        from agentnode_sdk.sandbox.contract import SandboxPolicy
+
+        service.write_down_what_it_used(record, SandboxPolicy(), "finished")
 
         was = meter.read(state.root)[-1]["allowance_admitted_under"]
         assert (was["runs_per_window"], was["seconds_per_window"]) == (7, 300), was
@@ -1031,7 +1042,11 @@ class TestARunCarriesWhatItWasAdmittedUnder:
         from agentnode_sdk.gateway import server
 
         text = inspect.getsource(server.GatewayService.write_down_what_it_used)
-        assert "record.admitted_under" in text
+        # The EXPRESSIONS, not the words. `record.admitted_under` is a prefix of
+        # `record.admitted_under_values`, so once the second existed a mutation removing the
+        # first left this passing on the spelling of the other -- which a counter-check found.
+        assert "allowance_sha256=record.admitted_under or" in text
+        assert "allowance_admitted_under=(record.admitted_under_values" in text
         assert "admitted under, not what is configured now" in text
 
     def test_the_digest_comes_back_from_the_check_that_applied_it(self):
