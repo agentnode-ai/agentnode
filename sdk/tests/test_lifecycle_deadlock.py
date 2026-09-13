@@ -71,6 +71,40 @@ def an_initialised_gateway(tmp_path):
     return Args, gateway_commands
 
 
+def serving_but_it_falls_over(monkeypatch, what_to_raise):
+    """Make the gateway this command is about to build fail inside its own serve loop.
+
+    On the INSTANCE, never on the class. Patching
+    `_ServerThatStopsItsWatchers.service_actions` reaches every server of that class in the
+    process -- including the session-scoped gateway other test files share -- and `serve_forever`
+    calls it every poll interval. Doing that killed that gateway's serving thread while its
+    watchers ran on, so nothing ever called `shutdown()`, and thirty-six later tests each waited
+    thirty seconds for a server that was no longer listening.
+
+    That is worth spelling out because it is invisible from the failures: they look exactly like
+    the intermittent gateway timeout this whole thread started from, in the same two files. The
+    dump attached to one of them is what told the difference -- three threads alive, both watchers
+    among them, and no `serve_forever` at all.
+    """
+    from agentnode_sdk.gateway import server as srv
+
+    made = {}
+    build = srv.make_server
+
+    def build_and_break_only_this_one(*a, **kw):
+        server = build(*a, **kw)
+        made["server"] = server
+
+        def falls_over(_self=None):
+            raise what_to_raise
+
+        server.service_actions = falls_over
+        return server
+
+    monkeypatch.setattr(srv, "make_server", build_and_break_only_this_one)
+    return made
+
+
 class TestTheWaysAGatewayReallyEnds:
 
     def test_ctrl_c_ends_it(self, tmp_path, monkeypatch):
@@ -94,12 +128,10 @@ class TestTheWaysAGatewayReallyEnds:
         before_fds = descriptors()
         before_threads = threading.active_count()
 
-        def somebody_pressed_it(self):
-            raise KeyboardInterrupt
-
-        monkeypatch.setattr(srv._ServerThatStopsItsWatchers, "service_actions", somebody_pressed_it)
+        made = serving_but_it_falls_over(monkeypatch, KeyboardInterrupt())
 
         assert gateway_commands.cmd_start(Args()) == 0, "Ctrl-C did not end it cleanly"
+        assert "server" in made, "the command never built a server"
 
         left = quiet_again(before_threads)
         settle()
@@ -121,10 +153,7 @@ class TestTheWaysAGatewayReallyEnds:
         before_fds = descriptors()
         before_threads = threading.active_count()
 
-        def fall_over(self):
-            raise RuntimeError("the floor gave way")
-
-        monkeypatch.setattr(srv._ServerThatStopsItsWatchers, "service_actions", fall_over)
+        serving_but_it_falls_over(monkeypatch, RuntimeError("the floor gave way"))
 
         with pytest.raises(RuntimeError):
             gateway_commands.cmd_start(Args())
