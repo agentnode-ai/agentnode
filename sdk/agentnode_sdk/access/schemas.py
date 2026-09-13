@@ -123,7 +123,7 @@ def mcp_tools() -> list:
     """The MCP rendering. One tool per operation, named so they group under one service."""
     return [
         {
-            "name": "agentnode_" + op.name.replace(".", "_"),
+            "name": tool_name_for(op.name),
             "description": op.summary,
             "inputSchema": _object(op.params),
             "_meta": {"agentnode/since": op.since, "agentnode/needs": op.needs,
@@ -143,7 +143,7 @@ def tool_calling_schema() -> list:
         {
             "type": "function",
             "function": {
-                "name": "agentnode_" + op.name.replace(".", "_"),
+                "name": tool_name_for(op.name),
                 "description": op.summary,
                 "parameters": _object(op.params),
             },
@@ -161,16 +161,29 @@ def every_rendering() -> dict:
     }
 
 
+def tool_name_for(operation_name: str) -> str:
+    """How an operation is spelled where dots are not allowed. One place, so the renderings and
+    anything reading them cannot disagree about it."""
+    return "agentnode_" + operation_name.replace(".", "_")
+
+
 def operations_named_by(rendering, which: str) -> set:
-    """Which operations a rendering actually offers, in that rendering's own terms."""
+    """Which declared operations a rendering actually offers.
+
+    Matched by mangling the DECLARED names and looking for them, rather than by un-mangling what
+    the rendering contains. Reversing the mangling needs a rule about where a dot used to be, and
+    the first version of that quietly got `devices.list` wrong in one of the three renderings --
+    which is exactly the kind of disagreement this module exists to make impossible.
+    """
     if which == "openapi":
-        return {entry[method]["operationId"]
-                for entry in rendering["paths"].values()
-                for method in entry}
+        offered = {entry[method]["operationId"]
+                   for entry in rendering["paths"].values()
+                   for method in entry}
+        return {op.name for op in contract.OPERATIONS if op.name in offered}
     if which == "mcp":
-        return {tool["name"].replace("agentnode_", "", 1).replace("_", ".", 1)
-                if tool["name"].count("_") > 1 else tool["name"].replace("agentnode_", "", 1)
-                for tool in rendering}
-    if which == "tool_calling":
-        return {tool["function"]["name"].replace("agentnode_", "", 1) for tool in rendering}
-    raise ValueError(which)
+        offered = {tool["name"] for tool in rendering}
+    elif which == "tool_calling":
+        offered = {tool["function"]["name"] for tool in rendering}
+    else:
+        raise ValueError(which)
+    return {op.name for op in contract.OPERATIONS if tool_name_for(op.name) in offered}

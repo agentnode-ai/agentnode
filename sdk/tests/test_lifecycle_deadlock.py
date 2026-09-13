@@ -73,16 +73,32 @@ def an_initialised_gateway(tmp_path):
 
 class TestTheWaysAGatewayReallyEnds:
 
-    def test_ctrl_c_ends_it(self, tmp_path):
-        """A real signal, delivered while the real loop is running."""
-        import signal
+    def test_ctrl_c_ends_it(self, tmp_path, monkeypatch):
+        """The Ctrl-C branch, raised from inside the real loop.
+
+        An earlier version sent a real SIGINT from a timer thread. It passed alone and HUNG in the
+        full suite, because whether a raised SIGINT becomes a KeyboardInterrupt depends on the
+        signal disposition whatever ran before it left behind -- so the command never returned and
+        the run stopped there. A test whose result depends on the order of the suite is not
+        measuring the product.
+
+        `service_actions` runs inside the real `serve_forever` loop, so raising there exercises
+        the real `except KeyboardInterrupt` branch and the real `finally`, and serve_forever's own
+        finally still sets the shutdown event. That is the difference from a stand-in loop, which
+        is what deadlocks.
+        """
+        from agentnode_sdk.gateway import server as srv
 
         Args, gateway_commands = an_initialised_gateway(tmp_path)
         settle()
         before_fds = descriptors()
         before_threads = threading.active_count()
 
-        threading.Timer(1.5, lambda: signal.raise_signal(signal.SIGINT)).start()
+        def somebody_pressed_it(self):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(srv._ServerThatStopsItsWatchers, "service_actions", somebody_pressed_it)
+
         assert gateway_commands.cmd_start(Args()) == 0, "Ctrl-C did not end it cleanly"
 
         left = quiet_again(before_threads)
