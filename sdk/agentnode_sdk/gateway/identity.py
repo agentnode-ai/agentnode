@@ -626,6 +626,23 @@ class GatewayState:
         self._write_tokens(tokens)
         return True
 
+    def revoke_client(self, client_id: str) -> bool:
+        """Withdraw a device by WHO it is, not by presenting its credential.
+
+        Whoever revokes a device is looking at a list of devices: their own other laptop, a
+        machine they have lost, somebody who has left. They have the device's identity and they
+        do not have its token -- tokens are stored hashed and never handed back. A revoke that
+        required the token would mean the only party able to withdraw a device was the device
+        itself, which is exactly backwards.
+        """
+        tokens = self._read_tokens()
+        for token_hash, record in list(tokens.items()):
+            if record.get("client_id") == client_id:
+                del tokens[token_hash]
+                self._write_tokens(tokens)
+                return True
+        return False
+
     def paired_clients(self) -> list[dict]:
         return sorted(self._read_tokens().values(), key=lambda t: t.get("issued_at", 0))
 

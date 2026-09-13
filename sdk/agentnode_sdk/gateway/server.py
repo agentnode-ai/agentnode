@@ -1671,8 +1671,36 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(503, refusal("this gateway has stopped accepting work: " + verdict.reason))
         return False
 
+    def _the_contract(self, body: bytes = b""):
+        """Anything the declared contract covers goes to the dispatcher and nowhere else.
+
+        This handler translates HTTP and makes no decision of its own. The routes are derived
+        from the declarations, so there is nowhere for an undeclared one to come from, and the
+        dispatcher is the only thing that carries an operation out.
+        """
+        from agentnode_sdk.access import rest
+
+        if not rest.ours(self.path):
+            return None
+        status, answer = rest.handle(self.service, self.path, self.command, self.headers, body)
+        # Written directly rather than through `_send`. `_send` stamps every answer with this
+        # gateway's own identity and protocol version, which is right for its own protocol and
+        # wrong here: it overwrote the contract's `protocol` field with the gateway's, so a
+        # client asking which version of the CONTRACT it was talking to got the version of
+        # something else. The contract declares what its answers contain, and this writes exactly
+        # that.
+        data = json.dumps(answer, sort_keys=True).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        return True
+
     def do_GET(self):
         if not self._state_is_private():
+            return None
+        if self._the_contract():
             return None
         if self.path == "/v1/hello":
             return self._send(200, self.service.hello())
@@ -1697,6 +1725,18 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._state_is_private():
             return None
+        from agentnode_sdk.access import rest as _rest
+
+        if _rest.ours(self.path):
+            # Read the body as bytes and let the adapter parse it: the contract's own refusal for
+            # a malformed body is part of the contract, and this handler must not invent another.
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BODY_BYTES:
+                return self._send(400, refusal("the request body is larger than this gateway "
+                                               "accepts"))
+            if self._the_contract(self.rfile.read(length) if length else b""):
+                return None
+
         try:
             body = self._read_json()
         except (ProtocolError, ValueError) as exc:

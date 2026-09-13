@@ -19,6 +19,9 @@ from __future__ import annotations
 
 from agentnode_sdk.access import contract
 
+#: Where the contract lives. Kept beside the renderer so the document and the router agree.
+NAMESPACE = "/v1/op/"
+
 #: JSON Schema words for the kinds a declaration uses. `bytes` has no JSON type: it travels
 #: base64-encoded, and saying so here is better than every transport deciding for itself.
 AS_JSON = {
@@ -82,7 +85,7 @@ def openapi_document(title: str = "AgentNode Sandbox", server: str = "") -> dict
                 "required": True,
                 "content": {"application/json": {"schema": _object(op.params)}},
             }
-        paths["/v1/" + op.name.replace(".", "/")] = {method: entry}
+        paths[NAMESPACE + op.name.replace(".", "/")] = {method: entry}
 
     document = {
         "openapi": "3.1.0",

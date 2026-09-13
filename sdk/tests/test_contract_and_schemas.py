@@ -70,7 +70,7 @@ class TestEveryRenderingSaysTheSameThing:
     def test_and_each_accepts_exactly_the_declared_parameters(self):
         document = schemas.openapi_document()
         for op in contract.OPERATIONS:
-            path = "/v1/" + op.name.replace(".", "/")
+            path = schemas.NAMESPACE + op.name.replace(".", "/")
             entry = list(document["paths"][path].values())[0]
             if not op.params:
                 assert "requestBody" not in entry, op.name

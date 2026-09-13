@@ -301,12 +301,32 @@ def _submit(service, principal, params):
         except Exception as exc:                              # noqa: BLE001
             raise Refused("malformed", "The artifact is not valid base64.",
                           "Send the code base64-encoded.") from exc
+    # The policy the caller is ASKING for, digested the same way the existing client digests it.
+    # The gateway compares this against what it will actually grant, so composing it here rather
+    # than letting a caller send a digest is the point: a digest a caller chose would bind
+    # nothing.
+    from agentnode_sdk.gateway.policy_paths import policy_shape
+    from agentnode_sdk.gateway.protocol import canonical_bytes
+    from agentnode_sdk.sandbox.contract import Limits, NetworkRules, SandboxPolicy
+
+    network = params.get("network") or "none"
+    domains = tuple(params.get("allowed_domains") or ())
+    wall_clock = max(1, int(params.get("wall_clock_s") or 60))
+    if network == "none":
+        rules = NetworkRules(enabled=False, allowed_destinations=frozenset())
+    else:
+        rules = NetworkRules(enabled=True, allowed_destinations=frozenset(domains))
+    asked_for = SandboxPolicy(network=rules, limits=Limits(wall_clock_s=wall_clock))
+
     request = JobRequest(
         job_id=str(params["run_id"]),
         run_id=str(params["run_id"]),
         artifact_sha256=digest(artifact),
+        policy_sha256=digest(canonical_bytes(policy_shape(asked_for))),
         command=tuple(params.get("command") or ()),
-        wall_clock_s=int(params.get("wall_clock_s") or 60),
+        network=network,
+        allowed_domains=domains,
+        wall_clock_s=wall_clock,
     )
     try:
         record = service.submit(request, artifact, token=principal.token)
@@ -364,7 +384,7 @@ def _usage(service, principal, params):
 
 def _devices_list(service, principal, params):
     return {"devices": [
-        {"device_id": d.get("client_id", ""), "name": d.get("name", ""),
+        {"device_id": d.get("client_id", ""), "name": d.get("client_name", ""),
          "last_used": d.get("last_used"), "paired_at": d.get("issued_at")}
         for d in service.state.paired_clients()
     ]}
@@ -372,12 +392,7 @@ def _devices_list(service, principal, params):
 
 def _devices_revoke(service, principal, params):
     wanted = str(params["device_id"])
-    for device in service.state.paired_clients():
-        if device.get("client_id") == wanted:
-            token = device.get("token") or device.get("token_sha256")
-            withdrawn = bool(service.state.revoke(token)) if token else False
-            return {"device_id": wanted, "withdrawn": withdrawn}
-    return {"device_id": wanted, "withdrawn": False}
+    return {"device_id": wanted, "withdrawn": bool(service.state.revoke_client(wanted))}
 
 
 def _translate(exc: Exception) -> Refused:
