@@ -74,7 +74,10 @@ def handle(service, message: dict, principal) -> dict | None:
         name = str(params.get("name") or "")
         operation = _operation_of(name)
         if not operation:
-            return _error(call_id, METHOD_NOT_FOUND, "There is no tool called %r." % name)
+            # Recorded like any other refusal. An unknown tool name is exactly what probing
+            # looks like, and it never reaches the dispatcher, so the door records it.
+            dispatch.record_a_refusal(service, name, principal, "unknown_operation")
+            return _error(call_id, METHOD_NOT_FOUND, "There is no tool called that.")
         try:
             answer = dispatch.dispatch(operation, params.get("arguments") or {}, principal,
                                        service=service)
@@ -92,7 +95,8 @@ def handle(service, message: dict, principal) -> dict | None:
             "structuredContent": answer,
         })
 
-    return _error(call_id, METHOD_NOT_FOUND, "This server does not do %r." % method)
+    dispatch.record_a_refusal(service, method, principal, "not_a_route")
+    return _error(call_id, METHOD_NOT_FOUND, "This server does not do that.")
 
 
 def _in_words(refusal) -> str:

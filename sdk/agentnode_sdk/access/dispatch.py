@@ -131,9 +131,10 @@ def _check_parameters(op, params: dict) -> dict:
     return given
 
 
-#: What may appear in an audit line's free text. Everything else is dropped rather than escaped:
-#: escaping preserves the value, and the point is that the value never arrives.
-SAFE_DETAIL = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _.-,")
+#: Nothing caller-influenced is written at all. A character filter was tried first and was
+#: not enough: a line of ordinary job output -- "hello world" -- passes any such filter
+#: unchanged, so "output cannot survive" was a claim the filter did not support. What is
+#: recorded instead is chosen entirely by the server from closed sets.
 
 
 def _a_name_we_know(op_name: str) -> str:
@@ -146,16 +147,19 @@ def _a_name_we_know(op_name: str) -> str:
     return op_name if contract.find(op_name) is not None else "(undeclared)"
 
 
-def _safe_detail(detail: str) -> str:
-    """Caller-influenced text, reduced to something that cannot carry a secret.
+def _which_parameters(op_name: str, detail: str) -> list:
+    """Which DECLARED parameter names a refusal was about.
 
-    Refusal text names parameters and sometimes quotes what was sent, and what was sent is
-    whatever the caller chose. Keeping only a short run of harmless characters means a token, a
-    line of job output or a pasted key does not survive into the log -- and what remains is still
-    enough to tell one refusal from another when reading it back.
+    The only thing written about a refusal besides its name. Every value here comes from
+    the contract, never from the request, so there is no string a caller can arrange to
+    have written -- which is the difference between a log somebody reads and a log
+    somebody writes to. It is still enough to tell one malformed request from another.
     """
-    kept = "".join(c for c in (detail or "") if c in SAFE_DETAIL)
-    return kept[:120]
+    op = contract.find(op_name)
+    if op is None:
+        return []
+    said = (detail or "")
+    return sorted(f.name for f in op.params if f.name in said)
 
 
 def _audit(service, op_name: str, principal: Principal, outcome: str, detail: str = "") -> None:
@@ -164,17 +168,18 @@ def _audit(service, op_name: str, principal: Principal, outcome: str, detail: st
     A record of what was refused is as much the point as a record of what was done: an account
     being probed looks like refusals, and a log that only kept successes would not show it.
 
-    Neither field is written as the caller supplied it. The operation is written only if it is a
-    declared one, and the detail is reduced to characters that cannot carry a credential -- a
-    review found that both were caller-controlled, which made this log somewhere to plant a
-    string rather than somewhere to read one.
+    Nothing caller-supplied is written. The operation is written only if it is one we declare;
+    what the refusal was ABOUT is a list of declared parameter names. A review found both
+    fields caller-controlled, and then found that filtering characters was not enough either:
+    ordinary text survives a character filter, so a line of job output would have been
+    preserved intact. Every value written here now comes from the contract.
     """
     line = {
         "at": round(time.time(), 3),
         "operation": _a_name_we_know(op_name),
         "device": principal.device_id or "(nobody)",
         "outcome": outcome if outcome in _OUTCOMES else "(other)",
-        "detail": _safe_detail(detail),
+        "about": _which_parameters(op_name, detail),
     }
     try:
         path = os.path.join(str(service.state.root), "audit.jsonl")

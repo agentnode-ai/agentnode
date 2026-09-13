@@ -177,3 +177,50 @@ class TestWhatAPrincipalIs:
 
     def test_and_nobody_is_not_authenticated(self):
         assert not dispatch.NOBODY.authenticated
+
+
+class TestTheAuditCannotBeWrittenTo:
+    """A log somebody can plant a string in is a log nobody can read.
+
+    A review found both fields caller-controlled, and then found that filtering characters was
+    not enough either: ordinary text passes any character filter, so a line of job output would
+    have survived intact. Nothing caller-supplied is written now.
+    """
+
+    def _lines(self, gateway):
+        path = gateway.state.root / "audit.jsonl"
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def test_ordinary_looking_output_does_not_survive(self, gateway, paired):
+        """The case that defeated the character filter."""
+        looks_harmless = "hello world from inside the sandbox"
+        with pytest.raises(dispatch.Refused):
+            dispatch.dispatch("status", {"run_id": "r" * 32, looks_harmless: 1}, paired,
+                              service=gateway)
+        assert looks_harmless not in self._lines(gateway)
+
+    def test_nor_does_anything_shaped_like_a_credential(self, gateway, paired):
+        for planted in ("sk-live-4242424242", paired.token, "BEGIN PRIVATE KEY"):
+            with pytest.raises(dispatch.Refused):
+                dispatch.dispatch("status", {"run_id": "r" * 32, planted: 1}, paired,
+                                  service=gateway)
+            assert planted not in self._lines(gateway)
+
+    def test_an_operation_name_nobody_declared_is_not_written_either(self, gateway, paired):
+        with pytest.raises(dispatch.Refused):
+            dispatch.dispatch("drop-all-tables; sk-live-9999", {}, paired, service=gateway)
+        written = self._lines(gateway)
+        assert "sk-live-9999" not in written
+        assert "(undeclared)" in written
+
+    def test_but_it_still_says_enough_to_read_back(self, gateway, paired):
+        """A log that records nothing useful is as bad as one that records too much."""
+        import json as _json
+
+        with pytest.raises(dispatch.Refused):
+            dispatch.dispatch("status", {}, paired, service=gateway)
+        lines = [_json.loads(l) for l in self._lines(gateway).splitlines() if l.strip()]
+        malformed = [l for l in lines if l["outcome"] == "malformed"]
+        assert malformed, lines
+        assert malformed[-1]["about"] == ["run_id"], malformed[-1]
+        assert malformed[-1]["operation"] == "status"

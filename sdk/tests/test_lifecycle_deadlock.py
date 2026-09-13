@@ -276,8 +276,43 @@ class TestTheRuleBehindThem:
         bench.open()
         thread = threading.Thread(target=bench.serve_forever, daemon=True)
         thread.start()
+        # Wait until it is really accepting. A review found this test did not, so a stop
+        # could land before serve_forever set its flag -- and the old serve_forever then
+        # set it back to True and served on. The test would have passed anyway, for the
+        # wrong reason, because the thread it joined had not started yet.
+        import time as _t
+
+        deadline = _t.monotonic() + 10
+        while _t.monotonic() < deadline and not getattr(bench, '_serving', False):
+            _t.sleep(0.02)
+        assert getattr(bench, '_serving', False), 'the worker never started accepting'
 
         bench.stop_serving()
         thread.join(timeout=10)
         assert not thread.is_alive(), (
             "the worker was told to stop and is still accepting")
+
+    def test_and_a_stop_that_arrives_first_is_not_overwritten(self, tmp_path):
+        """The race the test above used to be blind to.
+
+        `stop_serving()` before `serve_forever()` was simply lost: the loop set its own
+        flag to True on the way in, and the worker served on having been told to stop.
+        Asked in the order that exposes it, with no sleeping to hide it.
+        """
+        import os
+
+        from agentnode_sdk.worker.service import Bench
+        from tests.test_socket_worker import KEY, AWorkerThatAnswers
+
+        if not hasattr(os, 'getuid'):                     # pragma: no cover - not posix
+            pytest.skip('unix sockets only')
+        bench = Bench(AWorkerThatAnswers(), 'unix://' + str(tmp_path / 's2' / 'w.sock'),
+                      KEY, only_uid=os.getuid())
+        bench.open()
+        bench.stop_serving()                              # told BEFORE it ever served
+
+        thread = threading.Thread(target=bench.serve_forever, daemon=True)
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive(), (
+            'a worker told to stop before it started went on to serve anyway')

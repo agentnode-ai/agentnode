@@ -141,3 +141,25 @@ class TestTheDecisionIsNotAboutWhoTheVendorIs:
         decisions = source.split("def judge(", 1)[1]
         for vendor in ("openai", "anthropic", "claude", "chatgpt", "gemini", "copilot"):
             assert vendor not in decisions.lower(), vendor
+
+
+class TestCompatibleCannotBeReachedAroundTheCheck:
+    """`confirmed()` does the lookup -- so nothing else may accept an observation.
+
+    A review found `judge()` public and taking observations directly, which meant the lookup
+    could be skipped by calling the thing `confirmed()` calls. The door is closed rather than
+    guarded.
+    """
+
+    def test_judge_refuses_observations_from_anybody_else(self):
+        with pytest.raises(compat.NotConfirmable):
+            compat.judge("x", [compat.MCP], [an_observation()])
+
+    def test_and_still_answers_the_questions_it_is_for(self):
+        assert compat.judge("x", [compat.MCP]).state == compat.INTEGRABLE
+        assert compat.judge("x").state == compat.NOT_COMPATIBLE
+
+    def test_and_confirmed_is_the_only_way_through(self):
+        said = compat.confirmed("x", [compat.MCP], an_observation(),
+                                ask_the_sandbox=lambda run: {"run_id": run})
+        assert said.state == compat.COMPATIBLE

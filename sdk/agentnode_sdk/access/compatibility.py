@@ -126,8 +126,15 @@ def _clean(ways: Iterable[str]) -> tuple:
     return tuple(sorted({w for w in ways if w in WAYS_IN}))
 
 
-def judge(system: str, ways_in: Iterable[str] = (), observed: Iterable[Observation] = ()) -> Verdict:
-    """The only way to produce a verdict. There is no argument that means "trust me".
+def judge(system: str, ways_in: Iterable[str] = (), observed: Iterable[Observation] = (),
+          *, _checked: bool = False) -> Verdict:
+    """What can be said about a system from its interfaces alone.
+
+    This cannot return COMPATIBLE. A review found it could: `confirmed()` did the lookup and
+    then called this, but this was public and took observations directly, so anyone could
+    hand it one and skip the check entirely. The door is closed rather than guarded -- the
+    only caller allowed to pass observations is `confirmed()`, after it has asked the
+    sandbox, and it says so with a private argument rather than by convention.
 
     A system with no way in is NOT_COMPATIBLE and is told so plainly; a system with one is
     INTEGRABLE until somebody runs it; a system with an observation is COMPATIBLE, and the
@@ -135,6 +142,10 @@ def judge(system: str, ways_in: Iterable[str] = (), observed: Iterable[Observati
     """
     ways = _clean(ways_in)
     seen = tuple(observed)
+    if seen and not _checked:
+        raise NotConfirmable(
+            "observations are only accepted from confirmed(), which checks them against the\n"
+            "sandbox first. Call that instead.")
     for one in seen:
         if not isinstance(one, Observation):
             raise NotEvidence(
@@ -190,7 +201,7 @@ def confirmed(system: str, ways_in: Iterable[str], observation: Observation, *,
     if not said or str(said.get("run_id") or "") != observation.run_id:
         raise NotConfirmable(
             "the sandbox does not know run %s, so nothing was observed." % observation.run_id)
-    return judge(system, ways_in, (observation,))
+    return judge(system, ways_in, (observation,), _checked=True)
 
 
 def what_to_offer(verdict: Verdict) -> str:

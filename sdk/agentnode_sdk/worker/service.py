@@ -96,6 +96,9 @@ class Bench:
         #: that does not forget.
         self.floor = wire.Floor(remembers_at)
         self._socket: socket.socket | None = None
+        #: Set once, never cleared. Separate from `_serving` so a stop cannot be undone by
+        #: a loop that starts afterwards.
+        self._stopped = False
         self._serving = False
 
     # ------------------------------------------------------------------ the socket
@@ -144,11 +147,19 @@ class Bench:
         return path
 
     def serve_forever(self) -> None:
-        """Accept connections until told to stop, and notice being told within a second."""
+        """Accept connections until told to stop, and notice being told within a second.
+
+        A stop that arrived BEFORE this started is honoured rather than overwritten. This
+        used to set the serving flag unconditionally, so `stop_serving()` racing a worker
+        that was still starting was simply lost and the worker served on -- a worker told
+        to stop that does not. The stop is its own flag now, and setting it is one-way.
+        """
+        if self._stopped:
+            return
         if self._socket is None:
             self.open()
         self._serving = True
-        while self._serving:
+        while self._serving and not self._stopped:
             try:
                 connection, _ = self._socket.accept()
             except OSError:
@@ -158,6 +169,8 @@ class Bench:
             threading.Thread(target=self._one, args=(connection,), daemon=True).start()
 
     def stop_serving(self) -> None:
+        """Told once, stopped for good. Safe to call before serving has begun."""
+        self._stopped = True
         self._serving = False
         if self._socket is not None:
             try:
