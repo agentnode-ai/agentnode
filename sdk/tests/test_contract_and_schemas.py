@@ -75,7 +75,7 @@ class TestEveryRenderingSaysTheSameThing:
         something it should.
         """
         declared = {op.name for op in contract.OPERATIONS}
-        for_people = {op.name for op in contract.OPERATIONS if op.for_people_not_tools}
+        for_people = {op.name for op in contract.OPERATIONS if op.audience != contract.TOOL}
         assert for_people, "nothing is withheld, so this test establishes nothing"
 
         every = schemas.every_rendering()
@@ -114,17 +114,34 @@ class TestEveryRenderingSaysTheSameThing:
                     shape = body["content"]["application/json"]["schema"]
                     assert shape["additionalProperties"] is False, entry["operationId"]
 
-    def test_a_new_operation_appears_in_all_three_without_anyone_editing_them(self):
-        """The property that makes this worth the indirection: add one declaration, and every
-        door offers it. Nobody can forget a transport, because nobody touches a transport."""
-        extra = contract.Operation(
-            name="weather", since="99", needs=contract.READ,
-            summary="What it is like outside.",
-            params=(contract.Field("where", "string", "which sky"),),
-            errors=("not_authenticated", "not_permitted", "malformed"))
+    def test_a_new_operation_appears_everywhere_it_was_declared_for(self):
+        """Add one declaration and every door offers it -- with one deliberate asymmetry.
+
+        The HTTP surface picks it up automatically, because that is a person\'s own client
+        talking and forgetting a transport is the failure this indirection exists to prevent.
+        The renderings a MODEL reads do not, unless the declaration says `audience=tool`.
+
+        That asymmetry is the safety property. A new operation written by somebody thinking
+        about the feature and not about tool exposure is not handed to every model on the next
+        release. Being offered to something that cannot be asked whether it should has to be
+        asked for, in words.
+        """
+        shape = dict(since="99", needs=contract.READ, summary="What it is like outside.",
+                     params=(contract.Field("where", "string", "which sky"),),
+                     errors=("not_authenticated", "not_permitted", "malformed"))
+        unclassified = contract.Operation(name="weather", **shape)
+        for_a_model = contract.Operation(name="weather", audience=contract.TOOL, **shape)
+
         original = contract.OPERATIONS
         try:
-            contract.OPERATIONS = original + (extra,)
+            contract.OPERATIONS = original + (unclassified,)
+            every = schemas.every_rendering()
+            assert "weather" in schemas.operations_named_by(every["openapi"], "openapi")
+            for which in ("mcp", "tool_calling"):
+                assert "weather" not in schemas.operations_named_by(every[which], which), (
+                    "an operation nobody classified was published to models as a tool")
+
+            contract.OPERATIONS = original + (for_a_model,)
             every = schemas.every_rendering()
             for which in ("openapi", "mcp", "tool_calling"):
                 assert "weather" in schemas.operations_named_by(every[which], which), which

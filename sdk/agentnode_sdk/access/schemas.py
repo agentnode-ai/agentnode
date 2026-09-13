@@ -127,7 +127,7 @@ def openapi_document(title: str = "AgentNode Sandbox", server: str = "") -> dict
 def mcp_tools() -> list:
     """The MCP rendering. One tool per operation a model may be offered.
 
-    Operations marked `for_people_not_tools` are left out HERE, in the renderer, not only in the
+    Operations not declared `audience=tool` are left out HERE, in the renderer, not only in the
     per-device list. A schema is an offer: a tool that appears in it has been offered, whoever is
     afterwards told they may not call it. Rotating a credential, withdrawing a device, making an
     invitation, changing the operator's policy or working the kill switch are a person's
@@ -145,8 +145,7 @@ def mcp_tools() -> list:
             "_meta": {"agentnode/since": op.since, "agentnode/needs": op.needs,
                       "agentnode/changes": op.changes},
         }
-        for op in contract.OPERATIONS
-        if not op.for_people_not_tools
+        for op in contract.for_a_model()
     ]
 
 
@@ -167,8 +166,7 @@ def tool_calling_schema() -> list:
         }
         # The same exclusion as the MCP rendering, for the same reason: this is the other thing
         # a model is handed, and a schema that lists a tool has offered it.
-        for op in contract.OPERATIONS
-        if not op.for_people_not_tools
+        for op in contract.for_a_model()
     ]
 
 

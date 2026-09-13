@@ -41,8 +41,9 @@ def tools_for(principal) -> list:
     successor as one ordinary tool call. Those still go through the dispatcher, which is what
     stops them being a second place decisions are made; they are simply not offered here.
     """
+    for_a_model = {op.name for op in contract.for_a_model()}
     allowed = {op.name for op in contract.for_capabilities(principal.capabilities)
-               if not op.for_people_not_tools}
+               if op.name in for_a_model}
     return [tool for tool in schemas.mcp_tools()
             if _operation_of(tool["name"]) in allowed]
 

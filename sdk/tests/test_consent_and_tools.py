@@ -162,49 +162,119 @@ class TestTheConsentIsForTheJobThatWasDescribed:
         assert not service.runs, "something ran without anything having been disclosed"
 
 
-class TestSomeThingsAreNotOfferedToAModel:
+class TestWhatAModelIsOfferedIsDeclared:
+    """The rule, and the reason it is a declaration rather than a guess.
+
+    This used to work by matching fragments of operation NAMES -- "rotate", "revoke", "invite".
+    That is fail-open and obviously so once written down: an operation called `account.limits` or
+    `credentials.refresh` matches nothing on the list and ships to every model on the next
+    release. The list described the operations that happened to exist when it was written, and
+    was doing duty as a rule.
+
+    Now every operation declares who it is for, the default is `person`, and a declaration that
+    contradicts itself cannot be constructed at all.
+    """
 
     def tools(self):
         made = list(schemas.mcp_tools())
-        for other in ("function_tools", "tool_schemas", "generic_tools"):
-            renderer = getattr(schemas, other, None)
-            if callable(renderer):
-                made.extend(renderer())
+        made.extend(schemas.tool_calling_schema())
         return made
 
+    def names(self):
+        out = []
+        for tool in self.tools():
+            out.append(str(tool.get("name") or tool.get("function", {}).get("name", "")).lower())
+        return out
+
     def test_there_are_tools_to_check(self):
-        assert self.tools(), "nothing was rendered, so the check below establishes nothing"
+        assert self.tools(), "nothing was rendered, so everything below establishes nothing"
 
-    @pytest.mark.parametrize("concept,fragments", contract.NEVER_A_TOOL,
-                             ids=[c for c, _ in contract.NEVER_A_TOOL])
-    def test_no_generated_tool_offers_it(self, concept, fragments):
-        offered = [str(tool.get("name", "")).lower() for tool in self.tools()]
+    def test_the_default_is_not_a_tool(self):
+        """The whole safety property in one line: forget to classify, and it is not published."""
+        quiet = contract.Operation(name="something.new", since="2", needs=contract.READ,
+                                   summary="Somebody added this and thought about nothing else.")
+        assert quiet.audience == contract.PERSON
+        assert quiet not in contract.for_a_model()
+
+    def test_an_operation_nobody_classified_appears_in_no_tool_schema(self, monkeypatch):
+        """The counter-check for it: add one, render everything, look for it."""
+        quiet = contract.Operation(name="account.limits", since="2", needs=contract.READ,
+                                   summary="Raise this account's ceilings.")
+        monkeypatch.setattr(contract, "OPERATIONS", contract.OPERATIONS + (quiet,))
+        assert "account.limits" not in [op.name for op in contract.for_a_model()]
+        assert not [n for n in self.names() if "limits" in n], self.names()
+
+    def test_renaming_it_to_something_harmless_does_not_get_it_published(self):
+        """Because nothing reads the name. A declaration that says it changes access cannot also
+        say a model may call it, whatever it is called."""
+        with pytest.raises(ValueError) as refused:
+            contract.Operation(name="housekeeping", since="2", needs=contract.MANAGE_DEVICES,
+                               summary="Tidy up.", audience=contract.TOOL,
+                               risk=contract.CHANGES_ACCESS)
+        assert "cannot be asked whether it should" in str(refused.value)
+
+    @pytest.mark.parametrize("bad", [
+        {"audience": "anyone"},
+        {"risk": "mild"},
+        {"audience": ""},
+    ], ids=["unknown audience", "unknown risk", "missing audience"])
+    def test_a_classification_that_is_not_one_is_refused_at_the_declaration(self, bad):
+        with pytest.raises(ValueError):
+            contract.Operation(name="x.y", since="2", needs=contract.READ, summary="s", **bad)
+
+    def test_and_the_generators_refuse_rather_than_quietly_render_less(self, monkeypatch):
+        """A generator that skipped what it could not classify would publish a shorter list and
+        look like it had succeeded."""
+        broken = contract.Operation(name="x.y", since="2", needs=contract.READ, summary="s")
+        object.__setattr__(broken, "audience", "nonsense")
+        monkeypatch.setattr(contract, "OPERATIONS", contract.OPERATIONS + (broken,))
+        for render in (schemas.mcp_tools, schemas.tool_calling_schema):
+            with pytest.raises(ValueError) as refused:
+                render()
+            assert "not classified" in str(refused.value)
+
+    @pytest.mark.parametrize("concept,fragments", contract.NAMES_THAT_SHOULD_NEVER_BE_TOOLS,
+                             ids=[c for c, _ in contract.NAMES_THAT_SHOULD_NEVER_BE_TOOLS])
+    def test_the_named_dangerous_things_are_still_not_offered(self, concept, fragments):
+        """A tripwire over the declarations, not a rule. If this ever fires, something was
+        declared a tool that should not have been -- the name is the hint, not the mechanism."""
         for fragment in fragments:
-            hit = [name for name in offered if fragment in name]
-            assert not hit, (
-                "a model is offered %s: %s. Operations like this reach the dispatcher like "
-                "everything else, and are not handed to something that cannot be asked whether "
-                "it should." % (concept, hit))
+            hit = [n for n in self.names() if fragment in n]
+            assert not hit, "a model is offered %s: %s" % (concept, hit)
 
-    def test_every_operation_that_does_one_is_marked(self):
-        """Catches the next one, not just the current ones. An operation whose own name says it
-        rotates a credential and is NOT marked would be rendered as a tool."""
+    def test_rotate_and_revoke_specifically(self):
+        for name in ("devices.rotate", "devices.revoke"):
+            op = contract.BY_NAME[name]
+            assert op.audience == contract.PERSON
+            assert op.risk == contract.CHANGES_ACCESS
+            assert op.confirms_with_a_person
+            assert op not in contract.for_a_model()
+
+    def test_anything_that_changes_access_or_policy_needs_the_right_permission(self):
+        """REST still reaches them -- a person's client must be able to -- but only with the
+        capability a person's client holds."""
         for op in contract.OPERATIONS:
-            for concept, fragments in contract.NEVER_A_TOOL:
-                if any(f in op.name.lower().replace(".", "_") for f in fragments):
-                    assert op.for_people_not_tools, (
-                        "%s is %s and would be offered to a model" % (op.name, concept))
+            if op.risk in contract.NEVER_FOR_A_MODEL:
+                assert op.needs == contract.MANAGE_DEVICES, op.name
+
+    def test_a_device_without_that_permission_is_refused_at_the_dispatcher(self, sandbox):
+        service, who = sandbox
+        only_runs = dispatch.Principal(token=who.token, device_id=who.device_id,
+                                       client_id=who.client_id,
+                                       capabilities=(contract.RUN, contract.READ))
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("devices.revoke", {"device_id": "whoever"}, only_runs,
+                              service=service)
+        assert refused.value.refusal == "not_permitted"
 
     def test_but_they_are_still_reachable_through_the_dispatcher(self):
-        """Not offered is not the same as not available. A person's client can still call them,
-        which is what stops this being a second place decisions are made."""
+        """Not offered is not the same as not available. Withholding them from a model must not
+        turn them into a second place decisions are made."""
         for op in contract.OPERATIONS:
-            if op.for_people_not_tools:
-                assert op.name in dispatch.HANDLERS, (
-                    "%s is declared but nothing carries it out" % op.name)
+            if op.audience != contract.TOOL:
+                assert op.name in dispatch.HANDLERS, op.name
 
-    def test_and_they_need_a_capability_a_job_does_not_have(self):
-        for op in contract.OPERATIONS:
-            if op.for_people_not_tools:
-                assert op.needs == contract.MANAGE_DEVICES, (
-                    "%s is a person's business but asks only for %s" % (op.name, op.needs))
+    def test_submit_is_the_one_that_needs_a_person_to_have_agreed(self):
+        assert contract.BY_NAME["submit"].confirms_with_a_person
+        assert contract.BY_NAME["submit"].audience == contract.TOOL, (
+            "a model must be able to submit -- what it may not do is agree on your behalf")

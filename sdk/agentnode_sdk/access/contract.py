@@ -65,6 +65,31 @@ MANAGE_DEVICES = "manage_devices"  # list and revoke this account's devices
 
 CAPABILITIES = (RUN, READ, MANAGE_DEVICES)
 
+# ------------------------------------------------------------------ what an operation IS
+
+#: Who an operation is FOR. This is a declaration, never something worked out from the name.
+#:
+#: An earlier version excluded operations from the tool schemas by matching fragments of their
+#: names -- "rotate", "revoke", "invite". That is fail-open, and obviously so once written down:
+#: an operation called `account.limits` or `credentials.refresh` matches nothing on the list and
+#: ships to every model on the next release. The list was a description of the operations that
+#: happened to exist when it was written, doing duty as a rule.
+TOOL = "tool"            # may be handed to a model as a callable tool
+PERSON = "person"        # a person's own client. Never rendered as a tool.
+OPERATOR = "operator"    # whoever runs the sandbox. Never rendered as a tool.
+AUDIENCES = (TOOL, PERSON, OPERATOR)
+
+#: What an operation can do, in the only terms that matter for deciding who may be offered it.
+READS = "reads"                      # changes nothing
+AFFECTS_A_RUN = "affects_a_run"      # starts work, or stops it
+CHANGES_ACCESS = "changes_access"    # credentials, devices, sessions, invitations
+CHANGES_POLICY = "changes_policy"    # the operator's policy, ceilings, kill switch, billing
+RISK_CLASSES = (READS, AFFECTS_A_RUN, CHANGES_ACCESS, CHANGES_POLICY)
+
+#: Risk classes a model is never offered, whatever anybody declares. The rule that makes
+#: `audience` unable to be wrong in the dangerous direction.
+NEVER_FOR_A_MODEL = (CHANGES_ACCESS, CHANGES_POLICY)
+
 # ------------------------------------------------------------------ refusals, by name
 
 REFUSALS = (
@@ -115,18 +140,35 @@ class Operation:
     returns: tuple = ()
     errors: tuple = ()
     changes: bool = False
-    #: Declared, dispatched, and deliberately NOT offered as a tool an AI can call.
-    #:
-    #: Some operations are a person's business rather than a job's: replacing a credential,
-    #: managing browser sessions, enrolling a new connection. They go through the dispatcher
-    #: like everything else -- that is what stops them being a second decision point -- but an
-    #: AI that has been handed a device's token should not be able to mint its successor, list
-    #: the sessions belonging to the person who set it up, or issue itself a new connection, as
-    #: one ordinary tool call. Reaching the dispatcher and being offered to a model are two
-    #: different questions, and this is the second one.
-    for_people_not_tools: bool = False
+    #: Who this is for. DEFAULTS TO `PERSON`, which is the whole point: an operation added by
+    #: somebody who did not think about tool exposure is not exposed. Being offered to a model
+    #: has to be asked for, in words, in the declaration.
+    audience: str = PERSON
+    #: What it can do. Checked against `audience` below, so a declaration cannot be both
+    #: "a model may call this" and "this changes who can get in".
+    risk: str = READS
+    #: Whether carrying it out requires proof that a person agreed to this specific thing.
+    #: `submit` has it, and the disclosure gate is what enforces it.
+    confirms_with_a_person: bool = False
 
     def __post_init__(self) -> None:
+        # Refused at the declaration, not at the generator, so a classification that is missing,
+        # unknown or self-contradictory cannot exist anywhere in the build.
+        if self.audience not in AUDIENCES:
+            raise ValueError("%s declares audience %r, which is not one of %s"
+                             % (self.name, self.audience, ", ".join(AUDIENCES)))
+        if self.risk not in RISK_CLASSES:
+            raise ValueError("%s declares risk %r, which is not one of %s"
+                             % (self.name, self.risk, ", ".join(RISK_CLASSES)))
+        if self.audience == TOOL and self.risk in NEVER_FOR_A_MODEL:
+            raise ValueError(
+                "%s is declared as a tool and as %s. A model calling it cannot be asked whether "
+                "it should, and it has every reason to say yes." % (self.name, self.risk))
+        if self.risk in NEVER_FOR_A_MODEL and self.needs != MANAGE_DEVICES:
+            raise ValueError(
+                "%s is %s but asks only for %s. Something that changes who can get in, or what "
+                "they may do, needs the capability a person's own client holds."
+                % (self.name, self.risk, self.needs))
         if self.needs not in CAPABILITIES:
             raise ValueError("%s needs %r, which is not a capability" % (self.name, self.needs))
         for refusal in self.errors:
@@ -179,6 +221,8 @@ STATES = RUNNING_STATES + FINISHED_STATES
 OPERATIONS = (
     Operation(
         name="capabilities",
+        audience=TOOL,
+        risk=READS,
         since="1",
         needs=READ,
         summary="What this sandbox can do, what it will enforce, and which operations it has.",
@@ -202,6 +246,8 @@ OPERATIONS = (
     ),
     Operation(
         name="prepare",
+        audience=TOOL,
+        risk=READS,
         since="1",
         needs=RUN,
         summary="What would happen if this job were run: where, what leaves the machine, what it "
@@ -230,6 +276,9 @@ OPERATIONS = (
     ),
     Operation(
         name="submit",
+        audience=TOOL,
+        risk=AFFECTS_A_RUN,
+        confirms_with_a_person=True,
         since="1",
         needs=RUN,
         summary="Run this code in the sandbox.",
@@ -291,6 +340,8 @@ OPERATIONS = (
     ),
     Operation(
         name="status",
+        audience=TOOL,
+        risk=READS,
         since="1",
         needs=READ,
         summary="Where a run has got to.",
@@ -310,6 +361,8 @@ OPERATIONS = (
     ),
     Operation(
         name="result",
+        audience=TOOL,
+        risk=READS,
         since="1",
         needs=READ,
         summary="What a finished run produced.",
@@ -333,6 +386,8 @@ OPERATIONS = (
     ),
     Operation(
         name="cancel",
+        audience=TOOL,
+        risk=AFFECTS_A_RUN,
         since="1",
         needs=RUN,
         summary="Ask for a run to be stopped. Comes back at once; the run reports "
@@ -366,6 +421,8 @@ OPERATIONS = (
     ),
     Operation(
         name="usage",
+        audience=TOOL,
+        risk=READS,
         since="1",
         needs=READ,
         summary="What has been used against the ceilings, and when the window clears.",
@@ -381,6 +438,8 @@ OPERATIONS = (
     ),
     Operation(
         name="devices.list",
+        audience=TOOL,
+        risk=READS,
         since="1",
         needs=MANAGE_DEVICES,
         summary="Which devices can reach this sandbox as you, and when each was last used.",
@@ -390,10 +449,12 @@ OPERATIONS = (
     ),
     Operation(
         name="devices.rotate",
+        audience=PERSON,
+        risk=CHANGES_ACCESS,
+        confirms_with_a_person=True,
         since="2",
         needs=MANAGE_DEVICES,
         summary="Replace this device's credential, keeping the identity behind it.",
-        for_people_not_tools=True,
         params=(),
         returns=(
             Field("token", "string", "the replacement credential"),
@@ -407,12 +468,12 @@ OPERATIONS = (
     ),
     Operation(
         name="devices.revoke",
+        audience=PERSON,
+        risk=CHANGES_ACCESS,
+        confirms_with_a_person=True,
         since="1",
         needs=MANAGE_DEVICES,
         summary="Withdraw a device, so nothing it holds works any more.",
-        # A person deciding to cut a device off is asked to confirm it. A model calling the same
-        # thing is not asked anything, so it is not offered the call.
-        for_people_not_tools=True,
         params=(Field("device_id", "string", "the device to withdraw"),),
         returns=(
             Field("device_id", "string", "the device withdrawn"),
@@ -424,17 +485,11 @@ OPERATIONS = (
 )
 
 
-#: Things that must never be offered to a model as a callable tool, whatever else changes.
-#:
-#: Not a list of operation names -- names change, and a list of names goes stale the moment
-#: somebody adds `credentials.rotate` next to `devices.rotate`. These are the CONCEPTS, checked
-#: against every generated schema, so an operation that does one of them and was not marked
-#: `for_people_not_tools` is caught by its own description rather than by somebody remembering.
-#:
-#: Each is something where the person and the model want different things. An AI given a device
-#: token has every incentive to extend its own access, remove the thing that can stop it, or
-#: raise its own limits, and no way to be asked whether it should.
-NEVER_A_TOOL = (
+#: A TRIPWIRE, not the mechanism. What decides tool exposure is the declared `audience`; this
+#: exists so that an operation whose own name says it does one of these, and which was declared
+#: a tool anyway, is caught by a test rather than shipped. Deriving the class from the name is
+#: what this replaced, and a tripwire is not a derivation: nothing reads it at runtime.
+NAMES_THAT_SHOULD_NEVER_BE_TOOLS = (
     ("rotate a credential", ("rotate", "renew_token", "reissue")),
     ("withdraw a device or a session", ("revoke", "withdraw", "sign_out", "end_session")),
     ("make an invitation", ("invite", "invitation", "pair", "pairing", "enrol", "enroll")),
@@ -442,6 +497,29 @@ NEVER_A_TOOL = (
     ("work the kill switch", ("kill", "halt", "stop_gateway", "shutdown", "resume_gateway")),
     ("change billing or account limits", ("billing", "invoice", "quota_set", "plan")),
 )
+
+
+def for_a_model() -> tuple:
+    """The operations that may be rendered as tools. The only place that decides it."""
+    check_classifications()
+    return tuple(op for op in OPERATIONS if op.audience == TOOL)
+
+
+def check_classifications() -> None:
+    """Refuse to describe this contract at all if any classification is unusable.
+
+    `Operation.__post_init__` already refuses to build one, so reaching here means something was
+    constructed another way -- a test patching OPERATIONS, a plugin, a future loader. The
+    generators call this before rendering anything, because a generator that skipped an operation
+    it could not classify would publish a smaller list and look like it had succeeded.
+    """
+    for op in OPERATIONS:
+        if op.audience not in AUDIENCES or op.risk not in RISK_CLASSES:
+            raise ValueError(
+                "%s is not classified (audience=%r, risk=%r), so nothing can be generated from "
+                "this contract until it is." % (op.name, op.audience, op.risk))
+        if op.audience == TOOL and op.risk in NEVER_FOR_A_MODEL:
+            raise ValueError("%s is classified as a tool and as %s" % (op.name, op.risk))
 
 
 BY_NAME = {op.name: op for op in OPERATIONS}
