@@ -93,9 +93,11 @@ def openapi_document(title: str = "AgentNode Sandbox", server: str = "") -> dict
             "title": title,
             "version": contract.PROTOCOL_VERSION,
             "description": (
-                "Every operation this sandbox has. The same contract is served over REST, over "
-                "MCP, and to the CLI and SDKs; nothing is available through one and not another, "
-                "and no client decides anything the server decides."
+                "Every operation this sandbox has. The same contract is served over REST, "
+                "over MCP, and to the CLI and SDKs; nothing is available through one and not "
+                "another, and no client decides anything the server decides."
+                + chr(10) + chr(10) + "What this does not establish:" + chr(10)
+                + chr(10).join("  - " + line for line in contract.WHAT_THIS_IS_NOT)
             ),
         },
         "paths": paths,

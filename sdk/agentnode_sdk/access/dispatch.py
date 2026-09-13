@@ -43,6 +43,12 @@ from dataclasses import dataclass, field
 from agentnode_sdk.access import contract
 
 
+#: Every outcome an audit line may carry. Closed, so a caller cannot introduce a new one by
+#: arranging to be refused in a way nobody anticipated.
+_OUTCOMES = set(contract.REFUSALS) | {"carried_out", "unknown", "too_old", "bad_request",
+                                      "wrong_method", "not_a_route"}
+
+
 class Refused(Exception):
     """A refusal that names itself. Adapters render this; none of them composes one."""
 
@@ -125,18 +131,50 @@ def _check_parameters(op, params: dict) -> dict:
     return given
 
 
+#: What may appear in an audit line's free text. Everything else is dropped rather than escaped:
+#: escaping preserves the value, and the point is that the value never arrives.
+SAFE_DETAIL = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _.-,")
+
+
+def _a_name_we_know(op_name: str) -> str:
+    """An operation name, only if it is one of ours.
+
+    The name arrives from the caller. A caller that can put arbitrary text in a log line can put
+    a token in one -- theirs or, worse, something they are trying to get an operator to read --
+    so what is written is either a declared operation or the fact that it was not one.
+    """
+    return op_name if contract.find(op_name) is not None else "(undeclared)"
+
+
+def _safe_detail(detail: str) -> str:
+    """Caller-influenced text, reduced to something that cannot carry a secret.
+
+    Refusal text names parameters and sometimes quotes what was sent, and what was sent is
+    whatever the caller chose. Keeping only a short run of harmless characters means a token, a
+    line of job output or a pasted key does not survive into the log -- and what remains is still
+    enough to tell one refusal from another when reading it back.
+    """
+    kept = "".join(c for c in (detail or "") if c in SAFE_DETAIL)
+    return kept[:120]
+
+
 def _audit(service, op_name: str, principal: Principal, outcome: str, detail: str = "") -> None:
     """One line per attempt, however it went. No token, no artefact, no job output.
 
     A record of what was refused is as much the point as a record of what was done: an account
     being probed looks like refusals, and a log that only kept successes would not show it.
+
+    Neither field is written as the caller supplied it. The operation is written only if it is a
+    declared one, and the detail is reduced to characters that cannot carry a credential -- a
+    review found that both were caller-controlled, which made this log somewhere to plant a
+    string rather than somewhere to read one.
     """
     line = {
         "at": round(time.time(), 3),
-        "operation": op_name,
+        "operation": _a_name_we_know(op_name),
         "device": principal.device_id or "(nobody)",
-        "outcome": outcome,
-        "detail": detail[:200],
+        "outcome": outcome if outcome in _OUTCOMES else "(other)",
+        "detail": _safe_detail(detail),
     }
     try:
         path = os.path.join(str(service.state.root), "audit.jsonl")
@@ -158,6 +196,17 @@ def _the_operator_has_stopped_it(service) -> str:
                       "This sandbox cannot tell whether it has been stopped (%s), so it is "
                       "refusing work." % exc,
                       "Ask whoever runs it to look at the gateway's state directory.") from exc
+
+
+def record_a_refusal(service, operation: str, principal: Principal, outcome: str,
+                     detail: str = "") -> None:
+    """For a refusal a TRANSPORT produced before the dispatcher was reached.
+
+    A request refused at the door -- no such path, the wrong method, a body that is not JSON --
+    never reaches `dispatch`, so the audit never saw it. That is the half of the log somebody
+    looking for a probe would most want, because a probe rarely gets as far as a real operation.
+    """
+    _audit(service, operation, principal, outcome, detail)
 
 
 def dispatch(operation: str, params: dict, principal: Principal, *, service,
@@ -243,6 +292,47 @@ def _older(speaks: str, since: str) -> bool:
 # `GatewayService`, which is the only implementation of those questions.
 
 
+#: How long a disclosure a person was shown stays good for. Long enough to read it and decide;
+#: short enough that "I agreed to something last week" is not an argument.
+DISCLOSURE_GOOD_FOR_SECONDS = 15 * 60
+
+
+def _what_was_disclosed(answer: dict) -> str:
+    """The digest of a disclosure, over the parts that would change what actually happens.
+
+    Taken server-side over the server's own answer, so it names what the person was SHOWN. A
+    digest a caller computed would bind whatever the caller decided to hash.
+    """
+    import hashlib
+
+    material = json.dumps({
+        "runs_at": answer.get("runs_at"),
+        "transfers": answer.get("transfers"),
+        "network": answer.get("network"),
+        "limits": answer.get("limits"),
+    }, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _remember_the_disclosure(service, principal, digest_of_it: str) -> None:
+    """Kept by the SERVER, against this device, with a time on it."""
+    shown = getattr(service, "_disclosures_shown", None)
+    if shown is None:
+        shown = service._disclosures_shown = {}
+    shown[(principal.client_id, digest_of_it)] = time.time()
+
+
+def _take_the_disclosure(service, principal, digest_of_it: str) -> bool:
+    """Spend it. One use, by the device it was shown to, within the window.
+
+    Claimed and removed in the same step, so two submissions racing on one disclosure cannot both
+    be told they had it -- the same shape as the pairing code's claim, and for the same reason.
+    """
+    shown = getattr(service, "_disclosures_shown", None) or {}
+    when = shown.pop((principal.client_id, digest_of_it), None)
+    return bool(when) and (time.time() - when) <= DISCLOSURE_GOOD_FOR_SECONDS
+
+
 def _capabilities(service, principal, params):
     described = contract.describe()
     return {
@@ -251,6 +341,9 @@ def _capabilities(service, principal, params):
                        if o["needs"] in principal.capabilities],
         "capabilities": list(principal.capabilities),
         "enforces": service.measured_properties(),
+        # Every client is told the limits before it does anything, because this is the first
+        # thing every client asks and the only place all of them look.
+        "what_this_does_not_establish": list(contract.WHAT_THIS_IS_NOT),
     }
 
 
@@ -263,7 +356,7 @@ def _prepare(service, principal, params):
     asked_for = int(params.get("wall_clock_s") or 60)
     network = params.get("network") or "none"
     domains = tuple(params.get("allowed_domains") or ())
-    return {
+    answer = {
         "runs_at": "%s (%s)" % (service.worker.instance_label(), service.worker.topology),
         "transfers": {
             "artifact_sha256": params.get("artifact_sha256", ""),
@@ -287,10 +380,29 @@ def _prepare(service, principal, params):
         },
         "what_this_does_not_establish": what_it_does_not_establish(service.worker.topology),
     }
+    answer["accepted_disclosure"] = _what_was_disclosed(answer)
+    _remember_the_disclosure(service, principal, answer["accepted_disclosure"])
+    return answer
 
 
 def _submit(service, principal, params):
     import base64
+
+    # Nothing runs that a person was not shown first. `prepare` hands back a digest of what it
+    # displayed; this spends it. A review found the field optional and ignored, which made the
+    # disclosure a screen rather than a gate -- it could be skipped by simply not sending it.
+    presented = str(params.get("accepted_disclosure") or "")
+    if not presented:
+        raise Refused("malformed",
+                      "Nothing runs here that was not disclosed first.",
+                      "Call prepare with the same job, show somebody what comes back, and send "
+                      "its accepted_disclosure with the submission.")
+    if not _take_the_disclosure(service, principal, presented):
+        raise Refused("malformed",
+                      "That disclosure is not one this sandbox showed this device in the last "
+                      "%d minutes, or it has already been used."
+                      % (DISCLOSURE_GOOD_FOR_SECONDS // 60),
+                      "Call prepare again and submit against what it returns.")
 
     from agentnode_sdk.gateway.protocol import JobRequest, digest
 

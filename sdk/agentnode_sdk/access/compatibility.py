@@ -159,8 +159,37 @@ def judge(system: str, ways_in: Iterable[str] = (), observed: Iterable[Observati
         % (system, ", ".join(sorted({o.way_in for o in seen})), seen[0].run_id)))
 
 
-def confirmed(system: str, ways_in: Iterable[str], observation: Observation) -> Verdict:
-    """Sugar for the only transition that is a claim about reality, so it reads as deliberate."""
+class NotConfirmable(NotEvidence):
+    """The observation could not be checked against the sandbox that supposedly produced it."""
+
+
+def confirmed(system: str, ways_in: Iterable[str], observation: Observation, *,
+              ask_the_sandbox) -> Verdict:
+    """The only transition that is a claim about reality, and it is checked rather than believed.
+
+    A review found the earlier version self-asserted: anything could build an `Observation` with a
+    plausible run id and a timestamp, and the object proved only that somebody had typed it. So
+    the run is looked up in the sandbox that is said to have produced it, and COMPATIBLE is not
+    available unless that lookup finds it.
+
+    `ask_the_sandbox` is a callable taking a run id and returning what the sandbox says about it,
+    or raising. It is passed in rather than imported so this module still knows nothing about
+    transports -- but it is not optional, because an optional check is one somebody will omit on
+    the day it would have mattered.
+    """
+    if not callable(ask_the_sandbox):
+        raise NotConfirmable(
+            "compatibility is confirmed by asking the sandbox about the run, and no way to ask "
+            "was supplied. Without it this would be an assertion.")
+    try:
+        said = ask_the_sandbox(observation.run_id)
+    except Exception as exc:                                  # noqa: BLE001
+        raise NotConfirmable(
+            "the sandbox could not be asked about run %s (%s), so this is not an observation of "
+            "anything." % (observation.run_id, exc)) from exc
+    if not said or str(said.get("run_id") or "") != observation.run_id:
+        raise NotConfirmable(
+            "the sandbox does not know run %s, so nothing was observed." % observation.run_id)
     return judge(system, ways_in, (observation,))
 
 

@@ -97,23 +97,34 @@ def handle(service, path: str, method: str, headers, body: bytes):
         try:
             message = json.loads(body.decode("utf-8")) if body else {}
         except (ValueError, UnicodeDecodeError):
+            dispatch.record_a_refusal(
+                service, MCP_PATH, dispatch.identify(service, _header(headers, TOKEN_HEADER)),
+                "bad_request")
             return 400, {"jsonrpc": "2.0", "id": None,
                          "error": {"code": -32700, "message": "that is not JSON"}}
-        principal = dispatch.identify(service, _header(headers, TOKEN_HEADER))
-        reply = mcp.handle(service, message, principal)
+        reply = mcp.handle(service, message,
+                           dispatch.identify(service, _header(headers, TOKEN_HEADER)))
         # A notification gets no reply. 202 rather than 200 with an empty body, because "accepted,
         # nothing to say" and "here is nothing" are different things.
         return (202, {}) if reply is None else (200, reply)
 
+    # Who is asking is established first, so a refusal at the door is recorded against somebody
+    # rather than against nobody. A probe that never reaches an operation is exactly the traffic
+    # an operator most wants to be able to see afterwards.
+    token = _header(headers, TOKEN_HEADER)
+    who = dispatch.identify(service, token)
+
     op = route_for(path)
     if op is None:
+        dispatch.record_a_refusal(service, path, who, "not_a_route")
         return 404, dispatch.Refused(
             "unknown_operation",
-            "This sandbox has nothing at %s." % path,
+            "This sandbox has nothing at that address.",
             "Fetch %s to see what it does have." % SCHEMA_PATH).as_answer()
 
     wanted = "POST" if (op.changes or op.params) else "GET"
     if method.upper() != wanted:
+        dispatch.record_a_refusal(service, op.name, who, "wrong_method")
         return 405, dispatch.Refused(
             "malformed",
             "%s is asked for with %s, not %s." % (op.name, wanted, method.upper()),
@@ -124,19 +135,19 @@ def handle(service, path: str, method: str, headers, body: bytes):
         try:
             params = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
+            dispatch.record_a_refusal(service, op.name, who, "bad_request")
             return 400, dispatch.Refused(
                 "malformed", "The body of that request is not JSON.",
                 "Send a JSON object with the operation's parameters.").as_answer()
         if not isinstance(params, dict):
+            dispatch.record_a_refusal(service, op.name, who, "bad_request")
             return 400, dispatch.Refused(
                 "malformed", "The body of that request is not a JSON object.",
-                "Send an object, not a %s." % type(params).__name__).as_answer()
+                "Send an object, not a list or a bare value.").as_answer()
 
-    token = _header(headers, TOKEN_HEADER)
     speaks = _header(headers, SPEAKS_HEADER) or contract.PROTOCOL_VERSION
-    principal = dispatch.identify(service, token)
     try:
-        answer = dispatch.dispatch(op.name, params, principal, service=service, speaks=speaks)
+        answer = dispatch.dispatch(op.name, params, who, service=service, speaks=speaks)
     except dispatch.Refused as refusal:
         return how_it_should_answer(refusal.refusal), refusal.as_answer()
     return 200, answer

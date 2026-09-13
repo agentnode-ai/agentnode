@@ -57,10 +57,18 @@ def rpc(base, token, message):
 
 
 def a_finished_run(sandbox_client, run_id):
-    """Submit and wait, the way any of the doors would."""
+    """Prepare, then submit, then wait -- the way every door must.
+
+    Nothing runs that was not disclosed first, so prepare is not optional politeness
+    here: the submission carries what it returned, and without it the sandbox refuses.
+    """
+    told = sandbox_client.prepare(command=["python", "-c", "print('hi')"],
+                                  artifact_sha256="a" * 64, artifact_bytes=14,
+                                  wall_clock_s=30)
     sandbox_client.submit(run_id=run_id,
                           artifact=base64.b64encode(b"print('hi')").decode("ascii"),
-                          command=["python", "-c", "print('hi')"], wall_clock_s=30)
+                          command=["python", "-c", "print('hi')"], wall_clock_s=30,
+                          accepted_disclosure=told["accepted_disclosure"])
     for _ in range(100):
         where = sandbox_client.status(run_id)
         if where["state"] not in ("accepted", "running"):
@@ -81,7 +89,8 @@ class TestTheRestDoor:
         observed = compat.confirmed(
             "a neutral REST client", [compat.DIRECT],
             compat.Observation(way_in=compat.DIRECT, run_id=where["run_id"], at=time.time(),
-                               client="urllib over the authenticated API"))
+                               client="urllib over the authenticated API"),
+            ask_the_sandbox=door.status)
         assert observed.state == compat.COMPATIBLE
 
 
@@ -101,10 +110,19 @@ class TestTheRemoteMcpDoor:
         run_id = "m" * 32
         status, called = rpc(base, token, {
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": schemas.tool_name_for("prepare"), "arguments": {
+                "command": ["python", "-c", "print('hi')"], "artifact_sha256": "a" * 64,
+                "artifact_bytes": 14, "wall_clock_s": 30}}})
+        assert status == 200 and not called["result"].get("isError"), called
+        disclosure = called["result"]["structuredContent"]["accepted_disclosure"]
+
+        status, called = rpc(base, token, {
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
             "params": {"name": schemas.tool_name_for("submit"), "arguments": {
                 "run_id": run_id,
                 "artifact": base64.b64encode(b"print('hi')").decode("ascii"),
-                "command": ["python", "-c", "print('hi')"], "wall_clock_s": 30}}})
+                "command": ["python", "-c", "print('hi')"], "wall_clock_s": 30,
+                "accepted_disclosure": disclosure}}})
         assert status == 200, called
         assert not called["result"].get("isError"), called
         assert called["result"]["structuredContent"]["run_id"] == run_id
@@ -112,7 +130,8 @@ class TestTheRemoteMcpDoor:
         observed = compat.confirmed(
             "a neutral MCP client", [compat.MCP],
             compat.Observation(way_in=compat.MCP, run_id=run_id, at=time.time(),
-                               client="JSON-RPC over the remote MCP door"))
+                               client="JSON-RPC over the remote MCP door"),
+            ask_the_sandbox=adapter.Sandbox(base, token).status)
         assert observed.state == compat.COMPATIBLE
 
     def test_making_an_invitation_is_not_among_the_tools(self, sandbox):
@@ -159,15 +178,19 @@ class TestTheLocalStdioBridge:
         service, base, token = sandbox
         door = adapter.Sandbox(base, token)
         run_id = "b" * 32
-        incoming = io.StringIO("\n".join([
+        # The bridge goes through prepare like every other door: nothing runs undisclosed.
+        told = door.prepare(command=["python", "-c", "print('hi')"],
+                            artifact_sha256="a" * 64, artifact_bytes=14, wall_clock_s=30)
+        incoming = io.StringIO(chr(10).join([
             json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
             json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
             json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
                 "name": schemas.tool_name_for("submit"), "arguments": {
                     "run_id": run_id,
                     "artifact": base64.b64encode(b"print('hi')").decode("ascii"),
-                    "command": ["python", "-c", "print('hi')"], "wall_clock_s": 30}}}),
-        ]) + "\n")
+                    "command": ["python", "-c", "print('hi')"], "wall_clock_s": 30,
+                    "accepted_disclosure": told["accepted_disclosure"]}}}),
+        ]) + chr(10))
         outgoing = io.StringIO()
         adapter.bridge(door, incoming, outgoing)
 
@@ -181,7 +204,8 @@ class TestTheLocalStdioBridge:
         observed = compat.confirmed(
             "the local MCP stdio bridge", [compat.MCP],
             compat.Observation(way_in=compat.MCP, run_id=run_id, at=time.time(),
-                               client="stdio bridge relaying to the authenticated API"))
+                               client="stdio bridge relaying to the authenticated API"),
+            ask_the_sandbox=door.status)
         assert observed.state == compat.COMPATIBLE
 
     def test_and_it_holds_no_authority_of_its_own(self, sandbox):
@@ -214,7 +238,8 @@ class TestTheCommandLineShapedClient:
         observed = compat.confirmed(
             "the AgentNode CLI", [compat.RUNS_OUR_CLIENT],
             compat.Observation(way_in=compat.RUNS_OUR_CLIENT, run_id=run_id, at=time.time(),
-                               client="the SDK client the CLI uses"))
+                               client="the SDK client the CLI uses"),
+            ask_the_sandbox=door.status)
         assert observed.state == compat.COMPATIBLE
 
     def test_a_refusal_keeps_its_name_on_the_way_back(self, sandbox):

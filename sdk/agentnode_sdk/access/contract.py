@@ -112,6 +112,18 @@ class Operation:
 COMMON = ("not_authenticated", "device_revoked", "not_permitted", "malformed", "gateway_stopped")
 
 
+#: What every reader-facing surface must carry. Said in one place so the three surfaces cannot
+#: drift, and said at all because a service that describes where code runs without describing
+#: what that does not protect against is one somebody will read as a guarantee.
+WHAT_THIS_IS_NOT = (
+    "Older routes on this gateway are not part of this contract and are not covered by it.",
+    "Cancelling a run is synchronous and can hold the caller for up to the gateway's settle "
+    "window while it confirms the sandbox is gone.",
+    "None of this is authorisation to expose this sandbox publicly, to deploy it, or to charge "
+    "for it. It is a closed test service.",
+)
+
+
 OPERATIONS = (
     Operation(
         name="capabilities",
@@ -124,6 +136,8 @@ OPERATIONS = (
             Field("operations", "array", "each operation, with the version that introduced it"),
             Field("capabilities", "array", "what this device has been granted"),
             Field("enforces", "object", "what the sandbox was measured to actually enforce"),
+            Field("what_this_does_not_establish", "array",
+                  "the limits of this arrangement, which every client is told before it starts"),
         ),
         errors=COMMON,
     ),
@@ -150,6 +164,8 @@ OPERATIONS = (
             Field("expected_use", "object", "what this would count against, before it is run"),
             Field("what_this_does_not_establish", "string",
                   "the arrangement's stated limits, carried with the disclosure"),
+            Field("accepted_disclosure", "string",
+                  "what to send with the submission to show this is what was agreed to"),
         ),
         errors=COMMON + ("refused_by_policy", "over_a_ceiling"),
     ),
@@ -167,7 +183,7 @@ OPERATIONS = (
             Field("allowed_domains", "array", "where it may connect, if any", required=False),
             Field("wall_clock_s", "integer", "how long it may run", required=False),
             Field("accepted_disclosure", "string",
-                  "the digest of the prepare() answer this was started against", required=False),
+                  "the disclosure this was started against, as prepare() returned it"),
         ),
         returns=(
             Field("run_id", "string", "how to ask about it"),

@@ -113,7 +113,8 @@ class TestTheWholeJourney:
         artifact = b"print('hello')"
         status, started = door.ask("submit", {
             "run_id": "e" * 32, "artifact": base64.b64encode(artifact).decode("ascii"),
-            "command": ["python", "-c", "print('hello')"], "wall_clock_s": 30})
+            "command": ["python", "-c", "print('hello')"], "wall_clock_s": 30,
+            "accepted_disclosure": told["accepted_disclosure"]})
         assert status == 200, started
         run_id = started["run_id"]
 
@@ -157,9 +158,13 @@ class TestTheWholeJourney:
         service, base = sandbox
         token = service.state.redeem_pairing(service.state.start_pairing(), client_name="a laptop")
         door = ADoor(base, token)
+        _s, told = door.ask("prepare", {"command": ["python", "-c", "pass"],
+                                        "artifact_sha256": "b" * 64,
+                                        "artifact_bytes": 1, "wall_clock_s": 30})
         status, started = door.ask("submit", {
             "run_id": "c" * 32, "artifact": base64.b64encode(b"x").decode("ascii"),
-            "command": ["python", "-c", "pass"], "wall_clock_s": 30})
+            "command": ["python", "-c", "pass"], "wall_clock_s": 30,
+            "accepted_disclosure": told["accepted_disclosure"]})
         assert status == 200, started
         # A cancel is SYNCHRONOUS: the gateway waits for the sandbox to be confirmed gone, up to
         # its settle window of forty-five seconds. That is right for the answer it gives -- it can

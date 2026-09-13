@@ -58,6 +58,12 @@ def handle(service, message: dict, principal) -> dict | None:
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": "agentnode-sandbox",
                            "version": contract.PROTOCOL_VERSION},
+            # An AI reads this before it reads anything else, and whatever it reads here is what
+            # it will tell the person about what this sandbox is.
+            "instructions": (
+                "Runs code in a sandbox on somebody else's machine, under their policy."
+                + chr(10) + chr(10) + "What this does not establish:" + chr(10)
+                + chr(10).join("  - " + line for line in contract.WHAT_THIS_IS_NOT)),
         })
 
     if method == "tools/list":

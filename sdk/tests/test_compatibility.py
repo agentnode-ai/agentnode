@@ -32,11 +32,32 @@ class TestTheThreeStates:
         assert not said.is_a_claim_about_reality()
 
     def test_only_an_observed_call_is_compatible(self):
-        said = compat.confirmed("something that speaks MCP", [compat.MCP], an_observation())
+        said = compat.confirmed("something that speaks MCP", [compat.MCP],
+                                an_observation(),
+                                ask_the_sandbox=lambda run: {"run_id": run})
         assert said.state == compat.COMPATIBLE
         assert said.is_a_claim_about_reality()
         assert said.observed[0].run_id in said.because, "the claim does not carry what backs it"
 
+
+
+    def test_and_not_without_a_way_to_check_it(self):
+        """A review found this self-asserted: anything could build an Observation with a
+        plausible run id, and the object proved only that somebody had typed it."""
+        with pytest.raises(compat.NotConfirmable):
+            compat.confirmed("x", [compat.MCP], an_observation(), ask_the_sandbox=None)
+
+    def test_and_not_when_the_sandbox_does_not_know_the_run(self):
+        with pytest.raises(compat.NotConfirmable):
+            compat.confirmed("x", [compat.MCP], an_observation(),
+                             ask_the_sandbox=lambda run: {"run_id": "something else"})
+
+    def test_and_not_when_the_sandbox_cannot_be_asked(self):
+        def unreachable(run):
+            raise OSError("no route to host")
+
+        with pytest.raises(compat.NotConfirmable):
+            compat.confirmed("x", [compat.MCP], an_observation(), ask_the_sandbox=unreachable)
 
 class TestCompatibleCannotBeReachedWithoutEvidence:
     """The property the whole module exists for."""
