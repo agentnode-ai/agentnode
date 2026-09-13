@@ -269,6 +269,9 @@ def cmd_start(args) -> int:
         # tells the watchers to stop -- closing the socket does not.
         server.shutdown()
         server.server_close()
+        # The pool that carries out cancellations is owned by the service, so it is given back
+        # here too. Production closes what it opens; the finalizer stays a net.
+        service.close()
         state.close()
     return 0
 

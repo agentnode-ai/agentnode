@@ -73,6 +73,11 @@ def sandbox(tmp_path):
     backend = ABackendThatKeepsRunning()
     service = GatewayService(state, backend=backend)
     _store_measurement(service)
+    # Confirming a container is gone waits for it to appear first, and with a stand-in backend
+    # it never does -- so the real appear window would be spent in full on every teardown here.
+    # Shortened rather than mocked away: the same code path runs, it just does not spend twenty
+    # seconds establishing that nothing arrived.
+    service.CONTAINER_APPEAR_SECONDS = 0.2
     held = AWorkerHeldOpen(service.worker)
     held.run_may_finish = backend.may_finish_run
     service._worker = held
@@ -84,6 +89,7 @@ def sandbox(tmp_path):
         # whole wait while the fixture tried to tear the state down around it.
         held.run_may_finish.set()
         held.may_finish.set()
+        service.close()
         state.close()
 
 
@@ -214,7 +220,7 @@ def _eventually(it_is_true, tries=200):
     return False
 
 
-def _poll_until_finished(service, who, run_id, tries=200):
+def _poll_until_finished(service, who, run_id, tries=600):
     import time
 
     for _ in range(tries):
@@ -223,3 +229,88 @@ def _poll_until_finished(service, who, run_id, tries=200):
             return where
         time.sleep(0.05)
     raise AssertionError("the run never finished: last said %r" % where)
+
+
+class TestCancellingIsGovernedLikeEverythingElse:
+    """A cancellation is a request to this gateway, and is subject to what governs requests.
+
+    It would be easy to argue the other way -- stopping work is not starting work -- but an
+    operation exempt from the stop and from the limits is an operation an exhausted or halted
+    gateway still has to carry out, and that is the state in which it can least afford to.
+    """
+
+    def test_the_operators_stop_refuses_a_cancellation_as_well(self, sandbox):
+        service, who, held = sandbox
+        run_id = a_running_job(service, who)
+        import json
+        import os
+
+        with open(os.path.join(str(service.state.root), "stopped.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"reason": "Wartung"}, fh)
+
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("cancel", {"run_id": run_id}, who, service=service)
+        assert refused.value.refusal == "gateway_stopped"
+        assert "Wartung" in refused.value.because
+
+    def test_a_storm_across_many_runs_is_refused_before_it_becomes_work(self, sandbox):
+        """Asking about ONE cancellation repeatedly is free; starting hundreds is not."""
+        service, who, held = sandbox
+        from agentnode_sdk.access import stopping as poolmod
+
+        service.stopping.PER_DEVICE = 3
+        run_id = a_running_job(service, who)
+        first = dispatch.dispatch("cancel", {"run_id": run_id}, who, service=service)
+        assert first["accepted"] is True
+        for _ in range(50):                       # the same run, over and over: never refused
+            dispatch.dispatch("cancel", {"run_id": run_id}, who, service=service)
+
+        refused = None
+        for n in range(10):                       # distinct runs: bounded
+            try:
+                service.stopping.ask("made-up-run-%d" % n, by=who.client_id)
+            except poolmod.TooManyStops as too_many:
+                refused = too_many
+                break
+        assert refused is not None, "a device could start unlimited cancellations"
+        held.may_finish.set()
+
+
+class TestARestartDoesNotLoseACancellation:
+
+    def test_a_gateway_built_over_the_same_directory_picks_up_what_was_being_stopped(
+            self, tmp_path):
+        """What a restart really is, from the state directory's point of view."""
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        backend = ABackendThatKeepsRunning()
+        first = GatewayService(state, backend=backend)
+        _store_measurement(first)
+        first.CONTAINER_APPEAR_SECONDS = 0.2
+        held = AWorkerHeldOpen(first.worker)
+        held.run_may_finish = backend.may_finish_run
+        first._worker = held
+        token = state.redeem_pairing(state.start_pairing(), client_name="a laptop")
+        who = dispatch.identify(first, token)
+        run_id = a_running_job(first, who)
+        dispatch.dispatch("cancel", {"run_id": run_id}, who, service=first)
+        assert held.asked_to_stop.wait(timeout=10)
+        assert first.stopping.unfinished() == [run_id], "it was not written down before trying"
+
+        # The process dies here: not closed, not cleaned up, nothing given back.
+        try:
+            second = GatewayService(state, backend=ABackendThatKeepsRunning())
+            _store_measurement(second)
+            second.CONTAINER_APPEAR_SECONDS = 0.2
+            # Picked up on the way up, by __init__, not by anybody remembering to ask.
+            assert second.stopping.about(run_id) is not None, (
+                "a gateway came back up having forgotten it was tearing a sandbox down")
+        finally:
+            held.run_may_finish.set()
+            held.may_finish.set()
+            try:
+                second.close()
+            except NameError:
+                pass
+            first.close()
+            state.close()

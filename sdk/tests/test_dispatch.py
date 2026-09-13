@@ -59,7 +59,9 @@ class TestNothingReachesAHandlerWithoutPassingTheChecks:
         gateway.state.revoke(paired.token)
         with pytest.raises(dispatch.Refused) as refused:
             dispatch.dispatch("status", {"run_id": "x" * 32}, paired, service=gateway)
-        assert refused.value.refusal in ("not_authenticated", "device_revoked")
+        # Exactly this one, not "either of two". There is no separate refusal for a withdrawn
+        # device any more, and a test that accepted both would go on passing if one came back.
+        assert refused.value.refusal == "not_authenticated"
 
     def test_authenticated_is_not_the_same_as_allowed(self, gateway, paired):
         read_only = dispatch.Principal(token=paired.token, device_id=paired.device_id,

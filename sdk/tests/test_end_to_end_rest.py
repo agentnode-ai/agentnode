@@ -149,7 +149,7 @@ class TestTheWholeJourney:
 
         status, refused = door.ask("usage")
         assert status == 401, refused
-        assert refused["refused"] in ("not_authenticated", "device_revoked")
+        assert refused["refused"] == "not_authenticated"
         assert refused.get("what_to_do"), "a refusal with nothing to do about it leaves somebody stuck"
 
     def test_cancelling_says_what_became_of_the_sandbox(self, sandbox):

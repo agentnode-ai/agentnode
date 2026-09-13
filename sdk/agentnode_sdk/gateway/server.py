@@ -38,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from agentnode_sdk.worker import what_it_does_not_establish
+from agentnode_sdk.access.stopping import Stopping
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
 from agentnode_sdk.gateway import challenge as ch
 from agentnode_sdk.gateway.ledger import Ledger
@@ -283,7 +284,14 @@ class GatewayService:
         #: and a challenge says which one issued it.
         self.instance = "%s:%s" % (self.worker.instance_label(), secrets.token_hex(8))
         self.readiness = ReadinessGate(self.state.root)
+        #: Who carries out cancellations. Bounded, owned, and durable across a restart -- see
+        #: `access/stopping.py`. Nothing is started until the first cancellation is asked for,
+        #: so a gateway that never cancels anything has no threads for it.
+        self.stopping = Stopping(self.state.root, self._stop_it_and_confirm)
         self._restore_interrupted()
+        # A container being torn down does not disappear because the process did. Anything the
+        # journal still remembers is picked up here, on the way back up.
+        self.stopping.pick_up_where_it_left_off()
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ backend
@@ -1568,6 +1576,54 @@ class GatewayService:
             done.append({"run_id": record.run_id, "stopped": bool(settled),
                          "state": record.state})
         return done
+
+    def _stop_it_and_confirm(self, run_id: str) -> bool:
+        """Stop a run and answer whether the sandbox is CONFIRMED gone. Never guesses.
+
+        This is what the stopping pool calls, and the only thing that decides a cancellation is
+        finished. Returning False leaves the run in the pool's journal, so a gateway that dies
+        here picks it up again rather than leaving a container with nobody accounting for it.
+        Three cases, and the third is the one a restart lands in:
+
+        * still running -- stop it, then confirm;
+        * already terminal -- do not stop it again, but still confirm, because reaching a
+          terminal state is not the same as the sandbox being gone;
+        * not in memory at all -- a restart. The record is rebuilt from the ledger and the
+          container is addressed by the name this gateway derives from the run id.
+        """
+        from agentnode_sdk.gateway.protocol import is_terminal
+
+        run_id = str(run_id)
+        record = self.runs.get(run_id)
+        if record is not None and not is_terminal(record.state):
+            record, _settled = self.cancel(run_id)
+        if record is None:
+            self._ask_again_about(run_id)
+            record = self.runs.get(run_id)
+            return bool(record is not None and record.cleanup_verified)
+        if record.cleanup_verified:
+            return True
+        # Terminal, but nobody has confirmed the sandbox is gone. Asking is what makes a terminal
+        # state worth anything, so it is asked rather than assumed.
+        self._clean_up_what_it_left(record)
+        return bool(record.cleanup_verified)
+
+    def close(self) -> None:
+        """Release what this service owns. Explicit, because a finalizer is a safety net.
+
+        Idempotent: closing twice is what happens when a test and a production path both do the
+        right thing, and neither should have to know about the other.
+        """
+        pool = getattr(self, "stopping", None)
+        if pool is not None:
+            pool.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+        return False
 
     def cancel(self, run_id: str, settle: float | None = None):
         """Stop a run and answer once it has stopped. Returns `(record, settled)`.

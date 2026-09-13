@@ -67,7 +67,6 @@ def how_it_should_answer(refusal: str) -> int:
     """
     return {
         "not_authenticated": 401,
-        "device_revoked": 401,
         "not_permitted": 403,
         "unknown_operation": 404,
         "no_such_run": 404,

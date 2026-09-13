@@ -281,10 +281,30 @@ def _carry_out(operation: str, params: dict, principal: Principal, *, service,
                       "This request did not come with a credential this sandbox recognises.",
                       "Pair this device again with a fresh invitation.")
 
+    # Who is asking is re-established here, on every dispatch, rather than trusted from the
+    # principal that was handed in. A principal is a snapshot of who was asking WHEN IT WAS
+    # BUILT, so a caller holding one -- or a long-lived connection reusing one -- would
+    # otherwise keep the access it had at that moment for as long as it kept the object. This
+    # is what makes a withdrawal take effect at once on every path rather than at the next
+    # reconnection.
+    #
+    # What it raises is the GENERIC refusal, and that is the whole of what
+    # `MANAGED-REVOCATION-0001` changed here.
+    #
+    # Withdrawing one DELETES its token record, so by the time a request arrives there is nothing
+    # left that could tell it from a credential this sandbox never issued -- the check could only
+    # ever have fired in a race. `MANAGED-REVOCATION-0001` chose to correct the contract rather
+    # than keep a tombstone: retaining a record of credentials that no longer exist, so as to
+    # tell a caller that its revoked token was once real, buys a diagnostic distinction at the
+    # price of both retention and disclosure.
+    #
+    # What that costs is real and is stated rather than hidden. A client cannot tell "withdrawn"
+    # from "wrong", an operator reading the audit sees the generic outcome for both, and both
+    # lead a person to the same action: get a new invitation.
     if principal.device_id and service.state.client_id_for(principal.token) != principal.client_id:
-        raise Refused("device_revoked",
-                      "This device has been withdrawn from this sandbox.",
-                      "Ask whoever runs it for a new invitation.")
+        raise Refused("not_authenticated",
+                      "This request did not come with a credential this sandbox recognises.",
+                      "Pair this device again with a fresh invitation.")
 
     if op.needs not in principal.capabilities:
         raise Refused("not_permitted",
@@ -510,17 +530,22 @@ def _a_run_of_this_caller(service, principal, run_id):
 def _status(service, principal, params):
     """Where a run has got to, including whether it is on its way out.
 
-    `stopping` is reported while a cancellation is in flight and the run has not reached a
-    terminal state. The gateway itself has no such state -- it says "running" until the sandbox
-    is confirmed gone -- and telling somebody who has just asked for it to stop that it is
-    running would be true of the record and useless to the person.
-    """
-    from agentnode_sdk.gateway.protocol import is_terminal
+    `stopping` is reported for as long as a cancellation is being carried out -- INCLUDING once
+    the run's own record has gone terminal. That is deliberate, and it is the whole of what makes
+    a terminal state worth anything: the record turning "cancelled" or "finished" says the run
+    ended and says nothing about whether the sandbox it ran in is gone. Only confirmed cleanup
+    says that, and until it is confirmed this reports the run as still stopping.
 
+    An earlier version stopped at `is_terminal(record.state)` and reported the terminal state
+    while the teardown was still in progress, so a client polling "until finished" was told the
+    run was over while its container might still have been up. A client cannot check what it is
+    not told.
+
+    It is bounded: an attempt that fails leaves nothing in flight, and this falls back to what
+    the record really says rather than reporting `stopping` for ever.
+    """
     record = _a_run_of_this_caller(service, principal, params["run_id"])
-    showing = record.state
-    if not is_terminal(showing) and _is_stopping(service, record.run_id):
-        showing = "stopping"
+    showing = "stopping" if _is_stopping(service, record.run_id) else record.state
     return {"run_id": record.run_id, "state": showing,
             "started_at": int(record.started_at or 0) or None,
             "finished_at": int(record.finished_at or 0) or None}
@@ -539,64 +564,61 @@ def _result(service, principal, params):
             "cleanup_verified": record.cleanup_verified}
 
 
-#: Cancellations this gateway has started and not yet seen through. Keyed by run, so a second
-#: request for the same run joins the first rather than starting another.
-def _stopping(service) -> dict:
-    inflight = getattr(service, "_cancellations_in_flight", None)
-    if inflight is None:
-        inflight = service._cancellations_in_flight = {}
-    return inflight
-
-
 def _is_stopping(service, run_id: str) -> bool:
-    thread = _stopping(service).get(str(run_id))
-    return bool(thread is not None and thread.is_alive())
+    """Whether a cancellation is being carried out for this run right now.
+
+    The gateway owns a bounded pool for this (`access/stopping.py`). Nothing here creates a
+    thread and nothing here keeps per-request state, so there is no number of cancel requests
+    that produces an unbounded number of anything.
+    """
+    return bool(service.stopping.in_flight(str(run_id)))
 
 
 def _cancel(service, principal, params):
     """Ask for a run to be stopped, and come back at once.
 
-    Stopping is not instant and must not pretend to be. The sandbox has to be torn down and
-    CONFIRMED gone -- that confirmation is what makes a terminal state worth anything -- and that
-    can take the gateway's whole settle window. Doing it inline meant the caller, and the person
-    watching them, waited that long with nothing to look at. So the work goes on a thread of its
-    own, the run reports `stopping`, and the caller polls.
+    Stopping is not instant and must not pretend to be: the sandbox has to be torn down and
+    CONFIRMED gone, which is the only reason a terminal state is worth anything, and that can
+    take the gateway's whole settle window. Doing it on the caller's thread meant the caller, and
+    the person watching them, waited that long with nothing to look at.
 
-    Idempotent in both directions: a run that has already ended is not ended again, and a second
-    request for a run already stopping joins the first rather than starting another. Cleanup is
-    still a precondition for the terminal state -- nothing here shortens that, it only stops the
-    caller being held while it happens.
+    What carries it out is a fixed pool the gateway owns. An earlier version started a thread per
+    request, which moved the waiting off the caller and turned "ask to cancel" into "ask for a
+    thread" -- a worse arrangement in better clothes.
+
+    Idempotent in every direction that matters:
+
+    * a run that has already ended is not ended again;
+    * a second request while one is in flight JOINS it, returns the same state, and costs no
+      budget -- polling your own cancellation must not be rationed;
+    * a request after an attempt that failed starts a new attempt, because that is a retry
+      rather than a duplicate, and `attempts` says how many there have been.
+
+    Cleanup is still a precondition for the terminal state. Nothing here shortens that; it only
+    stops the caller being held while it happens.
     """
-    import threading
-
+    from agentnode_sdk.access import stopping as pool
     from agentnode_sdk.gateway.protocol import is_terminal
 
     record = _a_run_of_this_caller(service, principal, params["run_id"])
-    if is_terminal(record.state):
+    standing = service.stopping.about(record.run_id)
+    if is_terminal(record.state) and not (standing and standing.in_flight):
         return {"run_id": record.run_id, "state": record.state, "accepted": False,
-                "cleanup_verified": record.cleanup_verified}
+                "attempts": standing.attempts if standing else 0,
+                "cleanup_verified": record.cleanup_verified,
+                "problem": standing.problem if standing else ""}
 
-    already = _is_stopping(service, record.run_id)
-    if not already:
-        # Set before the thread starts, so nothing can look at this flag in the gap between
-        # deciding to stop and the stopping beginning.
-        record.cancel_requested.set()
-
-        def see_it_through():
-            try:
-                service.cancel(record.run_id)
-            except Exception:                                 # noqa: BLE001
-                # The run keeps whatever state the gateway gave it. Nothing is marked terminal
-                # here: a cancellation that failed must not look like one that worked, and
-                # `status` goes on saying what is true.
-                pass
-
-        thread = threading.Thread(target=see_it_through, daemon=True,
-                                  name="agentnode-stopping-%s" % str(record.run_id)[:8])
-        _stopping(service)[str(record.run_id)] = thread
-        thread.start()
-    return {"run_id": record.run_id, "state": "stopping", "accepted": not already,
-            "cleanup_verified": record.cleanup_verified}
+    joined = bool(standing is not None and standing.in_flight)
+    # Set before anything is queued, so nothing can read this flag in the gap between deciding
+    # to stop and the stopping beginning.
+    record.cancel_requested.set()
+    try:
+        stop = service.stopping.ask(record.run_id, by=principal.client_id)
+    except pool.TooManyStops as too_many:
+        raise Refused("over_a_ceiling", too_many.because, too_many.what_to_do) from too_many
+    return {"run_id": record.run_id, "state": "stopping", "accepted": not joined,
+            "attempts": stop.attempts, "cleanup_verified": stop.settled,
+            "problem": stop.problem}
 
 
 def _usage(service, principal, params):

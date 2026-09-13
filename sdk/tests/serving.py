@@ -77,6 +77,16 @@ def stop(server, thread=None, state=None, seconds: float = PATIENCE) -> None:
         server.server_close()
     except Exception:                                         # noqa: BLE001 - already closed
         pass
+    # The service owns a bounded pool for cancellations. It is lazy -- a server that never
+    # cancelled anything has nothing to close -- but a test that did cancel something would
+    # otherwise leave its hands behind, and this is the boundary that catches that.
+    service = getattr(server, "service", None) or getattr(type(server), "service", None)
+    close = getattr(service, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:                                     # noqa: BLE001 - already closed
+            pass
     if state is not None:
         state.close()
 

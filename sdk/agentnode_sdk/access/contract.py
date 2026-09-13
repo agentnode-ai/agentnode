@@ -40,7 +40,20 @@ from dataclasses import dataclass
 
 #: The protocol version this build speaks. Clients are told it, and are also told the `since` of
 #: every operation, so a client older than an operation can tell rather than discover by failing.
-PROTOCOL_VERSION = "1"
+PROTOCOL_VERSION = "2"
+
+#: What changed in 2, so a reader is not left to diff two builds:
+#:
+#: * `cancel` answers at once and the run reports `stopping` until the sandbox is confirmed
+#:   gone. Its answer gained `accepted`, `attempts` and `problem`.
+#: * `device_revoked` was REMOVED from the refusals. `MANAGED-REVOCATION-0001` settled it:
+#:   withdrawing a device deletes the only record that could tell it from a credential that
+#:   never existed, so the contract promised a distinction the gateway does not make. A
+#:   withdrawn device, an ended session and an unknown credential are all `not_authenticated`.
+#: * `devices.rotate` and the session operations were declared, and the older `/v1/jobs*` and
+#:   `/v1/token/rotate` addresses were withdrawn in favour of them.
+INTRODUCED_IN_2 = ("cancel.accepted", "cancel.attempts", "cancel.problem", "devices.rotate",
+                   "sessions.list", "sessions.end", "connections.enrol", "connections.check")
 
 # ------------------------------------------------------------------ what a caller may hold
 
@@ -55,8 +68,13 @@ CAPABILITIES = (RUN, READ, MANAGE_DEVICES)
 # ------------------------------------------------------------------ refusals, by name
 
 REFUSALS = (
-    "not_authenticated",       # no usable credential was presented
-    "device_revoked",          # the device was withdrawn
+    # One refusal covers an unknown credential, an expired one, a withdrawn device and an
+    # ended session. `MANAGED-REVOCATION-0001` chose this deliberately: revoking deletes the
+    # token record, so nothing remains to tell those apart, and keeping a tombstone to create
+    # the distinction would retain a record of credentials that no longer exist and would tell
+    # a caller holding a revoked token that it was once real. The cost is accepted and stated:
+    # a client cannot tell "withdrawn" from "wrong", and both lead to the same action.
+    "not_authenticated",       # no usable credential was presented, for any reason
     "not_permitted",           # authenticated, but lacks the capability
     "unknown_operation",       # nothing declared under that name
     "malformed",               # a parameter is missing, unknown, or the wrong shape
@@ -79,6 +97,10 @@ class Field:
     required: bool = True
     #: Present only for enumerated values, so a transport can offer a choice rather than free text.
     one_of: tuple = ()
+    #: The protocol version that introduced this field, when it is not the operation's own.
+    #: Descriptive rather than enforced -- an older client simply does not read it -- but a
+    #: reader of the schema can see what is new without comparing two builds.
+    since: str = ""
 
 
 @dataclass(frozen=True)
@@ -109,14 +131,16 @@ class Operation:
 
 #: Every refusal, for operations that can hit the common ones. Spelled out per operation rather
 #: than inherited, so reading one declaration tells a client what it must handle.
-COMMON = ("not_authenticated", "device_revoked", "not_permitted", "malformed", "gateway_stopped")
+COMMON = ("not_authenticated", "not_permitted", "malformed", "gateway_stopped")
 
 
 #: What every reader-facing surface must carry. Said in one place so the three surfaces cannot
 #: drift, and said at all because a service that describes where code runs without describing
 #: what that does not protect against is one somebody will read as a guarantee.
 WHAT_THIS_IS_NOT = (
-    "Older routes on this gateway are not part of this contract and are not covered by it.",
+    "A withdrawn device, an ended session and a credential this sandbox never issued are all "
+    "reported the same way. This gateway keeps no record of a credential once it is withdrawn, "
+    "so it cannot tell them apart and does not pretend to.",
     "Cancelling asks for a stop and comes back at once. The run is not finished at that "
     "point -- it reports stopping until the sandbox has been confirmed gone, and a stop "
     "that fails does not become a cancellation that worked.",
@@ -260,11 +284,19 @@ OPERATIONS = (
             Field("state", "string", "where it is now -- stopping, or already finished",
                   one_of=STATES),
             Field("accepted", "boolean",
-                  "whether this call is what started the stopping"),
+                  "whether this call is what started the stopping", since="2"),
+            Field("attempts", "integer",
+                  "how many times this gateway has tried to stop this run", since="2"),
             Field("cleanup_verified", "boolean",
                   "whether the sandbox was confirmed gone; absent means not yet known",
                   required=False),
+            Field("problem", "string",
+                  "why the last attempt did not confirm the sandbox gone, if it did not",
+                  required=False, since="2"),
         ),
+        # Cancelling is bounded like everything else. A device that asks for many stops in a
+        # short time is refused with `over_a_ceiling`; asking again about a stop already in
+        # flight is free, because that is how a client watches its own cancellation.
         errors=COMMON + ("no_such_run",),
         changes=True,
     ),

@@ -231,10 +231,13 @@ function plain(msg){ var e = new Error(msg); e.refused = "unreachable"; return e
  * it. Never the server's own sentence: those name commands to run on the host,
  * which is the one thing somebody using this page cannot do. */
 var SAYS = {
+  // One message for all of it, because the sandbox really cannot tell these apart -- it keeps
+  // no record of a credential once it is withdrawn. Naming only one of the causes would be a
+  // guess presented as a fact, so the wording covers every case truthfully and the action is
+  // the same in all of them.
   not_authenticated: ["Dieser Zugang gilt nicht mehr.",
-    "Bitte einen neuen Einladungslink anfordern und die Einrichtung noch einmal starten.", "again"],
-  device_revoked: ["Dieses Gerät wurde zurückgezogen.",
-    "Jemand mit Zugang hat es entfernt. Ein neuer Einladungslink verbindet es wieder.", "again"],
+    "Das passiert, wenn ein Zugang zurückgezogen wurde, abgelaufen ist oder nie gültig war. " +
+    "Mit einem neuen Einladungslink können Sie sich wieder verbinden.", "again"],
   not_permitted: ["Dieses Gerät darf das nicht.",
     "Bitte bei der Person nachfragen, die die Sandbox betreibt.", ""],
   gateway_stopped: ["Die Sandbox nimmt gerade keine Arbeit an.",
