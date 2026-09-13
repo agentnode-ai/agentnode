@@ -38,7 +38,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from agentnode_sdk.access import contract
 
@@ -498,8 +498,20 @@ def _a_run_of_this_caller(service, principal, run_id):
 
 
 def _status(service, principal, params):
+    """Where a run has got to, including whether it is on its way out.
+
+    `stopping` is reported while a cancellation is in flight and the run has not reached a
+    terminal state. The gateway itself has no such state -- it says "running" until the sandbox
+    is confirmed gone -- and telling somebody who has just asked for it to stop that it is
+    running would be true of the record and useless to the person.
+    """
+    from agentnode_sdk.gateway.protocol import is_terminal
+
     record = _a_run_of_this_caller(service, principal, params["run_id"])
-    return {"run_id": record.run_id, "state": record.state,
+    showing = record.state
+    if not is_terminal(showing) and _is_stopping(service, record.run_id):
+        showing = "stopping"
+    return {"run_id": record.run_id, "state": showing,
             "started_at": int(record.started_at or 0) or None,
             "finished_at": int(record.finished_at or 0) or None}
 
@@ -517,23 +529,63 @@ def _result(service, principal, params):
             "cleanup_verified": record.cleanup_verified}
 
 
-def _cancel(service, principal, params):
-    """Stop a run, or say that it had already stopped.
+#: Cancellations this gateway has started and not yet seen through. Keyed by run, so a second
+#: request for the same run joins the first rather than starting another.
+def _stopping(service) -> dict:
+    inflight = getattr(service, "_cancellations_in_flight", None)
+    if inflight is None:
+        inflight = service._cancellations_in_flight = {}
+    return inflight
 
-    Cancelling something that has finished is not an error and must not be answered as one: a
-    caller racing a short job would otherwise get a failure for having been slightly too late,
-    and would have no way to tell that from a cancel that did not work. This was found by the
-    full suite rather than by the test in isolation -- under load the job finished first.
+
+def _is_stopping(service, run_id: str) -> bool:
+    thread = _stopping(service).get(str(run_id))
+    return bool(thread is not None and thread.is_alive())
+
+
+def _cancel(service, principal, params):
+    """Ask for a run to be stopped, and come back at once.
+
+    Stopping is not instant and must not pretend to be. The sandbox has to be torn down and
+    CONFIRMED gone -- that confirmation is what makes a terminal state worth anything -- and that
+    can take the gateway's whole settle window. Doing it inline meant the caller, and the person
+    watching them, waited that long with nothing to look at. So the work goes on a thread of its
+    own, the run reports `stopping`, and the caller polls.
+
+    Idempotent in both directions: a run that has already ended is not ended again, and a second
+    request for a run already stopping joins the first rather than starting another. Cleanup is
+    still a precondition for the terminal state -- nothing here shortens that, it only stops the
+    caller being held while it happens.
     """
+    import threading
+
     from agentnode_sdk.gateway.protocol import is_terminal
 
     record = _a_run_of_this_caller(service, principal, params["run_id"])
-    if not is_terminal(record.state):
-        try:
-            service.cancel(record.run_id)
-        except Exception as exc:                              # noqa: BLE001
-            raise _translate(exc) from exc
-    return {"run_id": record.run_id, "state": record.state,
+    if is_terminal(record.state):
+        return {"run_id": record.run_id, "state": record.state, "accepted": False,
+                "cleanup_verified": record.cleanup_verified}
+
+    already = _is_stopping(service, record.run_id)
+    if not already:
+        # Set before the thread starts, so nothing can look at this flag in the gap between
+        # deciding to stop and the stopping beginning.
+        record.cancel_requested.set()
+
+        def see_it_through():
+            try:
+                service.cancel(record.run_id)
+            except Exception:                                 # noqa: BLE001
+                # The run keeps whatever state the gateway gave it. Nothing is marked terminal
+                # here: a cancellation that failed must not look like one that worked, and
+                # `status` goes on saying what is true.
+                pass
+
+        thread = threading.Thread(target=see_it_through, daemon=True,
+                                  name="agentnode-stopping-%s" % str(record.run_id)[:8])
+        _stopping(service)[str(record.run_id)] = thread
+        thread.start()
+    return {"run_id": record.run_id, "state": "stopping", "accepted": not already,
             "cleanup_verified": record.cleanup_verified}
 
 

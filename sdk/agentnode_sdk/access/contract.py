@@ -36,7 +36,7 @@ It is also not a wire format. How a parameter is encoded is each transport's bus
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 #: The protocol version this build speaks. Clients are told it, and are also told the `since` of
 #: every operation, so a client older than an operation can tell rather than discover by failing.
@@ -124,6 +124,18 @@ WHAT_THIS_IS_NOT = (
 )
 
 
+#: Every state a caller can be shown, so a client can be written against a closed list
+#: rather than against whatever it has happened to see.
+#:
+#: `stopping` is the one worth explaining. Cancelling is not instant -- the sandbox has to
+#: be torn down and confirmed gone, which is what makes a terminal state trustworthy -- so
+#: a cancel is ACCEPTED immediately and the run sits in `stopping` until that confirmation
+#: arrives. Holding the caller until then would mean a person watching a spinner for the
+#: length of the settle window.
+RUNNING_STATES = ("accepted", "running", "stopping")
+FINISHED_STATES = ("finished", "refused", "cancelled", "unverified", "interrupted")
+STATES = RUNNING_STATES + FINISHED_STATES
+
 OPERATIONS = (
     Operation(
         name="capabilities",
@@ -201,7 +213,7 @@ OPERATIONS = (
         params=(Field("run_id", "string", "the run to ask about"),),
         returns=(
             Field("run_id", "string", "the run asked about"),
-            Field("state", "string", "where it is"),
+            Field("state", "string", "where it is", one_of=STATES),
             Field("started_at", "integer", "when it began", required=False),
             Field("finished_at", "integer", "when it ended", required=False),
         ),
@@ -229,13 +241,17 @@ OPERATIONS = (
         name="cancel",
         since="1",
         needs=RUN,
-        summary="Stop a run that has not finished, and say whether what it left is gone.",
+        summary="Ask for a run to be stopped. Comes back at once; the run reports "
+                "stopping until the sandbox has been confirmed gone.",
         params=(Field("run_id", "string", "the run to stop"),),
         returns=(
-            Field("run_id", "string", "the run stopped"),
-            Field("state", "string", "what it ended as"),
+            Field("run_id", "string", "the run being stopped"),
+            Field("state", "string", "where it is now -- stopping, or already finished",
+                  one_of=STATES),
+            Field("accepted", "boolean",
+                  "whether this call is what started the stopping"),
             Field("cleanup_verified", "boolean",
-                  "whether the sandbox was confirmed gone; absent means nobody could ask",
+                  "whether the sandbox was confirmed gone; absent means not yet known",
                   required=False),
         ),
         errors=COMMON + ("no_such_run",),
