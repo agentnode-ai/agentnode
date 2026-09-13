@@ -75,6 +75,14 @@ class Principal:
     device_id: str
     client_id: str
     capabilities: tuple = ()
+    #: True when the caller showed it holds the token's SECRET rather than merely a copy of the
+    #: token. The older doors have always required that, and an answer to such a caller can be
+    #: signed -- it is the only caller able to check the signature.
+    proved: bool = False
+    #: Set when the caller arrived as a browser session rather than carrying a token itself.
+    session_id: str = ""
+    #: Which door. Written to the audit, and what a compatibility observation is bound to.
+    via: str = ""
     device_name: str = ""
 
     @property
@@ -86,15 +94,33 @@ class Principal:
 NOBODY = Principal(token="", device_id="", client_id="")
 
 
-def identify(service, token: str) -> Principal:
+def identify(service, token: str, proof=None, via: str = "") -> Principal:
     """Turn a presented token into a principal, or into nobody.
 
     The device's capabilities come from what the gateway recorded when it was paired, not from
     anything the caller sends. A caller that could name its own capabilities would be deciding
     what it is allowed to do.
+
+    `proof` is an optional `(payload, signature)` showing the caller holds the token's SECRET
+    rather than merely a copy of the token. The older doors have always required it, and when
+    they became translators onto this dispatcher that requirement had to come WITH them: a
+    translator that dropped it would have quietly turned a signed request into a bearer one,
+    which is a weaker thing wearing the same name.
+
+    Verifying it here rather than at the door is the point. Checking a signature is transport
+    work, but deciding WHO IS ASKING is not, and there is one place that decides. A proof that
+    does not verify makes the caller nobody, not a partly-trusted somebody.
     """
     if not token:
         return NOBODY
+    proved = False
+    if proof is not None:
+        payload, signature = proof
+        try:
+            service.authenticate(token, payload or {}, signature or "")
+        except Exception:                                     # noqa: BLE001
+            return NOBODY
+        proved = True
     client_id = service.state.client_id_for(token)
     if not client_id:
         return NOBODY
@@ -108,7 +134,18 @@ def identify(service, token: str) -> Principal:
                 held = tuple(c for c in recorded if c in contract.CAPABILITIES)
             break
     return Principal(token=token, device_id=client_id, client_id=client_id,
-                     capabilities=held, device_name=name)
+                     capabilities=held, device_name=name, proved=proved, via=via)
+
+
+def rendered_record(service, principal: Principal, run_id: str) -> dict:
+    """The whole run record, for a door whose wire shape predates the contract.
+
+    Those doors answer with the entire signed record, and their clients read fields the narrower
+    `status` and `result` deliberately do not carry. They are translators now, so they must not
+    do their own ownership check: that is a decision, and decisions live here. This performs
+    exactly the check the contract's own operations perform, and then renders.
+    """
+    return _a_run_of_this_caller(service, principal, run_id).public()
 
 
 def _check_parameters(op, params: dict) -> dict:
@@ -162,6 +199,10 @@ def _which_parameters(op_name: str, detail: str) -> list:
     return sorted(f.name for f in op.params if f.name in said)
 
 
+#: The doors this gateway has. An adapter names itself with one of these when it dispatches.
+WAYS_IN = ("rest", "mcp", "bridge", "cli", "browser", "older_door")
+
+
 def _audit(service, op_name: str, principal: Principal, outcome: str, detail: str = "") -> None:
     """One line per attempt, however it went. No token, no artefact, no job output.
 
@@ -178,6 +219,11 @@ def _audit(service, op_name: str, principal: Principal, outcome: str, detail: st
         "at": round(time.time(), 3),
         "operation": _a_name_we_know(op_name),
         "device": principal.device_id or "(nobody)",
+        # WHICH DOOR. Not caller-supplied: the adapter that calls `dispatch` names itself, and
+        # anything that is not one of the ways in we declare is written as "(other)". A
+        # compatibility observation is bound to this, so a value a caller could choose would let
+        # it claim to have arrived somewhere it never did.
+        "via": principal.via if principal.via in WAYS_IN else "(other)",
         "outcome": outcome if outcome in _OUTCOMES else "(other)",
         "about": _which_parameters(op_name, detail),
     }
@@ -256,10 +302,41 @@ def dispatch(operation: str, params: dict, principal: Principal, *, service,
     place that records now, and it cannot be skipped by adding a refusal above it.
     """
     try:
-        return _carry_out(operation, params, principal, service=service, speaks=speaks)
+        answer = _carry_out(operation, params, principal, service=service, speaks=speaks)
     except Refused as refusal:
         _audit(service, operation, principal, refusal.refusal, refusal.because)
         raise
+    return _bound_to_this_gateway(service, principal, operation, answer)
+
+
+def _bound_to_this_gateway(service, principal: Principal, operation: str, answer: dict) -> dict:
+    """Sign an answer for a caller that can check the signature, and for nobody else.
+
+    The older doors have always answered with the record bound to the gateway that produced it,
+    and `EM3C-EVIDENCE-0020` is why: an answer's outcome could be changed on the way to a client
+    and the binding still recomputed to what had been signed, so the binding covers everything
+    the answer says happened. Making those doors translators onto this dispatcher must not lose
+    that, which means it has to be expressible HERE.
+
+    Only for a caller that PROVED it holds the token's secret. Anyone else could not verify a
+    signature, so attaching one would be decoration -- and decoration that looks like evidence is
+    worse than none. It goes in a field of its own rather than at the top level, so the answer
+    still contains exactly what the operation declares.
+    """
+    op = contract.find(operation)
+    if not principal.proved or op is None or not isinstance(answer, dict):
+        return answer
+    if not any(f.name == "answer_binding" for f in op.returns):
+        return answer
+    try:
+        signed = service.sign_answer(service.stamp(dict(answer)), principal.token)
+    except Exception:                                         # noqa: BLE001
+        # A gateway that cannot sign says so by not signing. It does not invent a binding, and
+        # it does not fail an operation that otherwise succeeded.
+        return answer
+    carried = {k: signed[k] for k in ("gateway", "protocol", "binding", "signature")
+               if k in signed}
+    return {**answer, "answer_binding": carried} if carried else answer
 
 
 def _carry_out(operation: str, params: dict, principal: Principal, *, service,
@@ -497,22 +574,33 @@ def _submit(service, principal, params):
         rules = NetworkRules(enabled=True, allowed_destinations=frozenset(domains))
     asked_for = SandboxPolicy(network=rules, limits=Limits(wall_clock_s=wall_clock))
 
+    # Everything the caller asked for, carried through rather than summarised. What a job
+    # REQUIRES of the sandbox is the part that must never soften in passing: dropping a required
+    # property would run the job with less than was asked for and call that success, which is
+    # worse than refusing it outright.
     request = JobRequest(
-        job_id=str(params["run_id"]),
+        job_id=str(params.get("job_id") or params["run_id"]),
         run_id=str(params["run_id"]),
         artifact_sha256=digest(artifact),
         policy_sha256=digest(canonical_bytes(policy_shape(asked_for))),
+        required_properties=tuple(params.get("required_properties") or ()),
+        mandatory=tuple(params.get("mandatory") or ()),
+        optional=tuple(params.get("optional") or ()),
         command=tuple(params.get("command") or ()),
         network=network,
         allowed_domains=domains,
         wall_clock_s=wall_clock,
+        **({"nonce": str(params["nonce"])} if params.get("nonce") else {}),
     )
     try:
         record = service.submit(request, artifact, token=principal.token)
     except Exception as exc:                                  # noqa: BLE001
         raise _translate(exc) from exc
+    told = record.public()
     return {"run_id": record.run_id, "state": record.state,
-            "admitted_under": dict(getattr(record, "admitted_under_values", {}) or {})}
+            "admitted_under": dict(getattr(record, "admitted_under_values", {}) or {}),
+            "request_policy_sha256": told.get("request_policy_sha256", ""),
+            "effective_policy_sha256": told.get("effective_policy_sha256", "")}
 
 
 def _a_run_of_this_caller(service, principal, run_id):
@@ -636,6 +724,20 @@ def _devices_list(service, principal, params):
     ]}
 
 
+def _devices_rotate(service, principal, params):
+    """Hand back a replacement credential for the identity already asking.
+
+    Client-initiated on purpose: rotating only from the server side would mean an operator
+    conveying a new secret by hand, which is the moment secrets get pasted into chat windows.
+    """
+    replacement = service.state.rotate_token(principal.token)
+    if replacement is None:
+        raise Refused("not_authenticated",
+                      "This request did not come with a credential this sandbox recognises.",
+                      "Pair this device again with a fresh invitation.")
+    return {"token": replacement, "device_id": principal.client_id}
+
+
 def _devices_revoke(service, principal, params):
     wanted = str(params["device_id"])
     return {"device_id": wanted, "withdrawn": bool(service.state.revoke_client(wanted))}
@@ -668,5 +770,6 @@ HANDLERS = {
     "cancel": _cancel,
     "usage": _usage,
     "devices.list": _devices_list,
+    "devices.rotate": _devices_rotate,
     "devices.revoke": _devices_revoke,
 }

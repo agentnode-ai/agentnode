@@ -32,8 +32,17 @@ METHOD_NOT_FOUND = -32601
 
 
 def tools_for(principal) -> list:
-    """The tools this device may actually call -- not everything the service has."""
-    allowed = {op.name for op in contract.for_capabilities(principal.capabilities)}
+    """The tools this device may actually call -- not everything the service has.
+
+    Two filters, and they answer different questions. What this device was GRANTED decides what
+    it may do at all. What is a tool at all decides what a model is offered: some operations are
+    a person's business rather than a job's -- replacing a credential, managing sessions,
+    enrolling a connection -- and an AI handed a device token should not be able to mint its own
+    successor as one ordinary tool call. Those still go through the dispatcher, which is what
+    stops them being a second place decisions are made; they are simply not offered here.
+    """
+    allowed = {op.name for op in contract.for_capabilities(principal.capabilities)
+               if not op.for_people_not_tools}
     return [tool for tool in schemas.mcp_tools()
             if _operation_of(tool["name"]) in allowed]
 

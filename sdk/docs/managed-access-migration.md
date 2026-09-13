@@ -126,3 +126,51 @@ the refusal from the declaration. Both are changes to how identity is stored, so
 a release that was only meant to add a page.
 
 Until then, a client should treat `not_authenticated` as covering "this device was withdrawn".
+
+## What the contract can now express (protocol 2)
+
+Translating an older request onto the contract is only safe once the contract can say everything
+that request could say. Otherwise the translation quietly *narrows* it, and a requirement that is
+dropped rather than refused is worse than one that was never supported.
+
+`submit` therefore grew, all optional and all marked `since: "2"`: `job_id`, `required_properties`,
+`mandatory`, `optional`, `nonce`. Its answer grew `request_policy_sha256` and
+`effective_policy_sha256`.
+
+`submit`, `status`, `result` and `cancel` grew `answer_binding` — the gateway's identity, protocol,
+binding and signature over the answer, attached **only** for a caller that proved it holds the
+token's secret. That is what the older doors have always done and why: `EM3C-EVIDENCE-0020` found
+an answer's outcome could be changed in transit and the binding still recomputed, so the binding
+covers everything the answer says happened. A caller that cannot check a signature is given none,
+because decoration that looks like evidence is worse than no evidence.
+
+`identify()` accepts an optional proof — the `(payload, signature)` the older doors have always
+required. Checking a signature is transport work; deciding **who is asking** is not, so it happens
+in the one place that decides.
+
+`devices.rotate` was declared, replacing `/v1/token/rotate`. It is marked `for_people_not_tools`:
+it reaches the dispatcher like everything else, and it is deliberately **not** offered as an MCP
+tool. An AI handed a device's token should not be able to mint its successor in one tool call. An
+existing test already asserted no such tool is offered; that property is now enforced by the
+declaration rather than by nobody having added one.
+
+## Why `/v1/jobs` is still not a translator
+
+Found while trying to make it one, and worth stating plainly rather than discovering later.
+
+The contract's `submit` will not run anything that was not disclosed first: `prepare` returns an
+`accepted_disclosure`, and `submit` spends it. The older `/v1/jobs` door predates that gate and has
+no disclosure to spend.
+
+It is **not** an authentication or policy bypass — that door authenticates with a signed request,
+and admission, the operator's stop, the ceilings and the policy checks are all the same ones. What
+it predates is the *informed-consent* gate, not an access control.
+
+But it cannot become a thin translator while that is true. The translator would have to call
+`prepare` on the caller's own behalf and immediately spend the disclosure, which turns the gate
+into a formality — exactly the "disclosure is a screen rather than a gate" defect a review already
+found and closed once. So closing this properly means migrating `gateway/client.py` to call
+`prepare` before `submit`, together with the verification channels and tests that use it. That is a
+client migration, and it is not done.
+
+Until it is, `/v1/jobs` stays in the register as a route that decides for itself, and this is why.

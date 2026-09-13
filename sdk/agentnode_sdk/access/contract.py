@@ -113,6 +113,16 @@ class Operation:
     returns: tuple = ()
     errors: tuple = ()
     changes: bool = False
+    #: Declared, dispatched, and deliberately NOT offered as a tool an AI can call.
+    #:
+    #: Some operations are a person's business rather than a job's: replacing a credential,
+    #: managing browser sessions, enrolling a new connection. They go through the dispatcher
+    #: like everything else -- that is what stops them being a second decision point -- but an
+    #: AI that has been handed a device's token should not be able to mint its successor, list
+    #: the sessions belonging to the person who set it up, or issue itself a new connection, as
+    #: one ordinary tool call. Reaching the dispatcher and being offered to a model are two
+    #: different questions, and this is the second one.
+    for_people_not_tools: bool = False
 
     def __post_init__(self) -> None:
         if self.needs not in CAPABILITIES:
@@ -231,11 +241,41 @@ OPERATIONS = (
             Field("wall_clock_s", "integer", "how long it may run", required=False),
             Field("accepted_disclosure", "string",
                   "the disclosure this was started against, as prepare() returned it"),
+            # Everything below was expressible in the older signed request and was not
+            # expressible here. Declaring it is what made translating those requests onto this
+            # operation possible WITHOUT narrowing them: a field the contract cannot carry is a
+            # requirement that would have been dropped rather than refused, which is the one
+            # outcome worse than not migrating at all.
+            Field("job_id", "string",
+                  "the job this run belongs to, when it is not the run itself",
+                  required=False, since="2"),
+            Field("required_properties", "array",
+                  "what the sandbox must actually enforce, or the job is refused rather than "
+                  "run with less", required=False, since="2"),
+            Field("mandatory", "array",
+                  "policy fields that must survive composition; narrowing one is refused",
+                  required=False, since="2"),
+            Field("optional", "array",
+                  "policy fields the job would like; narrowing one is reported as a delta "
+                  "rather than silently applied", required=False, since="2"),
+            Field("nonce", "string",
+                  "chosen by the caller so a replayed request is seen as one",
+                  required=False, since="2"),
         ),
         returns=(
             Field("run_id", "string", "how to ask about it"),
             Field("state", "string", "where it is now"),
             Field("admitted_under", "object", "the ceilings and policy it was admitted against"),
+            Field("request_policy_sha256", "string",
+                  "digest of the policy that was ASKED for, composed by this gateway rather "
+                  "than sent by the caller", required=False, since="2"),
+            Field("effective_policy_sha256", "string",
+                  "digest of the policy actually granted", required=False, since="2"),
+            Field("answer_binding", "object",
+                  "the gateway's identity, protocol, binding and signature over this "
+                  "answer -- present only when the request proved it holds the token's "
+                  "secret, because nobody else could check it", required=False,
+                  since="2"),
         ),
         errors=COMMON + ("refused_by_policy", "over_a_ceiling", "sandbox_unavailable"),
         changes=True,
@@ -251,6 +291,11 @@ OPERATIONS = (
             Field("state", "string", "where it is", one_of=STATES),
             Field("started_at", "integer", "when it began", required=False),
             Field("finished_at", "integer", "when it ended", required=False),
+            Field("answer_binding", "object",
+                  "the gateway's identity, protocol, binding and signature over this "
+                  "answer -- present only when the request proved it holds the token's "
+                  "secret, because nobody else could check it", required=False,
+                  since="2"),
         ),
         errors=COMMON + ("no_such_run",),
     ),
@@ -269,6 +314,11 @@ OPERATIONS = (
             Field("cleanup_verified", "boolean",
                   "whether the sandbox was confirmed gone; absent means nobody could ask",
                   required=False),
+            Field("answer_binding", "object",
+                  "the gateway's identity, protocol, binding and signature over this "
+                  "answer -- present only when the request proved it holds the token's "
+                  "secret, because nobody else could check it", required=False,
+                  since="2"),
         ),
         errors=COMMON + ("no_such_run", "not_finished"),
     ),
@@ -293,6 +343,11 @@ OPERATIONS = (
             Field("problem", "string",
                   "why the last attempt did not confirm the sandbox gone, if it did not",
                   required=False, since="2"),
+            Field("answer_binding", "object",
+                  "the gateway's identity, protocol, binding and signature over this "
+                  "answer -- present only when the request proved it holds the token's "
+                  "secret, because nobody else could check it", required=False,
+                  since="2"),
         ),
         # Cancelling is bounded like everything else. A device that asks for many stops in a
         # short time is refused with `over_a_ceiling`; asking again about a stop already in
@@ -323,6 +378,23 @@ OPERATIONS = (
         params=(),
         returns=(Field("devices", "array", "each device, with its name and when it was last used"),),
         errors=COMMON,
+    ),
+    Operation(
+        name="devices.rotate",
+        since="2",
+        needs=MANAGE_DEVICES,
+        summary="Replace this device's credential, keeping the identity behind it.",
+        for_people_not_tools=True,
+        params=(),
+        returns=(
+            Field("token", "string", "the replacement credential"),
+            Field("device_id", "string", "the identity it still belongs to"),
+        ),
+        # Deliberately behind MANAGE_DEVICES rather than RUN. Credential management is not
+        # sandbox use, and an AI holding a device's token should not be able to mint its
+        # successor as one ordinary tool call.
+        errors=COMMON,
+        changes=True,
     ),
     Operation(
         name="devices.revoke",
