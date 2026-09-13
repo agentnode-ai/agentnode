@@ -44,15 +44,24 @@ def _adopt(server, thread, state) -> None:
         _owner.callback(stop, server, thread, state)
 
 
-def owned(server, state=None):
+def owned(server, state=None, owner=None):
     """Start serving, and make sure somebody is responsible for stopping it.
 
-    Returns the thread, so a caller that wants to join it itself still can. Calling `stop()` twice
-    is harmless, so a test that tidies up explicitly does not fight the stack that would have.
+    The default owner is the RUNNING TEST, which is right for a server the test itself makes and
+    wrong for anything that must outlive it. That distinction cost 36 failures and twenty minutes
+    of runtime: the session-scoped gateway registered its cleanup with whichever test happened to
+    trigger the fixture, was shut down when that test ended, and every later test waited thirty
+    seconds for a server that was not there.
+
+    So a fixture whose scope is wider than one test passes its OWN owner, and
+    `test_serving_ownership.py` refuses to let a bare call appear inside one.
     """
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    _adopt(server, thread, state)
+    if owner is not None:
+        owner.callback(stop, server, thread, state)
+    else:
+        _adopt(server, thread, state)
     return thread
 
 

@@ -2600,12 +2600,14 @@ class TestTheVerticalFlowForReal:
                     + (NEWLINE.join(lines) or "    (no results at all)")
                 )
             server = make_server(service, port=0)
-            serving.owned(server)
+            # Class-scoped: this outlives the test that first asks for it, so it owns its server.
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
             base = f"http://127.0.0.1:{server.server_address[1]}"
             try:
                 yield base, state, service
             finally:
-                server.shutdown()
+                serving.stop(server, thread, state)
 
     def test_foreign_code_runs_in_a_container_and_the_result_comes_back(self, real_gateway):
         """The runtime is asked what it created, so the observation names a real container.
@@ -2769,12 +2771,13 @@ class TestRestrictedEgressForReal:
             if not readiness.ready:
                 pytest.fail("conformance could not be measured: " + readiness.reason)
             server = make_server(service, port=0)
-            serving.owned(server)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
             base = "http://127.0.0.1:%d" % server.server_address[1]
             try:
                 yield base, state, service
             finally:
-                server.shutdown()
+                serving.stop(server, thread, state)
 
     def test_only_the_allowed_host_is_reachable_and_only_through_the_proxy(self,
                                                                           egress_gateway):
@@ -3037,7 +3040,8 @@ class TestEveryNarrowingIsDisclosed:
         svc = GatewayService(state, backend=StandInBackend(), operator_policy=operator)
         _store_measurement(svc)
         server = make_server(svc, port=0)
-        serving.owned(server)
+        # Called from a class-scoped fixture, so the caller stops it rather than the test.
+        threading.Thread(target=server.serve_forever, daemon=True).start()
         return svc, server, f"http://127.0.0.1:{server.server_address[1]}"
 
     def _ceiling(self):

@@ -69,12 +69,16 @@ class RealGateway:
         self.service = GatewayService(self.state, backend=self.backend)
         _store_measurement(self.service)
         self.server = make_server(self.service, port=0)
-        serving.owned(self.server)
+        # This gateway lives for the whole session, so it owns its own server. Handing it to the
+        # running test's stack shut it down after the first test that used it.
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.connection = gc.pair(self.base, self.state.start_pairing(), client_name="evidence")
 
     def close(self):
-        self.server.shutdown()
+        """Everything this gateway made, given back by name."""
+        serving.stop(self.server, self.thread, self.state)
 
     def saying_what_it_was_doing(self, what: str):
         """Turn a timeout here into a description of why it timed out.
