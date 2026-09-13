@@ -13,8 +13,29 @@ import pytest
 from agentnode_sdk.access import compatibility as compat
 
 
-def an_observation(way_in=compat.MCP, run_id="a7fd4ca2188643538f000f9c031b67a7"):
-    return compat.Observation(way_in=way_in, run_id=run_id, at=time.time(), client="a test")
+DEVICE = "d0d0d0d0d0d0d0d0"
+
+
+def an_observation(way_in=compat.MCP, run_id="a7fd4ca2188643538f000f9c031b67a7",
+                   device_id=DEVICE, operation="submit"):
+    return compat.Observation(way_in=way_in, run_id=run_id, at=time.time(),
+                              device_id=device_id, operation=operation, client="a test")
+
+
+def a_record_of(owner=DEVICE, did=("submit",), broken=False, observation=None):
+    """Stands in for what the gateway would report. Built through the real type, because
+    `confirmed()` will not accept anything else -- which is the point of the type."""
+    def who_owns(run_id):
+        if broken:
+            raise OSError("the ledger could not be read")
+        return owner
+
+    def what_they_did(device_id):
+        if broken:
+            raise OSError("the audit could not be read")
+        return did if device_id == owner else ()
+
+    return compat.WhatTheSandboxRecorded(who_owns, what_they_did)
 
 
 class TestTheThreeStates:
@@ -34,7 +55,7 @@ class TestTheThreeStates:
     def test_only_an_observed_call_is_compatible(self):
         said = compat.confirmed("something that speaks MCP", [compat.MCP],
                                 an_observation(),
-                                ask_the_sandbox=lambda run: {"run_id": run})
+                                recorded=a_record_of())
         assert said.state == compat.COMPATIBLE
         assert said.is_a_claim_about_reality()
         assert said.observed[0].run_id in said.because, "the claim does not carry what backs it"
@@ -45,19 +66,19 @@ class TestTheThreeStates:
         """A review found this self-asserted: anything could build an Observation with a
         plausible run id, and the object proved only that somebody had typed it."""
         with pytest.raises(compat.NotConfirmable):
-            compat.confirmed("x", [compat.MCP], an_observation(), ask_the_sandbox=None)
+            compat.confirmed("x", [compat.MCP], an_observation(), recorded=None)
 
     def test_and_not_when_the_sandbox_does_not_know_the_run(self):
         with pytest.raises(compat.NotConfirmable):
             compat.confirmed("x", [compat.MCP], an_observation(),
-                             ask_the_sandbox=lambda run: {"run_id": "something else"})
+                             recorded=a_record_of(owner='somebody else'))
 
     def test_and_not_when_the_sandbox_cannot_be_asked(self):
         def unreachable(run):
             raise OSError("no route to host")
 
         with pytest.raises(compat.NotConfirmable):
-            compat.confirmed("x", [compat.MCP], an_observation(), ask_the_sandbox=unreachable)
+            compat.confirmed("x", [compat.MCP], an_observation(), recorded=a_record_of(broken=True))
 
 class TestCompatibleCannotBeReachedWithoutEvidence:
     """The property the whole module exists for."""
@@ -161,5 +182,37 @@ class TestCompatibleCannotBeReachedAroundTheCheck:
 
     def test_and_confirmed_is_the_only_way_through(self):
         said = compat.confirmed("x", [compat.MCP], an_observation(),
-                                ask_the_sandbox=lambda run: {"run_id": run})
+                                recorded=a_record_of())
         assert said.state == compat.COMPATIBLE
+
+
+class TestARunThatExistsIsNotEvidenceThatThisSystemRanIt:
+    """The last thing a review found, and the sharpest.
+
+    A run id names something that happened. It does not say who did it, so an observation built
+    from any run anybody could see would have been accepted -- and the way to check it was a
+    callable the claimant supplied, which could say whatever the claimant liked.
+    """
+
+    def test_a_run_belonging_to_another_device_proves_nothing(self):
+        with pytest.raises(compat.NotConfirmable):
+            compat.confirmed("a borrowed run", [compat.MCP], an_observation(),
+                             recorded=a_record_of(owner="somebody else entirely"))
+
+    def test_nor_does_a_device_with_no_record_of_carrying_that_out(self):
+        with pytest.raises(compat.NotConfirmable):
+            compat.confirmed("never actually called it", [compat.MCP],
+                             an_observation(operation="submit"),
+                             recorded=a_record_of(did=()))
+
+    def test_and_the_records_must_come_from_the_gateway(self):
+        """A callable the claimant supplies is the claimant marking its own work."""
+        with pytest.raises(compat.NotConfirmable):
+            compat.confirmed("x", [compat.MCP], an_observation(),
+                             recorded=lambda run: {"run_id": run})
+
+    def test_an_observation_must_say_who_and_what(self):
+        with pytest.raises(compat.NotEvidence):
+            compat.Observation(way_in=compat.MCP, run_id="a" * 32, at=1.0, operation="submit")
+        with pytest.raises(compat.NotEvidence):
+            compat.Observation(way_in=compat.MCP, run_id="a" * 32, at=1.0, device_id=DEVICE)

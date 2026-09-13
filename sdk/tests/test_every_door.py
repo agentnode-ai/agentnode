@@ -22,7 +22,7 @@ import pytest
 
 from agentnode_sdk.access import client as adapter
 from agentnode_sdk.access import compatibility as compat
-from agentnode_sdk.access import contract, mcp, rest, schemas
+from agentnode_sdk.access import contract, dispatch, mcp, rest, schemas
 from agentnode_sdk.gateway.identity import GatewayState
 from agentnode_sdk.gateway.server import GatewayService, make_server
 from tests import serving
@@ -89,8 +89,10 @@ class TestTheRestDoor:
         observed = compat.confirmed(
             "a neutral REST client", [compat.DIRECT],
             compat.Observation(way_in=compat.DIRECT, run_id=where["run_id"], at=time.time(),
+                               device_id=dispatch.identify(service, token).device_id,
+                               operation="submit",
                                client="urllib over the authenticated API"),
-            ask_the_sandbox=door.status)
+            recorded=dispatch.records_of(service))
         assert observed.state == compat.COMPATIBLE
 
 
@@ -130,8 +132,10 @@ class TestTheRemoteMcpDoor:
         observed = compat.confirmed(
             "a neutral MCP client", [compat.MCP],
             compat.Observation(way_in=compat.MCP, run_id=run_id, at=time.time(),
+                               device_id=dispatch.identify(service, token).device_id,
+                               operation="submit",
                                client="JSON-RPC over the remote MCP door"),
-            ask_the_sandbox=adapter.Sandbox(base, token).status)
+            recorded=dispatch.records_of(service))
         assert observed.state == compat.COMPATIBLE
 
     def test_making_an_invitation_is_not_among_the_tools(self, sandbox):
@@ -204,8 +208,10 @@ class TestTheLocalStdioBridge:
         observed = compat.confirmed(
             "the local MCP stdio bridge", [compat.MCP],
             compat.Observation(way_in=compat.MCP, run_id=run_id, at=time.time(),
+                               device_id=dispatch.identify(service, token).device_id,
+                               operation="submit",
                                client="stdio bridge relaying to the authenticated API"),
-            ask_the_sandbox=door.status)
+            recorded=dispatch.records_of(service))
         assert observed.state == compat.COMPATIBLE
 
     def test_and_it_holds_no_authority_of_its_own(self, sandbox):
@@ -238,8 +244,10 @@ class TestTheCommandLineShapedClient:
         observed = compat.confirmed(
             "the AgentNode CLI", [compat.RUNS_OUR_CLIENT],
             compat.Observation(way_in=compat.RUNS_OUR_CLIENT, run_id=run_id, at=time.time(),
+                               device_id=dispatch.identify(service, token).device_id,
+                               operation="submit",
                                client="the SDK client the CLI uses"),
-            ask_the_sandbox=door.status)
+            recorded=dispatch.records_of(service))
         assert observed.state == compat.COMPATIBLE
 
     def test_a_refusal_keeps_its_name_on_the_way_back(self, sandbox):

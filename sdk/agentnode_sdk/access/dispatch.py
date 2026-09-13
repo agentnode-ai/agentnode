@@ -203,6 +203,38 @@ def _the_operator_has_stopped_it(service) -> str:
                       "Ask whoever runs it to look at the gateway's state directory.") from exc
 
 
+def records_of(service):
+    """The sandbox's own account of what it did, for confirming a compatibility claim.
+
+    The only way to build one. Compatibility is a public claim, so what backs it comes
+    from the gateway's ledger and its audit rather than from whoever benefits: the run's
+    owner says WHO, and the audit says WHAT they carried out.
+    """
+    from agentnode_sdk.access.compatibility import WhatTheSandboxRecorded
+
+    def who_owns_the_run(run_id):
+        record = service.runs.get(str(run_id))
+        return getattr(record, "owner_client_id", "") if record is not None else ""
+
+    def what_that_device_did(device_id):
+        done = set()
+        path = os.path.join(str(service.state.root), "audit.jsonl")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    entry = json.loads(line)
+                    if (entry.get("device") == device_id
+                            and entry.get("outcome") == "carried_out"):
+                        done.add(entry.get("operation"))
+        except (OSError, ValueError):
+            return set()
+        return done
+
+    return WhatTheSandboxRecorded(who_owns_the_run, what_that_device_did)
+
+
 def record_a_refusal(service, operation: str, principal: Principal, outcome: str,
                      detail: str = "") -> None:
     """For a refusal a TRANSPORT produced before the dispatcher was reached.

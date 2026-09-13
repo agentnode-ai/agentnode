@@ -93,6 +93,11 @@ class Observation:
     way_in: str
     run_id: str
     at: float
+    #: The device that made the call. A run id alone names something that happened;
+    #: it does not say WHO did it.
+    device_id: str = ""
+    #: The operation carried out, because using AgentNode means carrying one out.
+    operation: str = ""
     client: str = ""
 
     def __post_init__(self) -> None:
@@ -105,6 +110,13 @@ class Observation:
                 "it can look the run up. Without that this is an assertion, not evidence.")
         if not self.at:
             raise NotEvidence("an observation has to say when it happened")
+        if not self.device_id:
+            raise NotEvidence(
+                "an observation has to name the device that made the call. A run id "
+                "says something happened; it does not say who did it.")
+        if not self.operation:
+            raise NotEvidence(
+                "an observation has to name the operation that was carried out.")
 
 
 @dataclass(frozen=True)
@@ -171,11 +183,30 @@ def judge(system: str, ways_in: Iterable[str] = (), observed: Iterable[Observati
 
 
 class NotConfirmable(NotEvidence):
-    """The observation could not be checked against the sandbox that supposedly produced it."""
+    """The observation could not be checked against the sandbox that produced it."""
+
+
+class WhatTheSandboxRecorded:
+    """The sandbox's own account of what happened, read from its own records.
+
+    Built by `dispatch.records_of(service)` and by nothing else. Requiring this type
+    is what stops the claimant marking its own work: the answers come from the
+    gateway's ledger and audit rather than from whoever wants the verdict.
+    """
+
+    def __init__(self, who_owns_the_run, what_that_device_did) -> None:
+        self._who_owns_the_run = who_owns_the_run
+        self._what_that_device_did = what_that_device_did
+
+    def owner_of(self, run_id: str) -> str:
+        return str(self._who_owns_the_run(run_id) or "")
+
+    def operations_by(self, device_id: str) -> set:
+        return set(self._what_that_device_did(device_id) or ())
 
 
 def confirmed(system: str, ways_in: Iterable[str], observation: Observation, *,
-              ask_the_sandbox) -> Verdict:
+              recorded: "WhatTheSandboxRecorded") -> Verdict:
     """The only transition that is a claim about reality, and it is checked rather than believed.
 
     A review found the earlier version self-asserted: anything could build an `Observation` with a
@@ -183,24 +214,35 @@ def confirmed(system: str, ways_in: Iterable[str], observation: Observation, *,
     the run is looked up in the sandbox that is said to have produced it, and COMPATIBLE is not
     available unless that lookup finds it.
 
-    `ask_the_sandbox` is a callable taking a run id and returning what the sandbox says about it,
-    or raising. It is passed in rather than imported so this module still knows nothing about
-    transports -- but it is not optional, because an optional check is one somebody will omit on
-    the day it would have mattered.
+    A later review went further, and was right: a run that EXISTS says something happened, not
+    that this system did it, and a callable supplied by the claimant can say anything. So the
+    records come from the gateway (`dispatch.records_of`), the run's owner must be the device the
+    observation names, and that device must have an audited record of carrying that operation out.
     """
-    if not callable(ask_the_sandbox):
+    if not isinstance(recorded, WhatTheSandboxRecorded):
         raise NotConfirmable(
-            "compatibility is confirmed by asking the sandbox about the run, and no way to ask "
-            "was supplied. Without it this would be an assertion.")
+            "compatibility is confirmed from the sandbox's own records, which come from "
+            "dispatch.records_of(service). Anything else is the claimant marking its own work.")
     try:
-        said = ask_the_sandbox(observation.run_id)
+        owner = recorded.owner_of(observation.run_id)
+        carried_out = recorded.operations_by(observation.device_id)
     except Exception as exc:                                  # noqa: BLE001
         raise NotConfirmable(
-            "the sandbox could not be asked about run %s (%s), so this is not an observation of "
-            "anything." % (observation.run_id, exc)) from exc
-    if not said or str(said.get("run_id") or "") != observation.run_id:
+            "the sandbox's records could not be read (%s), so nothing is established." % exc
+        ) from exc
+    if not owner:
         raise NotConfirmable(
             "the sandbox does not know run %s, so nothing was observed." % observation.run_id)
+    if owner != observation.device_id:
+        # The heart of it: a run that exists says something happened. It does not say this
+        # system did it, and any run anybody can see would otherwise do.
+        raise NotConfirmable(
+            "run %s belongs to another device, so it is not evidence that %s did anything."
+            % (observation.run_id, system))
+    if observation.operation not in carried_out:
+        raise NotConfirmable(
+            "the sandbox has no record of that device carrying out %s, so there is no tool "
+            "call to point at." % observation.operation)
     return judge(system, ways_in, (observation,), _checked=True)
 
 
