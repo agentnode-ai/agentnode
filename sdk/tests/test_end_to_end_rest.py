@@ -156,9 +156,13 @@ class TestTheWholeJourney:
             "command": ["python", "-c", "pass"], "wall_clock_s": 30})
         assert status == 200, started
         status, stopped = door.ask("cancel", {"run_id": started["run_id"]})
+        # 200 whether it was still going or had already finished. Racing a short job is not an
+        # error, and a caller that was slightly too late must be able to tell that from a cancel
+        # that did not work -- which is what the full suite, under load, found.
         assert status == 200, stopped
         assert "cleanup_verified" in stopped, (
             "a cancel that does not say what became of the sandbox leaves it unaccounted for")
+        assert stopped["state"], stopped
 
 
 class TestTheDoorDecidesNothing:

@@ -369,8 +369,21 @@ def _result(service, principal, params):
 
 
 def _cancel(service, principal, params):
+    """Stop a run, or say that it had already stopped.
+
+    Cancelling something that has finished is not an error and must not be answered as one: a
+    caller racing a short job would otherwise get a failure for having been slightly too late,
+    and would have no way to tell that from a cancel that did not work. This was found by the
+    full suite rather than by the test in isolation -- under load the job finished first.
+    """
+    from agentnode_sdk.gateway.protocol import is_terminal
+
     record = _a_run_of_this_caller(service, principal, params["run_id"])
-    service.cancel(record.run_id)
+    if not is_terminal(record.state):
+        try:
+            service.cancel(record.run_id)
+        except Exception as exc:                              # noqa: BLE001
+            raise _translate(exc) from exc
     return {"run_id": record.run_id, "state": record.state,
             "cleanup_verified": record.cleanup_verified}
 
