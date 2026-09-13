@@ -41,11 +41,14 @@ PATHS = {NAMESPACE + op.name.replace(".", "/"): op for op in contract.OPERATIONS
 #: token without first knowing the shape of one.
 SCHEMA_PATH = "/v1/openapi.json"
 
+#: The MCP door. Same authentication, same dispatcher, different vocabulary.
+MCP_PATH = "/v1/mcp"
+
 
 def ours(path: str) -> bool:
     """Whether this path is the contract's to answer for, declared or not."""
     bare = path.split("?", 1)[0]
-    return bare.startswith(NAMESPACE) or bare == SCHEMA_PATH
+    return bare.startswith(NAMESPACE) or bare in (SCHEMA_PATH, MCP_PATH)
 
 
 def route_for(path: str):
@@ -84,8 +87,23 @@ def handle(service, path: str, method: str, headers, body: bytes):
     does is small enough to read in one sitting, and anything larger would be somewhere for a
     decision to hide.
     """
-    if path.split("?", 1)[0] == SCHEMA_PATH:
+    bare = path.split("?", 1)[0]
+    if bare == SCHEMA_PATH:
         return 200, schemas.openapi_document()
+
+    if bare == MCP_PATH:
+        from agentnode_sdk.access import mcp
+
+        try:
+            message = json.loads(body.decode("utf-8")) if body else {}
+        except (ValueError, UnicodeDecodeError):
+            return 400, {"jsonrpc": "2.0", "id": None,
+                         "error": {"code": -32700, "message": "that is not JSON"}}
+        principal = dispatch.identify(service, _header(headers, TOKEN_HEADER))
+        reply = mcp.handle(service, message, principal)
+        # A notification gets no reply. 202 rather than 200 with an empty body, because "accepted,
+        # nothing to say" and "here is nothing" are different things.
+        return (202, {}) if reply is None else (200, reply)
 
     op = route_for(path)
     if op is None:
