@@ -83,6 +83,8 @@ REFUSALS = (
     "gateway_stopped",         # the kill switch is on; the operator's own words come with it
     "no_such_run",             # asked about something this caller did not submit
     "not_finished",            # a result asked for before there is one
+    "disclosure_required",     # nothing was disclosed to a person, so nothing runs
+    "upgrade_required",        # this client cannot express what this operation now requires
     "sandbox_unavailable",     # nothing could run it, and this is not the caller's fault
 )
 
@@ -239,8 +241,14 @@ OPERATIONS = (
                   one_of=("none", "allowlist")),
             Field("allowed_domains", "array", "where it may connect, if any", required=False),
             Field("wall_clock_s", "integer", "how long it may run", required=False),
+            # Declared optional ON PURPOSE, and refused by `submit` rather than by the shape
+            # check. A client from before the gate existed sends nothing here, and what it needs
+            # back is not "a field is missing" but which call to make, in what order, and why --
+            # so the refusal is `disclosure_required`, which carries that. Optional in the shape,
+            # mandatory in fact.
             Field("accepted_disclosure", "string",
-                  "the disclosure this was started against, as prepare() returned it"),
+                  "the disclosure this was started against, as prepare() returned it",
+                  required=False),
             # Everything below was expressible in the older signed request and was not
             # expressible here. Declaring it is what made translating those requests onto this
             # operation possible WITHOUT narrowing them: a field the contract cannot carry is a
@@ -277,7 +285,8 @@ OPERATIONS = (
                   "secret, because nobody else could check it", required=False,
                   since="2"),
         ),
-        errors=COMMON + ("refused_by_policy", "over_a_ceiling", "sandbox_unavailable"),
+        errors=COMMON + ("refused_by_policy", "over_a_ceiling", "sandbox_unavailable",
+                         "disclosure_required", "upgrade_required"),
         changes=True,
     ),
     Operation(
@@ -401,6 +410,9 @@ OPERATIONS = (
         since="1",
         needs=MANAGE_DEVICES,
         summary="Withdraw a device, so nothing it holds works any more.",
+        # A person deciding to cut a device off is asked to confirm it. A model calling the same
+        # thing is not asked anything, so it is not offered the call.
+        for_people_not_tools=True,
         params=(Field("device_id", "string", "the device to withdraw"),),
         returns=(
             Field("device_id", "string", "the device withdrawn"),
@@ -409,6 +421,26 @@ OPERATIONS = (
         errors=COMMON,
         changes=True,
     ),
+)
+
+
+#: Things that must never be offered to a model as a callable tool, whatever else changes.
+#:
+#: Not a list of operation names -- names change, and a list of names goes stale the moment
+#: somebody adds `credentials.rotate` next to `devices.rotate`. These are the CONCEPTS, checked
+#: against every generated schema, so an operation that does one of them and was not marked
+#: `for_people_not_tools` is caught by its own description rather than by somebody remembering.
+#:
+#: Each is something where the person and the model want different things. An AI given a device
+#: token has every incentive to extend its own access, remove the thing that can stop it, or
+#: raise its own limits, and no way to be asked whether it should.
+NEVER_A_TOOL = (
+    ("rotate a credential", ("rotate", "renew_token", "reissue")),
+    ("withdraw a device or a session", ("revoke", "withdraw", "sign_out", "end_session")),
+    ("make an invitation", ("invite", "invitation", "pair", "pairing", "enrol", "enroll")),
+    ("change the operator's policy", ("set_policy", "policy_set", "allowance_set", "ceiling_set")),
+    ("work the kill switch", ("kill", "halt", "stop_gateway", "shutdown", "resume_gateway")),
+    ("change billing or account limits", ("billing", "invoice", "quota_set", "plan")),
 )
 
 

@@ -13,6 +13,7 @@ construction rather than by duration, and it fails against a synchronous cancel 
 from __future__ import annotations
 
 import base64
+import hashlib
 import threading
 
 import pytest
@@ -94,14 +95,21 @@ def sandbox(tmp_path):
 
 
 def a_running_job(service, who):
+    # The disclosure is bound to the job it described, so what is prepared and what is
+    # submitted have to be the same job. They were not: this prepared for a made-up
+    # digest and then submitted real code, which is exactly the substitution the gate
+    # now refuses.
+    code = "import time; time.sleep(30)"
+    body = code.encode("utf-8")
     told = dispatch.dispatch("prepare", {
-        "command": ["python", "-c", "import time; time.sleep(30)"],
-        "artifact_sha256": "a" * 64, "artifact_bytes": 40, "wall_clock_s": 60}, who,
+        "command": ["python", "-c", code],
+        "artifact_sha256": hashlib.sha256(body).hexdigest(),
+        "artifact_bytes": len(body), "wall_clock_s": 60}, who,
         service=service)
     started = dispatch.dispatch("submit", {
         "run_id": "s" * 32,
-        "artifact": base64.b64encode(b"import time; time.sleep(30)").decode("ascii"),
-        "command": ["python", "-c", "import time; time.sleep(30)"], "wall_clock_s": 60,
+        "artifact": base64.b64encode(body).decode("ascii"),
+        "command": ["python", "-c", code], "wall_clock_s": 60,
         "accepted_disclosure": told["accepted_disclosure"]}, who, service=service)
     return started["run_id"]
 

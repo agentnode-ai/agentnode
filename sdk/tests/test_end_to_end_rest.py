@@ -11,6 +11,7 @@ establish that is to go through it.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import urllib.error
@@ -23,6 +24,14 @@ from agentnode_sdk.gateway.identity import GatewayState
 from agentnode_sdk.gateway.server import GatewayService, make_server
 from tests import serving
 from tests.test_em3c_gateway import StandInBackend, _store_measurement
+
+
+#: What these tests actually send. Named rather than written out at each call site, because the
+#: disclosure binds the job it described: a test that prepares for a made-up digest and then
+#: submits real code is asking for one thing to be approved and doing another, which is the
+#: substitution the gate exists to refuse. These used to do exactly that and passed anyway.
+HELLO = b"print('hello')"
+HELLO_SHA = hashlib.sha256(HELLO).hexdigest()
 
 
 class ADoor:
@@ -98,7 +107,8 @@ class TestTheWholeJourney:
         # --- what would happen, before anything happens.
         status, told = door.ask("prepare", {
             "command": ["python", "-c", "print('hello')"],
-            "artifact_sha256": "a" * 64, "artifact_bytes": 21, "wall_clock_s": 30})
+            "artifact_sha256": HELLO_SHA, "artifact_bytes": len(HELLO),
+            "wall_clock_s": 30})
         assert status == 200, told
         for must_say in ("runs_at", "transfers", "network", "limits", "expected_use",
                          "what_this_does_not_establish"):
@@ -159,7 +169,7 @@ class TestTheWholeJourney:
         token = service.state.redeem_pairing(service.state.start_pairing(), client_name="a laptop")
         door = ADoor(base, token)
         _s, told = door.ask("prepare", {"command": ["python", "-c", "pass"],
-                                        "artifact_sha256": "b" * 64,
+                                        "artifact_sha256": hashlib.sha256(b"x").hexdigest(),
                                         "artifact_bytes": 1, "wall_clock_s": 30})
         status, started = door.ask("submit", {
             "run_id": "c" * 32, "artifact": base64.b64encode(b"x").decode("ascii"),

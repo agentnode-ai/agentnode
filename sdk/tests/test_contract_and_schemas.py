@@ -61,11 +61,31 @@ class TestTheDeclarationIsWellFormed:
 class TestEveryRenderingSaysTheSameThing:
 
     def test_they_offer_exactly_the_declared_operations_and_no_others(self):
+        """The renderings may not disagree -- but two of them deliberately offer LESS.
+
+        A schema handed to a model is an offer. Some operations are a person\'s business:
+        rotating a credential, withdrawing a device, making an invitation, changing the
+        operator\'s policy, working the kill switch. A model given a device token has every
+        incentive to do them and no way to be asked whether it should, so they are left out of
+        the renderings a model reads -- while remaining reachable through the dispatcher, which
+        is what stops this becoming a second place decisions are made.
+
+        This asserts the withheld set EXACTLY, in both directions. A rendering that quietly
+        started offering one of them fails; so does a rendering that quietly stopped offering
+        something it should.
+        """
         declared = {op.name for op in contract.OPERATIONS}
+        for_people = {op.name for op in contract.OPERATIONS if op.for_people_not_tools}
+        assert for_people, "nothing is withheld, so this test establishes nothing"
+
         every = schemas.every_rendering()
-        for which in ("openapi", "mcp", "tool_calling"):
+        # The HTTP surface is what a person\'s own client talks to, so it carries everything;
+        # reaching it still needs the capability the operation declares.
+        assert schemas.operations_named_by(every["openapi"], "openapi") == declared
+
+        for which in ("mcp", "tool_calling"):
             offered = schemas.operations_named_by(every[which], which)
-            assert offered == declared, (which, offered ^ declared)
+            assert offered == declared - for_people, (which, offered ^ (declared - for_people))
 
     def test_and_each_accepts_exactly_the_declared_parameters(self):
         document = schemas.openapi_document()

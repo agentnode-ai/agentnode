@@ -35,7 +35,9 @@ adapter that needed to make a decision to translate would be a decision made twi
 """
 from __future__ import annotations
 
+import hmac
 import json
+import secrets
 import os
 import time
 from dataclasses import dataclass
@@ -448,12 +450,51 @@ def _what_was_disclosed(answer: dict) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+def _spend_the_disclosure(service, principal, presented: str, about: dict) -> None:
+    """Claim a disclosure for THIS submission, or refuse. Raises; never returns False.
+
+    `presented` is `<nonce>.<digest>`. The nonce says which disclosure, the digest says what it
+    was about. Recomputing the digest from the submission in hand is the whole check: a caller
+    holding a valid disclosure for one job cannot spend it on another, because the digest of the
+    other job is a different number and no amount of holding the first one produces it.
+    """
+    nonce, _, carried = presented.partition(".")
+    expected = _what_was_disclosed(_what_would_happen(service, principal, about))
+    if not nonce or not carried:
+        raise Refused("disclosure_required",
+                      "That is not a disclosure this sandbox issued.",
+                      "Call prepare for this job and send back what it returns.")
+    if not hmac.compare_digest(carried, expected):
+        raise Refused("disclosure_required",
+                      "This submission is not the job that was disclosed. Something that "
+                      "changes what would actually happen -- the code, the command, the network "
+                      "it may reach, or how long it may run -- is different from what a person "
+                      "was shown.",
+                      "Call prepare again with exactly this job, show a person the answer, and "
+                      "submit against that.")
+    shown = getattr(service, "_disclosures_shown", None) or {}
+    # Claimed and removed in one step, so two submissions racing on one disclosure cannot both
+    # be told they had it -- the same shape as the pairing code's claim, and for the same reason.
+    when = shown.pop((principal.client_id, nonce), None)
+    if not when:
+        raise Refused("disclosure_required",
+                      "That disclosure has already been used, or it was shown to a different "
+                      "device.",
+                      "Call prepare again and submit against what it returns.")
+    if (time.time() - when) > DISCLOSURE_GOOD_FOR_SECONDS:
+        raise Refused("disclosure_required",
+                      "That disclosure is older than %d minutes, so what it described may no "
+                      "longer be what would happen."
+                      % (DISCLOSURE_GOOD_FOR_SECONDS // 60),
+                      "Call prepare again and submit against what it returns.")
+
+
 def _remember_the_disclosure(service, principal, digest_of_it: str) -> None:
     """Kept by the SERVER, against this device, with a time on it."""
     shown = getattr(service, "_disclosures_shown", None)
     if shown is None:
         shown = service._disclosures_shown = {}
-    shown[(principal.client_id, digest_of_it)] = time.time()
+    shown[(principal.client_id, digest_of_it.partition(".")[0])] = time.time()
 
 
 def _take_the_disclosure(service, principal, digest_of_it: str) -> bool:
@@ -491,8 +532,14 @@ def _capabilities(service, principal, params):
     }
 
 
-def _prepare(service, principal, params):
-    """The disclosure, composed server-side so every door shows the same thing."""
+def _what_would_happen(service, principal, params):
+    """What this job would actually do, composed server-side so every door shows the same thing.
+
+    Separated from `prepare` so that `submit` can compose it again for the job it has in hand
+    and compare. One function, so the thing a person is shown and the thing a submission is
+    measured against cannot drift apart -- if they could, the check would pass while meaning
+    nothing.
+    """
     from agentnode_sdk.worker import what_it_does_not_establish
 
     allowed = service.allowance()
@@ -524,31 +571,52 @@ def _prepare(service, principal, params):
         },
         "what_this_does_not_establish": what_it_does_not_establish(service.worker.topology),
     }
-    answer["accepted_disclosure"] = _what_was_disclosed(answer)
+    return answer
+
+
+def _prepare(service, principal, params):
+    """Show what would happen, and issue a single-use proof that it was shown.
+
+    The proof is `<nonce>.<digest>`. The digest is over the parts that would change what
+    actually happens, taken server-side over the server's own answer -- a digest a caller
+    computed would bind whatever the caller decided to hash. The nonce makes each disclosure its
+    own: without it two identical jobs would produce the same proof, so preparing twice and
+    submitting twice would work off one consent, and spending one would silently spend the
+    other.
+    """
+    answer = _what_would_happen(service, principal, params)
+    answer["accepted_disclosure"] = "%s.%s" % (secrets.token_hex(16), _what_was_disclosed(answer))
     _remember_the_disclosure(service, principal, answer["accepted_disclosure"])
     return answer
 
 
 def _submit(service, principal, params):
+    """Run something, having first established that this exact thing was disclosed.
+
+    The order matters and is not the order it was in. What is being submitted has to be worked
+    out BEFORE the disclosure can be judged, because judging it means recomputing what a
+    disclosure for THIS submission would look like and requiring the presented one to match.
+
+    Without that, the gate was a formality: a caller could call `prepare` for one job, be shown
+    what that job would do, and then spend the same disclosure on a different job entirely. The
+    digest was checked for existence, never against the submission it arrived with. So "nothing
+    runs that a person was not shown" held only for callers who were not trying.
+
+    Five bindings, and all five are checked here:
+
+    * the DEVICE -- the disclosure is stored under the client it was shown to;
+    * the CONTENT -- artifact digest, command, network, limits and ceilings, recomputed and
+      compared, so any change after acceptance invalidates it;
+    * the EXPIRY -- older than the window and it is not spendable;
+    * the NONCE -- each disclosure is its own, so two identical jobs do not share one;
+    * ONE USE -- claimed and removed in the same step, so two submissions racing on one cannot
+      both be told they had it.
+    """
     import base64
 
-    # Nothing runs that a person was not shown first. `prepare` hands back a digest of what it
-    # displayed; this spends it. A review found the field optional and ignored, which made the
-    # disclosure a screen rather than a gate -- it could be skipped by simply not sending it.
-    presented = str(params.get("accepted_disclosure") or "")
-    if not presented:
-        raise Refused("malformed",
-                      "Nothing runs here that was not disclosed first.",
-                      "Call prepare with the same job, show somebody what comes back, and send "
-                      "its accepted_disclosure with the submission.")
-    if not _take_the_disclosure(service, principal, presented):
-        raise Refused("malformed",
-                      "That disclosure is not one this sandbox showed this device in the last "
-                      "%d minutes, or it has already been used."
-                      % (DISCLOSURE_GOOD_FOR_SECONDS // 60),
-                      "Call prepare again and submit against what it returns.")
-
-    from agentnode_sdk.gateway.protocol import JobRequest, digest
+    from agentnode_sdk.gateway.policy_paths import policy_shape
+    from agentnode_sdk.gateway.protocol import JobRequest, canonical_bytes, digest
+    from agentnode_sdk.sandbox.contract import Limits, NetworkRules, SandboxPolicy
 
     artifact = params.get("artifact") or b""
     if isinstance(artifact, str):
@@ -557,17 +625,33 @@ def _submit(service, principal, params):
         except Exception as exc:                              # noqa: BLE001
             raise Refused("malformed", "The artifact is not valid base64.",
                           "Send the code base64-encoded.") from exc
-    # The policy the caller is ASKING for, digested the same way the existing client digests it.
-    # The gateway compares this against what it will actually grant, so composing it here rather
-    # than letting a caller send a digest is the point: a digest a caller chose would bind
-    # nothing.
-    from agentnode_sdk.gateway.policy_paths import policy_shape
-    from agentnode_sdk.gateway.protocol import canonical_bytes
-    from agentnode_sdk.sandbox.contract import Limits, NetworkRules, SandboxPolicy
 
     network = params.get("network") or "none"
     domains = tuple(params.get("allowed_domains") or ())
     wall_clock = max(1, int(params.get("wall_clock_s") or 60))
+
+    presented = str(params.get("accepted_disclosure") or "")
+    if not presented:
+        # Deliberately NOT "call prepare for them and carry on". A gateway that obtains the
+        # consent it requires, on behalf of the party it is protecting the person from, has not
+        # obtained consent. It says what is missing and what to do, and runs nothing.
+        raise Refused("disclosure_required",
+                      "Nothing runs here that was not disclosed to a person first, and this "
+                      "submission carried no proof that anything was.",
+                      "Call prepare with exactly this job, show a person what it returns, and "
+                      "send back the accepted_disclosure it gave you once they have agreed.")
+    _spend_the_disclosure(service, principal, presented, {
+        "command": list(params.get("command") or ()),
+        "artifact_sha256": digest(artifact),
+        "artifact_bytes": len(artifact),
+        "network": network,
+        "allowed_domains": list(domains),
+        "wall_clock_s": wall_clock,
+    })
+
+    # The policy the caller is ASKING for, digested the same way the existing client digests it.
+    # Composed here rather than accepted from the caller: a digest a caller chose would bind
+    # whatever the caller decided to hash.
     if network == "none":
         rules = NetworkRules(enabled=False, allowed_destinations=frozenset())
     else:
@@ -576,8 +660,7 @@ def _submit(service, principal, params):
 
     # Everything the caller asked for, carried through rather than summarised. What a job
     # REQUIRES of the sandbox is the part that must never soften in passing: dropping a required
-    # property would run the job with less than was asked for and call that success, which is
-    # worse than refusing it outright.
+    # property would run the job with less than was asked for and call that success.
     request = JobRequest(
         job_id=str(params.get("job_id") or params["run_id"]),
         run_id=str(params["run_id"]),

@@ -12,6 +12,7 @@ called compatible by anybody writing a document.
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import time
@@ -56,6 +57,14 @@ def rpc(base, token, message):
         return refused.code, json.loads(refused.read().decode("utf-8") or "{}")
 
 
+#: What these tests actually send. Named rather than written out at each call site, because the
+#: disclosure binds the job it described: a test that prepares for a made-up digest and then
+#: submits real code is asking for one thing to be approved and doing another, which is the
+#: substitution the gate exists to refuse. These used to do exactly that and passed anyway.
+HI = b"print('hi')"
+HI_SHA = hashlib.sha256(HI).hexdigest()
+
+
 def a_finished_run(sandbox_client, run_id):
     """Prepare, then submit, then wait -- the way every door must.
 
@@ -63,10 +72,10 @@ def a_finished_run(sandbox_client, run_id):
     here: the submission carries what it returned, and without it the sandbox refuses.
     """
     told = sandbox_client.prepare(command=["python", "-c", "print('hi')"],
-                                  artifact_sha256="a" * 64, artifact_bytes=14,
+                                  artifact_sha256=HI_SHA, artifact_bytes=len(HI),
                                   wall_clock_s=30)
     sandbox_client.submit(run_id=run_id,
-                          artifact=base64.b64encode(b"print('hi')").decode("ascii"),
+                          artifact=base64.b64encode(HI).decode("ascii"),
                           command=["python", "-c", "print('hi')"], wall_clock_s=30,
                           accepted_disclosure=told["accepted_disclosure"])
     for _ in range(100):
@@ -113,8 +122,8 @@ class TestTheRemoteMcpDoor:
         status, called = rpc(base, token, {
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
             "params": {"name": schemas.tool_name_for("prepare"), "arguments": {
-                "command": ["python", "-c", "print('hi')"], "artifact_sha256": "a" * 64,
-                "artifact_bytes": 14, "wall_clock_s": 30}}})
+                "command": ["python", "-c", "print('hi')"], "artifact_sha256": HI_SHA,
+                "artifact_bytes": len(HI), "wall_clock_s": 30}}})
         assert status == 200 and not called["result"].get("isError"), called
         disclosure = called["result"]["structuredContent"]["accepted_disclosure"]
 
@@ -184,7 +193,7 @@ class TestTheLocalStdioBridge:
         run_id = "b" * 32
         # The bridge goes through prepare like every other door: nothing runs undisclosed.
         told = door.prepare(command=["python", "-c", "print('hi')"],
-                            artifact_sha256="a" * 64, artifact_bytes=14, wall_clock_s=30)
+                            artifact_sha256=HI_SHA, artifact_bytes=len(HI), wall_clock_s=30)
         incoming = io.StringIO(chr(10).join([
             json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
             json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
