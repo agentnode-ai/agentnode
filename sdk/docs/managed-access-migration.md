@@ -108,3 +108,21 @@ repeated here so nothing is learned only by reading code:
   records — it is not an external attestation;
 - four addresses still decide for themselves. Until that number is zero, a change to the rules has
   to be made in more than one place, which is the risk one dispatcher exists to remove.
+
+## A declared refusal that cannot currently happen
+
+`device_revoked` is declared on every operation, and a client written against the contract would
+reasonably branch on it. It is very nearly unreachable.
+
+Withdrawing a device deletes its token entry, so the next request fails to identify at all and is
+answered `not_authenticated`. The `device_revoked` check sits *after* identification and can only
+fire in the narrow window where a token still resolves but its owner has changed.
+
+This is not a security gap — access stops immediately either way, on every path, which is what
+revocation has to guarantee and what `test_console_browser.py` checks. It is a documentation
+defect: the contract offers a distinction the gateway does not actually make. Closing it means
+either keeping revoked devices identifiable so the more specific refusal can be given, or removing
+the refusal from the declaration. Both are changes to how identity is stored, so neither belongs in
+a release that was only meant to add a page.
+
+Until then, a client should treat `not_authenticated` as covering "this device was withdrawn".

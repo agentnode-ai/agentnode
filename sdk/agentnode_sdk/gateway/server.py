@@ -1697,10 +1697,43 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
         return True
 
+    def _the_page(self):
+        """The console. Reads one file off disk and writes it back; decides nothing.
+
+        Deliberately not authenticated, and it does not need to be: what it serves is the same
+        markup for everybody, carries no credential, and grants nothing. The page then calls the
+        contract like any other client, with a token the person supplies -- so an unauthenticated
+        page does not become an unauthenticated way in.
+        """
+        from agentnode_sdk import console
+
+        if not console.ours(self.path):
+            return None
+        status, content_type, data = console.handle(self.path)
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        # A page holding a credential in memory should not be framed by anything, should not be
+        # sniffed into another type, and should not leak the address it came from.
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; "
+            "base-uri 'none'")
+        self.end_headers()
+        self.wfile.write(data)
+        return True
+
     def do_GET(self):
         if not self._state_is_private():
             return None
         if self._the_contract():
+            return None
+        if self._the_page():
             return None
         if self.path == "/v1/hello":
             return self._send(200, self.service.hello())

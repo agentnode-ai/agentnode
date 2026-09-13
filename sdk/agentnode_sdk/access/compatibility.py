@@ -42,7 +42,7 @@ recorded about a system is which INTERFACES it has, and the same code answers fo
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Iterable
 
 #: The only ways an AI can reach AgentNode. A system supporting none of these is not compatible.

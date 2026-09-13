@@ -30,6 +30,9 @@ THROUGH_THE_DISPATCHER = "through_the_dispatcher"
 BEFORE_ANYONE_IS_ANYBODY = "before_anyone_is_anybody"
 #: A route that still decides for itself. Each one is a second place the rules live.
 STILL_DECIDES_FOR_ITSELF = "still_decides_for_itself"
+#: A route that hands back a file and makes no decision at all. It cannot be a way in, because
+#: there is nothing behind it to reach.
+SERVES_A_PAGE = "serves_a_page_and_decides_nothing"
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,11 @@ REGISTER = (
           "request that gets it a credential without first knowing the shape of one."),
     Route("/v1/mcp", THROUGH_THE_DISPATCHER,
           "The MCP door. Same authentication, same dispatcher, different vocabulary."),
+
+    Route("/console", SERVES_A_PAGE,
+          "The page a person uses. It reads one file off disk and writes it back -- no token, no "
+          "state, nothing behind it. Everything the page then does, it does by calling the "
+          "contract like any other client, so the browser is not a privileged caller."),
 
     Route("/v1/hello", BEFORE_ANYONE_IS_ANYBODY,
           "What a client reads before it has paired, to learn which gateway it has reached and "

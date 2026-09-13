@@ -19,6 +19,7 @@ import os
 
 import pytest
 
+from agentnode_sdk import console
 from agentnode_sdk.access import mcp, rest, routes
 from agentnode_sdk.gateway import server as gateway_server
 
@@ -30,7 +31,12 @@ WHAT_THE_LITERALS_MEAN = {
     "/v1/jobs": ("/v1/jobs",),
     "/v1/token/rotate": ("/v1/token/rotate",),
     "/v1/jobs/": ("/v1/jobs/<run>", "/v1/jobs/<run>/cancel"),
+    "/console": ("/console",),
+    "/console/": ("/console",),
 }
+
+#: What counts as an address rather than any old string in the handler.
+LOOKS_LIKE_AN_ADDRESS = ("/v1", "/console")
 
 
 def source_of(module):
@@ -38,14 +44,20 @@ def source_of(module):
 
 
 def the_handlers_own_paths() -> set:
-    """Every `/v1` literal the request handler compares `self.path` against."""
+    """Every address this gateway answers on, read from where each one is actually decided.
+
+    Most are literals the request handler compares `self.path` against. The console's are not:
+    the handler asks the console module whether a path is its own, so the table lives there and
+    that is where this reads it from. Deriving it from the real table rather than from a string
+    in the handler is the point -- a second page added to that table shows up here.
+    """
     tree = ast.parse(source_of(gateway_server))
-    found = set()
+    found = set(console.FILES)
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name in ("do_GET", "do_POST"):
+        if isinstance(node, ast.FunctionDef) and node.name in ("do_GET", "do_POST", "_the_page"):
             for inner in ast.walk(node):
                 if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
-                    if inner.value.startswith("/v1"):
+                    if inner.value.startswith(LOOKS_LIKE_AN_ADDRESS):
                         found.add(inner.value)
     return found
 
@@ -85,7 +97,7 @@ class TestTheRegisterMatchesTheHandler:
         assert rest.ours(route.path + "capabilities" if route.path.endswith("/") else route.path)
 
     @pytest.mark.parametrize("route", [r for r in routes.REGISTER
-                                       if r.kind != routes.THROUGH_THE_DISPATCHER],
+                                       if r.kind not in (routes.THROUGH_THE_DISPATCHER,)],
                              ids=lambda r: r.path)
     def test_and_the_others_are_not_quietly_claimed_by_it(self, route):
         """If `ours()` ever widened to swallow a legacy path, the register would be describing one
@@ -161,3 +173,48 @@ class TestWhatTheReaderIsTold:
         text = io.open(note, encoding="utf-8").read()
         for route in routes.still_deciding():
             assert route.path in text, "%s is not mentioned in the migration note" % route.path
+
+
+class TestThePageIsNotAWayIn:
+    """The console is served without a credential, so what it can reach matters more than usual."""
+
+    def test_it_cannot_reach_the_gateway_at_all(self):
+        """Read as CODE, not as text. The module's own prose explains what it deliberately does
+        not touch, and a substring search would make saying so the thing that fails."""
+        tree = ast.parse(source_of(console))
+        used = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                used.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                used.add(node.attr)
+            elif isinstance(node, ast.alias):
+                used.update(node.name.split("."))
+                if node.asname:
+                    used.add(node.asname)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                used.update((getattr(node, "module", "") or "").split("."))
+        forbidden = {"GatewayState", "GatewayService", "dispatch", "worker", "runtime",
+                     "Runtime", "token", "identity", "state"}
+        reached = sorted(used & forbidden)
+        assert not reached, (
+            "the console module uses %s. It hands back a file; the moment it can reach anything "
+            "it stops being a page and starts being a door." % reached)
+
+    @pytest.mark.parametrize("attempt", [
+        "/console/../../etc/passwd",
+        "/console/index.html",
+        "/console/../identity.json",
+        "/console%2f..%2fstate",
+        "/console/state/audit.jsonl",
+        "/consolex",
+    ])
+    def test_it_serves_exactly_one_page_and_nothing_reachable_from_it(self, attempt):
+        """`FILES` is a table, not a directory. A path joined to whatever a request supplied is
+        how a static route becomes a way to read the state directory."""
+        assert not console.ours(attempt), attempt
+
+    def test_the_addresses_it_claims_are_the_ones_the_register_has(self):
+        for path in console.FILES:
+            assert path.rstrip("/") or path
+            assert routes.BY_PATH.get(path.rstrip("/") or path)

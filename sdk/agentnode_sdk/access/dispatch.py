@@ -372,7 +372,17 @@ def _take_the_disclosure(service, principal, digest_of_it: str) -> bool:
 
 def _capabilities(service, principal, params):
     described = contract.describe()
+    # Asked here rather than only at the point of running. `_the_operator_has_stopped_it` raises
+    # if it cannot tell, which is right when work is about to start and wrong when somebody is
+    # only asking what this sandbox is -- so an unreadable switch is reported as not accepting
+    # work, which is the same fail-closed answer without turning a question into an error.
+    try:
+        halted = _the_operator_has_stopped_it(service)
+    except Refused as refusal:
+        halted = refusal.because or "this sandbox cannot tell whether it has been stopped"
     return {
+        "accepting_work": not halted,
+        "not_accepting_because": halted,
         "protocol": described["protocol"],
         "operations": [o for o in described["operations"]
                        if o["needs"] in principal.capabilities],

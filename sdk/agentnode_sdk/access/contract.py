@@ -117,8 +117,12 @@ COMMON = ("not_authenticated", "device_revoked", "not_permitted", "malformed", "
 #: what that does not protect against is one somebody will read as a guarantee.
 WHAT_THIS_IS_NOT = (
     "Older routes on this gateway are not part of this contract and are not covered by it.",
-    "Cancelling a run is synchronous and can hold the caller for up to the gateway's settle "
-    "window while it confirms the sandbox is gone.",
+    "Cancelling asks for a stop and comes back at once. The run is not finished at that "
+    "point -- it reports stopping until the sandbox has been confirmed gone, and a stop "
+    "that fails does not become a cancellation that worked.",
+    "This gateway runs on one host for development. It is not multi-tenant, not "
+    "production-safe and not escape-proof, and nothing here should be described as any "
+    "of those.",
     "None of this is authorisation to expose this sandbox publicly, to deploy it, or to charge "
     "for it. It is a closed test service.",
 )
@@ -148,6 +152,13 @@ OPERATIONS = (
             Field("operations", "array", "each operation, with the version that introduced it"),
             Field("capabilities", "array", "what this device has been granted"),
             Field("enforces", "object", "what the sandbox was measured to actually enforce"),
+            # Additive in protocol 1. A customer area has to be able to show that the operator
+            # has stopped the sandbox WITHOUT first trying to run something and reading the
+            # refusal -- "why can I not start anything" should be answerable before you try.
+            Field("accepting_work", "boolean",
+                  "whether the operator currently has this sandbox taking new work"),
+            Field("not_accepting_because", "string",
+                  "the operator's reason, if it is not taking work", required=False),
             Field("what_this_does_not_establish", "array",
                   "the limits of this arrangement, which every client is told before it starts"),
         ),
