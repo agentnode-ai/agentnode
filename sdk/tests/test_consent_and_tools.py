@@ -364,11 +364,14 @@ class TestWhatTheApprovalIsBoundTo:
     def an_answer(self, service, who):
         return dispatch._what_would_happen(service, who, about())
 
-    def test_the_disclosure_names_the_account_and_the_door_it_was_shown_through(self, sandbox):
+    def test_the_disclosure_names_who_approved_it_and_which_connection_it_is_for(self, sandbox):
         service, who = sandbox
         shown = self.an_answer(service, who)
-        assert shown["decided_by"]["account"] == who.client_id
-        assert "via" in shown["decided_by"]
+        assert shown["approved_by"]["account"] == who.client_id
+        assert "channel" in shown["approved_by"]
+        assert shown["will_run_as"]["device"] == who.client_id
+        assert "shown_as" in shown["will_run_as"], (
+            "a person has to be shown a name they recognise, not an identifier")
 
     @pytest.mark.parametrize("path", dispatch.BOUND_BY_THE_DISCLOSURE,
                              ids=[".".join(p) for p in dispatch.BOUND_BY_THE_DISCLOSURE])
@@ -432,7 +435,8 @@ class TestWhatTheApprovalIsBoundTo:
         be removed by removing something: the required set, written out.
         """
         must_bind = {
-            ("decided_by",),                  # account and door
+            ("approved_by",),                 # who was shown it, and where
+            ("will_run_as",),                 # the one connection it is an approval for
             ("runs_at",),                     # backend and where it runs
             ("transfers",),                   # artifact digest, size, command
             ("network",),                     # mode and allowlist

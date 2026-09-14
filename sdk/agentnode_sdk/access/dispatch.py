@@ -202,7 +202,7 @@ def _which_parameters(op_name: str, detail: str) -> list:
 
 
 #: The doors this gateway has. An adapter names itself with one of these when it dispatches.
-WAYS_IN = ("rest", "mcp", "bridge", "cli", "browser", "older_door")
+WAYS_IN = contract.CHANNELS
 
 
 def _audit(service, op_name: str, principal: Principal, outcome: str, detail: str = "") -> None:
@@ -445,7 +445,8 @@ DISCLOSURE_GOOD_FOR_SECONDS = 15 * 60
 #: looks like one. What is bound from that section is the part the person was actually told
 #: about THIS job: what it would add.
 BOUND_BY_THE_DISCLOSURE = (
-    ("decided_by",),                       # which account, and which door it was shown through
+    ("approved_by",),                      # who was shown it, and where they confirmed it
+    ("will_run_as",),                      # the one connection it is an approval FOR
     ("runs_at",),                          # the backend and where it runs
     ("transfers",),                        # artifact digest, size, command
     ("network",),                          # mode and the destination allowlist
@@ -478,19 +479,63 @@ def _what_was_disclosed(answer: dict) -> str:
 
 
 def _spend_the_disclosure(service, principal, presented: str, about: dict) -> None:
-    """Claim a disclosure for THIS submission, or refuse. Raises; never returns False.
+    """Claim a disclosure for THIS submission, from THIS connection, or refuse.
 
-    `presented` is `<nonce>.<digest>`. The nonce says which disclosure, the digest says what it
-    was about. Recomputing the digest from the submission in hand is the whole check: a caller
-    holding a valid disclosure for one job cannot spend it on another, because the digest of the
-    other job is a different number and no amount of holding the first one produces it.
+    `presented` is `<nonce>.<digest>`. The nonce says which approval; the digest says what was
+    approved.
+
+    Two checks, and they establish different things.
+
+    The first is WHO IS SUBMITTING. The approval named one connection -- a device and a channel
+    -- and that is compared against what this gateway worked out from the request in hand, never
+    against anything the request claimed. A submission from another device, or over another
+    channel, is refused here with a sentence that says which connection it was for, because that
+    is a thing a person can act on.
+
+    The second is WHAT IS BEING SUBMITTED. The digest is recomputed from the approval side as it
+    was recorded, the execution side as it actually is, and the job now in hand. Anything that
+    drifted -- the code, the command, the network, the limits, the policy -- produces a different
+    number, and no amount of holding the first approval produces it.
     """
     nonce, _, carried = presented.partition(".")
-    expected = _what_was_disclosed(_what_would_happen(service, principal, about))
     if not nonce or not carried:
         raise Refused("disclosure_required",
                       "That is not a disclosure this sandbox issued.",
                       "Call prepare for this job and send back what it returns.")
+    shown = getattr(service, "_disclosures_shown", None) or {}
+    # LOOKED AT first, spent last. An earlier version popped it here and checked afterwards, so
+    # a submission that was going to be refused consumed the approval anyway -- one wrong-channel
+    # attempt, or one stolen approval string used from the wrong place, and the person had to go
+    # and agree to everything again. A refusal must not cost the thing being protected.
+    kept = shown.get(nonce)
+    if not kept:
+        raise Refused("disclosure_required",
+                      "That approval has already been used, or this sandbox never issued it.",
+                      "Call prepare again and submit against what it returns.")
+    if (time.time() - kept["when"]) > DISCLOSURE_GOOD_FOR_SECONDS:
+        raise Refused("disclosure_required",
+                      "That approval is older than %d minutes, so what it described may no "
+                      "longer be what would happen."
+                      % (DISCLOSURE_GOOD_FOR_SECONDS // 60),
+                      "Call prepare again and submit against what it returns.")
+
+    meant_for = kept["will_run_as"]
+    arrived_as = {"device": principal.client_id,
+                  "channel": principal.via or "(unrecorded)",
+                  "shown_as": meant_for.get("shown_as", "")}
+    if (arrived_as["device"] != meant_for.get("device")
+            or arrived_as["channel"] != meant_for.get("channel")):
+        raise Refused("disclosure_required",
+                      "That approval was given for %s over %s, and this submission arrived from "
+                      "somewhere else. An approval is for one connection."
+                      % (meant_for.get("shown_as") or meant_for.get("device"),
+                         meant_for.get("channel")),
+                      "Submit it from the connection that was approved, or have somebody "
+                      "approve this job for the connection you are using.")
+
+    expected = _what_was_disclosed(_what_would_happen(
+        service, principal, about,
+        approved_by=kept["approved_by"], will_run_as=meant_for))
     if not hmac.compare_digest(carried, expected):
         raise Refused("disclosure_required",
                       "This submission is not the job that was disclosed. Something that "
@@ -499,40 +544,31 @@ def _spend_the_disclosure(service, principal, presented: str, about: dict) -> No
                       "was shown.",
                       "Call prepare again with exactly this job, show a person the answer, and "
                       "submit against that.")
-    shown = getattr(service, "_disclosures_shown", None) or {}
-    # Claimed and removed in one step, so two submissions racing on one disclosure cannot both
-    # be told they had it -- the same shape as the pairing code's claim, and for the same reason.
-    when = shown.pop((principal.client_id, nonce), None)
-    if not when:
+
+    # Everything holds, so now it is spent -- and spent by exactly one caller. Two submissions
+    # racing on one approval both reach here; only the one whose `pop` returns the record goes
+    # on, which is the same claim-in-one-step the pairing code makes, moved to the end where it
+    # costs nothing to a caller who was going to be refused anyway.
+    if shown.pop(nonce, None) is None:
         raise Refused("disclosure_required",
-                      "That disclosure has already been used, or it was shown to a different "
-                      "device.",
-                      "Call prepare again and submit against what it returns.")
-    if (time.time() - when) > DISCLOSURE_GOOD_FOR_SECONDS:
-        raise Refused("disclosure_required",
-                      "That disclosure is older than %d minutes, so what it described may no "
-                      "longer be what would happen."
-                      % (DISCLOSURE_GOOD_FOR_SECONDS // 60),
+                      "That approval has just been used by something else.",
                       "Call prepare again and submit against what it returns.")
 
 
-def _remember_the_disclosure(service, principal, digest_of_it: str) -> None:
-    """Kept by the SERVER, against this device, with a time on it."""
+def _remember_the_disclosure(service, nonce: str, answer: dict) -> None:
+    """Kept by the SERVER: what was approved, for which connection, and when.
+
+    Keyed by the nonce alone rather than by nonce-and-device, because the device that SUBMITS is
+    not always the device that approved -- that is the whole point of separating the two. The
+    nonce is 128 bits this gateway chose; who may spend it is decided by what is stored here,
+    not by being able to guess where it is filed.
+    """
     shown = getattr(service, "_disclosures_shown", None)
     if shown is None:
         shown = service._disclosures_shown = {}
-    shown[(principal.client_id, digest_of_it.partition(".")[0])] = time.time()
-
-
-def _take_the_disclosure(service, principal, digest_of_it: str) -> bool:
-    """Spend it. One use, by the device it was shown to, within the window.
-
-    Claimed and removed in the same step, so two submissions racing on one disclosure cannot both
-    be told they had it -- the same shape as the pairing code's claim, and for the same reason.
-    """
-    shown = getattr(service, "_disclosures_shown", None) or {}
-    when = shown.pop((principal.client_id, digest_of_it), None)
-    return bool(when) and (time.time() - when) <= DISCLOSURE_GOOD_FOR_SECONDS
+    shown[nonce] = {"when": time.time(),
+                    "approved_by": answer["approved_by"],
+                    "will_run_as": answer["will_run_as"]}
 
 
 def _capabilities(service, principal, params):
@@ -559,7 +595,39 @@ def _capabilities(service, principal, params):
     }
 
 
-def _what_would_happen(service, principal, params):
+def _the_connection_this_is_for(service, principal, params) -> dict:
+    """Which paired connection an approval is being given for. Defaults to the one asking.
+
+    Nominating somebody else's connection is a device-management act, not sandbox use, so it
+    needs the capability a person's own client holds. Without that rule anything holding a
+    device token could have a person approve a job "for" a connection of its choosing.
+    """
+    channel = str(params.get("execution_channel") or "") or (principal.via or "(unrecorded)")
+    if channel not in contract.CHANNELS and channel != "(unrecorded)":
+        raise Refused("malformed",
+                      "This sandbox has no channel called %r." % channel,
+                      "Choose one of: " + ", ".join(contract.CHANNELS))
+    wanted = str(params.get("execution_device") or "") or principal.client_id
+    if wanted != principal.client_id and contract.MANAGE_DEVICES not in principal.capabilities:
+        raise Refused("not_permitted",
+                      "This device may not approve a job on behalf of another connection.",
+                      "Approve it from the connection that will run it, or use a device that "
+                      "manages this account's devices.")
+    named = ""
+    for device in service.state.paired_clients():
+        if device.get("client_id") == wanted:
+            named = str(device.get("client_name") or device.get("name") or "")
+            break
+    else:
+        raise Refused("malformed",
+                      "This sandbox has no paired connection to run that.",
+                      "Pair the connection first, then approve a job for it.")
+    # Stable server-side identifiers only. No token and no session id reaches a disclosure or
+    # its digest: a person is shown a name, and what is bound is an id this gateway assigned.
+    return {"device": wanted, "channel": channel, "shown_as": named or wanted}
+
+
+def _what_would_happen(service, principal, params, *, approved_by=None, will_run_as=None):
     """What this job would actually do, composed server-side so every door shows the same thing.
 
     Separated from `prepare` so that `submit` can compose it again for the job it has in hand
@@ -598,16 +666,23 @@ def _what_would_happen(service, principal, params):
         },
         "what_this_does_not_establish": what_it_does_not_establish(service.worker.topology),
     }
-    # --- who it is being shown to, and which door they came through ------------------------
+    # --- who approved it, and what they approved it FOR -------------------------------------
     #
-    # Bound, not merely recorded. A disclosure is one person agreeing to one thing, so it is
-    # not usable from another account, and not usable from another way in -- an approval given
-    # while setting something up over the web is not an approval for whatever calls the API
-    # afterwards.
-    answer["decided_by"] = {
+    # These are two different facts and an earlier version had them as one. Binding a single
+    # "channel" meant prepare and submit had to arrive the same way, which forbids the ordinary
+    # arrangement this product exists for: a person confirms comfortably in a browser, and the
+    # AI they set up runs the job over MCP afterwards.
+    #
+    # So the side that is OBSERVED and the side that is CHOSEN are kept apart. Who approved it
+    # and where they were when they did is established by this gateway from the request itself.
+    # What they approved it for is chosen at this call, shown to them in words, and bound -- so
+    # approving in a browser approves one named connection rather than approving in general.
+    answer["approved_by"] = approved_by or {
         "account": principal.client_id,
-        "via": principal.via or "(unrecorded)",
+        "channel": principal.via or "(unrecorded)",
+        "shown_as": principal.device_name or principal.client_id,
     }
+    answer["will_run_as"] = will_run_as or _the_connection_this_is_for(service, principal, params)
     answer["requested_policy_sha256"] = _digest_of_the_policy(asked_for)
     answer["operator_policy_sha256"] = _digest_of_the_policy(
         getattr(service, "operator_policy", None))
@@ -662,8 +737,9 @@ def _prepare(service, principal, params):
     other.
     """
     answer = _what_would_happen(service, principal, params)
-    answer["accepted_disclosure"] = "%s.%s" % (secrets.token_hex(16), _what_was_disclosed(answer))
-    _remember_the_disclosure(service, principal, answer["accepted_disclosure"])
+    nonce = secrets.token_hex(16)
+    answer["accepted_disclosure"] = "%s.%s" % (nonce, _what_was_disclosed(answer))
+    _remember_the_disclosure(service, nonce, answer)
     return answer
 
 

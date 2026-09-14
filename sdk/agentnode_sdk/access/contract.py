@@ -104,6 +104,17 @@ NEVER_FOR_A_MODEL = (CHANGES_ACCESS, CHANGES_POLICY)
 #: generated, started or served from it.
 UNCLASSIFIED = None
 
+# ------------------------------------------------------------------ the ways in
+
+#: Every door, named once. An adapter names itself with one of these; a caller never does.
+BROWSER = "browser"      # the console a person uses
+REST = "rest"            # the contract's own HTTP addresses
+MCP = "mcp"              # the remote MCP door
+BRIDGE = "bridge"        # a local stdio bridge relaying to the API
+CLI = "cli"              # the command line on somebody's own machine
+OLDER_DOOR = "older_door"  # the addresses that predate this contract
+CHANNELS = (BROWSER, REST, MCP, BRIDGE, CLI, OLDER_DOOR)
+
 # ------------------------------------------------------------------ refusals, by name
 
 REFUSALS = (
@@ -286,6 +297,15 @@ OPERATIONS = (
                   one_of=("none", "allowlist")),
             Field("allowed_domains", "array", "where it may connect, if any", required=False),
             Field("wall_clock_s", "integer", "how long it may run", required=False),
+            # WHICH connection is being approved. Chosen here, shown to the person here, and
+            # bound here -- so a person confirming in a browser is confirming one named tool
+            # connection rather than confirming in general. Left out, they mean "the one I am
+            # using", which is the same-channel case and stays as simple as it was.
+            Field("execution_channel", "string",
+                  "the channel the job may later be submitted over", required=False,
+                  one_of=CHANNELS, since="2"),
+            Field("execution_device", "string",
+                  "the paired device that may later submit it", required=False, since="2"),
         ),
         returns=(
             Field("runs_at", "string", "the machine and topology it would run on"),
@@ -295,9 +315,15 @@ OPERATIONS = (
             Field("expected_use", "object", "what this would count against, before it is run"),
             Field("what_this_does_not_establish", "string",
                   "the arrangement's stated limits, carried with the disclosure"),
-            Field("decided_by", "object",
-                  "the account and the way in this was disclosed to; a disclosure shown to one "
-                  "device, over one door, is not usable from another", since="2"),
+            Field("approved_by", "object",
+                  "who was shown this and where -- the account and the channel the person "
+                  "actually confirmed it on, established by this gateway from the request "
+                  "itself and never from anything the caller said", since="2"),
+            Field("will_run_as", "object",
+                  "the one connection this approval is for: which paired device, over which "
+                  "channel, shown by the name a person would recognise. Approving in a browser "
+                  "for a tool connection is the ordinary case, and this is the part that says "
+                  "WHICH tool connection", since="2"),
             Field("requested_policy_sha256", "string",
                   "digest of the policy being asked for, composed by this gateway", since="2"),
             Field("operator_policy_sha256", "string",
