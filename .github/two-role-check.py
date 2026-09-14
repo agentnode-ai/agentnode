@@ -280,7 +280,7 @@ def main() -> int:
         rotated = client("rotate")
         check("the client rotated its own access", rotated.returncode == 0,
               (rotated.stdout or "").strip()[:160])
-        check("it still works afterwards", client("test").returncode == 0)
+        check("it still works afterwards", client("test", "--yes").returncode == 0)
 
         clients_before = gateway("clients")
         found = re.search(r"two-role\s+([0-9a-f]{6,})", clients_before.stdout)
@@ -289,8 +289,20 @@ def main() -> int:
         if found:
             revoked = gateway("revoke", "--client", found.group(1))
             check("the operator revoked it", revoked.returncode == 0)
+            # The wording changed deliberately, and the check has to follow the contract
+            # rather than the memory of it. `device_revoked` was REMOVED: withdrawing a device
+            # deletes the only record that could tell it from a credential that never existed,
+            # so the gateway stopped claiming a distinction it does not make. A withdrawn
+            # device, an ended session, an expired credential and one this sandbox never issued
+            # all answer not_authenticated.
+            #
+            # --yes matters here for a reason worth spelling out: without it this command is
+            # refused at the CONSENT gate, before authentication is ever reached, and a check
+            # looking only for the word "refused" would have gone green while establishing
+            # nothing about revocation at all.
             check("the revoked client is refused at once, and says why",
-                  refused_because(client("test"), "not paired", "refused"))
+                  refused_because(client("test", "--yes"),
+                                  "credential this sandbox recognises"))
 
         say("what must fail, and did")
         code2 = pairing_code()
@@ -319,7 +331,7 @@ def main() -> int:
         stop_gateway(process)
         process = start_gateway()
         check("the client still works after the gateway restarted",
-              client("test").returncode == 0)
+              client("test", "--yes").returncode == 0)
 
         status = client("status")
         check("status reports a protected sandbox", status.returncode == 0,
