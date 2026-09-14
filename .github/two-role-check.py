@@ -212,7 +212,10 @@ def main() -> int:
               (connected.stdout or "").strip().replace("\n", " | ")[:200])
 
         say("a job, and its result")
-        tested = client("test")
+        # --yes is not a way round the consent gate, it is the gate's other answer: it says a
+        # person has read what would happen and accepts it. Nothing runs without one or the
+        # other, and a harness with no terminal has to give the explicit one.
+        tested = client("test", "--yes")
         check("the test job ran and came back", tested.returncode == 0,
               (tested.stdout or "").strip().replace("\n", " | ")[:220])
 
@@ -224,7 +227,11 @@ def main() -> int:
         runner = subprocess.Popen(
             ["sudo", "-n", "-u", CLIENT_USER, "env",
              f"AGENTNODE_HOME={CLIENT_HOME}/.agentnode", f"HOME={CLIENT_HOME}",
-             CLIENT_PYTHON, "-m", "agentnode_sdk.cli", "remote", "run", str(script),
+             # This one builds its own environment instead of going through client(), so it has
+             # to be given the same two things by hand -- where the credential lives, and the
+             # agreement -- or it reads a token it cannot find and asks a person who is not there.
+             "AGENTNODE_CREDENTIALS=file",
+             CLIENT_PYTHON, "-m", "agentnode_sdk.cli", "remote", "run", str(script), "--yes",
              "--max-seconds", "900", "--timeout", "300"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         run_id = ""
@@ -260,7 +267,7 @@ def main() -> int:
         subprocess.run(["sudo", "-n", "-u", CLIENT_USER, "tee", str(forever)],
                        input="import time\nprint('going', flush=True)\ntime.sleep(600)\n",
                        capture_output=True, text=True)
-        overran = client("run", str(forever), "--max-seconds", "10", "--timeout", "200")
+        overran = client("run", str(forever), "--yes", "--max-seconds", "10", "--timeout", "200")
         # Nonzero alone would also be satisfied by the job never starting, which is the opposite
         # of what this claims. It has to have STARTED and then been stopped.
         text = (overran.stdout or "") + (overran.stderr or "")
