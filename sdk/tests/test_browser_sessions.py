@@ -229,6 +229,24 @@ class TestEndingIt:
         # ... and it really is still there, so this was a refusal and not a quiet success.
         assert service.sessions.whose(given) is not None
 
+    def test_and_the_session_records_are_gone_rather_than_merely_unusable(self, signed_in):
+        """Two things have to be true and only one of them is visible from outside.
+
+        A withdrawn device cannot be identified, so its sessions stop working whatever else
+        happens -- which is what the test below observes, and which means that test would go on
+        passing if the records were left lying around. They are removed as well: a session that
+        outlives the device it belongs to is a row waiting to be matched against a re-paired
+        device with a recycled identity.
+        """
+        service, _base, browser, _cookie = signed_in
+        device = service.state.paired_clients()[0]["client_id"]
+        assert service.sessions.belonging_to(device), "nothing to remove, so nothing is proved"
+        # Through the door a person actually uses, so what is under test is the withdrawal
+        # rather than the method it happens to call.
+        status, answer, _ = browser.call("devices.revoke", {"device_id": device})
+        assert status == 200, answer
+        assert service.sessions.belonging_to(device) == []
+
     def test_withdrawing_the_device_ends_every_session_it_had(self, signed_in):
         """Revocation has to reach the browser, or "immediately" means "on every path except the
         one a person is actually looking at"."""
