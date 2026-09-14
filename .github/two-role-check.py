@@ -101,8 +101,18 @@ def gateway(*args, timeout: int = 600) -> subprocess.CompletedProcess:
 
 
 def client(*args, timeout: int = 600, extra_env: dict | None = None) -> subprocess.CompletedProcess:
-    """A client-side command, as the other user, with only its own home."""
-    env_bits = [f"AGENTNODE_HOME={CLIENT_HOME}/.agentnode", f"HOME={CLIENT_HOME}"]
+    """A client-side command, as the other user, with only its own home.
+
+    `AGENTNODE_CREDENTIALS=file` is the choice a headless machine has to make, and making it here
+    is the point rather than a workaround. A token goes in the platform keyring or nowhere; this
+    runner has no keyring, and the product refuses rather than quietly writing the token to disk
+    on your behalf. A server operator gets the same refusal and the same two ways out -- install
+    a keyring, or say this -- and the cost is spelled out in the refusal: the token then travels
+    in any backup of that directory. A test harness that did not have to make the choice would be
+    testing a path no server user has.
+    """
+    env_bits = [f"AGENTNODE_HOME={CLIENT_HOME}/.agentnode", f"HOME={CLIENT_HOME}",
+                "AGENTNODE_CREDENTIALS=file"]
     for key, value in (extra_env or {}).items():
         env_bits.append(f"{key}={value}")
     global last_result
