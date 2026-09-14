@@ -125,16 +125,47 @@ class TestOnePerRun:
 class TestNothingGrowsWithoutLimit:
 
     def test_the_hands_are_a_fixed_number_however_many_runs_are_stopping(self, sandbox):
+        """Measured on THIS pool, not on the process.
+
+        The first version counted every thread whose name began with "agentnode-stopping" and
+        required exactly two. That passes alone and fails in a full run, because other tests have
+        pools of their own that are legitimately alive -- so it was measuring the suite rather
+        than the property, and a review was right to refuse it as evidence of anything.
+
+        What the property actually says is that ONE pool has a fixed number of hands however many
+        runs it is asked to stop. That is what this measures: the pool's own hands, and how many
+        teardowns it ever had in flight at once.
+        """
         teardown = ASandboxThatTakesItsTime()
         stopping = sandbox(teardown, hands=2)
+        before = _hands()
         for n in range(40):
             stopping.ask("run-%d" % n, by="device-%d" % n)
 
         assert teardown.started.wait(timeout=5)
-        alive = [t for t in threading.enumerate() if t.name.startswith("agentnode-stopping")]
-        assert len(alive) == 2, [t.name for t in alive]
+        mine = [t for t in stopping._hands if t.is_alive()]
+        assert len(mine) == 2, [t.name for t in mine]
+        # ... and it started no others: the process gained exactly this pool's two.
+        assert _hands() - before == 2
         assert teardown.most_at_once <= 2, teardown.most_at_once
         teardown.may_finish.set()
+
+    def test_and_two_pools_have_two_pairs_of_hands_rather_than_four_pools_worth(self, sandbox):
+        """The global statement, made honestly: N pools cost N times the fixed number, not more.
+
+        Worth its own test because the per-pool check above cannot see a pool that starts hands
+        belonging to nobody.
+        """
+        first, second = ASandboxThatTakesItsTime(), ASandboxThatTakesItsTime()
+        before = _hands()
+        one, two = sandbox(first, hands=2), sandbox(second, hands=2)
+        for n in range(20):
+            one.ask("a-%d" % n, by="a")
+            two.ask("b-%d" % n, by="b")
+        assert first.started.wait(timeout=5) and second.started.wait(timeout=5)
+        assert _hands() - before == 4, _hands() - before
+        first.may_finish.set()
+        second.may_finish.set()
 
     def test_a_device_asking_for_too_many_new_stops_is_refused(self, sandbox):
         stopping = sandbox(lambda run_id: True)

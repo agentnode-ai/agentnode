@@ -5,8 +5,9 @@ been watched to go red. Each block below removes ONE property, names a DIFFERENT
 its exit status. A block whose named test still passes is reported as proving nothing, because
 that is what it does.
 
-Run with `scratchpad/cc_final.py` against a tree synced to `/root/rr/sdk`; every block restores
-the file it touched and the restoration is verified by comparison.
+These were run with `scratchpad/cc_final.py` against a tree synced to `/root/rr/sdk`. Every
+block restored the file it touched, and each restoration was verified by comparison. This is a
+record of what happened, not an instruction to anybody reading it.
 
 ## The bounded cancellation (earlier cycle, `scratchpad/cc_stop.py`)
 
@@ -73,9 +74,21 @@ not evidence and saying otherwise would be worse than saying nothing.
 
 ## The baseline
 
-Seven tests fail in a full run and failed identically at `f686861`, before any of this work:
-four in `test_agent_m1_transaction`, one in `test_agent_m1_amendment`, one in
-`test_layer3_installer_concurrency`, and one order-sensitive thread-count assertion in
-`test_stopping`. They belong to the installer work, not to this branch. The comparison was made
+Six tests fail in a full run and failed identically at `f686861`, before any of this work: four
+in `test_agent_m1_transaction`, one in `test_agent_m1_amendment`, one in
+`test_layer3_installer_concurrency`. They belong to the installer work. The comparison was made
 by exporting `f686861` to a separate tree and running the same command against it, not by
 inspection.
+
+**There were seven, and the seventh was mine.**
+`test_stopping.py::test_the_hands_are_a_fixed_number_however_many_runs_are_stopping` failed in a
+full run, and calling it "pre-existing" because it also failed at `f686861` was true and
+misleading: `test_stopping.py` was written earlier in this same arc, and that test is the
+bounded-execution gate. A review refused the package for it, correctly — baseline attribution
+cannot turn a failed mandatory gate into a pass.
+
+The cause was the test, not the code. It counted every thread in the process whose name began
+with `agentnode-stopping` and required exactly two, so it passed alone and failed in a full run
+where other tests legitimately have pools of their own. It was measuring the suite rather than
+the property. It now measures the pool's own hands, and a second test states the global version
+honestly: N pools cost N times the fixed number, and not more.

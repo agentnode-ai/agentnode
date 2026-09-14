@@ -37,10 +37,10 @@ HELLO_SHA = hashlib.sha256(HELLO).hexdigest()
 class ADoor:
     """A neutral client. It knows HTTP and the contract, and nothing about our internals."""
 
-    #: Longer than the gateway's own cancel settle window (45s). A cancel is synchronous and
-    #: waits for the sandbox to actually be gone, so a client that gave up sooner would be
-    #: measuring its own impatience rather than the operation. That the wait can be that long is
-    #: a real property worth knowing about -- see the note in the cancel test.
+    #: Generous, for a slow machine rather than for a slow operation. Cancelling comes back at
+    #: once now -- it asks, and the run reports `stopping` until the sandbox is confirmed gone --
+    #: so nothing here waits on a teardown. This number is left large because a test that fails
+    #: on an overloaded host teaches nobody anything.
     patience = 60.0
 
     def __init__(self, base, token=""):
@@ -176,11 +176,10 @@ class TestTheWholeJourney:
             "command": ["python", "-c", "pass"], "wall_clock_s": 30,
             "accepted_disclosure": told["accepted_disclosure"]})
         assert status == 200, started
-        # A cancel is SYNCHRONOUS: the gateway waits for the sandbox to be confirmed gone, up to
-        # its settle window of forty-five seconds. That is right for the answer it gives -- it can
-        # say whether cleanup was verified -- and it is a long time to hold a caller. Worth
-        # naming: a managed service will want this to be startable and pollable rather than
-        # blocking, and that is an access-layer change, not a change to the sandbox.
+        # Cancelling ASKS. It comes back immediately with `stopping`, and the run stays in that
+        # state until the sandbox has been confirmed gone -- confirmation being the only thing
+        # that makes a terminal state worth anything. Holding the caller through it, which is
+        # what this used to do, meant every client waited out somebody else's teardown.
         status, stopped = door.ask("cancel", {"run_id": started["run_id"]})
         # 200 whether it was still going or had already finished. Racing a short job is not an
         # error, and a caller that was slightly too late must be able to tell that from a cancel
