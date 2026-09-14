@@ -24,15 +24,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-#: A route that goes through the dispatcher: it authenticates, then carries nothing out itself.
+#: A route that IS the contract: declared operations, addressed by name.
 THROUGH_THE_DISPATCHER = "through_the_dispatcher"
+#: An older address, kept for the clients that use it, that translates and decides nothing. It
+#: reads the shape those clients send, hands the request to the dispatcher, and renders the
+#: answer in the envelope they have always read.
+TRANSLATES = "translates_to_the_dispatcher"
 #: A route that runs before anybody has a credential. Cannot go through the dispatcher by nature.
 BEFORE_ANYONE_IS_ANYBODY = "before_anyone_is_anybody"
-#: A route that still decides for itself. Each one is a second place the rules live.
-STILL_DECIDES_FOR_ITSELF = "still_decides_for_itself"
-#: A route that hands back a file and makes no decision at all. It cannot be a way in, because
-#: there is nothing behind it to reach.
+#: A route that hands back a file and makes no decision at all.
 SERVES_A_PAGE = "serves_a_page_and_decides_nothing"
+#: A route that still decides something for itself. Every one of these is a second place the
+#: rules live. The number is currently zero and the test below is what keeps it there.
+STILL_DECIDES_FOR_ITSELF = "still_decides_for_itself"
 
 
 @dataclass(frozen=True)
@@ -40,8 +44,8 @@ class Route:
     path: str
     kind: str
     why: str
-    #: For the ones not yet migrated: what it would cost a caller if it were migrated today.
-    what_migrating_would_break: str = ""
+    #: For a translator: what its clients read, and therefore what the translation must preserve.
+    keeps: str = ""
 
 
 REGISTER = (
@@ -54,41 +58,43 @@ REGISTER = (
           "The MCP door. Same authentication, same dispatcher, different vocabulary."),
 
     Route("/console", SERVES_A_PAGE,
-          "The page a person uses. It reads one file off disk and writes it back -- no token, no "
-          "state, nothing behind it. Everything the page then does, it does by calling the "
-          "contract like any other client, so the browser is not a privileged caller."),
+          "The page a person uses. It reads one file off disk and writes it back -- no token, "
+          "no state, nothing behind it. Everything the page then does, it does by calling the "
+          "contract like any other client."),
 
     Route("/v1/hello", BEFORE_ANYONE_IS_ANYBODY,
           "What a client reads before it has paired, to learn which gateway it has reached and "
           "whether that gateway is ready. There is nobody to authenticate yet."),
     Route("/v1/pair", BEFORE_ANYONE_IS_ANYBODY,
-          "Redeeming an invitation. This is how somebody comes to have a credential, so it "
-          "cannot require one. It has its own single-use claim, its own expiry and its own "
-          "attempt budget, none of which the dispatcher would add."),
+          "Redeeming an invitation: how somebody comes to have a credential, so it cannot "
+          "require one. It has its own single-use claim, its own expiry and its own attempt "
+          "budget, none of which the dispatcher would add."),
 
-    Route("/v1/token/rotate", STILL_DECIDES_FOR_ITSELF,
-          "Replacing a credential while keeping the identity behind it. Not in the contract "
-          "because it is credential management rather than sandbox use, and an AI holding a "
-          "device's token should not be able to mint its successor as one tool call.",
-          "Nothing yet: no contract operation covers it, so migrating it means declaring one."),
-    Route("/v1/jobs", STILL_DECIDES_FOR_ITSELF,
-          "The older submit. Carries required_properties, mandatory and optional policy shapes "
-          "that the contract's `submit` does not yet declare.",
-          "Migrating it today would silently NARROW what a caller can ask for -- the property "
-          "requirements would be dropped rather than refused, which is worse than not migrating. "
-          "The contract has to grow those fields first."),
-    Route("/v1/jobs/<run>", STILL_DECIDES_FOR_ITSELF,
-          "The older status. Returns the whole run record, signed; the contract's `status` "
+    Route("/v1/jobs", TRANSLATES,
+          "The older submit. Parses with the wire format's own reader -- the parser owns the "
+          "protocol version and the shape of every field -- then hands everything to the "
+          "dispatcher as claims to be checked.",
+          "A signed request and a signed answer, and the whole run record rather than the "
+          "narrow one. Its clients verify the binding, which is not decoration: an outcome "
+          "could otherwise be changed in transit and the binding recomputed over it."),
+    Route("/v1/jobs/<run>", TRANSLATES,
+          "The older status. Renders the whole signed record; the contract's own `status` "
           "returns a narrower shape on purpose.",
-          "Existing clients read fields the contract's status does not return. Migrating it "
-          "would break them silently, which is the one thing the instruction forbids."),
-    Route("/v1/jobs/<run>/cancel", STILL_DECIDES_FOR_ITSELF,
-          "The older cancel. Calls the gateway's cancel inline, so its callers still wait for "
-          "the settle window -- the very thing the contract's cancel stopped doing.",
-          "Its answer carries `settled`, which only means something for a cancel that waited. "
-          "Migrating it changes what that field can say, so the clients reading it have to be "
-          "moved first."),
+          "The full record, signed. A run this caller may not see is answered exactly as it "
+          "always was -- four words and nothing else, because telling a stranger that a run "
+          "exists but is not theirs tells them it exists."),
+    Route("/v1/jobs/<run>/cancel", TRANSLATES,
+          "The older cancel. Asks the dispatcher and answers at once; it holds nobody.",
+          "202, meaning what it always meant. 200 is gone, because only a route that waited "
+          "could say it -- so nothing changed meaning quietly, a value stopped being sent, and "
+          "the protocol version says so. The waiting moved into the client."),
+    Route("/v1/token/rotate", TRANSLATES,
+          "Replacing a credential, onto `devices.rotate`.",
+          "Its answer shape. The operation is declared for a person rather than a model, so it "
+          "reaches the dispatcher and is never offered as a tool: an AI holding a device's "
+          "token must not be able to mint its successor in one call."),
 )
+
 
 BY_PATH = {route.path: route for route in REGISTER}
 
@@ -98,18 +104,23 @@ def still_deciding() -> tuple:
     return tuple(r for r in REGISTER if r.kind == STILL_DECIDES_FOR_ITSELF)
 
 
+def translators() -> tuple:
+    """The older addresses that are kept, and decide nothing."""
+    return tuple(r for r in REGISTER if r.kind == TRANSLATES)
+
+
 def what_a_reader_should_know() -> str:
     """For the deployment notes and the migration guide: plain, and not reassuring."""
     outstanding = still_deciding()
-    if not outstanding:
-        return ("Every address this gateway answers on goes through one decision point, or runs "
-                "before anybody has a credential.")
+    if outstanding:
+        return (
+            "%d of this gateway's addresses still decide for themselves rather than going "
+            "through the contract's one decision point:\n%s" % (
+                len(outstanding),
+                "\n".join("  %-24s %s" % (r.path, r.why) for r in outstanding)))
     return (
-        "%d of this gateway's addresses still decide for themselves rather than going through "
-        "the contract's one decision point:\n%s\n"
-        "They are older routes with callers that have not moved yet. Until they do, a change to "
-        "the rules has to be made in more than one place, and that is exactly the risk the "
-        "contract exists to remove." % (
-            len(outstanding),
-            "\n".join("  %-24s %s" % (r.path, r.what_migrating_would_break) for r in outstanding))
-    )
+        "Every address this gateway answers on ends in one decision point, runs before "
+        "anybody has a credential, or hands back a file. The older addresses are kept and "
+        "translate; what each of their clients reads, and what the translation therefore "
+        "must not lose:\n%s" % (
+            "\n".join("  %-24s %s" % (r.path, r.keeps) for r in translators())))

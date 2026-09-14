@@ -515,7 +515,14 @@ def status_of(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
     return not_backwards(connection, verify_answer(connection, body))
 
 
-def cancel(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
+def cancel(connection: GatewayConnection, run_id: str, settle: float = 60.0) -> dict[str, Any]:
+    """Ask for a run to be stopped, and wait for it to really be over.
+
+    Returns `(record, settled)`, unchanged, and `settled` means what it always meant: the run
+    reached a terminal state with its sandbox confirmed gone. What changed in protocol 2 is
+    where the waiting happens -- the gateway answers at once now, so no caller of it is held
+    while somebody else's container is torn down. Pass `settle=0` to ask and not wait.
+    """
     from agentnode_sdk.gateway.identity import client_token_secret
 
     payload = {"run_id": run_id, "issued_at": time.time()}
@@ -534,7 +541,24 @@ def cancel(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
     # `EM3C-E6-RECORD-0001`: this used to return the body unverified, while `status_of` right
     # above it verified. What a person was shown after a cancellation was therefore the one state
     # in this client that nothing had checked.
-    return not_backwards(connection, verify_answer(connection, answer)), status == 200
+    asked = not_backwards(connection, verify_answer(connection, answer))
+    if status == 200 and asked.get("state") in TERMINAL_STATES:
+        return asked, True                       # a gateway from before protocol 2, still waiting
+    if not settle:
+        return asked, asked.get("state") in TERMINAL_STATES
+
+    # THE WAITING MOVED HERE, and that is the whole of the change. It has to happen somewhere:
+    # a person who cancels wants to be told when it is really over, and really over means the
+    # sandbox is confirmed gone rather than the record having changed. What matters is WHO
+    # waits. A server that held the connection held every caller, including the ones watching a
+    # screen; a client waiting for its own cancellation holds nobody but itself, and can give up
+    # whenever it likes.
+    try:
+        return wait_for(connection, run_id, timeout=settle), True
+    except GatewayClientError:
+        # Honest rather than convenient: it was asked for, and this client did not see it
+        # through. The caller is told which, and the run says what it really is.
+        return status_of(connection, run_id), False
 
 
 def wait_for(connection: GatewayConnection, run_id: str, timeout: float = 120.0,

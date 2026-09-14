@@ -41,7 +41,6 @@ from agentnode_sdk.worker import what_it_does_not_establish
 from agentnode_sdk.access.stopping import Stopping
 from agentnode_sdk.access import dispatch as _dispatch
 from agentnode_sdk.gateway import client as _gc
-from agentnode_sdk.access import rest as _rest
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
 from agentnode_sdk.gateway import challenge as ch
 from agentnode_sdk.gateway.ledger import Ledger
@@ -1779,6 +1778,12 @@ class _Handler(BaseHTTPRequestHandler):
         client checks who it is talking to before it reads anything -- and an unsigned error is
         exactly the thing somebody at a changed address would like to be able to write.
         """
+        # A run this caller may not see has always been answered with exactly this and nothing
+        # else: no record, no reason beyond the four words. That is deliberate -- telling a
+        # stranger that a run exists but is not theirs tells them it exists -- and the shape is
+        # pinned by tests that read the answer field by field. Preserved rather than improved.
+        if refused.refusal == "no_such_run":
+            return self._send(404, self.service.stamp(refusal("no such run")))
         # Shaped the way this door has always shaped a refusal: a record with a state and a
         # reason. Its clients read `answer["state"]`, and handing them a bare error body instead
         # would be a silent break -- they would not crash on a field that had merely changed
@@ -1851,21 +1856,24 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/hello":
             return self._send(200, self.service.hello())
         if self.path.startswith("/v1/jobs/"):
-            run_id = self.path.rsplit("/", 1)[-1]
+            # A TRANSLATOR. Who is asking and whether this run is theirs are both established by
+            # the dispatcher; this reads an address and renders an envelope.
+            #
+            # Worth remembering what used to be here: no authentication at all. It looked a run
+            # up by id and returned it, and a run id is not a secret while a run's output is
+            # somebody's code's output. That check now happens in the one place that makes it.
             token = self._token_of()
-            # This endpoint previously had NO authentication at all: it looked the run up by id
-            # and returned it. A run id is not a secret, and a run's output is the output of
-            # somebody's code, so that handed every job's stdout to anyone who could reach the
-            # port. Both checks now happen before the record is touched.
+            who = _dispatch.identify(self.service, token, via="older_door")
             try:
-                self.service.require_client(token)
-            except ProtocolError as exc:
-                return self._send(403, refusal(str(exc)))
-            record = self.service.owned_run(run_id, token)
-            if record is None:
-                return self._send(404, self.service.stamp(refusal("no such run")))
+                answer = _dispatch.rendered_record(
+                    self.service, who, self.path.rsplit("/", 1)[-1])
+            except _dispatch.Refused as refused:
+                return self._older_door_refuses(
+                    token, refused, run_id=self.path.rsplit("/", 1)[-1],
+                    speaks=404 if refused.refusal == "no_such_run" else 0)
             return self._send(200, self.service.sign_answer(
-                self.service.stamp(record.public()), token))
+                self.service.stamp(answer), token))
+
         return self._send(404, refusal("no such endpoint"))
 
     def do_POST(self):
@@ -1956,49 +1964,50 @@ class _Handler(BaseHTTPRequestHandler):
                               self.service.sign_answer(self.service.stamp(answer), token))
 
         if self.path == "/v1/token/rotate":
-            # Rotation is client-initiated on purpose. Doing it only from the server side would
-            # mean the operator has to convey a new secret by hand, which is the moment tokens
-            # get pasted into chat windows. The client proves it holds the current token, and
-            # gets its replacement over the same connection it was already trusted on.
+            # A TRANSLATOR onto `devices.rotate`. Client-initiated on purpose: rotating only
+            # from the server side would mean an operator conveying a new secret by hand, which
+            # is the moment secrets get pasted into chat windows. The operation is declared
+            # `audience=person`, so it reaches the dispatcher and is never offered to a model.
             token = body.get("token", "")
+            who = _dispatch.identify(
+                self.service, token, proof=(body.get("payload") or {}, body.get("signature", "")),
+                via="older_door")
             try:
-                self.service.authenticate(token, body.get("payload") or {},
-                                          body.get("signature", ""))
-            except ProtocolError as exc:
-                return self._send(403, refusal(str(exc)))
-            replacement = self.service.state.rotate_token(token)
-            if replacement is None:
-                return self._send(403, refusal("this client is not paired with this gateway"))
+                answer = _dispatch.dispatch("devices.rotate", {}, who, service=self.service)
+            except _dispatch.Refused as refused:
+                return self._older_door_refuses(token, refused)
             identity = self.service.state.identity
-            return self._send(200, {"token": replacement, "gateway": identity.as_dict(),
+            return self._send(200, {"token": answer["token"],
+                                    "gateway": identity.as_dict(),
                                     "fingerprint": identity.fingerprint})
 
         if self.path.endswith("/cancel") and self.path.startswith("/v1/jobs/"):
+            # A TRANSLATOR, and the one whose ANSWER changed in protocol 2.
+            #
+            # It used to carry the cancellation out itself and hold the caller while it did,
+            # answering 200 for "it stopped" and 202 for "it was asked to and had not stopped
+            # yet". It now hands the request to the dispatcher, which comes back at once, and
+            # always answers 202.
+            #
+            # 202 means exactly what it always meant. What has gone is 200, which only a route
+            # that waited could ever have said -- so nothing changed meaning quietly: a value
+            # stopped being sent, the version says so, and a client that has not been migrated
+            # reads "asked, not confirmed stopped", which is true. The waiting moved to the
+            # client, where it holds nobody but itself.
             run_id = self.path.split("/")[3]
             token = body.get("token", "")
+            who = _dispatch.identify(
+                self.service, token, proof=(body.get("payload") or {}, body.get("signature", "")),
+                via="older_door")
             try:
-                self.service.authenticate(token, body.get("payload") or {},
-                                          body.get("signature", ""))
-            except ProtocolError as exc:
-                return self._send(403, refusal(str(exc)))
-            # Being paired was never enough to cancel somebody else's run; it only looked like it
-            # was, because nothing checked. Ownership is checked BEFORE the cancel, so a stranger
-            # cannot stop a run and then be told it was not theirs.
-            if self.service.owned_run(run_id, token) is None:
-                return self._send(404, self.service.stamp(refusal("no such run")))
-            record, settled = self.service.cancel(run_id)
-            if record is None:
-                return self._send(404, self.service.stamp(refusal("no such run")))
-            # Signed with the token that authenticated, not with whatever a header claimed. The
-            # two were different variables, and only one of them had been checked.
-            #
-            # 200 means it stopped; 202 means it was asked to and had not stopped by the time this
-            # gateway would wait no longer. The record is signed either way and says which state
-            # it is really in -- the status is what keeps an unsettled cancellation from reading
-            # like a finished one. No field of the answer changed, so this protocol version still
-            # says everything a client of it needs.
-            return self._send(200 if settled else 202, self.service.sign_answer(
-                self.service.stamp(record.public()), token))
+                _dispatch.dispatch("cancel", {"run_id": run_id}, who, service=self.service)
+                answer = _dispatch.rendered_record(self.service, who, run_id)
+            except _dispatch.Refused as refused:
+                return self._older_door_refuses(
+                    token, refused, run_id=run_id,
+                    speaks=404 if refused.refusal == "no_such_run" else 0)
+            return self._send(202, self.service.sign_answer(
+                self.service.stamp(answer), token))
 
         return self._send(404, refusal("no such endpoint"))
 

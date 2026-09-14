@@ -1088,7 +1088,7 @@ class TestNobodyReadsSomebodyElsesRun:
         anonymous = gc.GatewayConnection(base_url=base, token="", gateway_id=conn.gateway_id)
         with pytest.raises(gc.GatewayClientError) as e:
             gc.status_of(anonymous, answer["run_id"])
-        assert "not paired" in str(e.value)
+        assert "credential this sandbox recognises" in str(e.value)
 
     def test_status_with_a_token_this_gateway_never_issued_is_refused(self, gateway):
         base, state, service, _ = gateway

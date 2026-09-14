@@ -484,7 +484,11 @@ def cmd_cancel(args) -> int:
     from agentnode_sdk.gateway.protocol import outcome_of
 
     try:
-        record, settled = gc.cancel(connection, str(args.run))
+        # How long THIS command waits, not how long the gateway holds anybody. The gateway
+        # answers at once; waiting for the sandbox to be confirmed gone is what a person at a
+        # terminal actually wants, and they can stop waiting whenever they like.
+        record, settled = gc.cancel(connection, str(args.run),
+                                    settle=float(getattr(args, "wait", 60) or 0))
     except Exception as exc:                                  # noqa: BLE001
         print(f"  Could not stop it: {exc}")
         return 1

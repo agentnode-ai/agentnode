@@ -108,32 +108,33 @@ class TestTheRegisterMatchesTheHandler:
 class TestTheOnesThatStillDecide:
     """Not a failure -- a measured quantity, with a reason attached to each one."""
 
-    def test_each_has_a_named_cost_for_migrating_it(self):
-        for route in routes.still_deciding():
-            assert route.what_migrating_would_break.strip(), (
-                "%s is listed as still deciding for itself with no account of what moving it "
-                "would break. Without that, the entry is an excuse rather than a finding."
-                % route.path)
+    def test_every_translator_says_what_its_clients_read(self):
+        """A translator has to preserve something specific, and saying what stops it being
+        rewritten into something that merely compiles."""
+        for route in routes.REGISTER:
+            if route.kind == routes.TRANSLATES:
+                assert route.keeps.strip(), (
+                    "%s translates, and nothing says what its clients read -- so nothing says "
+                    "what the translation must not lose." % route.path)
 
-    def test_the_summary_does_not_read_as_reassurance(self):
+    def test_the_summary_says_plainly_where_this_stands(self):
         said = routes.what_a_reader_should_know()
         for route in routes.still_deciding():
             assert route.path in said, "%s is missing from what a reader is told" % route.path
 
-    def test_the_older_cancel_is_the_one_that_still_holds_its_caller(self):
-        """Named explicitly, because it is the gap the contract's own cancel was built to close.
+    def test_no_older_route_carries_out_a_cancellation_itself(self):
+        """The gap the contract's cancel was built to close, now closed at both ends.
 
-        The contract's `cancel` comes back at once. This one does not, and its callers -- the CLI's
-        remote cancel and the consistency suite -- read a `settled` flag and a 200-versus-202 that
-        only mean something for a cancel that waited. So moving it is a client migration, not a
-        server change, and until those clients move the register has to say so rather than let the
-        arrangement look finished.
+        The older door used to call the gateway's cancel inline and hold its caller for the
+        settle window. It hands the request to the dispatcher now, and the waiting moved into
+        the client, where it holds nobody but itself.
         """
-        assert routes.BY_PATH["/v1/jobs/<run>/cancel"].kind == routes.STILL_DECIDES_FOR_ITSELF
         handler = source_of(gateway_server)
-        assert "record, settled = self.service.cancel(run_id)" in handler, (
-            "the older cancel changed; the register's account of why it is still where it is "
-            "needs to change with it")
+        assert "record, settled = self.service.cancel(run_id)" not in handler, (
+            "an older route is carrying out a cancellation itself again")
+        assert not routes.still_deciding(), (
+            "these decide for themselves: %s"
+            % [r.path for r in routes.still_deciding()])
 
 
 class TestTheDoorsDoNotReachPastTheDispatcher:

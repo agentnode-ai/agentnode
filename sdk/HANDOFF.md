@@ -76,14 +76,19 @@ Done in this commit:
 * `tests/consent.py` is how tests submit. It lives in the tests, not the SDK, so the convenience
   cannot creep into the client.
 
-Still to do, in order:
+All four older addresses are translators now: `/v1/jobs`, `/v1/jobs/<run>`,
+`/v1/jobs/<run>/cancel` and `/v1/token/rotate`. `access/routes.py` records what each one's
+clients read, and therefore what its translation must not lose. Nothing decides for itself.
 
-1. `/v1/jobs/<run>` and `/v1/jobs/<run>/cancel` as translators; `/v1/token/rotate` onto
-   `devices.rotate`; `/v1/hello` and `/v1/pair` through one `dispatch.before_anyone()`.
-2. Async cancel in `gc` (`ask_to_stop` + `wait_until_stopped`), the CLI (`--wait`), and the
-   three synchronous-cancel tests in `test_cancel_consistency.py`.
-3. The structural test: every route reaches the dispatcher and nothing else.
-4. Update `access/routes.py` and `docs/managed-access-migration.md` to match.
+The older cancel answers 202 at once. `gc.cancel(conn, run, settle=...)` and
+`agentnode remote cancel --wait` do the waiting client-side; what `settled` means is unchanged.
+
+Still to do in this track:
+
+1. `/v1/hello` and `/v1/pair` through one `dispatch.before_anyone()`, so the structural claim is
+   "every route reaches the dispatcher" without two named exceptions.
+2. The structural test for that.
+3. `docs/managed-access-migration.md` still describes the routes as unmigrated. Rewrite it.
 
 ## Tracks 2–5, not started
 

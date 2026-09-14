@@ -371,6 +371,8 @@ def main(argv: list[str] | None = None) -> int:
     rm_cancel = rm_sub.add_parser("cancel", help="Stop a run that is still going")
     rm_cancel.add_argument("--run", required=True, help="The run id printed when it started")
     rm_cancel.add_argument("--name", default="")
+    rm_cancel.add_argument("--wait", type=float, default=60,
+                           help="How long to wait here for it to be confirmed stopped")
     rm_rotate = rm_sub.add_parser("rotate", help="Replace your access, keeping the connection")
     rm_rotate.add_argument("--name", default="")
     rm_disconnect = rm_sub.add_parser("disconnect", help="Forget a sandbox on this machine")

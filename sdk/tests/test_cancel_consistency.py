@@ -315,7 +315,12 @@ class TestACancellationAnswersWhenItIsDone:
         def meddling(url, body, **kw):
             status, answer = real_post(url, body, **kw)
             if isinstance(answer, dict) and answer.get("state"):
-                answer["state"] = RUNNING           # the exact lie E6 displayed
+                # Whatever it really says, say something else. Pinning the lie to RUNNING stopped
+                # being a lie when the gateway stopped waiting: the answer now legitimately says
+                # the run is still going, so overwriting it with RUNNING changed nothing and the
+                # signature still verified. The claim under test is that a CHANGED answer is
+                # refused, so the change has to be one.
+                answer["state"] = "finished" if answer["state"] == RUNNING else RUNNING
             return status, answer
 
         monkeypatch.setattr(gc, "_post", meddling)
@@ -338,7 +343,12 @@ class TestACancellationAnswersWhenItIsDone:
         base, state, service, backend = waiting_gateway
         service.CANCEL_SETTLE_SECONDS = 0.4
         conn = a_running_job(base, state, service, backend)
-        record, settled = gc.cancel(conn, "run-under-test")
+        # `settle` is how long THIS CLIENT waits, which is what changed in protocol 2: the
+        # gateway answers at once and the waiting belongs to whoever wants the answer. What
+        # `settled` means has not changed -- it is still "terminal, with the sandbox confirmed
+        # gone" -- so a client that gives up early still reports honestly that it did not see it
+        # through, which is the property this test is about.
+        record, settled = gc.cancel(conn, "run-under-test", settle=0.4)
         assert settled is False
         assert not is_terminal(record["state"])
         assert record["state"] == RUNNING
@@ -491,7 +501,7 @@ class TestWhatTheCommandLineShows:
         assert backend.started.wait(timeout=10)
 
         code = remote_commands.cmd_cancel(
-            type("A", (), {"run": "unsettled", "name": "g"})())
+            type("A", (), {"run": "unsettled", "name": "g", "wait": 0.4})())
         out = capsys.readouterr().out
         backend.let_go.set()
         assert code == 1, out

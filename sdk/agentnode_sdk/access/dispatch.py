@@ -146,8 +146,15 @@ def rendered_record(service, principal: Principal, run_id: str) -> dict:
     Those doors answer with the entire signed record, and their clients read fields the narrower
     `status` and `result` deliberately do not carry. They are translators now, so they must not
     do their own ownership check: that is a decision, and decisions live here. This performs
-    exactly the check the contract's own operations perform, and then renders.
+    exactly the checks the contract's own operations perform, in the same order, and renders.
     """
+    # Authentication FIRST, as everywhere else. Without this line an unauthenticated caller
+    # reached a record lookup and was saved only by the ownership test that follows -- safe by
+    # accident rather than by order, which is the arrangement this whole layer exists to end.
+    if not principal.authenticated:
+        raise Refused("not_authenticated",
+                      "This request did not come with a credential this sandbox recognises.",
+                      "Pair this device again with a fresh invitation.")
     return _a_run_of_this_caller(service, principal, run_id).public()
 
 
