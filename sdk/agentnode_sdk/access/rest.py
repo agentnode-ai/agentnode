@@ -97,12 +97,14 @@ def handle(service, path: str, method: str, headers, body: bytes):
             message = json.loads(body.decode("utf-8")) if body else {}
         except (ValueError, UnicodeDecodeError):
             dispatch.record_a_refusal(
-                service, MCP_PATH, dispatch.identify(service, _header(headers, TOKEN_HEADER)),
+                service, MCP_PATH,
+                dispatch.identify(service, _header(headers, TOKEN_HEADER), via="mcp"),
                 "bad_request")
             return 400, {"jsonrpc": "2.0", "id": None,
                          "error": {"code": -32700, "message": "that is not JSON"}}
         reply = mcp.handle(service, message,
-                           dispatch.identify(service, _header(headers, TOKEN_HEADER)))
+                           dispatch.identify(service, _header(headers, TOKEN_HEADER),
+                                             via="mcp"))
         # A notification gets no reply. 202 rather than 200 with an empty body, because "accepted,
         # nothing to say" and "here is nothing" are different things.
         return (202, {}) if reply is None else (200, reply)
@@ -111,7 +113,10 @@ def handle(service, path: str, method: str, headers, body: bytes):
     # rather than against nobody. A probe that never reaches an operation is exactly the traffic
     # an operator most wants to be able to see afterwards.
     token = _header(headers, TOKEN_HEADER)
-    who = dispatch.identify(service, token)
+    # Which door, named by the adapter rather than taken from anything the caller sends. It is
+    # written to the audit and bound into a disclosure, so a value a caller could choose would
+    # let it claim to have arrived somewhere it never did.
+    who = dispatch.identify(service, token, via="rest")
 
     op = route_for(path)
     if op is None:

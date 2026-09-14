@@ -436,20 +436,44 @@ def _older(speaks: str, since: str) -> bool:
 DISCLOSURE_GOOD_FOR_SECONDS = 15 * 60
 
 
+#: Every part of a disclosure that is BOUND. Changing any of these between prepare and submit
+#: produces a different digest, and a different digest is not the approval that was given.
+#:
+#: What is deliberately NOT here is as considered as what is. `expected_use.runs_so_far` and
+#: `seconds_so_far` are counters that move on their own; binding them would invalidate every
+#: disclosure the moment anything else ran, which is not a security property, it is a bug that
+#: looks like one. What is bound from that section is the part the person was actually told
+#: about THIS job: what it would add.
+BOUND_BY_THE_DISCLOSURE = (
+    ("decided_by",),                       # which account, and which door it was shown through
+    ("runs_at",),                          # the backend and where it runs
+    ("transfers",),                        # artifact digest, size, command
+    ("network",),                          # mode and the destination allowlist
+    ("limits",),                           # resources asked for, and the ceilings in force
+    ("requested_policy_sha256",),          # the policy being asked for
+    ("operator_policy_sha256",),           # the policy in force when it was shown
+    ("secrets",),                          # which named secrets would be released
+    ("expected_use", "this_would_add_seconds"),   # the basis it is counted and charged against
+    ("good_for_seconds",),                 # how long the approval was said to last
+)
+
+
 def _what_was_disclosed(answer: dict) -> str:
-    """The digest of a disclosure, over the parts that would change what actually happens.
+    """The digest of a disclosure, over everything that would change what happens or what a
+    person was told about the decision.
 
     Taken server-side over the server's own answer, so it names what the person was SHOWN. A
     digest a caller computed would bind whatever the caller decided to hash.
     """
     import hashlib
 
-    material = json.dumps({
-        "runs_at": answer.get("runs_at"),
-        "transfers": answer.get("transfers"),
-        "network": answer.get("network"),
-        "limits": answer.get("limits"),
-    }, sort_keys=True, separators=(",", ":"))
+    picked = {}
+    for path in BOUND_BY_THE_DISCLOSURE:
+        here = answer
+        for step in path:
+            here = (here or {}).get(step) if isinstance(here, dict) else None
+        picked[".".join(path)] = here
+    material = json.dumps(picked, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -574,7 +598,57 @@ def _what_would_happen(service, principal, params):
         },
         "what_this_does_not_establish": what_it_does_not_establish(service.worker.topology),
     }
+    # --- who it is being shown to, and which door they came through ------------------------
+    #
+    # Bound, not merely recorded. A disclosure is one person agreeing to one thing, so it is
+    # not usable from another account, and not usable from another way in -- an approval given
+    # while setting something up over the web is not an approval for whatever calls the API
+    # afterwards.
+    answer["decided_by"] = {
+        "account": principal.client_id,
+        "via": principal.via or "(unrecorded)",
+    }
+    answer["requested_policy_sha256"] = _digest_of_the_policy(asked_for)
+    answer["operator_policy_sha256"] = _digest_of_the_policy(
+        getattr(service, "operator_policy", None))
+    # Names only, and there are none: this sandbox does not release named secrets into a job at
+    # all. Said rather than omitted, because an empty section a person can see is an answer and
+    # a missing section is a guess.
+    answer["secrets"] = {"names_released": [], "values": "never disclosed, and never sent"}
+    answer["good_for_seconds"] = DISCLOSURE_GOOD_FOR_SECONDS
+    # The honest remainder. A disclosure of this kind is often expected to cover these, and this
+    # sandbox does not model them -- so it says so here rather than leaving a person to assume
+    # the silence means "none" or "handled".
+    answer["not_modelled"] = [
+        "Data classes: this sandbox does not classify what a job processes, so nothing here "
+        "says what kind of data is involved.",
+        "Region and retention: it runs where its worker runs, and keeps what its ledger keeps. "
+        "There is no per-job region or retention setting to disclose.",
+        "Price: this is a closed test service with no billing, so what is shown is time and "
+        "runs against the ceilings, not money.",
+        "The EFFECTIVE policy is the composition of what is asked for and what the operator "
+        "allows, and is only settled at admission. What is bound here is what was ASKED for "
+        "and the operator policy in force; what was granted comes back with the submission.",
+    ]
     return answer
+
+
+def _digest_of_the_policy(policy) -> str:
+    """One digest, computed the way the rest of the product computes policy digests."""
+    import hashlib
+
+    if policy is None:
+        return ""
+    try:
+        from agentnode_sdk.gateway.policy_paths import policy_shape
+        from agentnode_sdk.gateway.protocol import canonical_bytes
+
+        return hashlib.sha256(canonical_bytes(policy_shape(policy))).hexdigest()
+    except Exception:                                         # noqa: BLE001
+        # A policy this build cannot digest is reported as one it cannot digest. Returning ""
+        # here would make two different policies look alike, which is the one thing a digest
+        # must never do, so it returns something that cannot collide with a real digest.
+        return "(this gateway could not digest the policy in force)"
 
 
 def _prepare(service, principal, params):

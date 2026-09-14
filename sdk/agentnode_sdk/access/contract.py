@@ -295,6 +295,19 @@ OPERATIONS = (
             Field("expected_use", "object", "what this would count against, before it is run"),
             Field("what_this_does_not_establish", "string",
                   "the arrangement's stated limits, carried with the disclosure"),
+            Field("decided_by", "object",
+                  "the account and the way in this was disclosed to; a disclosure shown to one "
+                  "device, over one door, is not usable from another", since="2"),
+            Field("requested_policy_sha256", "string",
+                  "digest of the policy being asked for, composed by this gateway", since="2"),
+            Field("operator_policy_sha256", "string",
+                  "digest of the operator policy in force when this was shown", since="2"),
+            Field("secrets", "object",
+                  "which named secrets would be released to the job -- names only, never "
+                  "values", since="2"),
+            Field("not_modelled", "array",
+                  "things a disclosure like this is often expected to cover that this sandbox "
+                  "does not model, said plainly rather than left to be assumed", since="2"),
             Field("accepted_disclosure", "string",
                   "what to send with the submission to show this is what was agreed to"),
         ),

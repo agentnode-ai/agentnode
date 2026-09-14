@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import time
 
 import pytest
@@ -350,3 +351,97 @@ class TestWhatAModelIsOfferedIsDeclared:
         assert contract.BY_NAME["submit"].confirms_with_a_person
         assert contract.BY_NAME["submit"].audience == contract.TOOL, (
             "a model must be able to submit -- what it may not do is agree on your behalf")
+
+
+class TestWhatTheApprovalIsBoundTo:
+    """Everything that would change what happens, or what a person was told about the decision.
+
+    The list is `dispatch.BOUND_BY_THE_DISCLOSURE`, and the first test here is the one that keeps
+    it honest: a field can be added to that list and quietly never reach the digest, at which
+    point the list describes an intention rather than a mechanism.
+    """
+
+    def an_answer(self, service, who):
+        return dispatch._what_would_happen(service, who, about())
+
+    def test_the_disclosure_names_the_account_and_the_door_it_was_shown_through(self, sandbox):
+        service, who = sandbox
+        shown = self.an_answer(service, who)
+        assert shown["decided_by"]["account"] == who.client_id
+        assert "via" in shown["decided_by"]
+
+    @pytest.mark.parametrize("path", dispatch.BOUND_BY_THE_DISCLOSURE,
+                             ids=[".".join(p) for p in dispatch.BOUND_BY_THE_DISCLOSURE])
+    def test_changing_any_bound_field_changes_the_approval(self, sandbox, path):
+        """A field on the list that does not reach the digest is a field nobody is bound to."""
+        service, who = sandbox
+        shown = self.an_answer(service, who)
+        before = dispatch._what_was_disclosed(shown)
+
+        changed = json.loads(json.dumps(shown))
+        here = changed
+        for step in path[:-1]:
+            here = here[step]
+        was = here.get(path[-1])
+        here[path[-1]] = "something else" if was != "something else" else "different again"
+
+        assert dispatch._what_was_disclosed(changed) != before, (
+            "%s is listed as bound and changing it changed nothing" % ".".join(path))
+
+    def test_an_approval_given_over_one_door_is_not_usable_from_another(self, sandbox):
+        """The binding that matters once there is a web console.
+
+        Agreeing to something while setting up, in a browser, is not agreeing to whatever calls
+        the API afterwards. Same person, same device, same job -- different door, so it is a
+        different approval.
+        """
+        service, who = sandbox
+        in_a_browser = dispatch.identify(service, who.token, via="rest")
+        as_a_tool = dispatch.identify(service, who.token, via="mcp")
+
+        approved = dispatch.dispatch("prepare", about(), in_a_browser,
+                                     service=service)["accepted_disclosure"]
+        with pytest.raises(dispatch.Refused) as refused:
+            submit(service, as_a_tool, approved)
+        assert refused.value.refusal == "disclosure_required"
+        # ... and it still works from the door it was actually shown through.
+        assert submit(service, in_a_browser, approved)["run_id"]
+
+    def test_it_says_which_named_secrets_would_be_released_and_never_a_value(self, sandbox):
+        service, who = sandbox
+        shown = self.an_answer(service, who)
+        assert shown["secrets"]["names_released"] == []
+        assert "never" in shown["secrets"]["values"]
+
+    def test_and_it_says_plainly_what_it_does_not_cover(self, sandbox):
+        """A silence a person reads as "none" is worse than a sentence saying it is not modelled."""
+        service, who = sandbox
+        said = " ".join(self.an_answer(service, who)["not_modelled"]).lower()
+        for subject in ("data class", "region", "retention", "price", "effective policy"):
+            assert subject in said, subject
+
+    def test_the_policy_asked_for_and_the_one_in_force_are_both_named(self, sandbox):
+        service, who = sandbox
+        shown = self.an_answer(service, who)
+        assert len(shown["requested_policy_sha256"]) == 64
+        assert "operator_policy_sha256" in shown
+
+    def test_the_bound_list_itself_contains_what_it_must(self):
+        """The test above is parametrised OVER the list, so deleting an entry deletes its own
+        check -- the counter-check for it ran nothing and said so. This is the half that cannot
+        be removed by removing something: the required set, written out.
+        """
+        must_bind = {
+            ("decided_by",),                  # account and door
+            ("runs_at",),                     # backend and where it runs
+            ("transfers",),                   # artifact digest, size, command
+            ("network",),                     # mode and allowlist
+            ("limits",),                      # resources and ceilings
+            ("requested_policy_sha256",),
+            ("operator_policy_sha256",),
+            ("secrets",),
+            ("expected_use", "this_would_add_seconds"),
+            ("good_for_seconds",),
+        }
+        missing = must_bind - set(dispatch.BOUND_BY_THE_DISCLOSURE)
+        assert not missing, "no longer bound: %s" % sorted(missing)
