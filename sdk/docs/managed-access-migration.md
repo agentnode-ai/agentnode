@@ -83,6 +83,14 @@ covering "this device was withdrawn". Access still stops immediately, on every p
 
 Two refusals were **added**: `disclosure_required` and `upgrade_required`.
 
+`devices.revoke` gained a return field, `runs_stopping` (`since: "2"`). Withdrawing a device now
+takes back what it already HELD, not only what it might ask for next: its sessions end, any
+unspent enrolment it was issued is dropped, and work it had in flight is stopped — the list of
+those run identifiers is what the new field carries. The credential is removed last, so all of
+that happens on behalf of a device this gateway still recognises. A finished run is not
+disturbed, and nobody else's is touched. A client that ignores the field sees exactly the
+behaviour it saw before.
+
 ## What every address is now
 
 Every one of them reaches the dispatcher, runs before anybody has a credential, or hands back a

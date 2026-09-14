@@ -71,6 +71,12 @@ refusal when there is nowhere safe has its own tests in `test_credentials.py`.
 * **Compatibility**: only an audited call by the freshly enrolled connection, over the enrolled
   channel, after the challenge was issued.
 * **CLI credentials**: keyring, or a refusal that says what to do.
+* **The service owns the threads it starts.** Run threads are held in `_running`, named
+  `agentnode-run-<id8>`, discarded by the thread itself on the way out, and joined by `close()`
+  under `CLOSE_SECONDS`; what could not be got back is returned and kept in `left_running`.
+  Daemon status is not lifecycle ownership. The page owns its timers the same way: `S.epoch` and
+  `S.timers`, `later()` instead of a bare `setTimeout`, and `stopEverythingScheduled()` on
+  sign-out, so a poller already in flight cannot act when it returns.
 
 ## What remains
 
@@ -79,7 +85,17 @@ refusal when there is nowhere safe has its own tests in `test_credentials.py`.
    `scratchpad/final_review.sh`, which verifies the profile digest and every input digest before
    each attempt and retries only on capacity errors.
 2. Whatever that verdict asks for.
-3. The official CI lanes have not been run against this branch — the founder asked for them as
-   part of the final assessment, and every run above is on the test host.
+3. **The official CI lanes cannot be run against this branch without a founder decision, and
+   one of them could not test it even then.** Two facts, both read from
+   `.github/workflows/`:
+   * Every lane triggers only on `push`/`pull_request` to `main` (`sdk.yml`, `sdk-lanes.yml`,
+     `backend.yml`, `cli.yml`). Reaching any of them means pushing this branch to
+     `agentnode-ai/agentnode`, and that repository is **public** — so it is a publication of the
+     work, which is a founder gate, not an ordinary step. Nothing was pushed.
+   * `sdk-lanes.yml` checks out `ref: ${{ env.FROZEN_REV }}` (`3873170`) in all three jobs, so
+     even on a pull request it exercises that pinned commit and not the branch head. It cannot
+     report on this work at all. `sdk.yml` (`pytest -v` over `sdk/`) is the lane that would.
+   * `deploy.yml` is `workflow_dispatch` only and disabled at the repository level, so a pull
+     request would not deploy anything.
 4. Human validation remains DEFERRED_EXTERNAL_VALIDATION. No person has used this unaided, and no
    automated result establishes that one could.

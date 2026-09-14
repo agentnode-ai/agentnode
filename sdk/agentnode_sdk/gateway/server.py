@@ -295,6 +295,13 @@ class GatewayService:
         #: Which gateway process, and which sandbox behind it. A restart is a different instance,
         #: and a challenge says which one issued it.
         self.instance = "%s:%s" % (self.worker.instance_label(), secrets.token_hex(8))
+        #: The run threads this service has started and not yet seen finish. Held so that close()
+        #: can wait for them: a thread nobody is keeping is a thread nobody can give back.
+        self._running: set = set()
+        self._running_lock = threading.Lock()
+        #: Run threads that were still alive when close() stopped waiting. Set here as well so
+        #: that reading it before close() says "nothing was left behind" rather than raising.
+        self.left_running: list = []
         # A gateway does not start on a contract that does not describe itself. Checked here
         # as well as in the generators, so a build where somebody half-declared an operation
         # fails at the start rather than at the first request for a schema.
@@ -1296,12 +1303,28 @@ class GatewayService:
         # ceiling of one admitted two. And the window claim was taken at the top of admission, so
         # a request that a later check refused kept the allowance it had claimed.
         self.reserve(record.owner_client_id, request.run_id, record, request.wall_clock_s)
+        # Kept, not just started. Daemon status is not ownership: it means the interpreter will
+        # not wait at exit, which is a different question from whether this service knows what it
+        # set going. A review was right that a run thread could outlive the service that created
+        # it, so the service holds them and gives them back in close().
         thread = threading.Thread(target=self._run, args=(request, artifact, granted, record),
-                                  daemon=True)
+                                  daemon=True, name="agentnode-run-%s" % str(request.run_id)[:8])
+        with self._running_lock:
+            self._running.add(thread)
         thread.start()
         return record
 
     def _run(self, request: JobRequest, artifact: bytes, granted, record: RunRecord) -> None:
+        try:
+            self._carry_the_run_out(request, artifact, granted, record)
+        finally:
+            # Taken out of the set on the way past, whatever happened, so what the service holds
+            # is what is actually running rather than everything it ever started.
+            with self._running_lock:
+                self._running.discard(threading.current_thread())
+
+    def _carry_the_run_out(self, request: JobRequest, artifact: bytes, granted,
+                           record: RunRecord) -> None:
         from agentnode_sdk.sandbox.composition import network_mode
         mode, domains = network_mode(granted)
         record.container_name = container_name_for(record.run_id)
@@ -1601,6 +1624,9 @@ class GatewayService:
                          "state": record.state})
         return done
 
+    #: How long `close()` waits for run threads before saying which it could not get back.
+    CLOSE_SECONDS = 20.0
+
     def _stop_it_and_confirm(self, run_id: str) -> bool:
         """Stop a run and answer whether the sandbox is CONFIRMED gone. Never guesses.
 
@@ -1632,15 +1658,31 @@ class GatewayService:
         self._clean_up_what_it_left(record)
         return bool(record.cleanup_verified)
 
-    def close(self) -> None:
-        """Release what this service owns. Explicit, because a finalizer is a safety net.
+    def close(self) -> list:
+        """Release what this service owns, and say what would not let go.
 
-        Idempotent: closing twice is what happens when a test and a production path both do the
-        right thing, and neither should have to know about the other.
+        Explicit, because a finalizer is a safety net. Idempotent: closing twice is what happens
+        when a test and a production path both do the right thing, and neither should have to
+        know about the other.
+
+        Returns the names of run threads still alive when the wait ran out -- empty when
+        everything ended, which is the ordinary case. Also kept on `left_running`, so a caller
+        that ignores the return value can still find out.
         """
         pool = getattr(self, "stopping", None)
         if pool is not None:
             pool.close()
+
+        # Then the runs. Bounded, because a job with a long wall clock should not hold a
+        # shutdown open for its whole allowance -- what matters is that this waits, reports what
+        # it could not get back, and never pretends a thread it abandoned has ended.
+        with self._running_lock:
+            waiting = list(self._running)
+        deadline = time.monotonic() + self.CLOSE_SECONDS
+        for thread in waiting:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        self.left_running = [t.name for t in waiting if t.is_alive()]
+        return self.left_running
 
     def __enter__(self):
         return self

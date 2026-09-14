@@ -80,6 +80,32 @@ the two redundant guards leaves the property standing, which is why the block st
 recorded here rather than dressed up as a red test, because a counter-check that cannot fail is
 not evidence and saying otherwise would be worse than saying nothing.
 
+## 15, 16 and 17 — the service owns what it starts
+
+A review refused the package because run threads were started and never held, and because the
+page went on polling after somebody signed out. Three properties came out of the fix, and they
+are separate ones:
+
+**15 — the run thread is held while it runs.** Remove the two lines that put the thread into
+`_running` before starting it, so it is started and forgotten exactly as before.
+`test_a_run_thread_is_held_while_it_runs` goes red. The revert was printed, the file restored
+afterwards and the restoration verified by `cmp`.
+
+**16 — close() waits.** The first attempt at this was wrong and is worth writing down. It removed
+the `join` loop and named
+`test_and_a_thread_that_will_not_end_is_reported_rather_than_abandoned`, which **stayed green** —
+correctly, because a thread that will not end is alive whether or not anybody waited for it, so
+that test states what close *reports*, not that it *waits*. The two are different properties and
+the first does not imply the second. A test for the second was added:
+`test_close_actually_waits_rather_than_only_reporting` uses a thread that ends shortly after
+`close()` is called, where waiting means nothing is left behind and not waiting means reporting
+a thread as abandoned when it was about to finish. Re-run with the `join` loop removed, it goes
+red.
+
+**17 — signing out cancels what the page had scheduled.** Remove the `stopEverythingScheduled()`
+call from `signedOut()`. `test_signing_out_cancels_what_the_page_had_scheduled` goes red in real
+Chromium: the page still holds scheduled timers after sign-out.
+
 ## The baseline
 
 Six tests fail in a full run and failed identically at `f686861`, before any of this work: four

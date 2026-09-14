@@ -339,3 +339,109 @@ def _until(it_is_true, seconds: float = 15.0) -> None:
             return
         time.sleep(0.02)
     raise AssertionError("it never became true within %gs" % seconds)
+
+
+class TestTheServiceOwnsWhatItStarts:
+    """Daemon status is not lifecycle ownership.
+
+    A daemon thread means the interpreter will not wait for it at exit, which is a different
+    question from whether the thing that created it knows it exists. A review pointed out that
+    run threads were started and never held, so one could outlive the service -- and the same
+    standard that applies to the cancellation pool applies to them.
+    """
+
+    def a_service(self, tmp_path, held=None):
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.server import GatewayService
+        from tests.test_em3c_gateway import StandInBackend, _store_measurement
+
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        service = GatewayService(state, backend=held or StandInBackend())
+        _store_measurement(service)
+        return state, service
+
+    def test_a_run_thread_is_held_while_it_runs(self, tmp_path):
+        import base64
+        import hashlib
+
+        from agentnode_sdk.access import dispatch
+        from tests.test_cancel_is_not_a_wait import ABackendThatKeepsRunning
+
+        backend = ABackendThatKeepsRunning()
+        state, service = self.a_service(tmp_path, held=backend)
+        try:
+            token = state.redeem_pairing(state.start_pairing(), client_name="a laptop")
+            who = dispatch.identify(service, token)
+            code = b"print('x')"
+            told = dispatch.dispatch("prepare", {
+                "command": ["python", "-c", "print('x')"],
+                "artifact_sha256": hashlib.sha256(code).hexdigest(),
+                "artifact_bytes": len(code), "wall_clock_s": 30}, who, service=service)
+            dispatch.dispatch("submit", {
+                "run_id": "r" * 32, "artifact": base64.b64encode(code).decode("ascii"),
+                "command": ["python", "-c", "print('x')"], "wall_clock_s": 30,
+                "accepted_disclosure": told["accepted_disclosure"]}, who, service=service)
+
+            _until(lambda: len(service._running) == 1)
+            assert [t.name for t in service._running][0].startswith("agentnode-run-")
+
+            backend.may_finish_run.set()
+            # ... and it takes itself out again when it is done, so what is held is what is
+            # actually running rather than everything ever started.
+            _until(lambda: not service._running)
+        finally:
+            backend.may_finish_run.set()
+            service.close()
+            state.close()
+
+    def test_close_waits_for_them_and_says_what_it_could_not_get_back(self, tmp_path):
+        state, service = self.a_service(tmp_path)
+        try:
+            assert service.close() == [], "close reported a thread it had not started"
+            # Idempotent, like the pool's.
+            assert service.close() == []
+        finally:
+            state.close()
+
+    def test_and_a_thread_that_will_not_end_is_reported_rather_than_abandoned(self, tmp_path):
+        """The honest half. close() is bounded, so it cannot promise every thread ended -- what
+        it must not do is fall silent about one it left behind."""
+        state, service = self.a_service(tmp_path)
+        forever = threading.Event()
+        stuck = threading.Thread(target=lambda: forever.wait(timeout=30), daemon=True,
+                                 name="agentnode-run-stuck")
+        try:
+            service.CLOSE_SECONDS = 0.2
+            with service._running_lock:
+                service._running.add(stuck)
+            stuck.start()
+            assert service.close() == ["agentnode-run-stuck"]
+        finally:
+            forever.set()
+            stuck.join(timeout=5)
+            state.close()
+
+    def test_close_actually_waits_rather_than_only_reporting(self, tmp_path):
+        """The test above states what close() SAYS; this one states that it waits.
+
+        They are different properties and the first does not imply the second: a close that
+        joined nothing would still report a stuck thread correctly, because a thread that will
+        not end is alive whether or not anybody waited for it. What distinguishes waiting is a
+        thread that ends SHORTLY AFTER close is called -- waiting turns it into nothing left
+        behind, not waiting reports it as abandoned when it was about to finish on its own.
+        """
+        state, service = self.a_service(tmp_path)
+        nearly_done = threading.Event()
+        soon = threading.Thread(target=lambda: nearly_done.wait(timeout=30), daemon=True,
+                                name="agentnode-run-soon")
+        try:
+            with service._running_lock:
+                service._running.add(soon)
+            soon.start()
+            threading.Timer(0.4, nearly_done.set).start()
+            assert service.close() == [], "close returned before the thread had ended"
+            assert not soon.is_alive()
+        finally:
+            nearly_done.set()
+            soon.join(timeout=5)
+            state.close()

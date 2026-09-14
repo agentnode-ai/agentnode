@@ -524,3 +524,42 @@ class TestANameSomebodyChoseIsText:
 
         assert console.tab.evaluate("() => window.__got_in") is None
         assert console.tab.locator("#devicelist").get_by_text(nasty, exact=False).count() >= 1
+
+
+class TestThePageDoesNotKeepWorkingAfterYouLeave:
+    """A poller that goes on after somebody signs out is work nobody owns.
+
+    It still holds the job it was watching and it still asks the gateway about it. The tab does
+    not close when a person signs out, so "it will stop eventually" is not a lifecycle.
+    """
+
+    def test_signing_out_cancels_what_the_page_had_scheduled(self, console):
+        console.sign_in().choose("none")
+        console.tab.click("#use-console-anyway")
+        console.tab.click("#start-job")
+        expect(console.tab.locator("#joblist").get_by_text("fertig")).to_be_visible(
+            timeout=PATIENCE)
+
+        console.tab.get_by_role("button", name="Sicherheit").click()
+        console.tab.click("#logout")
+        expect(console.tab.get_by_role("heading", name="Willkommen bei AgentNode.")
+               ).to_be_visible()
+
+        left = console.tab.evaluate("() => ({timers: S.timers.length, epoch: S.epoch})")
+        assert left["timers"] == 0, "the page is still holding scheduled work"
+        assert left["epoch"] > 0, "nothing was invalidated, so a poller in flight would resume"
+
+    def test_and_a_poller_still_in_flight_does_not_come_back_to_life(self, console):
+        """The one that matters: a timer that had already fired and was waiting on the network
+        must not act when it returns."""
+        console.sign_in().choose("rest")
+        console.collect_the_setup()
+        console.tab.click("#setup-next")
+        expect(console.tab.locator("#test-area").get_by_text("Wartet auf den ersten Aufruf")
+               ).to_be_visible()
+
+        console.tab.evaluate("() => { stopEverythingScheduled(); }")
+        before = console.tab.evaluate("() => S.epoch")
+        time.sleep(3)
+        assert console.tab.evaluate("() => S.epoch") == before
+        assert console.tab.evaluate("() => S.timers.length") == 0

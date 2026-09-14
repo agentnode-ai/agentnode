@@ -16,8 +16,28 @@
 
 var S = {
   csrf: "", device: "", deviceName: "", caps: null,
-  tab: "setup", step: 0, way: null, jobs: [], setup: null, err: null
+  tab: "setup", step: 0, way: null, jobs: [], setup: null, err: null,
+  // Everything this page has scheduled, and which run of the page scheduled it. A poller that
+  // keeps going after somebody signs out is work nobody owns -- it still holds the job it was
+  // watching, and it still asks the gateway about it. Daemon-ness is not ownership in a browser
+  // either: the tab stays open.
+  epoch: 0, timers: []
 };
+
+function later(fn, ms){
+  var mine = S.epoch;
+  var id = setTimeout(function(){
+    S.timers = S.timers.filter(function(t){ return t !== id; });
+    if(S.epoch === mine) fn();
+  }, ms);
+  S.timers.push(id);
+  return id;
+}
+
+function stopEverythingScheduled(){
+  S.epoch += 1;
+  S.timers.splice(0).forEach(clearTimeout);
+}
 
 /* --- talking to the sandbox ---------------------------------------------- */
 
@@ -555,9 +575,10 @@ function stepSetup(){
 function stepTest(){
   var box = el("div", {"class":"stack", id:"test-area"});
   var stop = false;
+  var mine = S.epoch;
 
   function look(tries){
-    if(stop) return;
+    if(stop || S.epoch !== mine || S.step !== 6) return;
     call("connections.check", {challenge: S.setup.challenge}).then(function(said){
       if(said.satisfied){ S.step = 7; render(); focusHeading(); return; }
       if(tries > 300){
@@ -565,7 +586,7 @@ function stepTest(){
         box.innerHTML = ""; box.appendChild(problem(S.err, function(){ S.err=null; render(); }));
         return;
       }
-      setTimeout(function(){ look(tries+1); }, 2000);
+      later(function(){ look(tries+1); }, 2000);
     }).catch(function(e){
       box.innerHTML = ""; box.appendChild(problem(e, function(){ render(); }));
     });
@@ -642,7 +663,9 @@ function runJob(label){
 var OVER = ["finished","refused","cancelled","unverified","interrupted"];
 function watch(job){
   var tries = 0;
+  var mine = S.epoch;
   (function look(){
+    if(S.epoch !== mine) return;          // this page has been signed out from under us
     call("status", {run_id: job.run_id}).then(function(where){
       var was = job.state;
       job.state = where.state;
@@ -654,8 +677,8 @@ function watch(job){
         }, function(){ paintJobs(); });
       }
       if(++tries > 600) return;
-      setTimeout(look, 1000);
-    }, function(){ if(++tries <= 600) setTimeout(look, 2000); });
+      later(look, 1000);
+    }, function(){ if(++tries <= 600) later(look, 2000); });
   })();
 }
 
@@ -977,6 +1000,8 @@ function safety(){
 }
 
 function signedOut(){
+  // First, because everything below is state those pollers are holding.
+  stopEverythingScheduled();
   S.csrf = ""; S.device = ""; S.caps = null; S.jobs = []; S.setup = null;
   S.step = 0; S.tab = "setup"; S.err = null; S.way = null;
   announce("Abgemeldet.");
