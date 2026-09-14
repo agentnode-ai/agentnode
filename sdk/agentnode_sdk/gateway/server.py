@@ -283,6 +283,12 @@ class GatewayService:
         #: Which gateway process, and which sandbox behind it. A restart is a different instance,
         #: and a challenge says which one issued it.
         self.instance = "%s:%s" % (self.worker.instance_label(), secrets.token_hex(8))
+        # A gateway does not start on a contract that does not describe itself. Checked here
+        # as well as in the generators, so a build where somebody half-declared an operation
+        # fails at the start rather than at the first request for a schema.
+        from agentnode_sdk.access import contract as _contract
+
+        _contract.check_classifications()
         self.readiness = ReadinessGate(self.state.root)
         #: Who carries out cancellations. Bounded, owned, and durable across a restart -- see
         #: `access/stopping.py`. Nothing is started until the first cancellation is asked for,

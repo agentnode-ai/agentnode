@@ -60,10 +60,16 @@ def _object(fields) -> dict:
 def openapi_document(title: str = "AgentNode Sandbox", server: str = "") -> dict:
     """The REST rendering. One path per operation, POST for anything that changes.
 
+    Refuses outright if any operation is unclassified. This surface does not filter by audience,
+    so without the check an operation nobody had classified would simply be reachable here --
+    "not offered to a model" and "reachable by anything that can reach the port" are very
+    different things to become by accident.
+
     Operations are addressed by name rather than by a REST-shaped noun hierarchy. That is a
     deliberate trade: a hierarchy reads better to somebody browsing, and it also means the REST
     surface stops being a direct rendering of the contract, which is the property being kept.
     """
+    contract.check_classifications()
     paths = {}
     for op in contract.OPERATIONS:
         method = "post" if op.changes or op.params else "get"

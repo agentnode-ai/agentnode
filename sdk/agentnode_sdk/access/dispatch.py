@@ -344,7 +344,10 @@ def _bound_to_this_gateway(service, principal: Principal, operation: str, answer
 def _carry_out(operation: str, params: dict, principal: Principal, *, service,
                speaks: str) -> dict:
     op = contract.find(operation)
-    if op is None:
+    if op is None or not contract.usable(op):
+        # An unclassified operation is not a quieter operation -- it is unreachable. Answered as
+        # "no such operation", because from a caller's side that is exactly what it is: nothing
+        # here will carry it out, over this transport or any other.
         raise Refused("unknown_operation",
                       "This sandbox has no operation called %r." % operation,
                       "Ask it for `capabilities` to see what it does have.")

@@ -128,18 +128,20 @@ class TestEveryRenderingSaysTheSameThing:
         """
         shape = dict(since="99", needs=contract.READ, summary="What it is like outside.",
                      params=(contract.Field("where", "string", "which sky"),),
-                     errors=("not_authenticated", "not_permitted", "malformed"))
-        unclassified = contract.Operation(name="weather", **shape)
+                     errors=("not_authenticated", "not_permitted", "malformed"),
+                     risk=contract.READS, confirms_with_a_person=False)
+        # A declared PERSON operation: perfectly ordinary, and not offered to a model.
+        for_a_person = contract.Operation(name="weather", audience=contract.PERSON, **shape)
         for_a_model = contract.Operation(name="weather", audience=contract.TOOL, **shape)
 
         original = contract.OPERATIONS
         try:
-            contract.OPERATIONS = original + (unclassified,)
+            contract.OPERATIONS = original + (for_a_person,)
             every = schemas.every_rendering()
             assert "weather" in schemas.operations_named_by(every["openapi"], "openapi")
             for which in ("mcp", "tool_calling"):
                 assert "weather" not in schemas.operations_named_by(every[which], which), (
-                    "an operation nobody classified was published to models as a tool")
+                    "an operation declared for a person was published to models as a tool")
 
             contract.OPERATIONS = original + (for_a_model,)
             every = schemas.every_rendering()

@@ -90,6 +90,20 @@ RISK_CLASSES = (READS, AFFECTS_A_RUN, CHANGES_ACCESS, CHANGES_POLICY)
 #: `audience` unable to be wrong in the dangerous direction.
 NEVER_FOR_A_MODEL = (CHANGES_ACCESS, CHANGES_POLICY)
 
+#: Not a value. The ABSENCE of one.
+#:
+#: An earlier version defaulted a missing `audience` to `person`, which kept an unclassified
+#: operation out of the tool schemas and was described as making classification mandatory. It
+#: did not. It made classification OPTIONAL with a safe fallback, which is a different and
+#: weaker claim, and it left the operation reachable over REST -- classified by nobody, refused
+#: by nothing. A default that stands in for a decision is a decision nobody made.
+#:
+#: There is no fallback now. Every operation states who it is for, what it can do, which
+#: permission it needs and whether a person has to have agreed. An operation that does not is
+#: not a quieter operation; it is a contract that does not describe itself, and nothing is
+#: generated, started or served from it.
+UNCLASSIFIED = None
+
 # ------------------------------------------------------------------ refusals, by name
 
 REFUSALS = (
@@ -140,20 +154,30 @@ class Operation:
     returns: tuple = ()
     errors: tuple = ()
     changes: bool = False
-    #: Who this is for. DEFAULTS TO `PERSON`, which is the whole point: an operation added by
-    #: somebody who did not think about tool exposure is not exposed. Being offered to a model
-    #: has to be asked for, in words, in the declaration.
-    audience: str = PERSON
+    #: Who this is for. NO DEFAULT -- see `UNCLASSIFIED`. `audience=PERSON` is a perfectly
+    #: ordinary thing to declare; what is refused is declaring nothing.
+    audience: str | None = UNCLASSIFIED
     #: What it can do. Checked against `audience` below, so a declaration cannot be both
     #: "a model may call this" and "this changes who can get in".
-    risk: str = READS
+    risk: str | None = UNCLASSIFIED
     #: Whether carrying it out requires proof that a person agreed to this specific thing.
-    #: `submit` has it, and the disclosure gate is what enforces it.
-    confirms_with_a_person: bool = False
+    #: `submit` has it, and the disclosure gate is what enforces it. False is a real answer;
+    #: not saying is not.
+    confirms_with_a_person: bool | None = UNCLASSIFIED
 
     def __post_init__(self) -> None:
-        # Refused at the declaration, not at the generator, so a classification that is missing,
-        # unknown or self-contradictory cannot exist anywhere in the build.
+        # Refused at the declaration, so a classification that is missing, unknown or
+        # self-contradictory cannot be constructed at all. The generators check again, because
+        # something built another way -- a loader, a plugin, a test -- must not slip past.
+        for what, value in (("audience", self.audience), ("risk", self.risk),
+                            ("required permission", self.needs),
+                            ("human confirmation", self.confirms_with_a_person)):
+            if value is UNCLASSIFIED:
+                raise ValueError(
+                    "%s does not declare its %s. Every operation states who it is for, what it "
+                    "can do, which permission it needs and whether a person has to have agreed. "
+                    "There is no default: a default standing in for that decision is a decision "
+                    "nobody made." % (self.name, what))
         if self.audience not in AUDIENCES:
             raise ValueError("%s declares audience %r, which is not one of %s"
                              % (self.name, self.audience, ", ".join(AUDIENCES)))
@@ -223,6 +247,7 @@ OPERATIONS = (
         name="capabilities",
         audience=TOOL,
         risk=READS,
+        confirms_with_a_person=False,
         since="1",
         needs=READ,
         summary="What this sandbox can do, what it will enforce, and which operations it has.",
@@ -248,6 +273,7 @@ OPERATIONS = (
         name="prepare",
         audience=TOOL,
         risk=READS,
+        confirms_with_a_person=False,
         since="1",
         needs=RUN,
         summary="What would happen if this job were run: where, what leaves the machine, what it "
@@ -342,6 +368,7 @@ OPERATIONS = (
         name="status",
         audience=TOOL,
         risk=READS,
+        confirms_with_a_person=False,
         since="1",
         needs=READ,
         summary="Where a run has got to.",
@@ -363,6 +390,7 @@ OPERATIONS = (
         name="result",
         audience=TOOL,
         risk=READS,
+        confirms_with_a_person=False,
         since="1",
         needs=READ,
         summary="What a finished run produced.",
@@ -388,6 +416,7 @@ OPERATIONS = (
         name="cancel",
         audience=TOOL,
         risk=AFFECTS_A_RUN,
+        confirms_with_a_person=False,
         since="1",
         needs=RUN,
         summary="Ask for a run to be stopped. Comes back at once; the run reports "
@@ -423,6 +452,7 @@ OPERATIONS = (
         name="usage",
         audience=TOOL,
         risk=READS,
+        confirms_with_a_person=False,
         since="1",
         needs=READ,
         summary="What has been used against the ceilings, and when the window clears.",
@@ -440,6 +470,7 @@ OPERATIONS = (
         name="devices.list",
         audience=TOOL,
         risk=READS,
+        confirms_with_a_person=False,
         since="1",
         needs=MANAGE_DEVICES,
         summary="Which devices can reach this sandbox as you, and when each was last used.",
@@ -505,21 +536,52 @@ def for_a_model() -> tuple:
     return tuple(op for op in OPERATIONS if op.audience == TOOL)
 
 
+class NotClassified(ValueError):
+    """The contract does not describe itself, so nothing may be generated, started or served."""
+
+
 def check_classifications() -> None:
-    """Refuse to describe this contract at all if any classification is unusable.
+    """Refuse the WHOLE contract if any operation's classification is unusable.
 
     `Operation.__post_init__` already refuses to build one, so reaching here means something was
-    constructed another way -- a test patching OPERATIONS, a plugin, a future loader. The
-    generators call this before rendering anything, because a generator that skipped an operation
-    it could not classify would publish a smaller list and look like it had succeeded.
+    constructed another way -- a loader, a plugin, a test. Every generator, the gateway's start
+    and the dispatcher call this.
+
+    It raises rather than skipping, and that distinction is the point. A generator that quietly
+    left out what it could not classify would publish a shorter schema and exit zero, and a
+    shorter schema that looks like a successful build is how an operation ends up reachable over
+    one transport and invisible on another -- with nobody having decided anything.
     """
     for op in OPERATIONS:
-        if op.audience not in AUDIENCES or op.risk not in RISK_CLASSES:
-            raise ValueError(
-                "%s is not classified (audience=%r, risk=%r), so nothing can be generated from "
-                "this contract until it is." % (op.name, op.audience, op.risk))
+        for what, value, allowed in (("audience", op.audience, AUDIENCES),
+                                     ("risk", op.risk, RISK_CLASSES),
+                                     ("required permission", op.needs, CAPABILITIES)):
+            if value is UNCLASSIFIED:
+                raise NotClassified(
+                    "%s does not declare its %s, so this contract does not describe itself and "
+                    "nothing can be generated, started or served from it." % (op.name, what))
+            if value not in allowed:
+                raise NotClassified(
+                    "%s declares %s %r, which is not one of %s."
+                    % (op.name, what, value, ", ".join(allowed)))
+        if op.confirms_with_a_person is UNCLASSIFIED:
+            raise NotClassified(
+                "%s does not say whether a person has to have agreed to it." % op.name)
         if op.audience == TOOL and op.risk in NEVER_FOR_A_MODEL:
-            raise ValueError("%s is classified as a tool and as %s" % (op.name, op.risk))
+            raise NotClassified(
+                "%s is declared as a tool and as %s. A model calling it cannot be asked whether "
+                "it should." % (op.name, op.risk))
+        if op.risk in NEVER_FOR_A_MODEL and op.needs != MANAGE_DEVICES:
+            raise NotClassified(
+                "%s is %s but asks only for %s." % (op.name, op.risk, op.needs))
+
+
+def usable(op) -> bool:
+    """Whether one operation is classified well enough to be carried out at all."""
+    return bool(op is not None
+                and op.audience in AUDIENCES and op.risk in RISK_CLASSES
+                and op.needs in CAPABILITIES and op.confirms_with_a_person is not UNCLASSIFIED
+                and not (op.audience == TOOL and op.risk in NEVER_FOR_A_MODEL))
 
 
 BY_NAME = {op.name: op for op in OPERATIONS}
@@ -538,7 +600,12 @@ def for_capabilities(held) -> tuple:
 
 
 def describe() -> dict:
-    """The contract as data, for `capabilities` to return and for the generators to render."""
+    """The contract as data, for `capabilities` to return and for the generators to render.
+
+    Validates first. This is the one function every rendering and every `capabilities` answer
+    goes through, so a contract that does not describe itself cannot be described.
+    """
+    check_classifications()
     return {
         "protocol": PROTOCOL_VERSION,
         "operations": [

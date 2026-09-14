@@ -162,82 +162,158 @@ class TestTheConsentIsForTheJobThatWasDescribed:
         assert not service.runs, "something ran without anything having been disclosed"
 
 
-class TestWhatAModelIsOfferedIsDeclared:
-    """The rule, and the reason it is a declaration rather than a guess.
+#: A valid declaration, to vary one field of at a time.
+WHOLE = dict(name="something.new", since="2", needs=contract.READ, summary="A new thing.",
+             audience=contract.PERSON, risk=contract.READS, confirms_with_a_person=False)
 
-    This used to work by matching fragments of operation NAMES -- "rotate", "revoke", "invite".
-    That is fail-open and obviously so once written down: an operation called `account.limits` or
-    `credentials.refresh` matches nothing on the list and ships to every model on the next
-    release. The list described the operations that happened to exist when it was written, and
-    was doing duty as a rule.
 
-    Now every operation declares who it is for, the default is `person`, and a declaration that
-    contradicts itself cannot be constructed at all.
+def smuggled(**broken):
+    """An operation that got past the constructor. Something built another way -- a loader, a
+    plugin, a future refactor -- and the point of checking again downstream."""
+    op = contract.Operation(**WHOLE)
+    for field, value in broken.items():
+        object.__setattr__(op, field, value)
+    return op
+
+
+def everything_refuses(monkeypatch, tmp_path, op, because=""):
+    """The whole contract is rejected -- not one rendering quietly made shorter.
+
+    Each of these is a separate way the operation could otherwise have leaked out: a schema a
+    model reads, a schema a person's client reads, the capabilities answer, the gateway agreeing
+    to serve at all, and the dispatcher agreeing to carry it out.
+    """
+    monkeypatch.setattr(contract, "OPERATIONS", contract.OPERATIONS + (op,))
+    for render in (contract.describe, schemas.openapi_document, schemas.mcp_tools,
+                   schemas.tool_calling_schema, schemas.every_rendering,
+                   contract.check_classifications):
+        with pytest.raises(contract.NotClassified) as refused:
+            render()
+        if because:
+            assert because in str(refused.value), (render.__name__, str(refused.value))
+
+    state = GatewayState(str(tmp_path / "wont-start"), version="test")
+    try:
+        with pytest.raises(contract.NotClassified):
+            GatewayService(state, backend=StandInBackend())
+    finally:
+        state.close()
+
+
+class TestClassificationIsMandatoryNotDefaulted:
+    """An earlier version defaulted a missing audience to `person`.
+
+    That kept an unclassified operation out of the tool schemas, and was described as making
+    classification mandatory. It did not: it made classification OPTIONAL with a safe fallback,
+    which is a weaker and different claim -- and it left the operation reachable over REST,
+    classified by nobody and refused by nothing. A default standing in for a decision is a
+    decision nobody made.
+
+    Each case below must reject the WHOLE contract. A generator that quietly dropped what it
+    could not classify would publish a shorter schema and exit zero, and a shorter schema that
+    looks like a successful build is exactly how something ends up reachable on one transport
+    and invisible on another.
     """
 
+    def test_a_declaration_that_says_nothing_cannot_be_built_at_all(self):
+        with pytest.raises(ValueError) as refused:
+            contract.Operation(name="something.new", since="2", needs=contract.READ,
+                               summary="Somebody added this and thought about nothing else.")
+        assert "does not declare its" in str(refused.value)
+
+    @pytest.mark.parametrize("missing", ["audience", "risk", "confirms_with_a_person"],
+                             ids=["no audience", "no risk", "no human confirmation"])
+    def test_nor_can_one_that_leaves_a_single_field_out(self, missing):
+        shape = dict(WHOLE)
+        shape.pop(missing)
+        with pytest.raises(ValueError) as refused:
+            contract.Operation(**shape)
+        assert "does not declare its" in str(refused.value)
+
+    def test_nor_can_one_without_a_required_permission(self):
+        shape = dict(WHOLE, needs=None)
+        with pytest.raises(ValueError):
+            contract.Operation(**shape)
+
+    def test_but_declaring_person_explicitly_is_perfectly_fine(self):
+        """What is refused is saying nothing -- not choosing the cautious answer."""
+        fine = contract.Operation(**WHOLE)
+        assert fine.audience == contract.PERSON
+        assert fine not in contract.for_a_model()
+
+    # --- and the same seven, against something that got past the constructor ------------------
+
+    def test_completely_unclassified(self, monkeypatch, tmp_path):
+        everything_refuses(monkeypatch, tmp_path,
+                           smuggled(audience=None, risk=None, confirms_with_a_person=None),
+                           because="does not declare its")
+
+    def test_a_missing_audience(self, monkeypatch, tmp_path):
+        everything_refuses(monkeypatch, tmp_path, smuggled(audience=None), because="audience")
+
+    def test_a_missing_risk(self, monkeypatch, tmp_path):
+        everything_refuses(monkeypatch, tmp_path, smuggled(risk=None), because="risk")
+
+    def test_a_missing_permission(self, monkeypatch, tmp_path):
+        everything_refuses(monkeypatch, tmp_path, smuggled(needs=None),
+                           because="required permission")
+
+    def test_a_missing_human_confirmation(self, monkeypatch, tmp_path):
+        everything_refuses(monkeypatch, tmp_path, smuggled(confirms_with_a_person=None),
+                           because="whether a person")
+
+    def test_a_contradictory_combination(self, monkeypatch, tmp_path):
+        everything_refuses(monkeypatch, tmp_path,
+                           smuggled(audience=contract.TOOL, risk=contract.CHANGES_ACCESS,
+                                    needs=contract.MANAGE_DEVICES),
+                           because="cannot be asked whether it should")
+
+    def test_an_enum_value_nobody_declared(self, monkeypatch, tmp_path):
+        everything_refuses(monkeypatch, tmp_path, smuggled(audience="everyone"),
+                           because="which is not one of")
+
+    def test_renaming_a_blocked_operation_does_not_unblock_it(self, monkeypatch, tmp_path):
+        """Nothing reads the name, so calling it something harmless changes nothing."""
+        with pytest.raises(ValueError):
+            contract.Operation(name="housekeeping", since="2", needs=contract.MANAGE_DEVICES,
+                               summary="Tidy up.", audience=contract.TOOL,
+                               risk=contract.CHANGES_ACCESS, confirms_with_a_person=False)
+        everything_refuses(monkeypatch, tmp_path,
+                           smuggled(name="housekeeping", audience=contract.TOOL,
+                                    risk=contract.CHANGES_ACCESS,
+                                    needs=contract.MANAGE_DEVICES),
+                           because="cannot be asked whether it should")
+
+    def test_and_it_is_reachable_over_no_transport(self, sandbox, monkeypatch):
+        """Not merely absent from the schemas -- refused by the dispatcher, which is what every
+        door goes through."""
+        service, who = sandbox
+        monkeypatch.setattr(contract, "OPERATIONS",
+                            contract.OPERATIONS + (smuggled(audience=None),))
+        monkeypatch.setitem(dispatch.HANDLERS, "something.new", lambda *a, **k: {"ok": True})
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("something.new", {}, who, service=service)
+        assert refused.value.refusal == "unknown_operation"
+
+
+class TestWhatAModelIsOfferedIsDeclared:
+    """What decides tool exposure is the declared audience. Nothing reads the name."""
+
     def tools(self):
-        made = list(schemas.mcp_tools())
-        made.extend(schemas.tool_calling_schema())
-        return made
+        return list(schemas.mcp_tools()) + list(schemas.tool_calling_schema())
 
     def names(self):
-        out = []
-        for tool in self.tools():
-            out.append(str(tool.get("name") or tool.get("function", {}).get("name", "")).lower())
-        return out
+        return [str(t.get("name") or t.get("function", {}).get("name", "")).lower()
+                for t in self.tools()]
 
     def test_there_are_tools_to_check(self):
         assert self.tools(), "nothing was rendered, so everything below establishes nothing"
 
-    def test_the_default_is_not_a_tool(self):
-        """The whole safety property in one line: forget to classify, and it is not published."""
-        quiet = contract.Operation(name="something.new", since="2", needs=contract.READ,
-                                   summary="Somebody added this and thought about nothing else.")
-        assert quiet.audience == contract.PERSON
-        assert quiet not in contract.for_a_model()
-
-    def test_an_operation_nobody_classified_appears_in_no_tool_schema(self, monkeypatch):
-        """The counter-check for it: add one, render everything, look for it."""
-        quiet = contract.Operation(name="account.limits", since="2", needs=contract.READ,
-                                   summary="Raise this account's ceilings.")
-        monkeypatch.setattr(contract, "OPERATIONS", contract.OPERATIONS + (quiet,))
-        assert "account.limits" not in [op.name for op in contract.for_a_model()]
-        assert not [n for n in self.names() if "limits" in n], self.names()
-
-    def test_renaming_it_to_something_harmless_does_not_get_it_published(self):
-        """Because nothing reads the name. A declaration that says it changes access cannot also
-        say a model may call it, whatever it is called."""
-        with pytest.raises(ValueError) as refused:
-            contract.Operation(name="housekeeping", since="2", needs=contract.MANAGE_DEVICES,
-                               summary="Tidy up.", audience=contract.TOOL,
-                               risk=contract.CHANGES_ACCESS)
-        assert "cannot be asked whether it should" in str(refused.value)
-
-    @pytest.mark.parametrize("bad", [
-        {"audience": "anyone"},
-        {"risk": "mild"},
-        {"audience": ""},
-    ], ids=["unknown audience", "unknown risk", "missing audience"])
-    def test_a_classification_that_is_not_one_is_refused_at_the_declaration(self, bad):
-        with pytest.raises(ValueError):
-            contract.Operation(name="x.y", since="2", needs=contract.READ, summary="s", **bad)
-
-    def test_and_the_generators_refuse_rather_than_quietly_render_less(self, monkeypatch):
-        """A generator that skipped what it could not classify would publish a shorter list and
-        look like it had succeeded."""
-        broken = contract.Operation(name="x.y", since="2", needs=contract.READ, summary="s")
-        object.__setattr__(broken, "audience", "nonsense")
-        monkeypatch.setattr(contract, "OPERATIONS", contract.OPERATIONS + (broken,))
-        for render in (schemas.mcp_tools, schemas.tool_calling_schema):
-            with pytest.raises(ValueError) as refused:
-                render()
-            assert "not classified" in str(refused.value)
-
     @pytest.mark.parametrize("concept,fragments", contract.NAMES_THAT_SHOULD_NEVER_BE_TOOLS,
                              ids=[c for c, _ in contract.NAMES_THAT_SHOULD_NEVER_BE_TOOLS])
-    def test_the_named_dangerous_things_are_still_not_offered(self, concept, fragments):
-        """A tripwire over the declarations, not a rule. If this ever fires, something was
-        declared a tool that should not have been -- the name is the hint, not the mechanism."""
+    def test_the_named_dangerous_things_are_not_offered(self, concept, fragments):
+        """A tripwire over the declarations, not a rule -- nothing reads it at runtime. If it
+        fires, something was declared a tool that should not have been."""
         for fragment in fragments:
             hit = [n for n in self.names() if fragment in n]
             assert not hit, "a model is offered %s: %s" % (concept, hit)
@@ -251,8 +327,6 @@ class TestWhatAModelIsOfferedIsDeclared:
             assert op not in contract.for_a_model()
 
     def test_anything_that_changes_access_or_policy_needs_the_right_permission(self):
-        """REST still reaches them -- a person's client must be able to -- but only with the
-        capability a person's client holds."""
         for op in contract.OPERATIONS:
             if op.risk in contract.NEVER_FOR_A_MODEL:
                 assert op.needs == contract.MANAGE_DEVICES, op.name
@@ -268,8 +342,6 @@ class TestWhatAModelIsOfferedIsDeclared:
         assert refused.value.refusal == "not_permitted"
 
     def test_but_they_are_still_reachable_through_the_dispatcher(self):
-        """Not offered is not the same as not available. Withholding them from a model must not
-        turn them into a second place decisions are made."""
         for op in contract.OPERATIONS:
             if op.audience != contract.TOOL:
                 assert op.name in dispatch.HANDLERS, op.name
