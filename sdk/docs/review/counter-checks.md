@@ -55,6 +55,14 @@ which is truthy, so nothing was reverted at all.
 | 10 | the page builds markup out of what somebody typed | `test_it_is_rendered_rather_than_run` (both cases) |
 | 11 | a token may be written where the config file is readable | `test_nothing_is_written_and_the_reason_is_given` |
 | 12 | the invitation is not needed to open a browser session | `test_is_good_for_one_exchange` |
+| 13 | withdrawing a device leaves its unspent download standing | `test_an_unspent_download_is_gone` |
+| 14 | ... and its work still running | `test_work_it_had_in_flight_is_stopped` |
+
+13 and 14 were added after a review refused the package on revocation. Removing a credential
+stops the NEXT request, and that is not the whole of revocation: a device's sessions, its work
+in flight, and any unspent download it was issued are all authority it has ALREADY been given.
+The download is the sharpest, because collecting one mints a fresh credential -- so leaving one
+standing is a way to walk straight back in.
 
 Three of these were wrong on the first attempt and are worth recording as such.
 

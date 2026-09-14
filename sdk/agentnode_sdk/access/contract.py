@@ -638,6 +638,10 @@ OPERATIONS = (
         returns=(
             Field("device_id", "string", "the device withdrawn"),
             Field("withdrawn", "boolean", "whether there was one to withdraw"),
+            Field("runs_stopping", "array",
+                  "work this device had in flight, which is being stopped -- withdrawing it "
+                  "takes back what it already had, not only what it might ask for next",
+                  since="2"),
         ),
         errors=COMMON,
         changes=True,

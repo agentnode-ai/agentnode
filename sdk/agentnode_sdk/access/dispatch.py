@@ -1376,12 +1376,46 @@ def _devices_rotate(service, principal, params):
 
 
 def _devices_revoke(service, principal, params):
+    """Withdraw a device, and take back everything it had already been given.
+
+    Removing the credential stops the NEXT request. That is not the whole of revocation, and a
+    review was right to refuse it as such: what a device already holds keeps working unless
+    something reaches for it.
+
+    Three things are already-issued authority, and all three go:
+
+    * its sessions -- otherwise a browser signed in as that device carries on;
+    * its runs -- a job it started is its work, still executing, in a sandbox nobody may now
+      ask about; leaving it would mean a withdrawn device's code kept running to completion;
+    * its enrolments -- an unspent download ticket MINTS A FRESH CREDENTIAL when collected, so
+      one left standing is a way to walk straight back in.
+
+    Order matters. The credential is removed LAST, so that everything above is done on behalf of
+    a device this gateway still recognises; doing it the other way round means asking questions
+    about somebody who is already nobody.
+    """
+    from agentnode_sdk.gateway.protocol import is_terminal
+
     wanted = str(params["device_id"])
-    # Every session that device holds goes with it. A device that has been withdrawn while a
-    # browser is still signed in as it would otherwise keep working through the session, which
-    # is the whole of what "revocation takes effect immediately" must not mean.
     service.sessions.end_every(wanted)
-    return {"device_id": wanted, "withdrawn": bool(service.state.revoke_client(wanted))}
+    service.connections.drop_everything_touching(wanted)
+
+    stopped = []
+    for run_id, record in list(service.runs.items()):
+        if getattr(record, "owner_client_id", "") != wanted or is_terminal(record.state):
+            continue
+        record.cancel_requested.set()
+        try:
+            service.stopping.ask(run_id, by="(a withdrawal)")
+            stopped.append(run_id)
+        except Exception:                                     # noqa: BLE001
+            # A run that could not be queued is not a reason to leave the credential in place.
+            # The withdrawal still happens, and the run is reported as one that was not stopped
+            # rather than quietly counted as stopped.
+            pass
+
+    return {"device_id": wanted, "withdrawn": bool(service.state.revoke_client(wanted)),
+            "runs_stopping": stopped}
 
 
 def _translate(exc: Exception) -> Refused:

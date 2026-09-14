@@ -245,3 +245,73 @@ class TestWhatTheVerdictRestsOn:
         token = collect(service, who, begun)
         assert service.state.client_id_for(token) != who.client_id, (
             "the enrolled connection is the account itself, so nothing distinguishes them")
+
+
+class TestWithdrawingADeviceTakesBackWhatItAlreadyHad:
+    """Removing a credential stops the NEXT request. That is not the whole of revocation.
+
+    A review refused this branch for exactly that: the implementation showed the credential and
+    the sessions going, and nothing reaching the authority a device had already been given. An
+    unspent download ticket is the sharpest case, because collecting one MINTS A FRESH
+    CREDENTIAL -- so a withdrawal that left one standing is a way to walk straight back in.
+    """
+
+    def test_an_unspent_download_is_gone(self, account):
+        service, who = account
+        begun = enrol(service, who)
+        dispatch.dispatch("devices.revoke", {"device_id": who.client_id}, who, service=service)
+        with pytest.raises(setting_up.NoSuchChallenge):
+            service.connections.about(begun["challenge"])
+
+    def test_and_so_is_one_that_named_the_withdrawn_connection_as_its_target(self, account):
+        service, who = account
+        begun = enrol(service, who)
+        token = collect(service, who, begun)
+        the_ai = dispatch.identify(service, token, via="mcp")
+
+        dispatch.dispatch("devices.revoke", {"device_id": the_ai.client_id}, who,
+                          service=service)
+        with pytest.raises(setting_up.NoSuchChallenge):
+            service.connections.about(begun["challenge"])
+
+    def test_work_it_had_in_flight_is_stopped(self, account):
+        """A job a withdrawn device started is its work, still executing, in a sandbox nobody may
+        now ask about. Leaving it would mean a withdrawn device's code ran to completion."""
+        service, who = account
+        started = run_something(service, who)
+        service.runs[started["run_id"]].state = "running"     # still going when it is withdrawn
+
+        said = dispatch.dispatch("devices.revoke", {"device_id": who.client_id}, who,
+                                 service=service)
+        assert started["run_id"] in said["runs_stopping"]
+        assert service.stopping.about(started["run_id"]) is not None
+
+    def test_and_a_run_that_had_already_finished_is_not_disturbed(self, account):
+        service, who = account
+        started = run_something(service, who)
+        _poll(service, started["run_id"])
+        said = dispatch.dispatch("devices.revoke", {"device_id": who.client_id}, who,
+                                 service=service)
+        assert started["run_id"] not in said["runs_stopping"]
+
+    def test_nor_is_somebody_elses(self, account):
+        service, who = account
+        other = dispatch.identify(
+            service, service.state.redeem_for_connection("not mine"), via="mcp")
+        theirs = run_something(service, other)
+        service.runs[theirs["run_id"]].state = "running"
+
+        said = dispatch.dispatch("devices.revoke", {"device_id": who.client_id}, who,
+                                 service=service)
+        assert theirs["run_id"] not in said["runs_stopping"]
+
+
+def _poll(service, run_id, tries=200):
+    from agentnode_sdk.gateway.protocol import is_terminal
+
+    for _ in range(tries):
+        record = service.runs.get(run_id)
+        if record is not None and is_terminal(record.state):
+            return record
+        time.sleep(0.02)
+    raise AssertionError("the run never finished")

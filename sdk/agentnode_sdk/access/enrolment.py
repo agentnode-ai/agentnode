@@ -170,6 +170,27 @@ class Connections:
         return dict(entry, satisfied=False,
                     why="nothing has been recorded from that connection yet")
 
+    # ------------------------------------------------------------------ withdrawal
+
+    def drop_everything_touching(self, device: str) -> int:
+        """Forget every setup this device started or was to become. Returns how many.
+
+        Withdrawing a device has to reach what it had already been GIVEN, not only what it might
+        ask for next. A challenge it started carries an unspent download ticket, and that ticket
+        mints a fresh credential when it is collected -- so a withdrawal that left one standing
+        would be a withdrawal somebody could walk straight back through.
+        """
+        device = str(device)
+        with self._lock:
+            kept = self._read()
+            going = [k for k, v in kept.items()
+                     if v.get("account") == device or v.get("device") == device]
+            for k in going:
+                del kept[k]
+            if going:
+                self._write(kept)
+            return len(going)
+
     # ------------------------------------------------------------------ the file
 
     def _tidied(self, kept: dict, now: float) -> dict:
