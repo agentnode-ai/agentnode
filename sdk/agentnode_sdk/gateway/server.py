@@ -38,6 +38,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from agentnode_sdk.worker import what_it_does_not_establish
+from agentnode_sdk.access import rest as _rest
+from agentnode_sdk.access import sessions as _sessions
+from agentnode_sdk.access.sessions import Sessions
 from agentnode_sdk.access.stopping import Stopping
 from agentnode_sdk.access import dispatch as _dispatch
 from agentnode_sdk.gateway import client as _gc
@@ -300,6 +303,9 @@ class GatewayService:
         #: Who carries out cancellations. Bounded, owned, and durable across a restart -- see
         #: `access/stopping.py`. Nothing is started until the first cancellation is asked for,
         #: so a gateway that never cancels anything has no threads for it.
+        #: The browser sessions this gateway has open. A browser is never given a token; it
+        #: is given one of these, in a cookie its own scripts cannot read.
+        self.sessions = Sessions(self.state.root)
         self.stopping = Stopping(self.state.root, self._stop_it_and_confirm)
         self._restore_interrupted()
         # A container being torn down does not disappear because the process did. Anything the
@@ -1896,6 +1902,34 @@ class _Handler(BaseHTTPRequestHandler):
             body = self._read_json()
         except (ProtocolError, ValueError) as exc:
             return self._send(400, refusal(str(exc)))
+
+        if self.path == "/v1/session":
+            # A browser exchanging an invitation. It gets a session, not a token: the credential
+            # is created and kept here, and what goes back is an identifier in a cookie the
+            # page's own scripts cannot read.
+            try:
+                answer = _dispatch.before_anyone("open_session", body, service=self.service,
+                                                 via="browser")
+            except _dispatch.Refused as refused:
+                return self._send(403, refusal(refused.because))
+            given = answer.pop("session")
+            data = json.dumps(answer, sort_keys=True).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            # HttpOnly: no script on the page can read it, so an injected one cannot take it
+            # somewhere else. Secure and __Host-: the browser itself refuses to accept this
+            # cookie unless it is bound to one origin with no Domain and the whole path, so the
+            # binding is the browser's rule rather than a promise made here. SameSite=Strict:
+            # another site's requests carry no cookie at all, which is the first of the two
+            # locks -- the second is the confirmation value, which lives only in the page.
+            self.send_header("Set-Cookie",
+                             "%s=%s; Path=/; Max-Age=%d; Secure; HttpOnly; SameSite=Strict"
+                             % (_rest.SESSION_COOKIE, given, _sessions.AT_MOST_SECONDS))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return None
 
         if self.path == "/v1/pair":
             try:

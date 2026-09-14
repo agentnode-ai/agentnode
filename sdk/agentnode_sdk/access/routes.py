@@ -65,6 +65,11 @@ REGISTER = (
     Route("/v1/hello", BEFORE_ANYONE_IS_ANYBODY,
           "What a client reads before it has paired, to learn which gateway it has reached and "
           "whether that gateway is ready. There is nobody to authenticate yet."),
+    Route("/v1/session", BEFORE_ANYONE_IS_ANYBODY,
+          "Redeeming an invitation as a BROWSER. The same single-use claim as pairing, and the "
+          "credential never leaves this gateway: what goes back is a session identifier in a "
+          "cookie the page's own scripts cannot read, so there is no durable bearer token in "
+          "the browser to steal because none was ever sent there."),
     Route("/v1/pair", BEFORE_ANYONE_IS_ANYBODY,
           "Redeeming an invitation: how somebody comes to have a credential, so it cannot "
           "require one. It has its own single-use claim, its own expiry and its own attempt "

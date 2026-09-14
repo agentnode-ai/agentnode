@@ -50,7 +50,7 @@ def audit_lines(service):
 class TestThereAreExactlyTwo:
 
     def test_the_list_is_the_list(self):
-        assert dispatch.BOOTSTRAP == ("hello", "pair")
+        assert dispatch.BOOTSTRAP == ("hello", "pair", "open_session")
 
     @pytest.mark.parametrize("operation",
                              [op.name for op in contract.OPERATIONS] + ["", "anything", "submit "])
@@ -70,7 +70,7 @@ class TestThereAreExactlyTwo:
     def test_the_register_names_the_same_two(self):
         anonymous = {r.path for r in routes.REGISTER
                      if r.kind == routes.BEFORE_ANYONE_IS_ANYBODY}
-        assert anonymous == {"/v1/hello", "/v1/pair"}
+        assert anonymous == {"/v1/hello", "/v1/pair", "/v1/session"}
 
     def test_and_every_route_is_one_of_the_four_kinds(self):
         allowed = {routes.THROUGH_THE_DISPATCHER, routes.TRANSLATES,
@@ -98,7 +98,7 @@ class TestNeitherIsAThingAModelCanCall:
 
     def test_nor_anywhere_in_the_text_a_model_is_handed(self):
         said = json.dumps(schemas.mcp_tools()) + json.dumps(schemas.tool_calling_schema())
-        for word in ("pairing", "invitation", "/v1/pair"):
+        for word in ("pairing", "invitation", "/v1/pair", "session"):
             assert word not in said.lower(), word
 
 

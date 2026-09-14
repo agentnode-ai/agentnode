@@ -28,6 +28,7 @@ from agentnode_sdk.gateway import server as gateway_server
 WHAT_THE_LITERALS_MEAN = {
     "/v1/hello": ("/v1/hello",),
     "/v1/pair": ("/v1/pair",),
+    "/v1/session": ("/v1/session",),
     "/v1/jobs": ("/v1/jobs",),
     "/v1/token/rotate": ("/v1/token/rotate",),
     "/v1/jobs/": ("/v1/jobs/<run>", "/v1/jobs/<run>/cancel"),

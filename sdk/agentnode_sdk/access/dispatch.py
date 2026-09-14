@@ -84,6 +84,10 @@ class Principal:
     proved: bool = False
     #: Set when the caller arrived as a browser session rather than carrying a token itself.
     session_id: str = ""
+    #: What a browser sent in the CSRF header. Checked for anything that changes state: the
+    #: cookie alone is not enough, because a cookie is attached by the browser and a header is
+    #: attached by the page.
+    csrf_presented: str = ""
     #: Which door. Written to the audit, and what a compatibility observation is bound to.
     via: str = ""
     device_name: str = ""
@@ -107,7 +111,7 @@ NOBODY = Principal(token="", device_id="", client_id="")
 #: -- including the ones a model reads -- and would make them addressable at `/v1/op/`, where the
 #: dispatcher would demand the credential they exist to obtain. Keeping them out of the contract
 #: is what makes "no tool can pair itself" true by construction rather than by a filter.
-BOOTSTRAP = ("hello", "pair")
+BOOTSTRAP = ("hello", "pair", "open_session")
 
 
 def before_anyone(operation: str, params: dict, *, service, via: str = "") -> dict:
@@ -193,7 +197,35 @@ def _pair(service, params: dict) -> dict:
             "fingerprint": identity.fingerprint}
 
 
-_BOOTSTRAP = {"hello": _hello, "pair": _pair}
+def _open_session(service, params: dict) -> dict:
+    """Redeem an invitation for a BROWSER SESSION rather than for a token.
+
+    Same invitation, same single-use claim, same throttle -- and the credential never leaves this
+    gateway. A browser is handed a session identifier in a cookie its own scripts cannot read,
+    and a CSRF token it is expected to keep in memory and nowhere else.
+
+    A device is still created, because a session belongs to a device and withdrawing that device
+    has to end the session. What is different is only that nobody is given its token: there is no
+    durable bearer credential in the browser to steal, because none was ever sent there.
+    """
+    from agentnode_sdk.access import sessions as store
+
+    paired = _pair(service, params)
+    client_id = service.state.client_id_for(paired["token"])
+    try:
+        session_id, csrf = service.sessions.open(client_id, label=str(params.get(
+            "client_name", "")))
+    except store.TooManySessions as too_many:
+        raise Refused("over_a_ceiling", str(too_many),
+                      "End a session you are no longer using, then sign in again.") from too_many
+    # The token is deliberately dropped on the floor. It exists -- the device is real and its
+    # secret is what signs its answers -- and this is the one caller that is never told it.
+    return {"session": session_id, "csrf": csrf, "device": client_id,
+            "device_name": str(params.get("client_name", "")),
+            "gateway": paired["gateway"], "fingerprint": paired["fingerprint"]}
+
+
+_BOOTSTRAP = {"hello": _hello, "pair": _pair, "open_session": _open_session}
 
 
 def identify(service, token: str, proof=None, via: str = "") -> Principal:
@@ -237,6 +269,48 @@ def identify(service, token: str, proof=None, via: str = "") -> Principal:
             break
     return Principal(token=token, device_id=client_id, client_id=client_id,
                      capabilities=held, device_name=name, proved=proved, via=via)
+
+
+def identify_session(service, session_id: str, csrf: str = "", via: str = "browser"):
+    """Turn a browser session into a principal, or into nobody.
+
+    The session says which device this is; everything after that -- what it may do, what it may
+    see -- comes from the device, exactly as it would for a caller holding that device's token.
+    A session is a way of PRESENTING an identity, not a different kind of identity, and keeping
+    it that way is what stops the browser becoming a second permission system.
+    """
+    if not session_id:
+        return NOBODY
+    found = service.sessions.whose(session_id)
+    if not found:
+        return NOBODY
+    who = identify(service, "", via=via)
+    known = identify_client(service, str(found["client_id"]), via=via)
+    if known is NOBODY:
+        # The session outlived the device it belongs to. Withdrawing a device ends its sessions,
+        # so reaching here means something went the other way round; either way, nobody.
+        return NOBODY
+    return Principal(token=known.token, device_id=known.device_id, client_id=known.client_id,
+                     capabilities=known.capabilities, device_name=known.device_name,
+                     proved=False, session_id=session_id, csrf_presented=csrf, via=via)
+
+
+def identify_client(service, client_id: str, via: str = ""):
+    """A principal for a device this gateway already knows, named by its identity.
+
+    Used where a credential is not what was presented -- a browser session -- so the capabilities
+    still come from what the gateway recorded at pairing and from nothing a caller sends.
+    """
+    for device in service.state.paired_clients():
+        if device.get("client_id") != str(client_id):
+            continue
+        held = tuple(c for c in (device.get("capabilities") or contract.CAPABILITIES)
+                     if c in contract.CAPABILITIES)
+        return Principal(token="", device_id=str(client_id), client_id=str(client_id),
+                         capabilities=held or contract.CAPABILITIES,
+                         device_name=str(device.get("client_name")
+                                         or device.get("name") or ""), via=via)
+    return NOBODY
 
 
 def rendered_record(service, principal: Principal, run_id: str) -> dict:
@@ -492,7 +566,24 @@ def _carry_out(operation: str, params: dict, principal: Principal, *, service,
     # What that costs is real and is stated rather than hidden. A client cannot tell "withdrawn"
     # from "wrong", an operator reading the audit sees the generic outcome for both, and both
     # lead a person to the same action: get a new invitation.
-    if principal.device_id and service.state.client_id_for(principal.token) != principal.client_id:
+    if principal.session_id:
+        # A session is re-established on every request too, for the same reason and with the
+        # same effect: ending one takes hold on the very next thing it tries to do.
+        if not service.sessions.whose(principal.session_id):
+            raise Refused("not_authenticated",
+                          "This session has ended.",
+                          "Sign in again from an invitation.")
+        if op.changes and not service.sessions.csrf_matches(principal.session_id,
+                                                            principal.csrf_presented):
+            # SameSite=Strict already means another origin's request carries no cookie. This is
+            # the second lock: a request that changes something must also carry a value only the
+            # page itself has, which a cross-site request cannot obtain and an injected script
+            # cannot read out of a cookie.
+            raise Refused("not_authenticated",
+                          "That request did not carry this session's confirmation value.",
+                          "Reload the page and try again.")
+    elif principal.device_id and (service.state.client_id_for(principal.token)
+                                  != principal.client_id):
         raise Refused("not_authenticated",
                       "This request did not come with a credential this sandbox recognises.",
                       "Pair this device again with a fresh invitation.")
@@ -1163,6 +1254,43 @@ def _devices_list(service, principal, params):
     ]}
 
 
+def _sessions_list(service, principal, params):
+    return {"sessions": service.sessions.belonging_to(principal.client_id)}
+
+
+def _sessions_end(service, principal, params):
+    """End a session. Yours by default, another of your own by name.
+
+    Named by what the list shows and never by the identifier itself -- a caller ending a session
+    is looking at a list, and a revoke that needed the identifier could only ever be performed by
+    the session being revoked, which is exactly backwards.
+    """
+    wanted = str(params.get("session") or "")
+    if not wanted:
+        if not principal.session_id:
+            raise Refused("malformed",
+                          "There is no session making this request, so there is no this one "
+                          "to end.",
+                          "Name the session to end, or sign out from the browser.")
+        return {"session": "", "ended": bool(service.sessions.end(principal.session_id)),
+                "this_one": True}
+    mine = {s["session"] for s in service.sessions.belonging_to(principal.client_id)}
+    if wanted not in mine:
+        # The same answer as one that does not exist. Telling somebody that a session exists
+        # but is not theirs tells them it exists.
+        return {"session": wanted, "ended": False, "this_one": False}
+    ended = service.sessions.end_named(wanted)
+    return {"session": wanted, "ended": bool(ended),
+            "this_one": bool(principal.session_id
+                             and wanted == fingerprint_of(principal.session_id))}
+
+
+def fingerprint_of(session_id: str) -> str:
+    from agentnode_sdk.access.sessions import fingerprint
+
+    return fingerprint(session_id)
+
+
 def _devices_rotate(service, principal, params):
     """Hand back a replacement credential for the identity already asking.
 
@@ -1179,6 +1307,10 @@ def _devices_rotate(service, principal, params):
 
 def _devices_revoke(service, principal, params):
     wanted = str(params["device_id"])
+    # Every session that device holds goes with it. A device that has been withdrawn while a
+    # browser is still signed in as it would otherwise keep working through the session, which
+    # is the whole of what "revocation takes effect immediately" must not mean.
+    service.sessions.end_every(wanted)
     return {"device_id": wanted, "withdrawn": bool(service.state.revoke_client(wanted))}
 
 
@@ -1208,6 +1340,8 @@ HANDLERS = {
     "result": _result,
     "cancel": _cancel,
     "usage": _usage,
+    "sessions.list": _sessions_list,
+    "sessions.end": _sessions_end,
     "devices.list": _devices_list,
     "devices.rotate": _devices_rotate,
     "devices.revoke": _devices_revoke,

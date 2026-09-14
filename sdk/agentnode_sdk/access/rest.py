@@ -23,6 +23,13 @@ from agentnode_sdk.access import contract, dispatch, schemas
 
 #: Where a caller puts its device token.
 TOKEN_HEADER = "X-AgentNode-Token"
+#: What a browser presents instead. The `__Host-` prefix is not decoration: a browser will only
+#: accept a cookie by that name if it is Secure, has no Domain and is scoped to the whole origin,
+#: which makes the binding the browser's own rule rather than this code's.
+SESSION_COOKIE = "__Host-agentnode"
+#: Kept in the page's memory and sent on anything that changes state. Never stored, so a script
+#: that runs later cannot find it, and never in a cookie, so a cross-site request cannot send it.
+CSRF_HEADER = "X-AgentNode-Confirm"
 
 #: Where a caller says which protocol it speaks, so the server can refuse an operation that
 #: arrived after that client did rather than letting it fail somewhere less obvious.
@@ -55,6 +62,33 @@ def route_for(path: str):
     """Which operation a path is, or None. One table, derived from the declarations."""
     bare = path.split("?", 1)[0]
     return PATHS.get(bare.rstrip("/") or bare)
+
+
+def _cookie(headers, name: str) -> str:
+    """One cookie by name, without a cookie library and without guessing.
+
+    Values are not decoded or unquoted: what this gateway put there is URL-safe base64, and
+    anything else is not one of ours whatever it decodes to.
+    """
+    raw = _header(headers, "Cookie")
+    for part in raw.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key == name:
+            return value.strip()
+    return ""
+
+
+def _whoever_is_asking(service, headers, token: str):
+    """A device presenting its token, or a browser presenting a session. Never both.
+
+    Checked in that order and without falling through: a request carrying a token is that
+    device, and if the token is wrong it is nobody -- it does not then get a second chance as
+    whatever session happens to be in the cookie jar.
+    """
+    if token:
+        return dispatch.identify(service, token, via="rest")
+    return dispatch.identify_session(service, _cookie(headers, SESSION_COOKIE),
+                                     _header(headers, CSRF_HEADER), via="browser")
 
 
 def how_it_should_answer(refusal: str) -> int:
@@ -116,7 +150,7 @@ def handle(service, path: str, method: str, headers, body: bytes):
     # Which door, named by the adapter rather than taken from anything the caller sends. It is
     # written to the audit and bound into a disclosure, so a value a caller could choose would
     # let it claim to have arrived somewhere it never did.
-    who = dispatch.identify(service, token, via="rest")
+    who = _whoever_is_asking(service, headers, token)
 
     op = route_for(path)
     if op is None:

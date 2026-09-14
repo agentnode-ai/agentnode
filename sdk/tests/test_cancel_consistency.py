@@ -324,8 +324,15 @@ class TestACancellationAnswersWhenItIsDone:
             return status, answer
 
         monkeypatch.setattr(gc, "_post", meddling)
-        with pytest.raises(gc.GatewayClientError):
-            gc.cancel(conn, "run-under-test")
+        try:
+            with pytest.raises(gc.GatewayClientError):
+                gc.cancel(conn, "run-under-test")
+        finally:
+            # Whatever happened above, let the run finish. Raising out of a cancellation leaves
+            # the job held and a hand of the stopping pool still working, and a fixture torn
+            # down around either of those is an intermittent teardown error rather than a
+            # result -- which is exactly how this showed up.
+            backend.let_go.set()
 
     def test_cancelling_twice_says_the_same_thing(self, waiting_gateway):
         base, state, service, backend = waiting_gateway
