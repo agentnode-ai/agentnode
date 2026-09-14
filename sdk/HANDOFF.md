@@ -1,7 +1,8 @@
 # Where this is
 
-Branch `managed/access-and-onboarding`, head `a5ec1cc`. Nothing pushed, merged or deployed.
-8099 closed.
+Branch `managed/access-and-onboarding`, head `2677698`, open as **draft pull request #127**
+against `main`. **Not merged.** 8099 closed. The pull request exists to run CI and for no other
+reason.
 
 **The review is PASSED.** `MANAGED-CONSOLE-FINAL-0006`, all fourteen criteria of the frozen
 profile, at commit `4ca44a1`. `sdk/` is byte-identical between `4ca44a1` and the head above --
@@ -97,30 +98,29 @@ refusal when there is nowhere safe has its own tests in `test_credentials.py`.
    `scratchpad/final_review.sh`, which verifies the profile digest and every input digest before
    each attempt and retries only on capacity errors.
 2. Whatever that verdict asks for.
-3. **The lane COMMANDS were run off-CI, and they pass.** The lanes themselves still need a
-   founder decision, because reaching them means publishing this branch (below). What could be
-   done without that was done -- each lane's own command, verbatim:
-   * `sdk` (`pip install -e ".[dev]"`, then `pytest -v` with NO ignores) on Linux: **6 failed,
-     5490 passed, 337 skipped**. The six are the installer set. The three files the working runs
-     excluded were included here and cost nothing: 70 more passes, no new failures. Python 3.14,
-     not one of the matrix's 3.10/3.11/3.12 -- right OS, wrong version, so this is the lane's
-     command and not the lane.
-   * `adapter-langchain` (`pip install ../sdk -e ".[dev]"`, `pytest -v`) on 3.12: **4 passed**.
-   * `web-lint-build` (`npm ci`, `npm run lint`, `npm run build`): all three pass, lint with 0
-     errors. THIS ONE WOULD HAVE FAILED an hour ago, and finding that is why it was worth
-     running -- see below.
-4. **The official CI lanes cannot be run against this branch without a founder decision, and
-   one of them could not test it even then.** Two facts, both read from
-   `.github/workflows/`:
-   * Every lane triggers only on `push`/`pull_request` to `main` (`sdk.yml`, `sdk-lanes.yml`,
-     `backend.yml`, `cli.yml`). Reaching any of them means pushing this branch to
-     `agentnode-ai/agentnode`, and that repository is **public** — so it is a publication of the
-     work, which is a founder gate, not an ordinary step. Nothing was pushed.
-   * `sdk-lanes.yml` checks out `ref: ${{ env.FROZEN_REV }}` (`3873170`) in all three jobs, so
-     even on a pull request it exercises that pinned commit and not the branch head. It cannot
-     report on this work at all. `sdk.yml` (`pytest -v` over `sdk/`) is the lane that would.
-   * `deploy.yml` is `workflow_dispatch` only and disabled at the repository level, so a pull
-     request would not deploy anything.
+3. **CI has run against this branch and every check is green.** 21 passed, 0 failed, 6 skipped
+   by their own path filters, at `2677698`:
+   * `managed-access (3.10 / 3.11 / 3.12)` — the new job. 407 tests, **0 skipped**, with a real
+     Chromium, and the gate printing every file at its full count.
+   * `sdk (3.10 / 3.11 / 3.12)`, `adapter-langchain`, `web-lint-build`, `sdk-web-required`.
+   * `two-roles`, `the-boundary`, `vertical-flow`, `conformance-local-container`,
+     `lane-ordinary` ×3, `lane-runtime-present`, `lane-runtime-absent`, `backend-required`.
+
+   Four checks were red on the way and all four were this branch's doing, not the base's:
+   * `two-roles` — the client pairs on a machine with no keyring, which this branch turned into
+     a refusal. One missing credential cascaded into twelve failed steps. The harness now makes
+     the choice a server operator has to make, and then answers the consent gate with `--yes`.
+     One of those checks would have gone green for the wrong reason: it looked for the word
+     "refused" while being refused at the consent gate, before authentication was reached.
+   * `the-boundary` and `vertical-flow` — both pin exact counts for `test_socket_worker.py`, and
+     this branch adds one test that binds a unix socket. Windows 10→11 skipped, Linux 123→124
+     passed. The two reconcile: 113 + 11 = 124.
+
+   **The six installer failures are a property of the old test host, not of the code.** They fail
+   there on `main` too, and on CI the `sdk` lane is green on `main` and green here.
+4. **`sdk-lanes.yml` was not touched.** Its `FROZEN_REV` still reads
+   `2de83e798f3cb71f5e91dae2148dd88004cd3d09` and exercises that commit by design, so it reports
+   on that revision rather than on this branch. That is intended and was left alone.
 5. Human validation remains DEFERRED_EXTERNAL_VALIDATION. No person has used this unaided, and no
    automated result establishes that one could.
 
