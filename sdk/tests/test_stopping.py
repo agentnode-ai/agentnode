@@ -224,14 +224,24 @@ class TestARestartDoesNotForget:
 
     def test_a_gateway_killed_mid_cancellation_picks_it_up_again(self, sandbox):
         """A restart, as far as this object is concerned: the first one is abandoned without
-        being closed, and a second one is built over the same directory."""
+        being closed, and a second one is built over the same directory.
+
+        The first teardown is still IN FLIGHT when the second pool reads the journal, and that
+        ordering is the scenario rather than an accident of it. An earlier version released the
+        first teardown first, which -- since a teardown that settles is forgotten, which is the
+        whole point of the journal -- meant the entry might already be gone: the test then passed
+        or failed depending on whether this thread or that hand was scheduled next, and on a
+        loaded machine it failed. It was also not testing what its name says. A gateway that
+        FINISHED a cancellation has nothing to pick up; only one killed mid-cancellation does.
+        """
         abandoned = ASandboxThatTakesItsTime()
         first = sandbox(abandoned)
         first.ask("run-1", by="a device")
         assert abandoned.started.wait(timeout=5)
         assert first.unfinished() == ["run-1"]
-        abandoned.may_finish.set()
 
+        # The gateway dies here, with the teardown still running and the journal still
+        # remembering it. `abandoned` is deliberately not released until the end.
         after = ASandboxThatTakesItsTime()
         second = sandbox(after)
         assert second.pick_up_where_it_left_off() == ["run-1"]
@@ -239,6 +249,7 @@ class TestARestartDoesNotForget:
         after.may_finish.set()
         _until(lambda: second.about("run-1").state == pool.SETTLED)
         assert second.unfinished() == []
+        abandoned.may_finish.set()
 
     def test_an_unreadable_journal_is_not_read_as_nothing_to_do(self, sandbox, tmp_path):
         """This test was named for the right property and asserted the opposite one.

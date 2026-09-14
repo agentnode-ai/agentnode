@@ -1,0 +1,148 @@
+name: Managed access (browser path required)
+
+# The managed-access console is driven by a real browser, and no existing workflow runs that
+# path at all: the `dev` extra does not contain Playwright, so under `SDK & Adapter CI` the
+# browser suite imports nothing, skips itself, and the lane goes green having tested none of it.
+# A suite that reports a working flow when none of it ran is worse than no suite.
+#
+# So this job installs the browser and runs the managed-access surface with
+# AGENTNODE_BROWSER_TESTS=required, which turns "Playwright is missing" from a skip into a
+# failure that says so. It then checks the machine-readable report rather than trusting the exit
+# code: ZERO skips, no missing file, and a floor on how many tests ran. A collection that lost a
+# file would otherwise exit zero and look exactly like a pass.
+#
+# Deliberately NOT touched: sdk-lanes.yml pins `FROZEN_REV` and exercises that commit by design.
+# Nothing here changes it. This is a separate job for a path that was never covered.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # A missing browser is a failure, not a skip. This is the whole point of the job.
+  AGENTNODE_BROWSER_TESTS: required
+  # Pinned: the version these tests were written and measured against. An unpinned browser means
+  # a green run says "it worked against whatever shipped today", which is not a property.
+  PLAYWRIGHT_VERSION: "1.62.0"
+
+jobs:
+  managed-access:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the SDK and its dev extra
+        run: pip install -e ".[dev]"
+
+      - name: Install the browser these tests drive
+        run: |
+          pip install "playwright==${PLAYWRIGHT_VERSION}"
+          python -m playwright install --with-deps chromium
+
+      - name: Run the managed-access surface
+        run: |
+          python -m pytest -v -p no:randomly \
+            --junit-xml=report.xml \
+            tests/test_console_browser.py \
+            tests/test_browser_sessions.py \
+            tests/test_one_way_in.py \
+            tests/test_routes_register.py \
+            tests/test_consent_and_tools.py \
+            tests/test_approval_targets.py \
+            tests/test_compatibility_challenge.py \
+            tests/test_compatibility.py \
+            tests/test_credentials.py \
+            tests/test_stopping.py \
+            tests/test_cancel_is_not_a_wait.py \
+            tests/test_dispatch.py \
+            tests/test_contract_and_schemas.py \
+            tests/test_end_to_end_rest.py \
+            tests/test_every_door.py \
+            tests/test_lifecycle_release.py \
+            tests/test_lifecycle_deadlock.py \
+            tests/test_serving_ownership.py
+
+      - name: A skip is not a pass, and a missing file is not a pass either
+        if: always()
+        shell: python
+        run: |
+          import pathlib
+          import sys
+          import xml.etree.ElementTree as ET
+
+          # The floor is what these files collect today. It is a FLOOR, not an equality, so
+          # adding a test does not break the build -- but losing a file or a whole class does.
+          FLOOR = 407
+          EXPECTED = [
+              "test_console_browser", "test_browser_sessions", "test_one_way_in",
+              "test_routes_register", "test_consent_and_tools", "test_approval_targets",
+              "test_compatibility_challenge", "test_compatibility", "test_credentials",
+              "test_stopping", "test_cancel_is_not_a_wait", "test_dispatch",
+              "test_contract_and_schemas", "test_end_to_end_rest", "test_every_door",
+              # The three that state the resource properties: descriptors given back, every
+              # ending leaving the same nothing, and repeated cycles not growing.
+              "test_lifecycle_release", "test_lifecycle_deadlock", "test_serving_ownership",
+          ]
+
+          report = pathlib.Path("sdk/report.xml")
+          if not report.exists():
+              print("::error::no report was produced, so NO TEST RAN -- that is not a pass")
+              sys.exit(1)
+
+          root = ET.parse(report).getroot()
+          suites = [root] if root.tag == "testsuite" else list(root)
+          total = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          failures = sum(int(s.get("failures", 0)) for s in suites)
+          errors = sum(int(s.get("errors", 0)) for s in suites)
+
+          seen = set()
+          for suite in suites:
+              for case in suite.iter("testcase"):
+                  where = (case.get("file") or "") + " " + (case.get("classname") or "")
+                  for name in EXPECTED:
+                      if name in where:
+                          seen.add(name)
+
+          print("tests=%d skipped=%d failures=%d errors=%d files=%d/%d"
+                % (total, skipped, failures, errors, len(seen), len(EXPECTED)))
+
+          bad = []
+          if skipped:
+              names = [c.get("name") for s in suites for c in s.iter("testcase")
+                       if c.find("skipped") is not None]
+              bad.append("%d test(s) were SKIPPED and a skip does not count as green: %s"
+                         % (skipped, ", ".join(names[:10])))
+          if failures or errors:
+              bad.append("%d failure(s) and %d error(s)" % (failures, errors))
+          if total < FLOOR:
+              bad.append("only %d tests ran, fewer than the floor of %d -- something was not "
+                         "collected" % (total, FLOOR))
+          missing = [n for n in EXPECTED if n not in seen]
+          if missing:
+              bad.append("these files contributed no test at all: %s" % ", ".join(missing))
+
+          for line in bad:
+              print("::error::" + line)
+          sys.exit(1 if bad else 0)
+
+      - name: Keep the report whatever happened
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: managed-access-report-${{ matrix.python-version }}
+          path: sdk/report.xml
+          if-no-files-found: warn

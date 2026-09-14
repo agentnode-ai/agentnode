@@ -154,6 +154,19 @@ after them. The replace was always atomic; the scratch file was the part that wa
 been there all along and `unfinished()` answering `[]` for an unreadable journal was hiding it:
 a corrupted journal looked exactly like a clean start.
 
+**25 — the restart test names the scenario it actually runs.** Put the ordering back: release
+the first teardown before the second pool reads the journal. Run on Python 3.12 under four busy
+cores, forty times: **4 failures in 40**, against **0 in 40** for the version that does not
+release it. The same forty-run comparison is the evidence; a single green run would have proved
+nothing, because the old version passed most of the time.
+
+It was found by running the official lane's Python version rather than the one that happened to
+be installed. The defect was in the test: a teardown that settles is forgotten -- that is what
+the journal is for -- so releasing the first one before reading meant the entry might already be
+gone, and which way it went depended on the scheduler. It was also not testing its own name. A
+gateway that FINISHED a cancellation has nothing to pick up; only one killed mid-cancellation
+does, and that is now what the test sets up.
+
 ### One existing test was agreeing with the defect
 
 `test_an_unreadable_journal_is_not_read_as_nothing_to_do` asserted `unfinished() == []` — which
