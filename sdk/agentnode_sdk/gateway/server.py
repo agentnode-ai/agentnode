@@ -1307,24 +1307,33 @@ class GatewayService:
         # not wait at exit, which is a different question from whether this service knows what it
         # set going. A review was right that a run thread could outlive the service that created
         # it, so the service holds them and gives them back in close().
-        thread = threading.Thread(target=self._run, args=(request, artifact, granted, record),
+        thread = threading.Thread(target=self._run_and_let_go,
+                                  args=(request, artifact, granted, record),
                                   daemon=True, name="agentnode-run-%s" % str(request.run_id)[:8])
         with self._running_lock:
             self._running.add(thread)
         thread.start()
         return record
 
-    def _run(self, request: JobRequest, artifact: bytes, granted, record: RunRecord) -> None:
+    def _run_and_let_go(self, request: JobRequest, artifact: bytes, granted,
+                        record: RunRecord) -> None:
+        """What the thread actually targets: carry the run out, then stop being held.
+
+        A wrapper rather than a try/finally inside `_run`, because `_run` IS the run and several
+        tests read its source to establish what it does in order -- wrapping the body in a
+        `try` would have moved every one of those statements into a different method and left
+        those tests reading this frame instead. The ownership belongs to the thread's lifetime,
+        not to the work, so it sits where the thread begins and ends.
+        """
         try:
-            self._carry_the_run_out(request, artifact, granted, record)
+            self._run(request, artifact, granted, record)
         finally:
             # Taken out of the set on the way past, whatever happened, so what the service holds
             # is what is actually running rather than everything it ever started.
             with self._running_lock:
                 self._running.discard(threading.current_thread())
 
-    def _carry_the_run_out(self, request: JobRequest, artifact: bytes, granted,
-                           record: RunRecord) -> None:
+    def _run(self, request: JobRequest, artifact: bytes, granted, record: RunRecord) -> None:
         from agentnode_sdk.sandbox.composition import network_mode
         mode, domains = network_mode(granted)
         record.container_name = container_name_for(record.run_id)
