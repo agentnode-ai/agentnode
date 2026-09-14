@@ -240,11 +240,17 @@ class TestARestartDoesNotForget:
         assert second.unfinished() == []
 
     def test_an_unreadable_journal_is_not_read_as_nothing_to_do(self, sandbox, tmp_path):
+        """This test was named for the right property and asserted the opposite one.
+
+        It required `unfinished()` to answer the empty list, which IS reading an unreadable
+        journal as nothing to do -- the exact thing the name forbids. A review caught the code;
+        the test had been agreeing with it. It now requires the refusal, and keeps the half it
+        always had right: the unreadable file is left alone so a person can still look at it.
+        """
         (tmp_path / "stopping.json").write_text("{not json", encoding="utf-8")
         stopping = sandbox(lambda run_id: True)
-        # It reports nothing rather than inventing runs, and -- this is the part that matters --
-        # it does not overwrite the file with an empty one, so a person can still look at it.
-        assert stopping.unfinished() == []
+        with pytest.raises(pool.JournalUnavailable):
+            stopping.unfinished()
         assert (tmp_path / "stopping.json").read_text(encoding="utf-8") == "{not json"
 
 
@@ -444,4 +450,178 @@ class TestTheServiceOwnsWhatItStarts:
         finally:
             nearly_done.set()
             soon.join(timeout=5)
+            state.close()
+
+
+class TestAJournalThatCannotBeKeptIsSaidOutLoud:
+    """Unreadable is not empty, and a failed write is not a success.
+
+    A review found both directions fail open: a write error was swallowed with a comment
+    defending it, and `unfinished()` turned an unreadable journal into "nothing was being
+    stopped". Either one lets a gateway come up clean while containers it can no longer account
+    for are still running.
+    """
+
+    def test_a_journal_that_cannot_be_read_is_not_an_empty_one(self, tmp_path):
+        from agentnode_sdk.access import stopping as pool
+
+        (tmp_path / "stopping.json").write_text("{not json at all", encoding="utf-8")
+        it = pool.Stopping(str(tmp_path), lambda run_id: True)
+        try:
+            with pytest.raises(pool.JournalUnavailable):
+                it.unfinished()
+        finally:
+            it.close()
+
+    def test_and_a_gateway_that_cannot_read_it_stops_taking_work(self, tmp_path):
+        """Fail closed, the same way an unreadable stop file means stopped."""
+        from agentnode_sdk.access import stopping as pool
+        from agentnode_sdk.gateway.allowance import why_it_is_stopped
+
+        (tmp_path / "stopping.json").write_text("{not json at all", encoding="utf-8")
+        it = pool.Stopping(str(tmp_path), lambda run_id: True)
+        try:
+            assert it.pick_up_where_it_left_off() == []
+            assert why_it_is_stopped(str(tmp_path)), "it came up taking work"
+            assert "read the cancellation journal" in it.journal_problem
+        finally:
+            it.close()
+
+    def test_an_absent_journal_is_simply_nothing_to_pick_up(self, tmp_path):
+        """The other half, and the reason the first one is not just paranoia: absent must stay
+        harmless, or every first start would halt itself."""
+        from agentnode_sdk.access import stopping as pool
+        from agentnode_sdk.gateway.allowance import why_it_is_stopped
+
+        it = pool.Stopping(str(tmp_path), lambda run_id: True)
+        try:
+            assert it.unfinished() == []
+            assert it.pick_up_where_it_left_off() == []
+            assert why_it_is_stopped(str(tmp_path)) == ""
+            assert it.journal_problem == ""
+        finally:
+            it.close()
+
+    def test_a_stop_that_could_not_be_written_down_says_so(self, tmp_path):
+        """The cancellation still happens -- a run the operator asked to stop is better stopped
+        without a record than left running with one -- but nobody is told it was durable."""
+        from agentnode_sdk.access import stopping as pool
+        from agentnode_sdk.gateway.allowance import why_it_is_stopped
+
+        it = pool.Stopping(str(tmp_path), lambda run_id: True)
+        try:
+            def refuses(kept):
+                raise OSError(30, "read-only file system")
+
+            it._write_journal = refuses
+            stop = it.ask("run-a", by="somebody")
+            assert stop is not None, "the cancellation was dropped"
+            assert stop.durable is False
+            assert "write down a cancellation" in it.journal_problem
+            # ... and the gateway stops admitting new work, because it can no longer promise
+            # what it promises.
+            assert why_it_is_stopped(str(tmp_path))
+        finally:
+            it.close()
+
+
+class TestClosingSaysWhatItCouldNotGetBack:
+    """A bounded wait cannot promise every thread ended. It can promise never to lose one."""
+
+    def test_the_pool_returns_the_hands_that_would_not_finish(self, tmp_path):
+        from agentnode_sdk.access import stopping as pool
+
+        holding = threading.Event()
+        it = pool.Stopping(str(tmp_path), lambda run_id: holding.wait(timeout=30) or True)
+        try:
+            it.ask("run-a", by="somebody")
+            _until(lambda: any(h.is_alive() for h in it._hands))
+            left = it.close(seconds=0.2)
+            assert left, "a hand that was still working was not reported"
+            assert all(name.startswith("agentnode-stopping") for name in left)
+            # Idempotent, and it says the same thing the second time rather than "none".
+            assert it.close(seconds=0.2) == left
+        finally:
+            holding.set()
+
+    def test_and_the_service_reports_them_as_its_own(self, tmp_path):
+        """The service's close() used to throw the pool's answer away, so a cancellation worker
+        could outlive the service while close() reported nothing left running."""
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.server import GatewayService
+        from tests.test_em3c_gateway import StandInBackend, _store_measurement
+
+        holding = threading.Event()
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        try:
+            service.stopping._carry_out = lambda run_id: holding.wait(timeout=30) or True
+            service.stopping.ask("run-a", by="somebody")
+            _until(lambda: any(h.is_alive() for h in service.stopping._hands))
+            service.stopping.GOODBYE_SECONDS = 0.2
+            left = service.close()
+            assert any(name.startswith("agentnode-stopping") for name in left), left
+            assert service.left_running == left
+        finally:
+            holding.set()
+            state.close()
+
+
+class TestTheServerOwnsItsWatchers:
+    """Two threads watch a running gateway. Clearing a flag asks them to stop; it does not
+    establish that they did, and a review was right that the difference is the whole property."""
+
+    def a_server(self, tmp_path):
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.server import GatewayService, make_server
+        from tests.test_em3c_gateway import StandInBackend, _store_measurement
+
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        return state, service, make_server(service, port=0)
+
+    def test_they_are_held_by_name_and_joined_when_the_server_closes(self, tmp_path):
+        state, service, server = self.a_server(tmp_path)
+        serving = threading.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        try:
+            held = list(server.agentnode_watchers)
+            assert sorted(w.name for w in held) == ["agentnode-watch-permissions",
+                                                    "agentnode-watch-the-stop"]
+            _until(lambda: all(w.is_alive() for w in held))
+
+            server.shutdown()
+            serving.join(timeout=10)
+            # shutdown() already waited for them, so there is nothing left to report and --
+            # the part that matters -- nothing left running either.
+            assert server.agentnode_left_watching == []
+            assert not any(w.is_alive() for w in held), "a watcher outlived the server"
+        finally:
+            server.server_close()
+            service.close()
+            state.close()
+
+    def test_and_one_that_will_not_stop_is_reported_rather_than_assumed_gone(self, tmp_path):
+        state, service, server = self.a_server(tmp_path)
+        forever = threading.Event()
+        stuck = threading.Thread(target=lambda: forever.wait(timeout=30), daemon=True,
+                                 name="agentnode-watch-stuck")
+        try:
+            server.WATCHERS_SECONDS = 0.2
+            server.agentnode_watchers = list(server.agentnode_watchers) + [stuck]
+            stuck.start()
+            server.agentnode_serving = False
+            left = server.let_the_watchers_go()
+            # The two real watchers wake on a one or two second tick and this wait is shorter
+            # than that, so they are named here too -- which is the property, not a nuisance:
+            # what has not been seen to end is reported, never assumed gone.
+            assert "agentnode-watch-stuck" in left
+            assert server.agentnode_left_watching == left
+        finally:
+            forever.set()
+            stuck.join(timeout=5)
+            server.server_close()
+            service.close()
             state.close()

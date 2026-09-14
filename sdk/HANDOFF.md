@@ -71,12 +71,18 @@ refusal when there is nowhere safe has its own tests in `test_credentials.py`.
 * **Compatibility**: only an audited call by the freshly enrolled connection, over the enrolled
   channel, after the challenge was issued.
 * **CLI credentials**: keyring, or a refusal that says what to do.
+* **A journal that cannot be kept is said out loud.** `unfinished()` raises
+  `JournalUnavailable` rather than answering the empty list; a write that fails marks the stop
+  undurable, records the reason on the pool, and stops the gateway taking NEW work through the
+  operator's own kill switch. The cancellation itself still goes ahead. Absent stays harmless.
 * **The service owns the threads it starts.** Run threads are held in `_running`, named
   `agentnode-run-<id8>`, discarded by the thread itself on the way out, and joined by `close()`
   under `CLOSE_SECONDS`; what could not be got back is returned and kept in `left_running`.
   Daemon status is not lifecycle ownership. The page owns its timers the same way: `S.epoch` and
   `S.timers`, `later()` instead of a bare `setTimeout`, and `stopEverythingScheduled()` on
-  sign-out, so a poller already in flight cannot act when it returns.
+  sign-out, so a poller already in flight cannot act when it returns. `Stopping.close()` and
+  `let_the_watchers_go()` both return what they could not get back, and `GatewayService.close()`
+  folds the pool's answer into its own instead of discarding it.
 
 ## What remains
 

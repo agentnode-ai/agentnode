@@ -40,6 +40,16 @@ QUEUED, WORKING, SETTLED, GAVE_UP = "queued", "working", "settled", "gave_up"
 IN_FLIGHT = (QUEUED, WORKING)
 
 
+class JournalUnavailable(Exception):
+    """The cancellation journal could not be read or written.
+
+    Distinct from an empty journal, and the distinction is the whole point. Absent means nothing
+    was being stopped. Unreadable means this gateway does not KNOW what it was stopping -- and a
+    gateway that answers the second question with the first one's answer will start clean, having
+    quietly decided that the containers it cannot account for do not exist.
+    """
+
+
 class TooManyStops(Exception):
     """A cancellation was refused because of a limit, not because of the run."""
 
@@ -52,7 +62,8 @@ class TooManyStops(Exception):
 class Stop:
     """One cancellation. Repeated requests for the same run share exactly one of these."""
 
-    __slots__ = ("run_id", "asked_at", "asked_by", "attempts", "state", "settled", "problem")
+    __slots__ = ("run_id", "asked_at", "asked_by", "attempts", "state", "settled", "problem",
+                 "durable")
 
     def __init__(self, run_id: str, asked_by: str, at: float) -> None:
         self.run_id = str(run_id)
@@ -64,6 +75,9 @@ class Stop:
         #: different from False, and a client is told which.
         self.settled = None
         self.problem = ""
+        #: Whether this stop was written down. False means the gateway could not keep its
+        #: journal, the cancellation went ahead anyway, and a restart will not pick it up.
+        self.durable = False
 
     @property
     def in_flight(self) -> bool:
@@ -93,6 +107,7 @@ class Stopping:
                  clock=time.time) -> None:
         #: `carry_out(run_id) -> bool`. True means the gateway confirmed the sandbox is gone.
         self._carry_out = carry_out
+        self._root = str(root)
         self._journal = os.path.join(str(root), "stopping.json")
         self._clock = clock
         self._hands_wanted = max(1, int(hands))
@@ -102,6 +117,12 @@ class Stopping:
         self._recent: dict = {}
         self._hands: list = []
         self._closed = False
+        #: Hands that were still working when `close()` stopped waiting. Set here as well so
+        #: reading it before close() says "none" rather than raising.
+        self.left_working: list = []
+        #: Why this pool cannot keep a durable record, when it cannot. Empty is the ordinary
+        #: case and means the journal is doing its job.
+        self.journal_problem = ""
 
     # ------------------------------------------------------------------ asking
 
@@ -238,29 +259,69 @@ class Stopping:
         os.replace(near, self._journal)
 
     def _remember(self, run_id: str, stop: Stop) -> None:
+        """Write the stop down before it is attempted, or say plainly that it could not be.
+
+        The cancellation still goes ahead: a run the operator asked to stop is better stopped
+        without a record than left running with one. But it is NOT durable, and the previous
+        version said nothing at all -- so a gateway whose state directory had gone read-only went
+        on answering cancellations exactly as if the journal were working, and a restart would
+        have found an empty file and picked up nothing.
+
+        So three things happen instead of nothing: the stop is marked undurable, the reason is
+        kept on the pool where `about()` and the operator can see it, and the gateway is stopped
+        for NEW work through the same kill switch an operator uses. Cancelling what is already
+        running still works; admitting more does not, because a gateway that cannot keep this
+        record cannot promise what it promises.
+        """
         try:
             kept = self._read_journal()
             kept[run_id] = {"asked_at": stop.asked_at, "asked_by": stop.asked_by}
             self._write_journal(kept)
-        except OSError:
-            # Written down before it is attempted, but a gateway that cannot write its journal
-            # still stops the run. Losing durability is worse than losing the cancellation.
-            pass
+            stop.durable = True
+        except (OSError, ValueError, JournalUnavailable) as problem:
+            stop.durable = False
+            self._cannot_keep_a_record("write down a cancellation", problem)
 
     def _forget(self, run_id: str) -> None:
+        """Take a settled stop out of the journal, or say why it is still in there.
+
+        Failing to forget is the harmless direction -- the worst it costs is one redundant stop
+        of an already-gone container after a restart. It is still reported, because "the journal
+        cannot be written" is one fact however it shows up, and an operator finding out from the
+        harmless direction first is better than finding out from the other one.
+        """
         try:
             kept = self._read_journal()
             if kept.pop(run_id, None) is not None:
                 self._write_journal(kept)
-        except (OSError, ValueError):
+        except (OSError, ValueError, JournalUnavailable) as problem:
+            self._cannot_keep_a_record("forget a settled cancellation", problem)
+
+    def _cannot_keep_a_record(self, doing: str, problem: Exception) -> None:
+        """Record the journal failure and stop this gateway taking new work."""
+        self.journal_problem = "could not %s: %s" % (doing, problem)
+        try:
+            from agentnode_sdk.gateway.allowance import stop_everything
+
+            stop_everything(self._root, self.journal_problem, by="(the cancellation journal)")
+        except Exception:                                      # noqa: BLE001
+            # The kill switch lives in the same directory that just failed, so it may well fail
+            # too. Nothing further can be done from in here, and the reason is on the pool where
+            # `about()` reports it either way -- what must not happen is this raising and taking
+            # the cancellation down with it.
             pass
 
     def unfinished(self) -> list:
-        """Runs this gateway was stopping when it last stopped being a gateway."""
+        """Runs this gateway was stopping when it last stopped being a gateway.
+
+        Raises `JournalUnavailable` when the journal exists and cannot be read. It used to answer
+        the empty list, which is the answer to a different question: `_read_journal` was careful
+        to distinguish absent from unreadable and this threw that away one frame later.
+        """
         try:
             return sorted(self._read_journal())
-        except (OSError, ValueError):
-            return []
+        except (OSError, ValueError) as problem:
+            raise JournalUnavailable(str(problem)) from problem
 
     def pick_up_where_it_left_off(self) -> list:
         """Re-ask for everything the journal still remembers. Returns what was picked up.
@@ -268,8 +329,16 @@ class Stopping:
         Called once on the way up. A run whose record is long gone still has a container named
         after it, and that container does not disappear because the process did.
         """
+        try:
+            picking_up = self.unfinished()
+        except JournalUnavailable as problem:
+            # Fail closed, the same way an unreadable stop file means stopped. This gateway
+            # cannot say what it was tearing down, so it does not come up taking work and
+            # pretending it knows; the reason is written where an operator will find it.
+            self._cannot_keep_a_record("read the cancellation journal", problem)
+            return []
         again = []
-        for run_id in self.unfinished():
+        for run_id in picking_up:
             try:
                 self.ask(run_id, by="(this gateway, on the way back up)")
                 again.append(run_id)
@@ -279,11 +348,20 @@ class Stopping:
 
     # ------------------------------------------------------------------ the end
 
-    def close(self, seconds: float = GOODBYE_SECONDS) -> None:
-        """Stop the hands and wait for them. Nothing started here outlives this call."""
+    def close(self, seconds: float | None = None) -> list:
+        """Stop the hands, wait for them, and SAY which would not end.
+
+        The wait is bounded, so "nothing started here outlives this call" is a claim this cannot
+        make on every path and must not pretend to. What it can do is never lose track: a hand
+        still alive when the wait runs out is returned by name and kept on `left_working`, so the
+        service closing this pool can report it rather than quietly assuming it stopped.
+        """
+        # None rather than the constant as a default, so that GOODBYE_SECONDS can be changed on
+        # an instance and mean something. A default evaluated at class creation cannot be.
+        seconds = self.GOODBYE_SECONDS if seconds is None else seconds
         with self._lock:
             if self._closed:
-                return
+                return list(self.left_working)
             self._closed = True
             hands = list(self._hands)
         for _ in hands:
@@ -296,6 +374,8 @@ class Stopping:
             hand.join(max(0.0, deadline - time.monotonic()))
         with self._lock:
             self._hands = [h for h in hands if h.is_alive()]
+            self.left_working = [h.name for h in self._hands]
+        return list(self.left_working)
 
     def __enter__(self):
         return self

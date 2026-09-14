@@ -106,6 +106,50 @@ red.
 call from `signedOut()`. `test_signing_out_cancels_what_the_page_had_scheduled` goes red in real
 Chromium: the page still holds scheduled timers after sign-out.
 
+## 18 to 23 — the journal, and everything else that was started and not held
+
+A second review kept two of the same shape and added one. Both directions of the cancellation
+journal failed open, and the watcher threads had the problem the run threads had just had.
+
+**18 — an unreadable journal is not an empty one.** Put `unfinished()` back to
+`except (OSError, ValueError): return []`.
+`test_a_journal_that_cannot_be_read_is_not_an_empty_one` goes red. `_read_journal` was always
+careful to distinguish absent from unreadable; this threw the distinction away one frame later.
+
+**19 — a journal write that fails is not a success.** Put `_remember` back to swallowing the
+`OSError`. `test_a_stop_that_could_not_be_written_down_says_so` goes red. The old comment —
+"losing durability is worse than losing the cancellation" — was defending the right trade-off and
+drawing the wrong conclusion from it: the cancellation should indeed go ahead, and that is no
+reason for nobody to be told the record was not kept.
+
+**20 — the pool says which hands it could not get back.** Make `Stopping.close()` return `[]`
+instead of the live hands. `test_the_pool_returns_the_hands_that_would_not_finish` goes red.
+
+**21 — and the service reports them as its own.** Put `GatewayService.close()` back to calling
+`pool.close()` and discarding the answer. `test_and_the_service_reports_them_as_its_own` goes
+red: a cancellation worker outlives the service while `close()` reports nothing left running.
+
+**22 — a watcher still alive is named.** Make `let_the_watchers_go()` return `[]`.
+`test_and_one_that_will_not_stop_is_reported_rather_than_assumed_gone` goes red.
+
+**23 — and `shutdown()` actually waits for them.** Remove the `let_the_watchers_go()` call from
+`shutdown()`. `test_they_are_held_by_name_and_joined_when_the_server_closes` goes red — note
+this is a DIFFERENT test from 22, for the same reason 15 and 16 needed two: reporting what is
+still alive and waiting for it to stop being alive are separate properties, and the first does
+not imply the second.
+
+Each revert was printed before its run, each file restored afterwards, and each restoration
+verified with `cmp` against a copy taken before the edit.
+
+### One existing test was agreeing with the defect
+
+`test_an_unreadable_journal_is_not_read_as_nothing_to_do` asserted `unfinished() == []` — which
+is exactly reading an unreadable journal as nothing to do, the thing its own name forbids. It was
+written alongside the code and encoded the same mistake, so it could never have caught it. It now
+requires the refusal and keeps the half it always had right: the unreadable file is left alone so
+a person can still look at it. A test named for a property it does not check is worse than no
+test, because the name is what anybody reads.
+
 ## The baseline
 
 Six tests fail in a full run and failed identically at `f686861`, before any of this work: four

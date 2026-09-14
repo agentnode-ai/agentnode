@@ -1678,9 +1678,11 @@ class GatewayService:
         everything ended, which is the ordinary case. Also kept on `left_running`, so a caller
         that ignores the return value can still find out.
         """
+        # What the pool could not get back is part of what THIS close could not get back.
+        # Discarding it meant a cancellation worker could outlive the service while close()
+        # reported nothing left running, which is the same mistake in a different place.
         pool = getattr(self, "stopping", None)
-        if pool is not None:
-            pool.close()
+        left_stopping = list(pool.close() or ()) if pool is not None else []
 
         # Then the runs. Bounded, because a job with a long wall clock should not hold a
         # shutdown open for its whole allowance -- what matters is that this waits, reports what
@@ -1690,7 +1692,7 @@ class GatewayService:
         deadline = time.monotonic() + self.CLOSE_SECONDS
         for thread in waiting:
             thread.join(max(0.0, deadline - time.monotonic()))
-        self.left_running = [t.name for t in waiting if t.is_alive()]
+        self.left_running = left_stopping + [t.name for t in waiting if t.is_alive()]
         return self.left_running
 
     def __enter__(self):
@@ -2179,13 +2181,34 @@ class _ServerThatStopsItsWatchers(ThreadingHTTPServer):
     Python version at a time, about half the time.
     """
 
+    #: How long the watchers are waited for. They wake on a one or two second tick, so this is
+    #: a tick or two plus room for a slow filesystem read, not a guess.
+    WATCHERS_SECONDS = 8.0
+
     def shutdown(self) -> None:
         self.agentnode_serving = False
         super().shutdown()
+        self.let_the_watchers_go()
 
     def server_close(self) -> None:
         self.agentnode_serving = False
         super().server_close()
+        self.let_the_watchers_go()
+
+    def let_the_watchers_go(self) -> list:
+        """Wait for the watcher threads and say which would not end.
+
+        Clearing `agentnode_serving` asks them to stop at their next tick; it does not establish
+        that they did. A review was right that starting a thread without keeping it is not
+        ownership -- so they are kept, joined here, and whatever is still alive when the wait
+        runs out is RETURNED rather than assumed gone.
+        """
+        watchers = list(getattr(self, "agentnode_watchers", ()))
+        deadline = time.monotonic() + self.WATCHERS_SECONDS
+        for watcher in watchers:
+            watcher.join(max(0.0, deadline - time.monotonic()))
+        self.agentnode_left_watching = [w.name for w in watchers if w.is_alive()]
+        return self.agentnode_left_watching
 
 
 def make_server(
@@ -2234,7 +2257,13 @@ def make_server(
                     + verdict.remedy + "\n"
                 )
                 target.agentnode_serving = False
-                threading.Thread(target=target.shutdown, daemon=True).start()
+                # On its own thread because shutdown() waits for the serve loop, which is not
+                # this one -- but kept, for the same reason as everything else here: something
+                # has to be able to say whether it ended.
+                closing = threading.Thread(target=target.shutdown, daemon=True,
+                                           name="agentnode-shutdown-on-exposure")
+                target.agentnode_closing = closing
+                closing.start()
                 return
     handler = type("_BoundHandler", (_Handler,), {"service": service})
     server = _ServerThatStopsItsWatchers((host, port), handler)
@@ -2293,8 +2322,16 @@ def make_server(
                            ", ".join(r["run_id"][:12] for r in unsettled)))
                 sys.stderr.flush()
 
-    threading.Thread(target=_watch_permissions, args=(server,), daemon=True).start()
-    threading.Thread(target=_watch_the_stop, args=(server,), daemon=True).start()
+    # Held, not just started, so `let_the_watchers_go()` can wait for them and say what it could
+    # not get back. Named, because a thread nobody can name is one nobody can report.
+    server.agentnode_watchers = [
+        threading.Thread(target=_watch_permissions, args=(server,), daemon=True,
+                         name="agentnode-watch-permissions"),
+        threading.Thread(target=_watch_the_stop, args=(server,), daemon=True,
+                         name="agentnode-watch-the-stop"),
+    ]
+    for watcher in server.agentnode_watchers:
+        watcher.start()
     return server
 
 
