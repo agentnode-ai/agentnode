@@ -1,0 +1,636 @@
+[
+  {
+    "file": "lc_async_tool.py",
+    "platform": "langchain",
+    "confidence": "low",
+    "draft_ready": false,
+    "tools_detected": 1,
+    "warning_count": 2,
+    "blocking_count": 1,
+    "review_count": 0,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "aiohttp"
+    ],
+    "duration_ms": 46,
+    "package_id": "fetch-multiple-urls-pack",
+    "confidence_reasons": [
+      "async function `fetch_multiple_urls` detected"
+    ],
+    "blocking_warnings": [
+      "Function `fetch_multiple_urls` uses async/await. AgentNode can currently only run synchronous tools. Remove `async`/`await` and use a synchronous alternative (e.g. `requests` instead of `aiohttp`). **Not draft-ready.**"
+    ]
+  },
+  {
+    "file": "lc_basetool_api_client.py",
+    "platform": "langchain",
+    "confidence": "low",
+    "draft_ready": false,
+    "tools_detected": 1,
+    "warning_count": 6,
+    "blocking_count": 3,
+    "review_count": 2,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests",
+      "pydantic"
+    ],
+    "duration_ms": 8,
+    "package_id": "api-client-pack",
+    "confidence_reasons": [
+      "`self` references in `api_client` body",
+      "1 unresolved symbol(s)"
+    ],
+    "blocking_warnings": [
+      "Code references `self.api_key`. In ANP there is no `self` \u2014 use a function parameter instead. **Not draft-ready.**",
+      "Code references `self.timeout`. In ANP there is no `self` \u2014 use a function parameter instead. **Not draft-ready.**",
+      "Code references `self.base_url`. In ANP there is no `self` \u2014 use a function parameter instead. **Not draft-ready.**"
+    ]
+  },
+  {
+    "file": "lc_basetool_database.py",
+    "platform": "langchain",
+    "confidence": "low",
+    "draft_ready": false,
+    "tools_detected": 1,
+    "warning_count": 6,
+    "blocking_count": 3,
+    "review_count": 2,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "pydantic",
+      "sqlalchemy"
+    ],
+    "duration_ms": 6,
+    "package_id": "database-query-pack",
+    "confidence_reasons": [
+      "`self` references in `database_query` body",
+      "1 unresolved symbol(s)"
+    ],
+    "blocking_warnings": [
+      "Code references `self.connection_string`. In ANP there is no `self` \u2014 use a function parameter instead. **Not draft-ready.**",
+      "Code references `self.db_name`. In ANP there is no `self` \u2014 use a function parameter instead. **Not draft-ready.**",
+      "Code references `self.timeout`. In ANP there is no `self` \u2014 use a function parameter instead. **Not draft-ready.**"
+    ]
+  },
+  {
+    "file": "lc_basetool_inheritance.py",
+    "platform": "langchain",
+    "confidence": "medium",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 2,
+    "blocking_count": 0,
+    "review_count": 0,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "pydantic",
+      "requests"
+    ],
+    "duration_ms": 8,
+    "package_id": "authenticated-base-tool-pack",
+    "confidence_reasons": [],
+    "blocking_warnings": []
+  },
+  {
+    "file": "lc_basetool_search.py",
+    "platform": "langchain",
+    "confidence": "low",
+    "draft_ready": false,
+    "tools_detected": 1,
+    "warning_count": 4,
+    "blocking_count": 1,
+    "review_count": 2,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests",
+      "pydantic"
+    ],
+    "duration_ms": 6,
+    "package_id": "web-search-pack",
+    "confidence_reasons": [
+      "`self` references in `web_search` body",
+      "1 unresolved symbol(s)"
+    ],
+    "blocking_warnings": [
+      "Code references `self.api_key`. In ANP there is no `self` \u2014 use a function parameter instead. **Not draft-ready.**"
+    ]
+  },
+  {
+    "file": "lc_basetool_str_return.py",
+    "platform": "langchain",
+    "confidence": "medium",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 3,
+    "blocking_count": 0,
+    "review_count": 2,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "pydantic"
+    ],
+    "duration_ms": 6,
+    "package_id": "file-reader-pack",
+    "confidence_reasons": [],
+    "blocking_warnings": []
+  },
+  {
+    "file": "lc_calculator.py",
+    "platform": "langchain",
+    "confidence": "high",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 1,
+    "blocking_count": 0,
+    "review_count": 0,
+    "unknown_imports": [],
+    "detected_dependencies": [],
+    "duration_ms": 4,
+    "package_id": "calculate-pack",
+    "confidence_reasons": [
+      "All tools extracted successfully"
+    ],
+    "blocking_warnings": []
+  },
+  {
+    "file": "lc_complex_args_schema.py",
+    "platform": "langchain",
+    "confidence": "low",
+    "draft_ready": false,
+    "tools_detected": 1,
+    "warning_count": 5,
+    "blocking_count": 2,
+    "review_count": 2,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests",
+      "pydantic"
+    ],
+    "duration_ms": 9,
+    "package_id": "data-query-pack",
+    "confidence_reasons": [
+      "`self` references in `data_query` body",
+      "1 unresolved symbol(s)"
+    ],
+    "blocking_warnings": [
+      "Code references `self.api_token`. In ANP there is no `self` \u2014 use a function parameter instead. **Not draft-ready.**",
+      "Code references `self.api_base_url`. In ANP there is no `self` \u2014 use a function parameter instead. **Not draft-ready.**"
+    ]
+  },
+  {
+    "file": "lc_email_sender.py",
+    "platform": "langchain",
+    "confidence": "high",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 2,
+    "blocking_count": 0,
+    "review_count": 1,
+    "unknown_imports": [],
+    "detected_dependencies": [],
+    "duration_ms": 6,
+    "package_id": "send-email-pack",
+    "confidence_reasons": [
+      "All tools extracted successfully"
+    ],
+    "blocking_warnings": []
+  },
+  {
+    "file": "lc_mixed_patterns.py",
+    "platform": "langchain",
+    "confidence": "high",
+    "draft_ready": true,
+    "tools_detected": 2,
+    "warning_count": 2,
+    "blocking_count": 0,
+    "review_count": 1,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests",
+      "pydantic"
+    ],
+    "duration_ms": 8,
+    "package_id": "ping-url-pack",
+    "confidence_reasons": [
+      "All tools extracted successfully"
+    ],
+    "blocking_warnings": []
+  },
+  {
+    "file": "lc_pdf_reader.py",
+    "platform": "langchain",
+    "confidence": "high",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 1,
+    "blocking_count": 0,
+    "review_count": 0,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "PyPDF2"
+    ],
+    "duration_ms": 5,
+    "package_id": "read-pdf-pack",
+    "confidence_reasons": [
+      "All tools extracted successfully"
+    ],
+    "blocking_warnings": []
+  },
+  {
+    "file": "lc_relative_import.py",
+    "platform": "langchain",
+    "confidence": "low",
+    "draft_ready": false,
+    "tools_detected": 1,
+    "warning_count": 3,
+    "blocking_count": 2,
+    "review_count": 0,
+    "unknown_imports": [
+      ".utils",
+      ".config"
+    ],
+    "detected_dependencies": [
+      "requests"
+    ],
+    "duration_ms": 4,
+    "package_id": "lookup-company-pack",
+    "confidence_reasons": [
+      "Relative import `.utils` detected",
+      "Relative import `.config` detected"
+    ],
+    "blocking_warnings": [
+      "`from .utils import ...` \u2014 relative imports indicate a multi-file project. This importer only supports single-file snippets. Include the code directly. **Not draft-ready.**",
+      "`from .config import ...` \u2014 relative imports indicate a multi-file project. This importer only supports single-file snippets. Include the code directly. **Not draft-ready.**"
+    ]
+  },
+  {
+    "file": "lc_simple_search.py",
+    "platform": "langchain",
+    "confidence": "high",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 1,
+    "blocking_count": 0,
+    "review_count": 0,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests"
+    ],
+    "duration_ms": 5,
+    "package_id": "search-web-pack",
+    "confidence_reasons": [
+      "All tools extracted successfully"
+    ],
+    "blocking_warnings": []
+  },
+  {
+    "file": "lc_structured_tool.py",
+    "platform": "langchain",
+    "confidence": "low",
+    "draft_ready": false,
+    "tools_detected": 0,
+    "warning_count": 2,
+    "blocking_count": 2,
+    "review_count": 0,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests",
+      "pydantic"
+    ],
+    "duration_ms": 1,
+    "package_id": "",
+    "confidence_reasons": [
+      "No tool pattern detected"
+    ],
+    "blocking_warnings": [
+      "Pattern `StructuredTool.from_function()` is not supported. Please convert to a plain `@tool` function manually.",
+      "No @tool decorator or BaseTool class found. Check that your code contains a recognized tool pattern."
+    ]
+  },
+  {
+    "file": "lc_tool_env_vars.py",
+    "platform": "langchain",
+    "confidence": "high",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 2,
+    "blocking_count": 0,
+    "review_count": 1,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests"
+    ],
+    "duration_ms": 8,
+    "package_id": "query-notion-database-pack",
+    "confidence_reasons": [
+      "All tools extracted successfully"
+    ],
+    "blocking_warnings": []
+  },
+  {
+    "file": "lc_tool_list_return.py",
+    "platform": "langchain",
+    "confidence": "medium",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 2,
+    "blocking_count": 0,
+    "review_count": 1,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests"
+    ],
+    "duration_ms": 6,
+    "package_id": "fetch-csv-as-records-pack",
+    "confidence_reasons": [],
+    "blocking_warnings": []
+  },
+  {
+    "file": "lc_tool_no_annotation.py",
+    "platform": "langchain",
+    "confidence": "medium",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 2,
+    "blocking_count": 0,
+    "review_count": 0,
+    "unknown_imports": [],
+    "detected_dependencies": [],
+    "duration_ms": 4,
+    "package_id": "run-shell-command-pack",
+    "confidence_reasons": [],
+    "blocking_warnings": []
+  },
+  {
+    "file": "lc_tool_with_class.py",
+    "platform": "langchain",
+    "confidence": "high",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 1,
+    "blocking_count": 0,
+    "review_count": 0,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests"
+    ],
+    "duration_ms": 7,
+    "package_id": "get-github-repo-info-pack",
+    "confidence_reasons": [
+      "All tools extracted successfully"
+    ],
+    "blocking_warnings": []
+  },
+  {
+    "file": "lc_two_tools.py",
+    "platform": "langchain",
+    "confidence": "high",
+    "draft_ready": true,
+    "tools_detected": 2,
+    "warning_count": 1,
+    "blocking_count": 0,
+    "review_count": 0,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests"
+    ],
+    "duration_ms": 9,
+    "package_id": "get-weather-pack",
+    "confidence_reasons": [
+      "All tools extracted successfully"
+    ],
+    "blocking_warnings": []
+  },
+  {
+    "file": "lc_web_scraper.py",
+    "platform": "langchain",
+    "confidence": "high",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 1,
+    "blocking_count": 0,
+    "review_count": 0,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests",
+      "bs4"
+    ],
+    "duration_ms": 8,
+    "package_id": "scrape-webpage-pack",
+    "confidence_reasons": [
+      "All tools extracted successfully"
+    ],
+    "blocking_warnings": []
+  },
+  {
+    "file": "cr_api_tool.py",
+    "platform": "crewai",
+    "confidence": "high",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 2,
+    "blocking_count": 0,
+    "review_count": 1,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests"
+    ],
+    "duration_ms": 8,
+    "package_id": "weather-api-pack",
+    "confidence_reasons": [
+      "All tools extracted successfully"
+    ],
+    "blocking_warnings": []
+  },
+  {
+    "file": "cr_async_tool.py",
+    "platform": "crewai",
+    "confidence": "low",
+    "draft_ready": false,
+    "tools_detected": 1,
+    "warning_count": 2,
+    "blocking_count": 2,
+    "review_count": 0,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "aiohttp"
+    ],
+    "duration_ms": 7,
+    "package_id": "async-batch-fetcher-pack",
+    "confidence_reasons": [
+      "async function `async_batch_fetcher` detected"
+    ],
+    "blocking_warnings": [
+      "Function `fetch_urls_async` uses async/await. AgentNode can currently only run synchronous tools. Remove `async`/`await` and use a synchronous alternative. **Not draft-ready.**",
+      "Package ID `async-batch-fetcher-pack` was auto-suggested. Please review before publishing."
+    ]
+  },
+  {
+    "file": "cr_basetool_calc.py",
+    "platform": "crewai",
+    "confidence": "medium",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 2,
+    "blocking_count": 0,
+    "review_count": 0,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "pydantic"
+    ],
+    "duration_ms": 7,
+    "package_id": "calculator-tool-pack",
+    "confidence_reasons": [],
+    "blocking_warnings": []
+  },
+  {
+    "file": "cr_basetool_sec.py",
+    "platform": "crewai",
+    "confidence": "low",
+    "draft_ready": false,
+    "tools_detected": 0,
+    "warning_count": 1,
+    "blocking_count": 1,
+    "review_count": 0,
+    "unknown_imports": [
+      "sec_api"
+    ],
+    "detected_dependencies": [
+      "pydantic",
+      "requests"
+    ],
+    "duration_ms": 1,
+    "package_id": "",
+    "confidence_reasons": [
+      "No tool pattern detected"
+    ],
+    "blocking_warnings": [
+      "No @tool decorator or BaseTool class found. Check that your code contains a recognized tool pattern."
+    ]
+  },
+  {
+    "file": "cr_basetool_self_state.py",
+    "platform": "crewai",
+    "confidence": "low",
+    "draft_ready": false,
+    "tools_detected": 1,
+    "warning_count": 6,
+    "blocking_count": 3,
+    "review_count": 2,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests",
+      "pydantic",
+      "bs4"
+    ],
+    "duration_ms": 8,
+    "package_id": "stateful-web-scraper-pack",
+    "confidence_reasons": [
+      "`self` references in `stateful_web_scraper` body",
+      "1 unresolved symbol(s)"
+    ],
+    "blocking_warnings": [
+      "Code references `self.visited_urls`. In ANP there is no `self` \u2014 use a function parameter instead. **Not draft-ready.**",
+      "Code references `self.scraped_content`. In ANP there is no `self` \u2014 use a function parameter instead. **Not draft-ready.**",
+      "Code references `self.max_cache_size`. In ANP there is no `self` \u2014 use a function parameter instead. **Not draft-ready.**"
+    ]
+  },
+  {
+    "file": "cr_crew_file.py",
+    "platform": "crewai",
+    "confidence": "low",
+    "draft_ready": false,
+    "tools_detected": 0,
+    "warning_count": 1,
+    "blocking_count": 1,
+    "review_count": 0,
+    "unknown_imports": [
+      "langchain_openai"
+    ],
+    "detected_dependencies": [],
+    "duration_ms": 1,
+    "package_id": "",
+    "confidence_reasons": [
+      "No tool pattern detected"
+    ],
+    "blocking_warnings": [
+      "No @tool decorator or BaseTool class found. Check that your code contains a recognized tool pattern."
+    ]
+  },
+  {
+    "file": "cr_file_tool.py",
+    "platform": "crewai",
+    "confidence": "medium",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 2,
+    "blocking_count": 0,
+    "review_count": 1,
+    "unknown_imports": [],
+    "detected_dependencies": [],
+    "duration_ms": 10,
+    "package_id": "file-manager-pack",
+    "confidence_reasons": [],
+    "blocking_warnings": []
+  },
+  {
+    "file": "cr_simple_tool.py",
+    "platform": "crewai",
+    "confidence": "high",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 1,
+    "blocking_count": 0,
+    "review_count": 0,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests"
+    ],
+    "duration_ms": 6,
+    "package_id": "duck-duck-go-search-pack",
+    "confidence_reasons": [
+      "All tools extracted successfully"
+    ],
+    "blocking_warnings": []
+  },
+  {
+    "file": "cr_tool_with_agent.py",
+    "platform": "crewai",
+    "confidence": "medium",
+    "draft_ready": true,
+    "tools_detected": 1,
+    "warning_count": 3,
+    "blocking_count": 0,
+    "review_count": 2,
+    "unknown_imports": [
+      "langchain_openai"
+    ],
+    "detected_dependencies": [
+      "requests"
+    ],
+    "duration_ms": 6,
+    "package_id": "wikipedia-summary-pack",
+    "confidence_reasons": [],
+    "blocking_warnings": []
+  },
+  {
+    "file": "cr_two_tools.py",
+    "platform": "crewai",
+    "confidence": "high",
+    "draft_ready": true,
+    "tools_detected": 2,
+    "warning_count": 2,
+    "blocking_count": 0,
+    "review_count": 1,
+    "unknown_imports": [],
+    "detected_dependencies": [
+      "requests"
+    ],
+    "duration_ms": 11,
+    "package_id": "stock-price-lookup-pack",
+    "confidence_reasons": [
+      "All tools extracted successfully"
+    ],
+    "blocking_warnings": []
+  }
+]
