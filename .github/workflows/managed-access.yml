@@ -8,11 +8,14 @@ name: Managed access (browser path required)
 # So this job installs the browser and runs the managed-access surface with
 # AGENTNODE_BROWSER_TESTS=required, which turns "Playwright is missing" from a skip into a
 # failure that says so. It then checks the machine-readable report rather than trusting the exit
-# code: ZERO skips, no missing file, and a floor on how many tests ran. A collection that lost a
-# file would otherwise exit zero and look exactly like a pass.
+# code: ZERO skips, no file short of its own count, and no report means no run.
 #
 # Deliberately NOT touched: sdk-lanes.yml pins `FROZEN_REV` and exercises that commit by design.
-# Nothing here changes it. This is a separate job for a path that was never covered.
+# Nothing here changes it. This is a separate file for a path that was never covered.
+#
+# The action tags below are major tags rather than commit digests. That is what all sixteen other
+# workflows in this repository use; pinning one file differently would make this the odd one out
+# without making the repository reproducible. It is a known limit, recorded rather than hidden.
 
 on:
   pull_request:
@@ -37,6 +40,10 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     defaults:
       run:
+        # NOTE: this applies to EVERY run step, including the `shell: python` gate below, so
+        # paths inside that gate are relative to sdk/ and not to the repository root. An earlier
+        # version of this file looked for sdk/report.xml from inside sdk/ and would therefore
+        # have failed every single run with "no report was produced".
         working-directory: sdk
     steps:
       - uses: actions/checkout@v4
@@ -75,31 +82,36 @@ jobs:
             tests/test_lifecycle_deadlock.py \
             tests/test_serving_ownership.py
 
-      - name: A skip is not a pass, and a missing file is not a pass either
+      - name: A skip is not a pass, and neither is a file that quietly shrank
         if: always()
         shell: python
         run: |
+          import os
           import pathlib
           import sys
           import xml.etree.ElementTree as ET
 
-          # The floor is what these files collect today. It is a FLOOR, not an equality, so
-          # adding a test does not break the build -- but losing a file or a whole class does.
-          FLOOR = 407
-          EXPECTED = [
-              "test_console_browser", "test_browser_sessions", "test_one_way_in",
-              "test_routes_register", "test_consent_and_tools", "test_approval_targets",
-              "test_compatibility_challenge", "test_compatibility", "test_credentials",
-              "test_stopping", "test_cancel_is_not_a_wait", "test_dispatch",
-              "test_contract_and_schemas", "test_end_to_end_rest", "test_every_door",
+          # What each file collects today. PER FILE rather than one total, because a total can
+          # acquire slack: add twenty tests here, lose a class of twenty there, and an aggregate
+          # floor still passes while a whole property has stopped being checked.
+          FLOOR = {
+              "test_console_browser": 30, "test_browser_sessions": 30, "test_one_way_in": 47,
+              "test_routes_register": 34, "test_consent_and_tools": 55,
+              "test_approval_targets": 13, "test_compatibility_challenge": 24,
+              "test_compatibility": 26, "test_credentials": 13, "test_stopping": 34,
+              "test_cancel_is_not_a_wait": 9, "test_dispatch": 24,
+              "test_contract_and_schemas": 19, "test_end_to_end_rest": 9, "test_every_door": 14,
               # The three that state the resource properties: descriptors given back, every
               # ending leaving the same nothing, and repeated cycles not growing.
-              "test_lifecycle_release", "test_lifecycle_deadlock", "test_serving_ownership",
-          ]
+              "test_lifecycle_release": 15, "test_lifecycle_deadlock": 6,
+              "test_serving_ownership": 5,
+          }
 
-          report = pathlib.Path("sdk/report.xml")
+          # Relative to sdk/, which is this step's working directory. See the note above.
+          report = pathlib.Path("report.xml")
           if not report.exists():
-              print("::error::no report was produced, so NO TEST RAN -- that is not a pass")
+              print("::error::no report at %s (cwd %s), so NO TEST RAN -- that is not a pass"
+                    % (report, os.getcwd()))
               sys.exit(1)
 
           root = ET.parse(report).getroot()
@@ -109,16 +121,26 @@ jobs:
           failures = sum(int(s.get("failures", 0)) for s in suites)
           errors = sum(int(s.get("errors", 0)) for s in suites)
 
-          seen = set()
+          def which_file(case):
+              """The module a case belongs to, from whichever field this pytest wrote."""
+              named = case.get("file") or ""
+              if named.endswith(".py"):
+                  return os.path.basename(named)[:-3]
+              parts = (case.get("classname") or "").split(".")
+              if len(parts) >= 2 and parts[0] == "tests":
+                  return parts[1]
+              return parts[0] if parts else ""
+
+          ran = {}
           for suite in suites:
               for case in suite.iter("testcase"):
-                  where = (case.get("file") or "") + " " + (case.get("classname") or "")
-                  for name in EXPECTED:
-                      if name in where:
-                          seen.add(name)
+                  name = which_file(case)
+                  if name:
+                      ran[name] = ran.get(name, 0) + 1
 
-          print("tests=%d skipped=%d failures=%d errors=%d files=%d/%d"
-                % (total, skipped, failures, errors, len(seen), len(EXPECTED)))
+          print("tests=%d skipped=%d failures=%d errors=%d" % (total, skipped, failures, errors))
+          for name in sorted(FLOOR):
+              print("  %-32s %3d / %3d" % (name, ran.get(name, 0), FLOOR[name]))
 
           bad = []
           if skipped:
@@ -128,12 +150,11 @@ jobs:
                          % (skipped, ", ".join(names[:10])))
           if failures or errors:
               bad.append("%d failure(s) and %d error(s)" % (failures, errors))
-          if total < FLOOR:
-              bad.append("only %d tests ran, fewer than the floor of %d -- something was not "
-                         "collected" % (total, FLOOR))
-          missing = [n for n in EXPECTED if n not in seen]
-          if missing:
-              bad.append("these files contributed no test at all: %s" % ", ".join(missing))
+          short = ["%s ran %d of %d" % (n, ran.get(n, 0), FLOOR[n])
+                   for n in sorted(FLOOR) if ran.get(n, 0) < FLOOR[n]]
+          if short:
+              bad.append("these files ran fewer tests than they collect -- something was lost: "
+                         + "; ".join(short))
 
           for line in bad:
               print("::error::" + line)
@@ -143,6 +164,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
+          # NOT relative to the working-directory above: `uses` steps resolve against the
+          # workspace root, and only `run` steps take the default.
           name: managed-access-report-${{ matrix.python-version }}
           path: sdk/report.xml
-          if-no-files-found: warn
+          if-no-files-found: error
