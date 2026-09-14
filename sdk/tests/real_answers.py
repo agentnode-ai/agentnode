@@ -20,6 +20,7 @@ import threading
 
 import pytest
 
+from tests import consent
 from agentnode_sdk.gateway import client as gc
 from agentnode_sdk.gateway.identity import GatewayState
 from agentnode_sdk.gateway.protocol import TIMED_OUT
@@ -106,7 +107,7 @@ class RealGateway:
     def a_finished_run(self, artifact: bytes = b"print('EXT-OK')") -> dict:
         """Submit a job, wait for it, and return the answer the client verified."""
         with self.saying_what_it_was_doing("a submission to the session gateway"):
-            answer = gc.submit(self.connection, artifact,
+            answer = consent.submit(self.connection, artifact,
                                granted=_granted(self.service, token=self.connection.token))
         run_id = answer["run_id"]
         with self.saying_what_it_was_doing("waiting for run " + str(run_id)):

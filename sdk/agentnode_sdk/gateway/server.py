@@ -39,6 +39,9 @@ from typing import Any
 
 from agentnode_sdk.worker import what_it_does_not_establish
 from agentnode_sdk.access.stopping import Stopping
+from agentnode_sdk.access import dispatch as _dispatch
+from agentnode_sdk.gateway import client as _gc
+from agentnode_sdk.access import rest as _rest
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
 from agentnode_sdk.gateway import challenge as ch
 from agentnode_sdk.gateway.ledger import Ledger
@@ -203,6 +206,11 @@ RECOVERY_APPEAR_SECONDS = 1.0
 #: slow to answer about every run in a long ledger. Runs not reached keep `cleanup_verified` at
 #: None, which reads as "nobody could ask" rather than "nothing was left behind".
 RECOVERY_BUDGET_SECONDS = 30.0
+
+
+#: The first release whose client calls prepare and carries back what a person agreed to.
+#: Named in the refusal an older client gets, so "update" is an instruction rather than advice.
+MIGRATED_CLIENT = "0.25.0"
 
 
 def container_name_for(run_id: str) -> str:
@@ -1759,6 +1767,49 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
         return True
 
+    def _older_door_refuses(self, token: str, refused, run_id: str = "", speaks: int = 0):
+        """Refuse an older client in a way it can verify and a person can act on.
+
+        A client from before the consent gate sends no proof that anybody agreed. What it gets
+        back is not a silent success, and not a quiet policy of running it anyway: it is a
+        refusal that names itself, says what to do, and says which version of this client knows
+        how. Failing safely is not a silent break when the answer is this specific.
+
+        Signed with the same envelope as any other answer from this door, because an older
+        client checks who it is talking to before it reads anything -- and an unsigned error is
+        exactly the thing somebody at a changed address would like to be able to write.
+        """
+        # Shaped the way this door has always shaped a refusal: a record with a state and a
+        # reason. Its clients read `answer["state"]`, and handing them a bare error body instead
+        # would be a silent break -- they would not crash on a field that had merely changed
+        # meaning, they would crash on one that had gone. The structured `refused` name and
+        # `what_to_do` come WITH it, so a client that has been migrated gets both.
+        # An actual refused record, rendered the way this door has always rendered one.
+        # Building it rather than hand-listing its fields is what keeps a replay from disclosing
+        # the original run: a fresh record has empty streams and no exit code, so there is
+        # nothing of somebody else's in it to leak, and it cannot fall out of step with whatever
+        # a record carries next year.
+        blocked = RunRecord(run_id=run_id, job_id="", state="refused")
+        blocked.refusal = refused.because
+        body = blocked.public()
+        body.update(refused.as_answer())
+        body["error"] = refused.because
+        body["refusal"] = refused.because
+        body["state"] = "refused"
+        if refused.refusal in ("disclosure_required", "upgrade_required"):
+            body["needs_client"] = MIGRATED_CLIENT
+            body["what_to_do"] = (
+                refused.what_to_do
+                + " This client is older than the gate: update to agentnode %s or later, which "
+                  "calls prepare, shows a person what would happen, and sends back what they "
+                  "agreed to." % MIGRATED_CLIENT)
+        # 403 for "who are you", 409 for "what you asked for". Both are what this door
+        # answered before; `how_it_should_answer` is the contract's mapping and is right for
+        # the contract's own addresses, not for one whose callers were written years earlier.
+        speaks = speaks or (403 if refused.refusal in ("not_authenticated", "not_permitted")
+                            else 409)
+        return self._send(speaks, self.service.sign_answer(self.service.stamp(body), token))
+
     def _the_page(self):
         """The console. Reads one file off disk and writes it back; decides nothing.
 
@@ -1853,19 +1904,56 @@ class _Handler(BaseHTTPRequestHandler):
                                     "fingerprint": identity.fingerprint})
 
         if self.path == "/v1/jobs":
+            # A TRANSLATOR. It reads the older shape off the wire, hands the request to the
+            # dispatcher, and renders what comes back in the envelope this door has always used.
+            # It decides nothing: who is asking, whether they may, what the policy allows, and
+            # whether anybody agreed are all established in one place, the same place every
+            # other door goes through.
             payload = body.get("payload") or {}
+            token = body.get("token", "")
+            # The signed request stays a signed request. Verifying it is transport work, but
+            # deciding who is asking is not, so the proof goes to the dispatcher rather than
+            # being checked here and the answer trusted.
+            who = _dispatch.identify(
+                self.service, token, proof=(payload, body.get("signature", "")),
+                via="older_door")
+            # PARSED with the wire format's own reader rather than read field by field.
+            # Reading it by hand quietly dropped every check that lives in the parser -- the
+            # protocol version, the shape of each field, what a malformed allowlist means -- and
+            # a translator that loses checks is not a translator. Parsing is transport work;
+            # what the parsed request is ALLOWED to do is still decided in one place.
             try:
-                self.service.authenticate(body.get("token", ""), payload,
-                                          body.get("signature", ""))
                 request = JobRequest.from_payload(payload)
-                artifact = base64.b64decode(body.get("artifact_b64", "") or "")
             except (ProtocolError, ValueError) as exc:
-                return self._send(403, refusal(str(exc)))
-            record = self.service.submit(request, artifact, body.get("token", ""))
-            return self._send(202 if record.state != "refused" else 409,
-                              self.service.sign_answer(
-                                  self.service.stamp(record.public()),
-                                  body.get("token", "")))
+                return self._older_door_refuses(token, _dispatch.Refused(
+                    "malformed", str(exc), "Correct the request and send it again."),
+                    run_id=str(payload.get("run_id") or ""), speaks=403)
+            asked = {
+                "run_id": request.run_id,
+                "job_id": request.job_id,
+                "artifact": body.get("artifact_b64", "") or "",
+                # Carried as CLAIMS for the dispatcher to check, not dropped in favour of what
+                # this gateway would have computed. A signature that covers something other than
+                # what arrived is a refusal, not a detail to be corrected on the way past.
+                "artifact_sha256": request.artifact_sha256,
+                "policy_sha256": request.policy_sha256,
+                "issued_at": request.issued_at,
+                "nonce": request.nonce,
+                "command": list(request.command),
+                "network": _gc.NETWORK_WORDS.get(request.network, request.network),
+                "allowed_domains": list(request.allowed_domains),
+                "wall_clock_s": int(request.wall_clock_s),
+                "required_properties": list(request.required_properties),
+                "mandatory": list(request.mandatory),
+                "optional": list(request.optional),
+                "accepted_disclosure": str(payload.get("accepted_disclosure") or ""),
+            }
+            try:
+                answer = _dispatch.submitted_record(self.service, who, asked)
+            except _dispatch.Refused as refused:
+                return self._older_door_refuses(token, refused, run_id=asked["run_id"])
+            return self._send(202 if answer.get("state") != "refused" else 409,
+                              self.service.sign_answer(self.service.stamp(answer), token))
 
         if self.path == "/v1/token/rotate":
             # Rotation is client-initiated on purpose. Doing it only from the server side would

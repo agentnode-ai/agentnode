@@ -84,21 +84,21 @@ class TestTheOrdinaryPathIsShort:
         assert "Connected" in out
         assert "runs inside a container" in out or "measured" in out
 
-        assert main(["remote", "test"]) == 0
+        assert main(["remote", "test", "--yes"]) == 0
         out = capsys.readouterr().out
         assert "It works" in out
         assert "no network access" in out
 
         script = tmp_path / "hello.py"
         script.write_text("print('from the script')\n", encoding="utf-8")
-        assert main(["remote", "run", str(script)]) == 0
+        assert main(["remote", "run", "--yes", str(script)]) == 0
         assert "RAN" in capsys.readouterr().out
 
     def test_the_user_never_sees_the_machinery(self, home, running_gateway, capsys):
         """Real, load-bearing, and not what someone setting this up needs to read."""
         url, state, service = running_gateway
         _connect(url, state)
-        main(["remote", "test"])
+        main(["remote", "test", "--yes"])
         main(["remote", "status"])
         text = capsys.readouterr().out.lower()
         for jargon in ("policy digest", "hmac", "vantage", "nonce", "sha256", "canonical"):
@@ -137,7 +137,7 @@ class TestTheOrdinaryPathIsShort:
         after = json.loads((home / "gateways.json").read_text(encoding="utf-8"))
         assert (after["gateways"]["lab"]["token"]
                 != before["gateways"]["lab"]["token"]), "the token did not change"
-        assert main(["remote", "test"]) == 0
+        assert main(["remote", "test", "--yes"]) == 0
 
 
 class TestTheCredentialIsLookedAfter:
@@ -192,7 +192,7 @@ class TestTheCommandsRefuseTheRightThings:
         assert "not ready" in out
         assert "refuse work" in out
 
-        assert main(["remote", "test"]) == 1
+        assert main(["remote", "test", "--yes"]) == 1
         out = capsys.readouterr().out
         assert "has not been measured" in out
 
@@ -206,7 +206,7 @@ class TestTheCommandsRefuseTheRightThings:
             "nope" not in (home / "gateways.json").read_text(encoding="utf-8")
 
     def test_commands_that_need_a_gateway_say_how_to_get_one(self, home, capsys):
-        for argv in (["remote", "test"], ["remote", "status"], ["remote", "list"]):
+        for argv in (["remote", "test", "--yes"], ["remote", "status"], ["remote", "list"]):
             capsys.readouterr()
             assert main(argv) == 1
             out = capsys.readouterr().out
@@ -258,7 +258,7 @@ class TestTheOperatorSide:
         assert "no longer send work" in capsys.readouterr().out
 
         # and the client really is out
-        assert main(["remote", "test"]) == 1
+        assert main(["remote", "test", "--yes"]) == 1
 
     def test_revoking_someone_who_is_not_there(self, home, running_gateway, capsys):
         url, state, service = running_gateway
@@ -451,7 +451,7 @@ class TestTheWholeJourneyThroughThePublishedCommands:
         assert main(["remote", "status"]) == 0
         assert "not ready" not in capsys.readouterr().out
 
-        assert main(["remote", "test"]) == 0
+        assert main(["remote", "test", "--yes"]) == 0
         out = capsys.readouterr().out
         print("  [observed] remote test said:", out.strip().replace("\n", " | ")[:300])
         assert "It works" in out
@@ -459,7 +459,7 @@ class TestTheWholeJourneyThroughThePublishedCommands:
         script = tmp_path / "job.py"
         script.write_text("import os\nprint('E2E-RAN-AS', os.getuid(), flush=True)\n",
                           encoding="utf-8")
-        assert main(["remote", "run", str(script), "--max-seconds", "90"]) == 0
+        assert main(["remote", "run", "--yes", str(script), "--max-seconds", "90"]) == 0
         out = capsys.readouterr().out
         print("  [observed] remote run said:", out.strip().replace("\n", " | ")[:300])
         assert "E2E-RAN-AS 1000" in out, "the job did not run as the unprivileged user"
@@ -480,7 +480,7 @@ class TestTheWholeJourneyThroughThePublishedCommands:
         captured: dict = {}
 
         def run_it():
-            captured["code"] = main(["remote", "run", str(script), "--max-seconds", "150",
+            captured["code"] = main(["remote", "run", "--yes", str(script), "--max-seconds", "150",
                                      "--timeout", "180"])
 
         worker = threading.Thread(target=run_it, daemon=True)
@@ -513,7 +513,7 @@ class TestTheWholeJourneyThroughThePublishedCommands:
         script = tmp_path / "forever.py"
         script.write_text("import time\nprint('going', flush=True)\ntime.sleep(600)\n",
                           encoding="utf-8")
-        code = main(["remote", "run", str(script), "--max-seconds", "10", "--timeout", "180"])
+        code = main(["remote", "run", "--yes", str(script), "--max-seconds", "10", "--timeout", "180"])
         out = capsys.readouterr().out
         print("  [observed] overrun run said:", out.strip().replace("\n", " | ")[:300])
         assert code != 0, "a job that ran past its limit reported success"
@@ -525,7 +525,7 @@ class TestTheWholeJourneyThroughThePublishedCommands:
         url, gw_dir, home, env = gateway_process
         monkeypatch.setenv("AGENTNODE_HOME", str(home))
         self._pair_and_connect(url, gw_dir, home, capsys, name="doomed")
-        assert main(["remote", "test"]) == 0
+        assert main(["remote", "test", "--yes"]) == 0
 
         capsys.readouterr()
         assert main(["gateway", "clients", "--dir", str(gw_dir)]) == 0
@@ -536,7 +536,7 @@ class TestTheWholeJourneyThroughThePublishedCommands:
         assert main(["gateway", "revoke", "--dir", str(gw_dir),
                      "--client", found.group(1)]) == 0
         capsys.readouterr()
-        assert main(["remote", "test"]) == 1, "a revoked client could still run work"
+        assert main(["remote", "test", "--yes"]) == 1, "a revoked client could still run work"
         print("  [observed] after revocation:", capsys.readouterr().out.strip()[:200])
 
     def test_nothing_is_left_behind_by_any_of_it(self, gateway_process):
@@ -588,7 +588,7 @@ class TestTheCommandsSayWhatWasGrantedNotWhatWasAsked:
         script = tmp_path / "reach.py"
         script.write_text("print('x')\n", encoding="utf-8")
 
-        main(["remote", "run", str(script), "--allow", "example.com"])
+        main(["remote", "run", "--yes", str(script), "--allow", "example.com"])
         out = capsys.readouterr().out
 
         assert "Asking to reach: example.com" in out, out
@@ -603,7 +603,7 @@ class TestTheCommandsSayWhatWasGrantedNotWhatWasAsked:
         script = tmp_path / "reach.py"
         script.write_text("print('x')\n", encoding="utf-8")
 
-        main(["remote", "run", str(script), "--allow", "example.com"])
+        main(["remote", "run", "--yes", str(script), "--allow", "example.com"])
         out = capsys.readouterr().out
 
         assert "Granted: no network access." in out, out
@@ -617,7 +617,7 @@ class TestTheCommandsSayWhatWasGrantedNotWhatWasAsked:
         script = tmp_path / "reach.py"
         script.write_text("print('x')\n", encoding="utf-8")
 
-        main(["remote", "run", str(script), "--allow", "example.com"])
+        main(["remote", "run", "--yes", str(script), "--allow", "example.com"])
         out = capsys.readouterr().out
 
         assert "stricter than asked" in out, out
@@ -641,7 +641,7 @@ class TestTheCommandsSayWhatWasGrantedNotWhatWasAsked:
             capsys.readouterr()
             script = tmp_path / "reach.py"
             script.write_text("print('x')\n", encoding="utf-8")
-            main(["remote", "run", str(script), "--allow", "example.com"])
+            main(["remote", "run", "--yes", str(script), "--allow", "example.com"])
             out = capsys.readouterr().out
             assert "Granted: example.com -- and nothing else." in out, out
             assert "stricter than asked" not in out, \
@@ -657,7 +657,7 @@ class TestTheCommandsSayWhatWasGrantedNotWhatWasAsked:
         _connect(url, state)
         capsys.readouterr()
 
-        assert main(["remote", "test"]) == 0
+        assert main(["remote", "test", "--yes"]) == 0
         out = capsys.readouterr().out
         assert "It works" in out
         assert "was removed afterwards, and that was confirmed." in out \
@@ -694,7 +694,7 @@ class TestARunItsLimitEndedIsReportedAsThat:
         job = tmp_path / "slow.py"
         job.write_text("print('never mind')", encoding="utf-8")
         capsys.readouterr()
-        code = main(["remote", "run", str(job)])
+        code = main(["remote", "run", "--yes", str(job)])
         out = capsys.readouterr().out
         assert code == TIMEOUT_EXIT_STATUS, out
         assert "ran out of time" in out, out
@@ -706,7 +706,7 @@ class TestARunItsLimitEndedIsReportedAsThat:
         job = tmp_path / "slow.py"
         job.write_text("print('never mind')", encoding="utf-8")
         capsys.readouterr()
-        main(["remote", "run", str(job)])
+        main(["remote", "run", "--yes", str(job)])
         out = capsys.readouterr().out
         assert "linux-container reported 137" in out, out
 
@@ -718,7 +718,7 @@ class TestARunItsLimitEndedIsReportedAsThat:
         job = tmp_path / "ok.py"
         job.write_text("print('fine')", encoding="utf-8")
         capsys.readouterr()
-        code = main(["remote", "run", str(job)])
+        code = main(["remote", "run", "--yes", str(job)])
         out = capsys.readouterr().out
         assert code == 0, out
         assert "ran out of time" not in out

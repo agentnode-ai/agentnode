@@ -38,6 +38,7 @@ import time
 
 import pytest
 
+from tests import consent
 from agentnode_sdk.gateway import client as gc
 from agentnode_sdk.gateway.protocol import (
     CANCELLED,
@@ -119,7 +120,7 @@ def waiting_gateway(tmp_path):
 def a_running_job(base, state, service, backend, run_id="run-under-test"):
     """Submit a job and wait until it is really running. Returns the connection."""
     conn = _paired(base, state)
-    gc.submit(conn, b"print('x')", granted=_granted(service), run_id=run_id)
+    consent.submit(conn, b"print('x')", granted=_granted(service), run_id=run_id)
     assert backend.started.wait(timeout=10), "the job never reached the sandbox"
     return conn
 
@@ -468,7 +469,7 @@ class TestWhatTheCommandLineShows:
 
         base, state, service, backend = waiting_gateway
         conn = self.a_saved_gateway(tmp_path, base, state, monkeypatch)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="shown")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="shown")
         assert backend.started.wait(timeout=10)
         threading.Timer(0.4, backend.let_go.set).start()
 
@@ -486,7 +487,7 @@ class TestWhatTheCommandLineShows:
         base, state, service, backend = waiting_gateway
         service.CANCEL_SETTLE_SECONDS = 0.4
         conn = self.a_saved_gateway(tmp_path, base, state, monkeypatch)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="unsettled")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="unsettled")
         assert backend.started.wait(timeout=10)
 
         code = remote_commands.cmd_cancel(
@@ -581,7 +582,7 @@ class TestARealContainer:
             try:
                 conn = _paired(base, state)
                 payload = b"import time\nprint('up', flush=True)\ntime.sleep(120)\n"
-                gc.submit(conn, payload,
+                consent.submit(conn, payload,
                           granted=_granted(service, wall_clock_s=120), run_id="real-cancel")
                 deadline = time.monotonic() + 60
                 while time.monotonic() < deadline:

@@ -27,6 +27,7 @@ import time
 
 import pytest
 
+from tests import consent
 from agentnode_sdk.gateway import client as gc
 from agentnode_sdk.conformance.report import Vantage
 from agentnode_sdk.gateway import readiness
@@ -280,8 +281,8 @@ class TestNothingRunsUntilItIsAdmitted:
     def test_an_unpaired_client_is_refused(self, gateway):
         base, state, service, backend = gateway
         conn = gc.GatewayConnection(base_url=base, token="not-a-token")
-        with pytest.raises(gc.GatewayClientError, match="not paired"):
-            gc.submit(conn, b"print(1)", granted=_granted(service))
+        with pytest.raises(gc.GatewayClientError, match="credential this sandbox recognises"):
+            consent.submit(conn, b"print(1)", granted=_granted(service))
         assert backend.specs == []
 
     def test_a_tampered_artifact_is_refused(self, gateway):
@@ -290,7 +291,7 @@ class TestNothingRunsUntilItIsAdmitted:
         conn = _paired(base, state)
         request = JobRequest(job_id="j", run_id="r", artifact_sha256=digest(b"honest"),
                              policy_sha256=policy_digest(_granted(service)))
-        payload = request.to_payload()
+        payload = consent.agreed(conn, request, b"MALICIOUS")
         body = {"token": conn.token, "payload": payload,
                 "signature": sign(client_token_secret(conn.token), payload),
                 "artifact_b64": base64.b64encode(b"MALICIOUS").decode()}
@@ -310,7 +311,7 @@ class TestNothingRunsUntilItIsAdmitted:
                 "signature": sign(client_token_secret(conn.token), request.to_payload()),
                 "artifact_b64": base64.b64encode(b"x").decode()}
         status, answer = gc._post(base + "/v1/jobs", body)
-        assert status == 403 and "signature" in answer["error"]
+        assert status == 403 and "credential this sandbox recognises" in answer["error"]
         assert backend.specs == []
 
     def test_a_replayed_request_is_refused(self, gateway):
@@ -318,14 +319,14 @@ class TestNothingRunsUntilItIsAdmitted:
         conn = _paired(base, state)
         request = JobRequest(job_id="j", run_id="r1", artifact_sha256=digest(b"x"),
                              policy_sha256=policy_digest(_granted(service)))
-        payload = request.to_payload()
+        payload = consent.agreed(conn, request, b"x")
         body = {"token": conn.token, "payload": payload,
                 "signature": sign(client_token_secret(conn.token), payload),
                 "artifact_b64": base64.b64encode(b"x").decode()}
         first = gc._post(base + "/v1/jobs", body)[1]
         assert first["state"] != "refused"
         # same nonce, different run id: the nonce cache is what has to catch this
-        payload2 = dict(payload, run_id="r2")
+        payload2 = consent.agreed_again(conn, payload, b"x", run_id="r2")
         body2 = {"token": conn.token, "payload": payload2,
                  "signature": sign(client_token_secret(conn.token), payload2),
                  "artifact_b64": base64.b64encode(b"x").decode()}
@@ -343,7 +344,7 @@ class TestNothingRunsUntilItIsAdmitted:
         request = JobRequest(job_id="j", run_id="r", artifact_sha256=digest(b"x"),
                              policy_sha256=policy_digest(_granted(service)),
                              issued_at=time.time() - 3600)
-        payload = request.to_payload()
+        payload = consent.agreed(conn, request, b"x")
         body = {"token": conn.token, "payload": payload,
                 "signature": sign(client_token_secret(conn.token), payload),
                 "artifact_b64": base64.b64encode(b"x").decode()}
@@ -358,7 +359,7 @@ class TestNothingRunsUntilItIsAdmitted:
         request = JobRequest(job_id="j", run_id="r", artifact_sha256=digest(b"x"),
                              policy_sha256=policy_digest(_granted(service)),
                              issued_at=time.time() + 3600)
-        payload = request.to_payload()
+        payload = consent.agreed(conn, request, b"x")
         body = {"token": conn.token, "payload": payload,
                 "signature": sign(client_token_secret(conn.token), payload),
                 "artifact_b64": base64.b64encode(b"x").decode()}
@@ -373,7 +374,7 @@ class TestNothingRunsUntilItIsAdmitted:
         conn = _paired(base, state)
         request = JobRequest(job_id="j", run_id="r", artifact_sha256=digest(b"x"),
                              policy_sha256="0" * 64)
-        payload = request.to_payload()
+        payload = consent.agreed(conn, request, b"x")
         body = {"token": conn.token, "payload": payload,
                 "signature": sign(client_token_secret(conn.token), payload),
                 "artifact_b64": base64.b64encode(b"x").decode()}
@@ -384,7 +385,7 @@ class TestNothingRunsUntilItIsAdmitted:
     def test_a_required_property_the_gateway_cannot_show_is_refused(self, gateway):
         base, state, service, backend = gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", granted=_granted(service),
+        answer = consent.submit(conn, b"x", granted=_granted(service),
                            required_properties=("microvm_isolation",))
         assert answer["state"] == "refused"
         assert "cannot provide microvm_isolation" in answer["refusal"]
@@ -496,7 +497,7 @@ class TestTheOperatorPolicyWins:
             conn2 = gc.pair(url, state.start_pairing())
             granted = svc.compose(type("R", (), {
                 "network": "none", "allowed_domains": (), "wall_clock_s": 3600})(), conn2.token)
-            answer = gc.submit(conn2, b"x", granted=granted, network="none", wall_clock_s=3600)
+            answer = consent.submit(conn2, b"x", granted=granted, network="none", wall_clock_s=3600)
             assert answer["state"] != "refused", answer.get("refusal")
             gc.wait_for(conn2, answer["run_id"], timeout=30)
             assert recorded["timeout"] == 7.0, (
@@ -532,7 +533,7 @@ class TestEveryAnswerNamesTheGatewayThatGaveIt:
         expected = state.identity
 
         answers = {"hello": gc.hello(base)}
-        answers["submit"] = gc.submit(conn, b"x", granted=_granted(service), run_id="stamped")
+        answers["submit"] = consent.submit(conn, b"x", granted=_granted(service), run_id="stamped")
         gc.wait_for(conn, "stamped", timeout=20)
         answers["status"] = gc.status_of(conn, "stamped")
         # A cancellation answers with the record AND whether it settled; the record is the part
@@ -573,7 +574,7 @@ class TestMandatoryAndOptionalNarrowing:
         svc, server, url = self._serve(state, wall_clock_s=5)
         try:
             conn = gc.pair(url, state.start_pairing())
-            answer = gc.submit(conn, b"x", network="none", wall_clock_s=3600,
+            answer = consent.submit(conn, b"x", network="none", wall_clock_s=3600,
                                mandatory=("limits.wall_clock_s",))
             assert answer["state"] == "refused"
             assert "limits.wall_clock_s" in answer["refusal"]
@@ -587,7 +588,7 @@ class TestMandatoryAndOptionalNarrowing:
         svc, server, url = self._serve(state, wall_clock_s=5)
         try:
             conn = gc.pair(url, state.start_pairing())
-            answer = gc.submit(conn, b"x", network="none", wall_clock_s=3600,
+            answer = consent.submit(conn, b"x", network="none", wall_clock_s=3600,
                                optional=("limits.wall_clock_s",))
             assert answer["state"] != "refused", answer.get("refusal")
             final = gc.wait_for(conn, answer["run_id"], timeout=20)
@@ -604,7 +605,7 @@ class TestMandatoryAndOptionalNarrowing:
     def test_an_unnarrowed_job_has_equal_digests_and_no_deltas(self, gateway):
         base, state, service, _ = gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none", wall_clock_s=60)
+        answer = consent.submit(conn, b"x", network="none", wall_clock_s=60)
         final = gc.wait_for(conn, answer["run_id"], timeout=20)
         assert final["policy_deltas"] == []
         assert final["request_policy_sha256"] == final["effective_policy_sha256"]
@@ -614,7 +615,7 @@ class TestMandatoryAndOptionalNarrowing:
         """A path nobody validated would be a requirement that silently is not one."""
         base, state, service, backend = gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none", mandatory=bad)
+        answer = consent.submit(conn, b"x", network="none", mandatory=bad)
         assert answer["state"] == "refused"
         assert "cannot be enforced" in answer["refusal"]
         assert backend.specs == []
@@ -622,7 +623,7 @@ class TestMandatoryAndOptionalNarrowing:
     def test_a_field_cannot_be_both_mandatory_and_optional(self, gateway):
         base, state, service, backend = gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none",
+        answer = consent.submit(conn, b"x", network="none",
                            mandatory=("limits.cpu",), optional=("limits.cpu",))
         assert answer["state"] == "refused"
         assert "cannot be both" in answer["refusal"]
@@ -631,7 +632,7 @@ class TestMandatoryAndOptionalNarrowing:
     def test_a_duplicated_path_is_refused(self, gateway):
         base, state, service, backend = gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none",
+        answer = consent.submit(conn, b"x", network="none",
                            mandatory=("limits.cpu", "limits.cpu"))
         assert answer["state"] == "refused"
         assert backend.specs == []
@@ -642,7 +643,7 @@ class TestTheClientVerifiesTheAnswer:
 
     def _finished(self, base, state, service, run_id="v"):
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none", run_id=run_id)
+        answer = consent.submit(conn, b"x", network="none", run_id=run_id)
         return conn, gc.wait_for(conn, answer["run_id"], timeout=20)
 
     def test_a_good_answer_verifies(self, gateway):
@@ -887,7 +888,7 @@ class TestTheAnswerMustComeFromTheGatewayYouPairedWith:
     def test_an_answer_from_a_different_gateway_is_refused(self, gateway):
         base, state, service, _ = gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none", run_id="pinned")
+        answer = consent.submit(conn, b"x", network="none", run_id="pinned")
         gc.wait_for(conn, "pinned", timeout=20)
 
         elsewhere = gc.GatewayConnection(base_url=base, token=conn.token,
@@ -899,7 +900,7 @@ class TestTheAnswerMustComeFromTheGatewayYouPairedWith:
     def test_a_changed_fingerprint_is_refused(self, gateway):
         base, state, service, _ = gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none", run_id="pinned-print")
+        answer = consent.submit(conn, b"x", network="none", run_id="pinned-print")
         gc.wait_for(conn, "pinned-print", timeout=20)
 
         moved = gc.GatewayConnection(base_url=base, token=conn.token,
@@ -914,7 +915,7 @@ class TestTheAnswerMustComeFromTheGatewayYouPairedWith:
         elsewhere = gc.GatewayConnection(base_url=base, token=conn.token,
                                          gateway_id="somebody-else", fingerprint="")
         with pytest.raises(gc.GatewayClientError, match="not the sandbox you paired with"):
-            gc.submit(elsewhere, b"x", network="none", run_id="wrong-peer")
+            consent.submit(elsewhere, b"x", network="none", run_id="wrong-peer")
 
     def test_a_connection_saved_before_fingerprints_still_works(self, gateway):
         """Refusing those would break every existing pairing to add a check it cannot perform."""
@@ -922,7 +923,7 @@ class TestTheAnswerMustComeFromTheGatewayYouPairedWith:
         conn = _paired(base, state)
         older = gc.GatewayConnection(base_url=base, token=conn.token,
                                      gateway_id=conn.gateway_id, fingerprint="")
-        answer = gc.submit(older, b"x", network="none", run_id="legacy")
+        answer = consent.submit(older, b"x", network="none", run_id="legacy")
         assert answer["state"] != "refused"
 
 
@@ -955,7 +956,7 @@ class TestCredentialsNeverRideInAUrl:
         try:
             code = state.start_pairing()
             conn = gc.pair(base, code)
-            answer = gc.submit(conn, b"x", network="none")
+            answer = consent.submit(conn, b"x", network="none")
             gc.wait_for(conn, answer["run_id"], timeout=20)
         finally:
             gc._post = original
@@ -1035,7 +1036,7 @@ class TestATerminalStateMeansTheRecordIsComplete:
 
         service.worker.gone = watching
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none")
+        answer = consent.submit(conn, b"x", network="none")
         final = gc.wait_for(conn, answer["run_id"], timeout=20)
 
         assert observed, "cleanup verification never ran"
@@ -1051,7 +1052,7 @@ class TestATerminalStateMeansTheRecordIsComplete:
         base, state, service, _ = gateway
         conn = _paired(base, state)
         for i in range(3):
-            answer = gc.submit(conn, b"x", network="none", run_id=f"complete-{i}")
+            answer = consent.submit(conn, b"x", network="none", run_id=f"complete-{i}")
             final = gc.wait_for(conn, answer["run_id"], timeout=20)
             assert final["state"] in ("finished", "refused", "cancelled")
             assert final["finished_at"] is not None
@@ -1083,7 +1084,7 @@ class TestNobodyReadsSomebodyElsesRun:
     def test_status_without_a_token_is_refused(self, gateway):
         base, state, service, _ = gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none")
+        answer = consent.submit(conn, b"x", network="none")
         anonymous = gc.GatewayConnection(base_url=base, token="", gateway_id=conn.gateway_id)
         with pytest.raises(gc.GatewayClientError) as e:
             gc.status_of(anonymous, answer["run_id"])
@@ -1092,7 +1093,7 @@ class TestNobodyReadsSomebodyElsesRun:
     def test_status_with_a_token_this_gateway_never_issued_is_refused(self, gateway):
         base, state, service, _ = gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none")
+        answer = consent.submit(conn, b"x", network="none")
         forged = gc.GatewayConnection(base_url=base, token="not-a-real-token",
                                       gateway_id=conn.gateway_id)
         with pytest.raises(gc.GatewayClientError):
@@ -1102,7 +1103,7 @@ class TestNobodyReadsSomebodyElsesRun:
         """Distinguishing them would let any paired client enumerate real run ids."""
         base, state, service, _ = gateway
         first, second = self._two_clients(base, state)
-        answer = gc.submit(first, b"secret-payload", network="none", run_id="private")
+        answer = consent.submit(first, b"secret-payload", network="none", run_id="private")
         gc.wait_for(first, answer["run_id"], timeout=20)
 
         # Compared at the GATEWAY, not through the client's formatted message -- that
@@ -1116,7 +1117,7 @@ class TestNobodyReadsSomebodyElsesRun:
     def test_the_owner_can_still_read_it(self, gateway):
         base, state, service, _ = gateway
         first, _second = self._two_clients(base, state)
-        answer = gc.submit(first, b"x", network="none", run_id="mine")
+        answer = consent.submit(first, b"x", network="none", run_id="mine")
         final = gc.wait_for(first, "mine", timeout=20)
         assert final["state"] == "finished"
 
@@ -1125,7 +1126,7 @@ class TestNobodyReadsSomebodyElsesRun:
         it was not theirs."""
         base, state, service, _ = gateway
         first, second = self._two_clients(base, state)
-        answer = gc.submit(first, b"x", network="none", run_id="not-yours")
+        answer = consent.submit(first, b"x", network="none", run_id="not-yours")
         with pytest.raises(gc.GatewayClientError):
             gc.cancel(second, "not-yours")
         record = service.runs["not-yours"]
@@ -1136,14 +1137,14 @@ class TestNobodyReadsSomebodyElsesRun:
     def test_a_revoked_token_stops_working_at_once_everywhere(self, gateway):
         base, state, service, _ = gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none", run_id="before-revocation")
+        answer = consent.submit(conn, b"x", network="none", run_id="before-revocation")
         gc.wait_for(conn, "before-revocation", timeout=20)
 
         assert state.revoke(conn.token) is True
         with pytest.raises(gc.GatewayClientError):
             gc.status_of(conn, "before-revocation")
         with pytest.raises(gc.GatewayClientError):
-            gc.submit(conn, b"x", network="none", run_id="after-revocation")
+            consent.submit(conn, b"x", network="none", run_id="after-revocation")
         with pytest.raises(gc.GatewayClientError):
             gc.cancel(conn, "before-revocation")
 
@@ -1416,7 +1417,7 @@ class TestRotationReplacesTheSecretAndNothingElse:
     def test_the_old_token_stops_and_the_new_one_works(self, gateway):
         base, state, service, _ = gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none", run_id="pre-rotation")
+        answer = consent.submit(conn, b"x", network="none", run_id="pre-rotation")
         gc.wait_for(conn, "pre-rotation", timeout=20)
 
         replacement = state.rotate_token(conn.token)
@@ -1453,7 +1454,7 @@ class TestAskingTwiceGivesTheSameAnswer:
         conn = _paired(base, state)
         request = JobRequest(job_id="j", run_id="exact", artifact_sha256=digest(b"x"),
                              policy_sha256=policy_digest(_granted(service)))
-        payload = request.to_payload()
+        payload = consent.agreed(conn, request, b"x")
         body = {"token": conn.token, "payload": payload,
                 "signature": sign(client_token_secret(conn.token), payload),
                 "artifact_b64": base64.b64encode(b"x").decode()}
@@ -1470,7 +1471,7 @@ class TestAskingTwiceGivesTheSameAnswer:
         """What a client with a dropped connection does, and it needs no re-POST."""
         base, state, service, backend = gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", granted=_granted(service), run_id="dropped")
+        answer = consent.submit(conn, b"x", granted=_granted(service), run_id="dropped")
         assert answer["state"] != "refused"
         gc.wait_for(conn, "dropped", timeout=20)
         calls = len(backend.specs)
@@ -1484,7 +1485,7 @@ class TestAskingTwiceGivesTheSameAnswer:
         conn = _paired(base, state)
         first = JobRequest(job_id="j", run_id="shared", artifact_sha256=digest(b"honest"),
                            policy_sha256=policy_digest(_granted(service)))
-        p1 = first.to_payload()
+        p1 = consent.agreed(conn, first, b"honest")
         gc._post(base + "/v1/jobs", {
             "token": conn.token, "payload": p1,
             "signature": sign(client_token_secret(conn.token), p1),
@@ -1493,7 +1494,7 @@ class TestAskingTwiceGivesTheSameAnswer:
         calls = len(backend.specs)
         second = JobRequest(job_id="j", run_id="shared", artifact_sha256=digest(b"other"),
                             policy_sha256=policy_digest(_granted(service)))
-        p2 = second.to_payload()
+        p2 = consent.agreed(conn, second, b"other")
         answer = gc._post(base + "/v1/jobs", {
             "token": conn.token, "payload": p2,
             "signature": sign(client_token_secret(conn.token), p2),
@@ -1506,7 +1507,7 @@ class TestAskingTwiceGivesTheSameAnswer:
         base, state, service, backend = gateway
         conn = _paired(base, state)
         for _ in range(2):
-            answer = gc.submit(conn, b"x", granted=_granted(service), run_id="refused-once",
+            answer = consent.submit(conn, b"x", granted=_granted(service), run_id="refused-once",
                                required_properties=("microvm_isolation",))
             assert answer["state"] == "refused"
         assert backend.specs == []
@@ -1546,7 +1547,7 @@ class TestNothingRunsOnAnUnmeasuredGateway:
                 assert all(v is False for v in hello["properties"].values()), hello["properties"]
 
                 conn = gc.pair(base, state.start_pairing())
-                answer = gc.submit(conn, b"x", network="none")
+                answer = consent.submit(conn, b"x", network="none")
                 assert answer["state"] == "refused"
                 assert "has not been measured" in answer["refusal"]
                 assert "gateway doctor" in answer["refusal"]
@@ -1630,7 +1631,7 @@ class TestNothingRunsOnAnUnmeasuredGateway:
                 assert "egress_allowlist" in hello["unproven"]
 
                 conn = gc.pair(base, state.start_pairing())
-                answer = gc.submit(conn, b"x", network="none",
+                answer = consent.submit(conn, b"x", network="none",
                                    required_properties=("egress_allowlist",))
                 assert answer["state"] == "refused"
                 assert service.backend.specs == []
@@ -1701,7 +1702,7 @@ class TestUnknownCleanupIsNotSuccess:
             base = "http://127.0.0.1:%d" % server.server_address[1]
             try:
                 conn = gc.pair(base, state.start_pairing())
-                answer = gc.submit(conn, b"x", network="none",
+                answer = consent.submit(conn, b"x", network="none",
                                    required_properties=("verified_cleanup",))
                 assert answer["state"] != "refused", answer.get("refusal")
                 final = gc.wait_for(conn, answer["run_id"], timeout=60)
@@ -1727,7 +1728,7 @@ class TestUnknownCleanupIsNotSuccess:
             base = "http://127.0.0.1:%d" % server.server_address[1]
             try:
                 conn = gc.pair(base, state.start_pairing())
-                answer = gc.submit(conn, b"x", network="none")
+                answer = consent.submit(conn, b"x", network="none")
                 final = gc.wait_for(conn, answer["run_id"], timeout=60)
                 assert final["state"] == "finished"
             finally:
@@ -1764,7 +1765,7 @@ class TestEveryRemediationIsInvocableAndChangesTheAnswer:
                 assert before["next_steps"] == ["agentnode gateway doctor --measure"]
 
                 conn = gc.pair(base, state.start_pairing())
-                refused = gc.submit(conn, b"x", network="none", run_id="before-measuring")
+                refused = consent.submit(conn, b"x", network="none", run_id="before-measuring")
                 assert refused["state"] == "refused"
 
                 # take the step the refusal named
@@ -1773,7 +1774,7 @@ class TestEveryRemediationIsInvocableAndChangesTheAnswer:
                 after = gc.hello(base)
                 assert after["ready"] is True, after["reason"]
                 assert after["properties"]["container_isolation"] is True
-                accepted = gc.submit(conn, b"x", network="none", run_id="after-measuring")
+                accepted = consent.submit(conn, b"x", network="none", run_id="after-measuring")
                 assert accepted["state"] != "refused", accepted.get("refusal")
             finally:
                 server.shutdown()
@@ -1805,14 +1806,14 @@ class TestEveryRemediationIsInvocableAndChangesTheAnswer:
             base = "http://127.0.0.1:%d" % server.server_address[1]
             try:
                 conn = gc.pair(base, state.start_pairing())
-                refused = gc.submit(conn, b"x", network="none", run_id="needs-cleanup",
+                refused = consent.submit(conn, b"x", network="none", run_id="needs-cleanup",
                                     required_properties=("verified_cleanup",))
                 assert refused["state"] == "refused"
                 assert service.backend.specs == []
 
                 _store_measurement(service)          # now everything is measured
 
-                accepted = gc.submit(conn, b"x", network="none", run_id="needs-cleanup-2",
+                accepted = consent.submit(conn, b"x", network="none", run_id="needs-cleanup-2",
                                      required_properties=("verified_cleanup",))
                 assert accepted["state"] != "refused", accepted.get("refusal")
                 final = gc.wait_for(conn, "needs-cleanup-2", timeout=20)
@@ -1874,7 +1875,7 @@ class TestRestrictedEgress:
             state, service, server, base = self._open_gateway(td)
             try:
                 conn = _paired(base, state)
-                answer = gc.submit(conn, b"x", network="restricted",
+                answer = consent.submit(conn, b"x", network="restricted",
                                    allowed_domains=(destination,) if destination else ())
                 assert answer["state"] == "refused", (destination, why)
                 assert service.backend.specs == [], "a container was started for " + repr(destination)
@@ -1887,7 +1888,7 @@ class TestRestrictedEgress:
             state, service, server, base = self._open_gateway(td)
             try:
                 conn = _paired(base, state)
-                answer = gc.submit(conn, b"x", network="restricted", allowed_domains=())
+                answer = consent.submit(conn, b"x", network="restricted", allowed_domains=())
                 assert answer["state"] == "refused"
                 assert service.backend.specs == []
             finally:
@@ -1899,7 +1900,7 @@ class TestRestrictedEgress:
             state, service, server, base = self._open_gateway(td, allowed=("example.com",))
             try:
                 conn = _paired(base, state)
-                answer = gc.submit(conn, b"x", network="restricted",
+                answer = consent.submit(conn, b"x", network="restricted",
                                    allowed_domains=("example.com", "elsewhere.example"),
                                    optional=("network.allowed_destinations",))
                 assert answer["state"] != "refused", answer.get("refusal")
@@ -1917,7 +1918,7 @@ class TestRestrictedEgress:
             state, service, server, base = self._open_gateway(td, allowed=("example.com",))
             try:
                 conn = _paired(base, state)
-                answer = gc.submit(conn, b"x", network="unrestricted")
+                answer = consent.submit(conn, b"x", network="unrestricted")
                 if answer["state"] != "refused":
                     final = gc.wait_for(conn, answer["run_id"], timeout=30)
                     effective = final["effective_policy"]["network.allowed_destinations"]
@@ -1945,7 +1946,7 @@ class TestRestrictedEgress:
             state, service, server, base = self._open_gateway(td, allowed=("example.com",))
             try:
                 conn = _paired(base, state)
-                answer = gc.submit(conn, b"x", network="restricted",
+                answer = consent.submit(conn, b"x", network="restricted",
                                    allowed_domains=("example.com",))
                 assert answer["state"] != "refused", answer.get("refusal")
                 final = gc.wait_for(conn, answer["run_id"], timeout=30)
@@ -2444,7 +2445,7 @@ class TestARestartDoesNotForget:
     def _signed_body(self, service, conn, run_id, artifact=b"x"):
         request = JobRequest(job_id="j", run_id=run_id, artifact_sha256=digest(artifact),
                              policy_sha256=policy_digest(_granted(service)))
-        payload = request.to_payload()
+        payload = consent.agreed(conn, request, artifact)
         return {"token": conn.token, "payload": payload,
                 "signature": sign(client_token_secret(conn.token), payload),
                 "artifact_b64": base64.b64encode(artifact).decode()}
@@ -2516,7 +2517,7 @@ class TestTwoIdenticalRequestsAtOnce:
         conn = _paired(base, state)
         request = JobRequest(job_id="j", run_id="burst", artifact_sha256=digest(b"x"),
                              policy_sha256=policy_digest(_granted(service)))
-        payload = request.to_payload()
+        payload = consent.agreed(conn, request, b"x")
         body = {"token": conn.token, "payload": payload,
                 "signature": sign(client_token_secret(conn.token), payload),
                 "artifact_b64": base64.b64encode(b"x").decode()}
@@ -2646,7 +2647,7 @@ class TestTheVerticalFlowForReal:
         artifact = (b"import os, time\n"
                     b"print('EM3C-RAN-AS', os.getuid(), flush=True)\n"
                     b"time.sleep(3)\n")
-        answer = gc.submit(conn, artifact,
+        answer = consent.submit(conn, artifact,
                            granted=_granted(service, wall_clock_s=120, token=conn.token),
                            network="none",
                            required_properties=("container_isolation", "verified_cleanup"),
@@ -2682,7 +2683,7 @@ class TestTheVerticalFlowForReal:
                     b"    if s: signal.signal(s, signal.SIG_IGN)\n"
                     b"print('EM3C-IGNORING', flush=True)\n"
                     b"time.sleep(600)\n")
-        answer = gc.submit(conn, artifact,
+        answer = consent.submit(conn, artifact,
                            granted=_granted(service, wall_clock_s=300, token=conn.token),
                            network="none", wall_clock_s=300)
         assert answer["state"] != "refused", answer.get("refusal")
@@ -2707,7 +2708,7 @@ class TestTheVerticalFlowForReal:
         base, state, service = real_gateway
         conn = _paired(base, state)
         artifact = b"import time\nprint('EM3C-SLEEPING', flush=True)\ntime.sleep(600)\n"
-        answer = gc.submit(conn, artifact,
+        answer = consent.submit(conn, artifact,
                            granted=_granted(service, wall_clock_s=8, token=conn.token),
                            network="none", wall_clock_s=8)
         assert answer["state"] != "refused", answer.get("refusal")
@@ -2783,7 +2784,7 @@ class TestRestrictedEgressForReal:
                                                                           egress_gateway):
         base, state, service = egress_gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, self.PAYLOAD, network="restricted",
+        answer = consent.submit(conn, self.PAYLOAD, network="restricted",
                            allowed_domains=("example.com",), wall_clock_s=180,
                            required_properties=("container_isolation",))
         assert answer["state"] != "refused", answer.get("refusal")
@@ -2813,7 +2814,7 @@ class TestRestrictedEgressForReal:
 
         base, state, service = egress_gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"print('done')\n", network="restricted",
+        answer = consent.submit(conn, b"print('done')\n", network="restricted",
                            allowed_domains=("example.com",), wall_clock_s=120)
         assert answer["state"] != "refused", answer.get("refusal")
         final = gc.wait_for(conn, answer["run_id"], timeout=300)
@@ -3056,7 +3057,7 @@ class TestEveryNarrowingIsDisclosed:
         _svc, server, url = self._serve(state, self._ceiling())
         try:
             conn = gc.pair(url, state.start_pairing())
-            answer = gc.submit(conn, b"x", network="restricted",
+            answer = consent.submit(conn, b"x", network="restricted",
                                allowed_domains=("example.com",))
             assert answer["state"] != "refused", answer.get("refusal")
             final = gc.wait_for(conn, answer["run_id"], timeout=20)
@@ -3080,7 +3081,7 @@ class TestEveryNarrowingIsDisclosed:
         _svc, server, url = self._serve(state, self._ceiling())
         try:
             conn = gc.pair(url, state.start_pairing())
-            answer = gc.submit(conn, b"x", network="restricted",
+            answer = consent.submit(conn, b"x", network="restricted",
                                allowed_domains=("example.com",))
             final = gc.wait_for(conn, answer["run_id"], timeout=20)
             deltas = {d["field"]: d for d in final["policy_deltas"]}
@@ -3094,7 +3095,7 @@ class TestEveryNarrowingIsDisclosed:
         """The control. Without it, a change that reported every field always would pass."""
         base, state = gateway[0], gateway[1]
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none", wall_clock_s=60)
+        answer = consent.submit(conn, b"x", network="none", wall_clock_s=60)
         final = gc.wait_for(conn, answer["run_id"], timeout=20)
         assert final["policy_deltas"] == []
         assert final["request_policy_sha256"] == final["effective_policy_sha256"]
@@ -3105,7 +3106,7 @@ class TestEveryNarrowingIsDisclosed:
         svc, server, url = self._serve(state, self._ceiling())
         try:
             conn = gc.pair(url, state.start_pairing())
-            answer = gc.submit(conn, b"x", network="restricted",
+            answer = consent.submit(conn, b"x", network="restricted",
                                allowed_domains=("example.com",),
                                mandatory=("network.enabled",))
             assert answer["state"] == "refused"
@@ -3119,7 +3120,7 @@ class TestEveryNarrowingIsDisclosed:
         """The optional list no longer gates disclosure, but it is still validated."""
         base, state, _, backend = gateway
         conn = _paired(base, state)
-        answer = gc.submit(conn, b"x", network="none", optional=("network.nope",))
+        answer = consent.submit(conn, b"x", network="none", optional=("network.nope",))
         assert answer["state"] == "refused"
         assert "cannot be enforced" in answer["refusal"]
         assert backend.specs == []

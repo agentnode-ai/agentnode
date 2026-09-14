@@ -38,6 +38,7 @@ from __future__ import annotations
 import hmac
 import json
 import secrets
+import threading
 import os
 import time
 from dataclasses import dataclass
@@ -400,9 +401,14 @@ def _carry_out(operation: str, params: dict, principal: Principal, *, service,
         # gateway is stopped sends them off to fix something that was never the obstacle.
         halted = _the_operator_has_stopped_it(service)
         if halted:
-            raise Refused("gateway_stopped",
-                          "Whoever runs this sandbox has stopped it: " + halted,
-                          "Nothing will run until they start it again.")
+            from agentnode_sdk.gateway.allowance import STOPPED_SAYS
+
+            # The words the rest of the product already uses for this. Composing a second
+            # sentence here would mean the same event read differently depending on which door
+            # somebody came through, and a client matching on one of them would be right about
+            # half the time.
+            raise Refused("gateway_stopped", STOPPED_SAYS + halted,
+                          "Nothing will run until whoever runs it starts it again.")
 
     given = _check_parameters(op, params)
 
@@ -652,7 +658,13 @@ def _what_would_happen(service, principal, params, *, approved_by=None, will_run
         },
         "network": {
             "asked_for": network,
-            "allowed": list(domains) if network == "allowlist" else [],
+            # SORTED. A set of destinations has no order, and two callers asking for the same
+            # two hosts in different orders are asking for the same thing -- so binding the
+            # order would bind something that is not a policy fact and refuse a submission that
+            # matched its approval in every way that matters. Found exactly that way: the older
+            # door sorts its allowlist on the wire and prepare did not.
+            "allowed": (["anywhere this machine can reach"] if network == "unrestricted"
+                        else sorted(domains) if network == "allowlist" else []),
             "everything_else": "refused",
         },
         "limits": {
@@ -743,6 +755,33 @@ def _prepare(service, principal, params):
     return answer
 
 
+#: Where a submission leaves the record it produced, for `submitted_record` to collect one line
+#: later.
+#:
+#: Thread-local, and emphatically not a dict keyed by the principal. The first version used
+#: `id(principal)`, which is a reused address rather than an identity: once a principal is
+#: collected the next object can be handed the same id, and a later submission would then pick
+#: up a record belonging to somebody else's request. It survived every test run in isolation and
+#: came apart in a full one, which is what that class of bug does.
+_handoff = threading.local()
+
+
+def submitted_record(service, principal: Principal, params: dict) -> dict:
+    """Submit, and render the whole record, for a door whose wire shape predates the contract.
+
+    Goes through `dispatch` like everything else -- every check, in the same order, in the same
+    place -- and differs only in what it renders afterwards. The older doors answer with the
+    entire signed record and their clients read fields the narrower `submit` answer does not
+    carry; translating them must not lose that.
+    """
+    answer = dispatch("submit", params, principal, service=service)
+    record = getattr(_handoff, "record", None)
+    _handoff.record = None
+    if record is None:                                        # pragma: no cover - defensive
+        return dict(answer)
+    return record.public()
+
+
 def _submit(service, principal, params):
     """Run something, having first established that this exact thing was disclosed.
 
@@ -779,10 +818,68 @@ def _submit(service, principal, params):
             raise Refused("malformed", "The artifact is not valid base64.",
                           "Send the code base64-encoded.") from exc
 
+    claimed = str(params.get("artifact_sha256") or "")
+    if claimed and not hmac.compare_digest(claimed, digest(artifact)):
+        raise Refused("malformed",
+                      "The artifact does not match the digest this request is signed for.",
+                      "Send the artifact this request describes, or sign a request for the one "
+                      "you are sending.")
+    when = params.get("issued_at")
+    if when:
+        from agentnode_sdk.gateway.protocol import check_freshness
+
+        try:
+            check_freshness(float(when))
+        except Exception as exc:                              # noqa: BLE001
+            raise _translate(exc) from exc
+
     network = params.get("network") or "none"
     domains = tuple(params.get("allowed_domains") or ())
     wall_clock = max(1, int(params.get("wall_clock_s") or 60))
 
+    # The policy the caller is ASKING for, digested the same way the existing client digests it.
+    # Composed here rather than accepted from the caller: a digest a caller chose would bind
+    # whatever the caller decided to hash.
+    if network == "none":
+        rules = NetworkRules(enabled=False, allowed_destinations=frozenset())
+    elif network == "unrestricted":
+        # None is not the empty set here, and collapsing them would digest the widest and the
+        # narrowest policy to the same value. The older door could ask for this; so can this one.
+        rules = NetworkRules(enabled=True, allowed_destinations=None)
+    else:
+        rules = NetworkRules(enabled=True, allowed_destinations=frozenset(domains))
+    asked_for = SandboxPolicy(network=rules, limits=Limits(wall_clock_s=wall_clock))
+    composed = digest(canonical_bytes(policy_shape(asked_for)))
+    said_policy = str(params.get("policy_sha256") or "")
+    if said_policy and not hmac.compare_digest(said_policy, composed):
+        raise Refused("malformed",
+                      "This request is signed for a different policy than the one it asks for.",
+                      "Compose the digest from the policy you are actually requesting.")
+
+    # A replay is refused HERE, before consent is even looked at. It has to be: after a
+    # restart the approvals this gateway was holding are gone, so a captured request re-sent
+    # from outside would be answered "nobody agreed to this" -- true, and the wrong thing to
+    # say about a request that is being replayed at you. The durable ledger is the same source
+    # `admit` uses; asking it early only changes which refusal arrives first.
+    #
+    # Safe to refuse early because reconnecting is NOT a re-POST: a client that lost the answer
+    # asks `status`, which needs no approval and carries no risk of running anything twice.
+    said_nonce = str(params.get("nonce") or "")
+    if said_nonce:
+        try:
+            already = service.ledger.knows_nonce(said_nonce)
+        except Exception:                                     # noqa: BLE001
+            already = False
+        if already:
+            raise Refused("malformed",
+                          "this request has already been used (replay)",
+                          "Ask `status` about the run it started; a dropped answer is read "
+                          "again, not sent again.")
+
+    # AFTER everything that establishes the request is what it says it is, and before anything
+    # runs. A request signed for another artifact, or another policy, or issued an hour ago is
+    # WRONG, and telling its sender "nobody agreed to this" would send them to fix the one thing
+    # that was not the problem. Consent is the last gate, not the first.
     presented = str(params.get("accepted_disclosure") or "")
     if not presented:
         # Deliberately NOT "call prepare for them and carry on". A gateway that obtains the
@@ -802,14 +899,6 @@ def _submit(service, principal, params):
         "wall_clock_s": wall_clock,
     })
 
-    # The policy the caller is ASKING for, digested the same way the existing client digests it.
-    # Composed here rather than accepted from the caller: a digest a caller chose would bind
-    # whatever the caller decided to hash.
-    if network == "none":
-        rules = NetworkRules(enabled=False, allowed_destinations=frozenset())
-    else:
-        rules = NetworkRules(enabled=True, allowed_destinations=frozenset(domains))
-    asked_for = SandboxPolicy(network=rules, limits=Limits(wall_clock_s=wall_clock))
 
     # Everything the caller asked for, carried through rather than summarised. What a job
     # REQUIRES of the sandbox is the part that must never soften in passing: dropping a required
@@ -818,7 +907,7 @@ def _submit(service, principal, params):
         job_id=str(params.get("job_id") or params["run_id"]),
         run_id=str(params["run_id"]),
         artifact_sha256=digest(artifact),
-        policy_sha256=digest(canonical_bytes(policy_shape(asked_for))),
+        policy_sha256=composed,
         required_properties=tuple(params.get("required_properties") or ()),
         mandatory=tuple(params.get("mandatory") or ()),
         optional=tuple(params.get("optional") or ()),
@@ -827,11 +916,17 @@ def _submit(service, principal, params):
         allowed_domains=domains,
         wall_clock_s=wall_clock,
         **({"nonce": str(params["nonce"])} if params.get("nonce") else {}),
+        **({"issued_at": float(params["issued_at"])} if params.get("issued_at") else {}),
     )
     try:
         record = service.submit(request, artifact, token=principal.token)
     except Exception as exc:                                  # noqa: BLE001
         raise _translate(exc) from exc
+    # Handed back with the answer, not looked up afterwards. A submission that is REFUSED -- a
+    # second request claiming a run id that already exists, say -- produces a record that is not
+    # the run filed under that id, so `service.runs[run_id]` would hand back the earlier run and
+    # report somebody else's success as this submission's outcome.
+    _handoff.record = record
     told = record.public()
     return {"run_id": record.run_id, "state": record.state,
             "admitted_under": dict(getattr(record, "admitted_under_values", {}) or {}),

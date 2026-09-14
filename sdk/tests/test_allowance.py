@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import pytest
 
+from tests import consent
 from agentnode_sdk.gateway import client as gc
 from agentnode_sdk.gateway import meter
 from agentnode_sdk.gateway.allowance import (
@@ -69,8 +70,20 @@ def a_gateway(tmp_path):
 
 
 def a_run(conn, service, run_id, seconds=60):
-    return gc.submit(conn, b"print('x')", granted=_granted(service, wall_clock_s=seconds),
-                     run_id=run_id, wall_clock_s=seconds)
+    """One job, the way a client must now send one: ask, be shown, agree, submit.
+
+    A stopped gateway refuses at the FIRST of those rather than the last -- it will not describe
+    what a run would do when it is not going to run anything -- so the refusal arrives as an
+    error from `prepare` instead of as a record whose state is "refused". Both are the gateway
+    refusing and saying the operator's reason, which is what these tests are about, so this
+    renders the earlier refusal in the shape they read.
+    """
+    try:
+        return consent.submit(conn, b"print('x')",
+                              granted=_granted(service, wall_clock_s=seconds),
+                              run_id=run_id, wall_clock_s=seconds)
+    except gc.GatewayClientError as refused:
+        return {"run_id": run_id, "state": "refused", "refusal": str(refused)}
 
 
 # ------------------------------------------------------------- the operator sets the ceilings
@@ -332,7 +345,7 @@ class TestEveryCeilingRefuses:
         # The other kind, from a gateway that is NOT over a ceiling -- otherwise every refusal
         # after the first would be the ceiling one and the test would be comparing it with itself.
         write_allowance(state.root, Allowance())
-        malformed = gc.submit(conn, b"x", granted=_granted(service), run_id="third",
+        malformed = consent.submit(conn, b"x", granted=_granted(service), run_id="third",
                               required_properties=("a_property_nobody_measured",))
         assert malformed["state"] == "refused"
         assert not malformed["refusal"].startswith(CEILING_SAYS)
@@ -1161,7 +1174,7 @@ class TestARefusedRequestDoesNotConsumeAllowance:
 
         # A property this gateway cannot prove. That check lives BELOW the allowance look in
         # `admit`, so this is a request that gets past the ceiling and is then refused.
-        answer = gc.submit(conn, b"print('x')", granted=_granted(service, wall_clock_s=30),
+        answer = consent.submit(conn, b"print('x')", granted=_granted(service, wall_clock_s=30),
                            required_properties=("a-property-nobody-measures",),
                            run_id="refused-one", wall_clock_s=30)
         assert answer.get("state") == "refused", answer
@@ -1181,7 +1194,7 @@ class TestARefusedRequestDoesNotConsumeAllowance:
         who = state.client_id_for(conn.token) or ""
         write_allowance(state.root, Allowance(runs_per_window=3))
         for i in range(6):
-            gc.submit(conn, b"print('x')", granted=_granted(service, wall_clock_s=30),
+            consent.submit(conn, b"print('x')", granted=_granted(service, wall_clock_s=30),
                       required_properties=("a-property-nobody-measures",),
                       run_id="refused-%d" % i, wall_clock_s=30)
         time.sleep(0.5)

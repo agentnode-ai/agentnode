@@ -30,6 +30,10 @@ AS_JSON = {
     "boolean": {"type": "boolean"},
     "object": {"type": "object"},
     "array": {"type": "array"},
+    # A timestamp with sub-second precision is genuinely a number and not an integer. Declaring
+    # a kind this table does not know raised a KeyError deep inside rendering rather than at the
+    # declaration, which is the wrong end -- see the guard below.
+    "number": {"type": "number"},
     "bytes": {"type": "string", "contentEncoding": "base64"},
 }
 
@@ -37,6 +41,13 @@ AS_JSON = {
 def _properties(fields) -> dict:
     out = {}
     for f in fields:
+        if f.kind not in AS_JSON:
+            # Said here, naming the field, rather than as a bare KeyError from a dict lookup
+            # three frames down. A kind nothing can render is a contract that cannot be
+            # described, which is the same class of fault as an unclassified operation.
+            raise contract.NotClassified(
+                "%r is declared as %r, which is not a kind any rendering knows. Kinds are: %s"
+                % (f.name, f.kind, ", ".join(sorted(AS_JSON))))
         shape = dict(AS_JSON[f.kind])
         shape["description"] = f.describes
         if f.one_of:

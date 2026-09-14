@@ -144,7 +144,7 @@ class Field:
     """One parameter or one returned value."""
 
     name: str
-    kind: str                      # "string" | "integer" | "boolean" | "object" | "array" | "bytes"
+    kind: str   # "string"|"integer"|"number"|"boolean"|"object"|"array"|"bytes"
     describes: str
     required: bool = True
     #: Present only for enumerated values, so a transport can offer a choice rather than free text.
@@ -294,7 +294,7 @@ OPERATIONS = (
             Field("artifact_sha256", "string", "digest of the code that would be sent"),
             Field("artifact_bytes", "integer", "how much would be transferred"),
             Field("network", "string", "the access being asked for", required=False,
-                  one_of=("none", "allowlist")),
+                  one_of=("none", "allowlist", "unrestricted")),
             Field("allowed_domains", "array", "where it may connect, if any", required=False),
             Field("wall_clock_s", "integer", "how long it may run", required=False),
             # WHICH connection is being approved. Chosen here, shown to the person here, and
@@ -352,7 +352,7 @@ OPERATIONS = (
             Field("artifact", "bytes", "the code to run"),
             Field("command", "array", "the command, as a list of arguments"),
             Field("network", "string", "the access asked for", required=False,
-                  one_of=("none", "allowlist")),
+                  one_of=("none", "allowlist", "unrestricted")),
             Field("allowed_domains", "array", "where it may connect, if any", required=False),
             Field("wall_clock_s", "integer", "how long it may run", required=False),
             # Declared optional ON PURPOSE, and refused by `submit` rather than by the shape
@@ -382,6 +382,20 @@ OPERATIONS = (
                   "rather than silently applied", required=False, since="2"),
             Field("nonce", "string",
                   "chosen by the caller so a replayed request is seen as one",
+                  required=False, since="2"),
+            # CLAIMS, checked rather than believed. A caller that signs a request says what it
+            # is sending and under what policy; recomputing those server-side and ignoring what
+            # was signed would mean a tampered claim was not wrong, merely irrelevant -- and a
+            # request whose signature covers something other than what arrived should be
+            # refused, not quietly corrected.
+            Field("artifact_sha256", "string",
+                  "what the caller says it is sending; refused if it is not", required=False,
+                  since="2"),
+            Field("policy_sha256", "string",
+                  "what the caller says it is asking for; refused if it is not", required=False,
+                  since="2"),
+            Field("issued_at", "number",
+                  "when the caller made this request, so a stale or future-dated one is refused",
                   required=False, since="2"),
         ),
         returns=(

@@ -259,8 +259,12 @@ def cmd_test(args) -> int:
     print(f"  Sending a tiny test program to {bold(saved.name)}.")
     artifact = b"print('the sandbox ran this')\n"
     try:
-        answer = gc.submit(connection, artifact, network="none",
+        proof = _agreed(connection, artifact, args, network="none")
+        answer = gc.submit(connection, artifact, accepted_disclosure=proof, network="none",
                            required_properties=("container_isolation",))
+    except Declined as no:
+        print(f"  {no}")
+        return 1
     except Exception as exc:                                  # noqa: BLE001
         print(f"  It would not take the job: {exc}")
         return 1
@@ -300,6 +304,53 @@ def cmd_test(args) -> int:
     return 1
 
 
+class Declined(Exception):
+    """Somebody was shown what would happen and did not agree to it."""
+
+
+def _agreed(connection, artifact, args, **job) -> str:
+    """Show what would happen, ask, and return the proof only if somebody said yes.
+
+    This is the whole of what the command line adds to the gate, and what it must never do is
+    answer for the person in front of it. There is no flag that means "agree to whatever comes
+    back": --yes says a person has already read this and accepts it, which is a statement they
+    make, not one this program makes on their behalf. Without a terminal and without --yes there
+    is nobody to ask, so nothing runs.
+    """
+    from agentnode_sdk.gateway import client as gc
+
+    shown = gc.prepare(connection, artifact, **job)
+    print()
+    print(f"  {bold('Before anything runs, here is what would happen.')}")
+    print(f"  Where:      {shown['runs_at']}")
+    print(f"  Sending:    {shown['transfers']['bytes']} bytes"
+          f" -- {' '.join(shown['transfers']['command']) or 'no command'}")
+    reach = shown["network"]["allowed"]
+    print(f"  Network:    {', '.join(reach) if reach else 'none at all'}")
+    print(f"  Time limit: {shown['limits']['wall_clock_s']} seconds")
+    print(f"  Runs as:    {shown['will_run_as']['shown_as']}"
+          f" over {shown['will_run_as']['channel']}")
+    for line in shown.get("not_modelled", ()):
+        print(f"  Note:       {line}")
+    print()
+
+    if getattr(args, "yes", False):
+        print("  Agreed in advance with --yes.")
+        return shown["accepted_disclosure"]
+    if not sys.stdin.isatty():
+        raise Declined(
+            "nothing here runs without somebody agreeing to it, and there is no terminal to "
+            "ask. Re-run it where you can answer, or pass --yes to say you have read the above "
+            "and accept it.")
+    try:
+        said = input("  Run it? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        raise Declined("nothing was run.") from None
+    if said not in ("y", "yes"):
+        raise Declined("nothing was run.")
+    return shown["accepted_disclosure"]
+
+
 def cmd_run(args) -> int:
     from agentnode_sdk.gateway import client as gc
 
@@ -324,11 +375,16 @@ def cmd_run(args) -> int:
     else:
         print("  Asking for no network access.")
 
+    seconds = int(getattr(args, "max_seconds", 0) or 60)
     try:
-        answer = gc.submit(connection, artifact, network=network,
-                           allowed_domains=allow,
-                           wall_clock_s=int(getattr(args, "max_seconds", 0) or 60),
+        proof = _agreed(connection, artifact, args, network=network,
+                        allowed_domains=allow, wall_clock_s=seconds)
+        answer = gc.submit(connection, artifact, accepted_disclosure=proof, network=network,
+                           allowed_domains=allow, wall_clock_s=seconds,
                            required_properties=("container_isolation",))
+    except Declined as no:
+        print(f"  {no}")
+        return 1
     except Exception as exc:                                  # noqa: BLE001
         print(f"  It would not take the job: {exc}")
         return 1

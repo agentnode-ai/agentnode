@@ -31,6 +31,7 @@ import time
 
 import pytest
 
+from tests import consent
 from agentnode_sdk.gateway import client as gc
 from agentnode_sdk.gateway.identity import GatewayState
 from agentnode_sdk.gateway.protocol import (
@@ -144,7 +145,7 @@ def a_cancelled_run(base, state, service, backend, run_id="cancel-me"):
     destroyed underneath it. Letting the sandbox go first would be watching a run finish.
     """
     conn = _paired(base, state)
-    gc.submit(conn, b"print('x')", granted=_granted(service), run_id=run_id)
+    consent.submit(conn, b"print('x')", granted=_granted(service), run_id=run_id)
     assert backend.started.wait(timeout=10), "the job never reached the sandbox"
 
     asked = threading.Thread(target=lambda: gc.cancel(conn, run_id), daemon=True)
@@ -188,7 +189,7 @@ class TestARunThatHasNotStoppedGivesNoReason:
         """`EM3C-E8-RECORD-0001` found `running` beside `exited` in a real record."""
         base, state, service, backend = exiting_gateway
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="still-going")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="still-going")
         assert backend.started.wait(timeout=10)
         record = gc.status_of(conn, "still-going")
         assert record["state"] in (QUEUED, RUNNING)
@@ -198,7 +199,7 @@ class TestARunThatHasNotStoppedGivesNoReason:
     def test_and_nothing_in_the_answer_disagrees_with_that(self, exiting_gateway):
         base, state, service, backend = exiting_gateway
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="agrees")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="agrees")
         assert backend.started.wait(timeout=10)
         record = gc.status_of(conn, "agrees")
         assert what_disagrees(record["state"], record["termination_reason"],
