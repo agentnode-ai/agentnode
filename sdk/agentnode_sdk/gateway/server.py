@@ -1854,7 +1854,8 @@ class _Handler(BaseHTTPRequestHandler):
         if self._the_page():
             return None
         if self.path == "/v1/hello":
-            return self._send(200, self.service.hello())
+            return self._send(200, _dispatch.before_anyone(
+                "hello", {}, service=self.service, via="older_door"))
         if self.path.startswith("/v1/jobs/"):
             # A TRANSLATOR. Who is asking and whether this run is theirs are both established by
             # the dispatcher; this reads an address and renders an envelope.
@@ -1898,18 +1899,14 @@ class _Handler(BaseHTTPRequestHandler):
 
         if self.path == "/v1/pair":
             try:
-                self.service.require_private_state()
-                # No source is passed, and that is the decision rather than an omission: the
-                # limits it feeds are address-free, because behind a reverse proxy every client
-                # shares the peer address and a forwarding header is set by whoever can set one.
-                token = self.service.state.redeem_pairing(
-                    body.get("code", ""), client_name=body.get("client_name", ""),
-                )
-            except PairingError as exc:
-                return self._send(403, refusal(str(exc)))
-            identity = self.service.state.identity
-            return self._send(200, {"token": token, "gateway": identity.as_dict(),
-                                    "fingerprint": identity.fingerprint})
+                answer = _dispatch.before_anyone("pair", body, service=self.service,
+                                                 via="older_door")
+            except _dispatch.Refused as refused:
+                # The shape this door has always used for a pairing that did not work. The
+                # console tells expired, already-used and mistyped apart from the sentence, so
+                # the sentence is passed through rather than generalised away.
+                return self._send(403, refusal(refused.because))
+            return self._send(200, answer)
 
         if self.path == "/v1/jobs":
             # A TRANSLATOR. It reads the older shape off the wire, hands the request to the

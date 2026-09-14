@@ -97,6 +97,105 @@ class Principal:
 NOBODY = Principal(token="", device_id="", client_id="")
 
 
+#: The only two operations reachable without a credential, and the whole of that list.
+#:
+#: They exist because authentication has to start somewhere: one says which gateway you have
+#: reached, the other is how you come to hold a credential at all. Everything else goes through
+#: `dispatch`, whose first act is to establish who is asking.
+#:
+#: They are deliberately NOT contract operations. Declaring them would put them in the renderings
+#: -- including the ones a model reads -- and would make them addressable at `/v1/op/`, where the
+#: dispatcher would demand the credential they exist to obtain. Keeping them out of the contract
+#: is what makes "no tool can pair itself" true by construction rather than by a filter.
+BOOTSTRAP = ("hello", "pair")
+
+
+def before_anyone(operation: str, params: dict, *, service, via: str = "") -> dict:
+    """The one way in for somebody who has no credential yet.
+
+    Every anonymous request in this gateway comes through here. That is the point: a route that
+    answered an unauthenticated caller on its own would be a second front door, and the number of
+    front doors is the thing worth being able to count.
+
+    Recorded like everything else. An account being probed looks like a run of failed pairings,
+    and a log that only kept the successful one would not show it.
+    """
+    if operation not in BOOTSTRAP:
+        _audit(service, operation, NOBODY, "not_authenticated")
+        raise Refused("not_authenticated",
+                      "That is not something this sandbox will do for somebody it does not "
+                      "know yet.",
+                      "Pair a device first; everything else needs a credential.")
+    try:
+        answer = _BOOTSTRAP[operation](service, params or {})
+    except Refused as refusal:
+        _audit(service, operation, NOBODY, refusal.refusal, refusal.because)
+        raise
+    _audit(service, operation, NOBODY, "carried_out")
+    return answer
+
+
+#: Everything `hello` will tell somebody it has never met, and the whole of that list.
+#:
+#: Written out rather than passed through, because this answers anybody who can reach the port
+#: and "whatever the gateway happens to return" is not a decision anybody made. A field added to
+#: the gateway's own view of itself does not become public by being added; it becomes public by
+#: being put here.
+#:
+#: Every one of these is composed by this gateway from its own state. None of it is caller
+#: supplied, and none of it names a path, a file or an account on the machine -- which is the
+#: property `test_one_way_in.py` checks rather than trusting this sentence.
+#:
+#: `reason` and `next_steps` stay. An earlier version cut them on the theory that they were
+#: operator-facing, and that was a guess: they are the product's own words for why a gateway is
+#: not ready and what to do about it, and a refusal that names no way through is the thing this
+#: project has spent months removing everywhere else. `pairing_open` stays too -- the operator
+#: opened that window deliberately, and a client that cannot see it is left guessing.
+WHAT_A_STRANGER_IS_TOLD = ("protocol", "gateway", "fingerprint", "ready", "reason",
+                           "properties", "unproven", "next_steps", "measured_at",
+                           "pairing_open")
+
+
+def _hello(service, params: dict) -> dict:
+    """What this gateway will tell somebody it has never met.
+
+    Enough to decide whether to pair with it: which gateway this is, its fingerprint, whether it
+    can take work, what it was measured to enforce and what it was not, and whether a pairing
+    window is open.
+    """
+    said = service.hello()
+    return {field: said.get(field) for field in WHAT_A_STRANGER_IS_TOLD}
+
+
+def _pair(service, params: dict) -> dict:
+    """Redeem an invitation for a credential.
+
+    Every guard belongs to the pairing itself and is applied by `redeem_pairing`: the code is
+    checked in constant time, a wrong one costs the throttle, an expired one is refused, and the
+    claim is made and removed in one step so two callers racing on one invitation cannot both be
+    told they had it. Nothing here re-implements any of that; it is carried out where it is
+    written down, and this records that it happened.
+    """
+    from agentnode_sdk.gateway.identity import PairingError
+
+    try:
+        service.require_private_state()
+        # No source address is passed, and that is a decision rather than an omission: behind a
+        # reverse proxy every client shares one, and a forwarding header is set by whoever can
+        # set one. A limit keyed on either would be a limit on the wrong thing.
+        token = service.state.redeem_pairing(
+            str(params.get("code", "")), client_name=str(params.get("client_name", "")))
+    except PairingError as exc:
+        raise Refused("not_authenticated", str(exc),
+                      "Ask whoever runs this sandbox for a fresh invitation.") from exc
+    identity = service.state.identity
+    return {"token": token, "gateway": identity.as_dict(),
+            "fingerprint": identity.fingerprint}
+
+
+_BOOTSTRAP = {"hello": _hello, "pair": _pair}
+
+
 def identify(service, token: str, proof=None, via: str = "") -> Principal:
     """Turn a presented token into a principal, or into nobody.
 
@@ -191,6 +290,8 @@ def _a_name_we_know(op_name: str) -> str:
     a token in one -- theirs or, worse, something they are trying to get an operator to read --
     so what is written is either a declared operation or the fact that it was not one.
     """
+    if op_name in BOOTSTRAP:
+        return op_name
     return op_name if contract.find(op_name) is not None else "(undeclared)"
 
 

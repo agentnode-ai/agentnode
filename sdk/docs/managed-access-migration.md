@@ -1,176 +1,146 @@
 # Moving to the managed access contract
 
-This is for anyone already talking to a gateway over the older `/v1` addresses. Nothing you are
-using has been removed or changed shape. What has happened is that a declared contract now exists
-alongside it, every new capability is being added there, and two of the older routes are going to
-move. This note says which, what changes when they do, and what to do about it.
+For anyone already talking to a gateway over the older `/v1` addresses. Those addresses still
+work and still answer in the shapes they always have. What changed is that none of them decides
+anything any more, and that a job will not run until a person has agreed to it.
 
-## What is new
+Protocol version: **2**.
 
-Every operation the contract declares lives under `/v1/op/<operation>`, is described by
-`/v1/openapi.json`, and is available unchanged over MCP at `/v1/mcp`. All three end in the same
-place: one server-side dispatcher that establishes who is asking, checks the device has not been
-revoked, checks the capability, checks the parameters against the declaration, and only then
-carries anything out. There is no second path through it and no adapter that can skip a step.
+## The one change that will stop an older client working
 
-Contract protocol version: **1**. Each operation also carries its own `since`, so a client can ask
-`capabilities` and find out exactly which operations this gateway has, rather than inferring it
-from one service version number.
+**Nothing runs that a person was not shown first.**
 
-## What changed for callers this release
+`prepare` describes exactly what a job would do and hands back a single-use proof that it was
+shown. `submit` spends that proof. A submission without one is refused with `disclosure_required`,
+and the answer says which call to make, in what order, and which client version knows how.
 
-**`cancel` no longer holds you.**
+The gateway does **not** call `prepare` on a caller's behalf. A gateway that obtains the consent
+it requires, on behalf of the party it is protecting the person from, has not obtained consent.
+So an older client fails here, on purpose, with an answer it can act on. That is a break, and it
+is not a silent one.
 
-Tearing a sandbox down and *confirming* it is gone is what makes a terminal state worth anything,
-and it takes as long as it takes — up to the gateway's settle window of 45 seconds. The contract's
-`cancel` used to do that inline, which meant the caller, and the person watching a spinner, waited
-that long.
+What to do:
 
-It now comes back immediately:
+```python
+from agentnode_sdk.gateway import client as gc
 
-| field | meaning |
+shown = gc.prepare(connection, artifact, command=[...], network="none", wall_clock_s=60)
+#  ... show `shown` to a person. Let them decide. ...
+record = gc.submit(connection, artifact, accepted_disclosure=shown["accepted_disclosure"],
+                   command=[...], network="none", wall_clock_s=60)
+```
+
+On the command line, `agentnode remote run` and `agentnode remote test` print what would happen
+and ask. `--yes` says a person has read that and accepts it. With no terminal and no `--yes`,
+nothing runs — there is nobody to ask.
+
+### What the proof is bound to
+
+Changing any of these between `prepare` and `submit` refuses the submission. They are recomputed
+from the job in hand and compared; the approval is not a token that unlocks whatever comes next.
+
+The account and the channel it was approved on · the connection it was approved **for** · where it
+would run · the artifact digest, size and command · the network mode and destination allowlist ·
+the resource limits and the ceilings in force · the requested policy digest · the operator policy
+digest · which named secrets would be released · what it would add to your usage · how long the
+approval lasts · a nonce.
+
+Deliberately **not** bound: how much you have used so far. Those counters move on their own, and
+binding them would invalidate every approval the moment anything else ran.
+
+### Approving in one place for something that runs in another
+
+This is the ordinary case, not an edge one. A person confirms in a browser; the AI they set up
+runs the job over MCP afterwards.
+
+`prepare` takes `execution_channel` and `execution_device`. They are shown to the person in
+words — "Claude Code on my laptop, over MCP" — and bound. That exact connection may submit; REST
+may not, the same device on another channel may not, another device on the same channel may not.
+Leaving them out means "the connection I am using", which is most callers and needs no change.
+Nominating somebody else's connection needs `manage_devices`.
+
+## Cancelling no longer holds you
+
+`/v1/jobs/<run>/cancel` answers **202** at once. 202 means what it always meant: asked for, not
+confirmed stopped. **200 is gone** — only a route that waited could ever have said it, so nothing
+changed meaning quietly; a value stopped being sent and the protocol version says so.
+
+The waiting moved into the client, where it holds nobody but itself:
+`gc.cancel(connection, run_id, settle=60)` and `agentnode remote cancel --wait`. What `settled`
+means is unchanged — terminal, with the sandbox confirmed gone.
+
+On the contract's own `cancel`, the run reports `stopping` until cleanup is confirmed. `stopping`
+is a **running** state. Poll `status` until it is one of `finished`, `refused`, `cancelled`,
+`unverified`, `interrupted`. A cancellation that fails does not become `cancelled`.
+
+## Refusals
+
+`device_revoked` was **removed**. `MANAGED-REVOCATION-0001` settled it: withdrawing a device
+deletes the only record that could tell it from a credential that never existed, so the contract
+was promising a distinction the gateway does not make. A withdrawn device, an ended session, an
+expired credential and one this sandbox never issued are all `not_authenticated`. Treat that as
+covering "this device was withdrawn". Access still stops immediately, on every path.
+
+Two refusals were **added**: `disclosure_required` and `upgrade_required`.
+
+## What every address is now
+
+Every one of them reaches the dispatcher, runs before anybody has a credential, or hands back a
+file. `agentnode_sdk/access/routes.py` is the register, and `test_routes_register.py` and
+`test_one_way_in.py` compare it against the request handler's own source — including a check that
+no route reaches anything on the service except what renders and signs an answer.
+
+| address | what it is |
 | --- | --- |
-| `state` | `stopping`, or the finished state if the run had already ended |
-| `accepted` | whether *this* call is what started the stopping |
-| `cleanup_verified` | whether the sandbox has been confirmed gone; not yet known while stopping |
+| `/v1/op/*`, `/v1/openapi.json`, `/v1/mcp` | the contract |
+| `/v1/jobs`, `/v1/jobs/<run>`, `/v1/jobs/<run>/cancel`, `/v1/token/rotate` | translators |
+| `/v1/hello`, `/v1/pair` | the only two reachable without a credential |
+| `/console` | one file, no decisions |
 
-`stopping` is a **running** state, not a finished one. Poll `status` until `state` is one of
-`finished`, `refused`, `cancelled`, `unverified`, `interrupted`. Cleanup is still a precondition
-for reaching any of those — nothing here shortens the confirmation, it only moves who waits for it.
-A cancellation that fails does **not** become `cancelled`.
+A translator parses the older shape, hands the request to the dispatcher, and renders the answer
+in the envelope its clients read. Signed requests stay signed — the proof goes to the dispatcher
+rather than being checked at the door and the answer trusted — and signed answers stay signed,
+because clients verify the binding and that is not decoration: an outcome could otherwise be
+changed in transit and the binding recomputed over it.
 
-Asking twice is safe: the second call joins the first and answers `accepted: false`. Cancelling
-something that already finished is also not an error — it answers with the state it really has.
+`hello` and `pair` go through one bootstrap path, `dispatch.before_anyone()`, which refuses
+anything that is not one of those two. Neither is a declared operation, so neither can appear in
+any schema a model is handed — not by being filtered out, but by there being nothing to filter.
+Both are recorded in the audit, because an account being probed looks like a run of failed
+pairings and a log that kept only the successes would not show it.
 
-If you were reading the old return shape of the contract's `cancel`, the `state` field is still
-there and still means the same thing. The change is that it can now say `stopping`, which is why
-`capabilities` publishes the closed list of states rather than leaving you to discover them.
+`hello` answers anybody who can reach the port, so what it says is a written-down list
+(`dispatch.WHAT_A_STRANGER_IS_TOLD`) rather than whatever the gateway happens to return. A field
+added to the gateway's own view of itself does not become public by being added.
 
-## What is going to move, and what it will cost you
+**An invitation is good for one attempt.** The claim is made before the code is compared, so a
+wrong guess spends it and the person is told to ask for a new one. That makes guessing
+structurally impossible rather than merely slow. It is a real trade — anybody who can reach the
+port can burn an invitation an operator has opened — bounded by the attempt throttle and the
+fifteen-minute window, and it costs an operator one button press where the alternative would cost
+a credential.
 
-Four older addresses still make their own decisions rather than going through the dispatcher. They
-are listed in `agentnode_sdk/access/routes.py`, and a test compares that list against the request
-handler's own source, so the list cannot quietly go stale. Each is still there for a reason, and
-each reason is a client that has to move first.
+## The contract can now say everything the older requests could
 
-### `/v1/jobs/<run>/cancel` — still waits, and still will until its clients move
+`submit` grew `job_id`, `required_properties`, `mandatory`, `optional`, `nonce`, and three claims
+that are **checked rather than recomputed over**: `artifact_sha256`, `policy_sha256` and
+`issued_at`. A request whose signature covers something other than what arrived is refused, not
+quietly corrected. `network` grew `unrestricted`, which the older door could ask for and the
+contract could not express.
 
-This one is the reason this section exists. It calls the gateway's cancel inline, so **its callers
-still wait up to the settle window**, which is exactly what the contract's cancel stopped doing.
+`submit`, `status`, `result` and `cancel` can return `answer_binding` — the gateway's identity,
+protocol, binding and signature — attached only to a caller that proved it holds the token's
+secret, since nobody else could check it.
 
-It cannot simply be switched over, because its answer is the waiting:
-
-- it returns **200** when the run stopped and **202** when the gateway would wait no longer;
-- the SDK's `gateway.client.cancel` turns that into a `settled` flag;
-- the CLI's `agentnode remote cancel` prints a different thing depending on it.
-
-An asynchronous cancel can never truthfully answer 200, so migrating the server without migrating
-those clients would turn "it stopped" into "it was asked to" with no change any of them could see.
-That is the silent break this migration is meant to avoid.
-
-**What to do now:** if you are writing anything new, use `/v1/op/cancel` and poll `status`. The old
-route keeps working until its clients are moved deliberately, in a change that says so.
-
-### `/v1/jobs/<run>` — the older status
-
-Returns the whole signed run record. The contract's `status` deliberately returns a narrower
-shape. Clients read fields the narrow shape does not carry, so moving this route means either
-widening the declaration or breaking those readers. Use `/v1/op/status` for new work.
-
-### `/v1/jobs` — the older submit
-
-Carries `required_properties`, `mandatory` and `optional` policy shapes that the contract's
-`submit` does not yet declare. Migrating it today would quietly *narrow* what you are allowed to
-ask for — the requirements would be dropped rather than refused, which is worse than leaving it
-where it is. The contract has to grow those fields first.
-
-### `/v1/token/rotate` — replacing a credential
-
-No contract operation covers it, and that is deliberate: an AI holding a device token should not be
-able to mint its successor as one tool call. Credential management is not sandbox use.
-
-## What will never move
-
-`/v1/hello` and `/v1/pair` run **before** anybody has a credential — the first says which gateway
-you have reached, the second is how you come to hold a token at all. The dispatcher's first act is
-to establish who is asking, so these two cannot go through it by their nature. A pre-authentication
-route is not a bypass of authentication; it is what authentication is built out of. Pairing keeps
-its own single-use claim, its own expiry and its own attempt budget.
+`devices.rotate` replaces `/v1/token/rotate`. It is declared for a person rather than a model, so
+it reaches the dispatcher and is never offered as a tool: an AI handed a device's token must not
+be able to mint its successor in one call.
 
 ## What this is not
 
-The contract's own `capabilities` carries these limits on every reader-facing surface, and they are
-repeated here so nothing is learned only by reading code:
-
-- the test topology is **single-host-development**. It is not multi-tenant, not production-safe and
-  not escape-proof, and must not be described as any of those;
-- confirmation that a sandbox is gone is a confirmation by this gateway, of this gateway's own
-  records — it is not an external attestation;
-- four addresses still decide for themselves. Until that number is zero, a change to the rules has
-  to be made in more than one place, which is the risk one dispatcher exists to remove.
-
-## A declared refusal that cannot currently happen
-
-`device_revoked` is declared on every operation, and a client written against the contract would
-reasonably branch on it. It is very nearly unreachable.
-
-Withdrawing a device deletes its token entry, so the next request fails to identify at all and is
-answered `not_authenticated`. The `device_revoked` check sits *after* identification and can only
-fire in the narrow window where a token still resolves but its owner has changed.
-
-This is not a security gap — access stops immediately either way, on every path, which is what
-revocation has to guarantee and what `test_console_browser.py` checks. It is a documentation
-defect: the contract offers a distinction the gateway does not actually make. Closing it means
-either keeping revoked devices identifiable so the more specific refusal can be given, or removing
-the refusal from the declaration. Both are changes to how identity is stored, so neither belongs in
-a release that was only meant to add a page.
-
-Until then, a client should treat `not_authenticated` as covering "this device was withdrawn".
-
-## What the contract can now express (protocol 2)
-
-Translating an older request onto the contract is only safe once the contract can say everything
-that request could say. Otherwise the translation quietly *narrows* it, and a requirement that is
-dropped rather than refused is worse than one that was never supported.
-
-`submit` therefore grew, all optional and all marked `since: "2"`: `job_id`, `required_properties`,
-`mandatory`, `optional`, `nonce`. Its answer grew `request_policy_sha256` and
-`effective_policy_sha256`.
-
-`submit`, `status`, `result` and `cancel` grew `answer_binding` — the gateway's identity, protocol,
-binding and signature over the answer, attached **only** for a caller that proved it holds the
-token's secret. That is what the older doors have always done and why: `EM3C-EVIDENCE-0020` found
-an answer's outcome could be changed in transit and the binding still recomputed, so the binding
-covers everything the answer says happened. A caller that cannot check a signature is given none,
-because decoration that looks like evidence is worse than no evidence.
-
-`identify()` accepts an optional proof — the `(payload, signature)` the older doors have always
-required. Checking a signature is transport work; deciding **who is asking** is not, so it happens
-in the one place that decides.
-
-`devices.rotate` was declared, replacing `/v1/token/rotate`. It is marked `for_people_not_tools`:
-it reaches the dispatcher like everything else, and it is deliberately **not** offered as an MCP
-tool. An AI handed a device's token should not be able to mint its successor in one tool call. An
-existing test already asserted no such tool is offered; that property is now enforced by the
-declaration rather than by nobody having added one.
-
-## Why `/v1/jobs` is still not a translator
-
-Found while trying to make it one, and worth stating plainly rather than discovering later.
-
-The contract's `submit` will not run anything that was not disclosed first: `prepare` returns an
-`accepted_disclosure`, and `submit` spends it. The older `/v1/jobs` door predates that gate and has
-no disclosure to spend.
-
-It is **not** an authentication or policy bypass — that door authenticates with a signed request,
-and admission, the operator's stop, the ceilings and the policy checks are all the same ones. What
-it predates is the *informed-consent* gate, not an access control.
-
-But it cannot become a thin translator while that is true. The translator would have to call
-`prepare` on the caller's own behalf and immediately spend the disclosure, which turns the gate
-into a formality — exactly the "disclosure is a screen rather than a gate" defect a review already
-found and closed once. So closing this properly means migrating `gateway/client.py` to call
-`prepare` before `submit`, together with the verification channels and tests that use it. That is a
-client migration, and it is not done.
-
-Until it is, `/v1/jobs` stays in the register as a route that decides for itself, and this is why.
+- The topology is **single-host-development**: not multi-tenant, not production-safe, not
+  escape-proof.
+- Confirmation that a sandbox is gone is this gateway's confirmation, of its own records. It is
+  not an external attestation.
+- This sandbox does not classify what a job processes, has no per-job region or retention, and
+  has no billing. The disclosure says so rather than staying silent.

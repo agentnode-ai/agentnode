@@ -55,7 +55,7 @@ switch. A named subset is how they stayed hidden.
   prepare, shown, and bound. Browser-approve → MCP-execute works; nothing else does. A refused
   submission does not consume the approval.
 
-## Track 1 — in progress
+## Track 1 — COMPLETE
 
 Done in this commit:
 
@@ -83,12 +83,20 @@ clients read, and therefore what its translation must not lose. Nothing decides 
 The older cancel answers 202 at once. `gc.cancel(conn, run, settle=...)` and
 `agentnode remote cancel --wait` do the waiting client-side; what `settled` means is unchanged.
 
-Still to do in this track:
+`hello` and `pair` go through `dispatch.before_anyone()`, which refuses anything that is not one
+of those two. Neither is a declared operation, so neither can reach any schema a model is handed
+-- nothing to filter rather than a filter. Both are audited. `hello` says a written-down list
+(`dispatch.WHAT_A_STRANGER_IS_TOLD`), so a field added to the gateway's own view of itself is not
+published by being added.
 
-1. `/v1/hello` and `/v1/pair` through one `dispatch.before_anyone()`, so the structural claim is
-   "every route reaches the dispatcher" without two named exceptions.
-2. The structural test for that.
-3. `docs/managed-access-migration.md` still describes the routes as unmigrated. Rewrite it.
+`tests/test_one_way_in.py` reads the request handler's AST and asserts no route reaches anything
+on the service except `sign_answer`, `stamp` and `state`. `docs/managed-access-migration.md` is
+rewritten for protocol 2.
+
+One design fact worth not relitigating: an invitation is good for ONE ATTEMPT. The claim is made
+before the code is compared, so a wrong guess spends it. That is deliberate and makes guessing
+structurally impossible; the cost is that anybody who can reach the port can burn an open
+invitation, bounded by the throttle and the 15-minute window.
 
 ## Tracks 2–5, not started
 
