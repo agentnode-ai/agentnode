@@ -506,3 +506,16 @@ def pytest_sessionfinish(session, exitstatus):
     print("\n  full report: %s" % where)
     if os.environ.get("AGENTNODE_LIFECYCLE_GATE") and exitstatus == 0:
         session.exitstatus = 1
+
+
+@pytest.fixture(autouse=True)
+def _somewhere_to_keep_a_credential(monkeypatch):
+    """This suite runs headless, where there is no keyring.
+
+    Saying so once here rather than in every test that saves a connection: the refusal when
+    there is nowhere safe is a real behaviour with its own tests in `test_credentials.py`, and
+    every other test is about something else.
+    """
+    from agentnode_sdk.access import credentials
+
+    monkeypatch.setenv(credentials.SAY_SO, "file")
