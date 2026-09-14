@@ -1,7 +1,12 @@
 # Where this is
 
-Branch `managed/access-and-onboarding`, final commit `7e616b8`. Nothing pushed, merged or
-deployed. 8099 closed.
+Branch `managed/access-and-onboarding`, head `a5ec1cc`. Nothing pushed, merged or deployed.
+8099 closed.
+
+**The review is PASSED.** `MANAGED-CONSOLE-FINAL-0006`, all fourteen criteria of the frozen
+profile, at commit `4ca44a1`. `sdk/` is byte-identical between `4ca44a1` and the head above --
+the one commit since is the restoration of 23 files outside `sdk/` (see below), so the reviewed
+object has not moved.
 
 **Frozen review profile:** `managed-console-final-r1`, sha256
 `0068b9ac2346790717cf1b22848e54dc8d9fc3f22281212d993680604200ffe9`. Frozen in `acecc0f`, which
@@ -91,7 +96,19 @@ refusal when there is nowhere safe has its own tests in `test_credentials.py`.
    `scratchpad/final_review.sh`, which verifies the profile digest and every input digest before
    each attempt and retries only on capacity errors.
 2. Whatever that verdict asks for.
-3. **The official CI lanes cannot be run against this branch without a founder decision, and
+3. **The lane COMMANDS were run off-CI, and they pass.** The lanes themselves still need a
+   founder decision, because reaching them means publishing this branch (below). What could be
+   done without that was done -- each lane's own command, verbatim:
+   * `sdk` (`pip install -e ".[dev]"`, then `pytest -v` with NO ignores) on Linux: **6 failed,
+     5490 passed, 337 skipped**. The six are the installer set. The three files the working runs
+     excluded were included here and cost nothing: 70 more passes, no new failures. Python 3.14,
+     not one of the matrix's 3.10/3.11/3.12 -- right OS, wrong version, so this is the lane's
+     command and not the lane.
+   * `adapter-langchain` (`pip install ../sdk -e ".[dev]"`, `pytest -v`) on 3.12: **4 passed**.
+   * `web-lint-build` (`npm ci`, `npm run lint`, `npm run build`): all three pass, lint with 0
+     errors. THIS ONE WOULD HAVE FAILED an hour ago, and finding that is why it was worth
+     running -- see below.
+4. **The official CI lanes cannot be run against this branch without a founder decision, and
    one of them could not test it even then.** Two facts, both read from
    `.github/workflows/`:
    * Every lane triggers only on `push`/`pull_request` to `main` (`sdk.yml`, `sdk-lanes.yml`,
@@ -103,5 +120,22 @@ refusal when there is nowhere safe has its own tests in `test_credentials.py`.
      report on this work at all. `sdk.yml` (`pytest -v` over `sdk/`) is the lane that would.
    * `deploy.yml` is `workflow_dispatch` only and disabled at the repository level, so a pull
      request would not deploy anything.
-4. Human validation remains DEFERRED_EXTERNAL_VALIDATION. No person has used this unaided, and no
+5. Human validation remains DEFERRED_EXTERNAL_VALIDATION. No person has used this unaided, and no
    automated result establishes that one could.
+
+
+## The 23 files this branch deleted and put back
+
+`git add -A` from the repository root staged deletions of files that were absent from the working
+tree and had nothing to do with this work: `web/` and `cli/` lockfiles and tsconfigs, and
+nineteen `backend/` data and script files. Restored byte for byte in `a5ec1cc`; the branch now
+touches nothing outside `sdk/`, which is checkable with
+`git diff --stat acecc0f HEAD -- backend cli web` (empty).
+
+`web/package-lock.json` is the one with teeth. The `web-lint-build` job runs `npm ci`, which
+refuses to install without a lockfile, so that job -- and with it `sdk-web-required`, the only
+required check for this track -- could not have passed. It would not have failed in a way that
+looked like a lockfile problem either; it would have failed in CI, later, at somebody else.
+
+The lesson is narrow and worth keeping: `git add -A` from a repository root commits the working
+tree's absences as well as its edits. Stage paths, or check `git status` for deletions first.
