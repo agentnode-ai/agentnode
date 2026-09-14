@@ -253,10 +253,32 @@ class Stopping:
         return kept if isinstance(kept, dict) else {}
 
     def _write_journal(self, kept: dict) -> None:
-        near = self._journal + ".new"
-        with open(near, "w", encoding="utf-8") as fh:
-            json.dump(kept, fh, sort_keys=True)
-        os.replace(near, self._journal)
+        """Replace the journal in one step, from a name nobody else is writing.
+
+        The scratch file used to be one fixed name. Two writers over the same directory -- a
+        worker forgetting a settled stop while something else remembers a new one, or the
+        abandoned pool of a gateway that has just been restarted over its own state -- both
+        opened it, and each `open(..., "w")` truncated what the other had not yet flushed. What
+        landed was one writer's bytes with the tail of the other's after them: valid JSON
+        followed by rubbish, which is how "Extra data: line 1 column 3" appears in a file that
+        only ever had whole documents written to it.
+
+        The replace was always atomic. The scratch file was the part that was not, and a unique
+        name is what makes it so -- os.replace then makes the swap indivisible for readers.
+        """
+        near = "%s.%d.%d.new" % (self._journal, os.getpid(), threading.get_ident())
+        try:
+            with open(near, "w", encoding="utf-8") as fh:
+                json.dump(kept, fh, sort_keys=True)
+            os.replace(near, self._journal)
+        except BaseException:
+            # Leaving a scratch file behind would be a slow leak in a directory an operator
+            # reads. Nothing is raised from here: the original failure is what matters.
+            try:
+                os.unlink(near)
+            except OSError:
+                pass
+            raise
 
     def _remember(self, run_id: str, stop: Stop) -> None:
         """Write the stop down before it is attempted, or say plainly that it could not be.
@@ -291,9 +313,12 @@ class Stopping:
         harmless direction first is better than finding out from the other one.
         """
         try:
-            kept = self._read_journal()
-            if kept.pop(run_id, None) is not None:
-                self._write_journal(kept)
+            # Under the lock: read-modify-write is not one step, and two hands settling at once
+            # would otherwise each write back a picture taken before the other's change.
+            with self._lock:
+                kept = self._read_journal()
+                if kept.pop(run_id, None) is not None:
+                    self._write_journal(kept)
         except (OSError, ValueError, JournalUnavailable) as problem:
             self._cannot_keep_a_record("forget a settled cancellation", problem)
 

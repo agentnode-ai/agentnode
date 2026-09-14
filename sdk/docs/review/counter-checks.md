@@ -141,6 +141,19 @@ not imply the second.
 Each revert was printed before its run, each file restored afterwards, and each restoration
 verified with `cmp` against a copy taken before the edit.
 
+**24 — the journal's scratch file has a name nobody else is writing.** Put `_write_journal`
+back to the single fixed `stopping.json.new`.
+`test_a_second_writer_does_not_leave_the_first_one_s_tail_behind` goes red, with the same
+`Extra data: line 1 column 3` that a full run produced.
+
+This one was found rather than designed. Closing the fail-open made a full run fail where the
+file suite passed: two pools over one directory -- a restart's new pool and the abandoned one's
+hand still working -- both opened the scratch file, and each `open(..., "w")` truncated what the
+other had not yet flushed, so what landed was one writer's bytes with the tail of the other's
+after them. The replace was always atomic; the scratch file was the part that was not. It had
+been there all along and `unfinished()` answering `[]` for an unreadable journal was hiding it:
+a corrupted journal looked exactly like a clean start.
+
 ### One existing test was agreeing with the defect
 
 `test_an_unreadable_journal_is_not_read_as_nothing_to_do` asserted `unfinished() == []` — which

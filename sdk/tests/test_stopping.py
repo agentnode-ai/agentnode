@@ -12,6 +12,7 @@ measure Docker.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 
@@ -625,3 +626,55 @@ class TestTheServerOwnsItsWatchers:
             server.server_close()
             service.close()
             state.close()
+
+
+class TestTwoWritersDoNotCorruptTheJournal:
+    """Found in a full run, not in this file: a restart leaves the abandoned pool's hand still
+    working over the same directory as the new one, and both write the journal.
+
+    The replace was always atomic. The SCRATCH FILE was not: it had one fixed name, so each
+    `open(..., "w")` truncated what the other had not yet flushed and what landed was one
+    writer's bytes with the tail of the other's after them -- valid JSON followed by rubbish.
+
+    It only surfaced now because it used to be swallowed. `unfinished()` answered the empty list
+    for an unreadable journal, so a corrupted one looked exactly like a clean start: the
+    fail-open was hiding the defect underneath it.
+    """
+
+    def test_a_second_writer_does_not_leave_the_first_one_s_tail_behind(self, tmp_path):
+        from agentnode_sdk.access import stopping as pool
+
+        one = pool.Stopping(str(tmp_path), lambda run_id: True)
+        two = pool.Stopping(str(tmp_path), lambda run_id: True)
+        try:
+            # A long document and a short one, alternating, from two pools over one directory --
+            # the shape that corrupts, because the short write is what leaves a tail.
+            long_one = {("run-%03d" % i): {"asked_at": 1.0, "asked_by": "x" * 40}
+                        for i in range(40)}
+            stop = threading.Event()
+            trouble = []
+
+            def keep_writing(it, what):
+                while not stop.is_set():
+                    try:
+                        it._write_journal(what)
+                        it._read_journal()
+                    except Exception as problem:            # noqa: BLE001
+                        trouble.append(problem)
+                        return
+
+            hands = [threading.Thread(target=keep_writing, args=(one, long_one), daemon=True),
+                     threading.Thread(target=keep_writing, args=(two, {}), daemon=True)]
+            for hand in hands:
+                hand.start()
+            time.sleep(2.0)
+            stop.set()
+            for hand in hands:
+                hand.join(timeout=10)
+
+            assert not trouble, "the journal was corrupted: %r" % (trouble[0],)
+            # And nothing was left lying around in a directory an operator reads.
+            assert not [f for f in os.listdir(tmp_path) if f.endswith(".new")]
+        finally:
+            one.close()
+            two.close()
