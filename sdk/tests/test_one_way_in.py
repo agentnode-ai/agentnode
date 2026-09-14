@@ -70,7 +70,8 @@ class TestThereAreExactlyTwo:
     def test_the_register_names_the_same_two(self):
         anonymous = {r.path for r in routes.REGISTER
                      if r.kind == routes.BEFORE_ANYONE_IS_ANYBODY}
-        assert anonymous == {"/v1/hello", "/v1/pair", "/v1/session"}
+        assert anonymous == {"/v1/hello", "/v1/pair", "/v1/session",
+                             "/console/setup"}
 
     def test_and_every_route_is_one_of_the_four_kinds(self):
         allowed = {routes.THROUGH_THE_DISPATCHER, routes.TRANSLATES,

@@ -57,6 +57,12 @@ REGISTER = (
     Route("/v1/mcp", THROUGH_THE_DISPATCHER,
           "The MCP door. Same authentication, same dispatcher, different vocabulary."),
 
+    Route("/console/setup", BEFORE_ANYONE_IS_ANYBODY,
+          "Collecting a setup file. Not anonymous in fact -- it needs a signed-in session and "
+          "that session's confirmation value -- but it is listed here rather than as a "
+          "dispatcher route because it answers with a FILE rather than with an operation's "
+          "result, and because it is the one place a device credential is ever written out. It "
+          "is a form POST so the ticket never reaches an address bar, a history or a referrer."),
     Route("/console", SERVES_A_PAGE,
           "The page a person uses. It reads one file off disk and writes it back -- no token, "
           "no state, nothing behind it. Everything the page then does, it does by calling the "

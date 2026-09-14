@@ -626,6 +626,22 @@ class GatewayState:
         self._write_tokens(tokens)
         return True
 
+    def redeem_for_connection(self, client_name: str = "") -> str:
+        """Issue a credential for a connection somebody has already been authorised to set up.
+
+        No invitation, because the authorisation already happened: a person signed in, chose a
+        connection, and confirmed it. An invitation exists to let somebody who holds nothing
+        prove they were invited, and that is not this situation -- requiring one here would mean
+        a person setting up their second AI had to go back to the machine and press a button.
+
+        It goes through the same issuing path as every other credential, so what is stored is a
+        hash and nothing else.
+        """
+        # The same guard every other credential-issuing path uses: this gateway will not mint
+        # anything while its own state directory is readable by other accounts on the machine.
+        self._guard_private()
+        return self._issue_token(client_name=client_name)
+
     def revoke_client(self, client_id: str) -> bool:
         """Withdraw a device by WHO it is, not by presenting its credential.
 

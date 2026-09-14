@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import hmac
+import urllib.parse
 import json
 import os
 import secrets
@@ -40,6 +41,7 @@ from typing import Any
 from agentnode_sdk.worker import what_it_does_not_establish
 from agentnode_sdk.access import rest as _rest
 from agentnode_sdk.access import sessions as _sessions
+from agentnode_sdk.access.enrolment import Connections
 from agentnode_sdk.access.sessions import Sessions
 from agentnode_sdk.access.stopping import Stopping
 from agentnode_sdk.access import dispatch as _dispatch
@@ -306,6 +308,9 @@ class GatewayService:
         #: The browser sessions this gateway has open. A browser is never given a token; it
         #: is given one of these, in a cookie its own scripts cannot read.
         self.sessions = Sessions(self.state.root)
+        #: Connections being set up, and the challenge each has to answer before this gateway
+        #: will call it compatible.
+        self.connections = Connections(self.state.root)
         self.stopping = Stopping(self.state.root, self._stop_it_and_confirm)
         self._restore_interrupted()
         # A container being torn down does not disappear because the process did. Anything the
@@ -1772,6 +1777,47 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
         return True
 
+    def _hand_over_a_setup_file(self):
+        """The one place a device credential is written out, and it goes to a file."""
+        from agentnode_sdk.access import enrolment
+
+        form = urllib.parse.parse_qs(
+            self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode("utf-8"))
+        asked = {k: (v[0] if v else "") for k, v in form.items()}
+        who = _dispatch.identify_session(
+            self.service, _rest._cookie(self.headers, _rest.SESSION_COOKIE),
+            asked.get("confirm", ""), via="browser")
+        # Collecting a credential changes what can reach this sandbox, so it needs the same
+        # confirmation value as anything else that does.
+        if not who.authenticated or not self.service.sessions.csrf_matches(
+                who.session_id, asked.get("confirm", "")):
+            return self._send(401, refusal("this is not a session that may collect a setup"))
+        try:
+            found = self.service.connections.about(asked.get("challenge", ""))
+            if found["account"] != who.client_id:
+                raise enrolment.NoSuchChallenge("not this account's setup")
+            token = self.service.state.redeem_for_connection(found["label"])
+            bound = self.service.connections.spend_the_ticket(
+                asked.get("challenge", ""), asked.get("ticket", ""),
+                self.service.state.client_id_for(token))
+        except enrolment.NoSuchChallenge as exc:
+            return self._send(403, refusal(str(exc)))
+        name, text = enrolment.setup_file(bound["channel"], self._where_we_are(), token,
+                                          bound["label"])
+        data = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+        return None
+
+    def _where_we_are(self) -> str:
+        host = self.headers.get("Host") or ("%s:%d" % self.server.server_address[:2])
+        return "%s://%s" % ("https" if getattr(self.server, "is_tls", False) else "http", host)
+
     def _older_door_refuses(self, token: str, refused, run_id: str = "", speaks: int = 0):
         """Refuse an older client in a way it can verify and a person can act on.
 
@@ -1902,6 +1948,14 @@ class _Handler(BaseHTTPRequestHandler):
             body = self._read_json()
         except (ProtocolError, ValueError) as exc:
             return self._send(400, refusal(str(exc)))
+
+        if self.path == "/console/setup":
+            # Collecting a setup file. A FORM POST rather than a link: a URL would put the
+            # ticket in the address bar, the history and the referrer, and the answer streams
+            # back as a download rather than as something a script reads. The credential is
+            # created here, at the moment of collection, so a setup somebody starts and abandons
+            # leaves no connection behind.
+            return self._hand_over_a_setup_file()
 
         if self.path == "/v1/session":
             # A browser exchanging an invitation. It gets a session, not a token: the credential

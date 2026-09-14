@@ -1254,6 +1254,54 @@ def _devices_list(service, principal, params):
     ]}
 
 
+def _connections_enrol(service, principal, params):
+    """Start setting up a connection, and issue what it will have to answer."""
+    from agentnode_sdk.access.enrolment import NoSuchChallenge
+
+    try:
+        begun = service.connections.begin(principal.client_id, str(params["way_in"]),
+                                          str(params["label"]))
+    except NoSuchChallenge as exc:                            # pragma: no cover - defensive
+        raise Refused("malformed", str(exc), "Start the setup again.") from exc
+    return {"challenge": begun["challenge"], "ticket": begun["ticket"],
+            "expires_at": int(begun["expires_at"])}
+
+
+def _connections_check(service, principal, params):
+    """Whether that connection has done the thing. Read from this gateway's own audit."""
+    from agentnode_sdk.access.enrolment import NoSuchChallenge
+
+    try:
+        found = service.connections.about(str(params["challenge"]))
+    except NoSuchChallenge as exc:
+        raise Refused("no_such_run", str(exc),
+                      "Start setting the connection up again.") from exc
+    if found["account"] != principal.client_id:
+        # The same answer as one that does not exist. A challenge is not a thing to enumerate.
+        raise Refused("no_such_run",
+                      "this sandbox is not setting up a connection under that name",
+                      "Start setting the connection up again.")
+    said = service.connections.satisfied_by(str(params["challenge"]), lambda: _audit_lines(service))
+    return {"satisfied": bool(said.get("satisfied")), "label": found["label"],
+            "way_in": found["channel"], "operation": found["operation"],
+            "why": said.get("why", "")}
+
+
+def _audit_lines(service):
+    """This gateway's own record of what it carried out. Nothing else takes part in a verdict."""
+    path = os.path.join(str(service.state.root), "audit.jsonl")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    try:
+                        yield json.loads(line)
+                    except ValueError:
+                        continue
+    except OSError:
+        return
+
+
 def _sessions_list(service, principal, params):
     return {"sessions": service.sessions.belonging_to(principal.client_id)}
 
@@ -1340,6 +1388,8 @@ HANDLERS = {
     "result": _result,
     "cancel": _cancel,
     "usage": _usage,
+    "connections.enrol": _connections_enrol,
+    "connections.check": _connections_check,
     "sessions.list": _sessions_list,
     "sessions.end": _sessions_end,
     "devices.list": _devices_list,
