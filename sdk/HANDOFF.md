@@ -15,8 +15,9 @@ contains no code; fifteen commits of implementation follow it. Do not edit it. T
 
 ## How to run the tests
 
-On the test host (`root@116.203.32.193`, key `/c/Users/User/.ssh/a1e_spike`), tree synced to
-`/root/rr/sdk`, venv `/opt/agentnode/venv`:
+On a Linux host with Chromium and the dev extra installed. The machine this was measured on
+is not named here: an address and a key path in a public repository are an invitation to
+try them, and they are of no use to anybody reading this anyway.
 
 ```
 AGENTNODE_BROWSER_TESTS=required PYTHONPATH=/root/rr/sdk PYTHONDONTWRITEBYTECODE=1 \
