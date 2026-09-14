@@ -32,6 +32,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FILES = {
     "/console": ("index.html", "text/html; charset=utf-8"),
     "/console/": ("index.html", "text/html; charset=utf-8"),
+    # Separate files rather than inline blocks, and that is a security decision rather than
+    # tidiness. A content security policy that has to allow inline code allows ANY inline code,
+    # which is most of what an injection wants; with these in files the policy can say
+    # `script-src 'self'` and mean it.
+    "/console/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/console/app.css": ("app.css", "text/css; charset=utf-8"),
 }
 
 

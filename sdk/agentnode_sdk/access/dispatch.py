@@ -284,7 +284,6 @@ def identify_session(service, session_id: str, csrf: str = "", via: str = "brows
     found = service.sessions.whose(session_id)
     if not found:
         return NOBODY
-    who = identify(service, "", via=via)
     known = identify_client(service, str(found["client_id"]), via=via)
     if known is NOBODY:
         # The session outlived the device it belongs to. Withdrawing a device ends its sessions,
@@ -293,6 +292,29 @@ def identify_session(service, session_id: str, csrf: str = "", via: str = "brows
     return Principal(token=known.token, device_id=known.device_id, client_id=known.client_id,
                      capabilities=known.capabilities, device_name=known.device_name,
                      proved=False, session_id=session_id, csrf_presented=csrf, via=via)
+
+
+def a_confirmed_session(service, session_id: str, csrf: str):
+    """A principal for a browser that presented BOTH its cookie and its confirmation value.
+
+    For the two console addresses that answer with something other than an operation's result --
+    a file, and a fresh confirmation value. They still must not decide anything themselves, and
+    "is this really that session, and did the page itself ask" is a decision.
+    """
+    who = identify_session(service, session_id, csrf, via="browser")
+    if not who.authenticated:
+        return NOBODY
+    if not service.sessions.csrf_matches(session_id, csrf):
+        return NOBODY
+    return who
+
+
+def fresh_confirmation(service, session_id: str) -> str:
+    """A new confirmation value for a session that still exists, or "" for one that does not."""
+    who = identify_session(service, session_id, via="browser")
+    if not who.authenticated:
+        return ""
+    return service.sessions.new_confirmation(session_id)
 
 
 def identify_client(service, client_id: str, via: str = ""):

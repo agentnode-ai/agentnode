@@ -116,6 +116,28 @@ class Sessions:
             self._write(kept)
             return dict(found, session=named)
 
+    def new_confirmation(self, session_id: str) -> str:
+        """Issue this session a fresh confirmation value. What a reloaded page asks for.
+
+        A new one rather than the old one handed back, because the old one is not kept: only its
+        hash is, exactly like the session itself. Rotating also means a value that leaked from a
+        page's memory stops working the next time that page is opened.
+
+        Safe to give to whoever presents the cookie -- they already hold the cookie, and
+        SameSite=Strict is what stops another site being able to ask.
+        """
+        named = fingerprint(session_id)
+        csrf = secrets.token_urlsafe(32)
+        with self._lock:
+            kept = self._read()
+            found = kept.get(named)
+            if found is None or self._is_over(found, self._clock()):
+                return ""
+            found["csrf"] = fingerprint(csrf)
+            kept[named] = found
+            self._write(kept)
+        return csrf
+
     def csrf_matches(self, session_id: str, presented: str) -> bool:
         """Constant-time, and false for anything missing rather than raising."""
         found = self.whose(session_id)

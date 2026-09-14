@@ -71,7 +71,7 @@ class TestThereAreExactlyTwo:
         anonymous = {r.path for r in routes.REGISTER
                      if r.kind == routes.BEFORE_ANYONE_IS_ANYBODY}
         assert anonymous == {"/v1/hello", "/v1/pair", "/v1/session",
-                             "/console/setup"}
+                             "/console/setup", "/console/confirm"}
 
     def test_and_every_route_is_one_of_the_four_kinds(self):
         allowed = {routes.THROUGH_THE_DISPATCHER, routes.TRANSLATES,

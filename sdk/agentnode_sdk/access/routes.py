@@ -57,6 +57,11 @@ REGISTER = (
     Route("/v1/mcp", THROUGH_THE_DISPATCHER,
           "The MCP door. Same authentication, same dispatcher, different vocabulary."),
 
+    Route("/console/confirm", BEFORE_ANYONE_IS_ANYBODY,
+          "What a reloaded page asks for: a fresh confirmation value for the session whose "
+          "cookie it already holds. Listed here because it answers before a page has anything "
+          "in memory; it gives nothing to somebody who does not already have the cookie, and "
+          "SameSite is what stops another site asking on their behalf."),
     Route("/console/setup", BEFORE_ANYONE_IS_ANYBODY,
           "Collecting a setup file. Not anonymous in fact -- it needs a signed-in session and "
           "that session's confirmation value -- but it is listed here rather than as a "
@@ -67,6 +72,12 @@ REGISTER = (
           "The page a person uses. It reads one file off disk and writes it back -- no token, "
           "no state, nothing behind it. Everything the page then does, it does by calling the "
           "contract like any other client."),
+    Route("/console/app.js", SERVES_A_PAGE,
+          "The page's code, in a file rather than inline. That is what lets the content "
+          "security policy say script-src 'self' and mean it: a policy that has to allow "
+          "inline code allows ANY inline code, which is most of what an injection wants."),
+    Route("/console/app.css", SERVES_A_PAGE,
+          "The page's styling, in a file for the same reason."),
 
     Route("/v1/hello", BEFORE_ANYONE_IS_ANYBODY,
           "What a client reads before it has paired, to learn which gateway it has reached and "

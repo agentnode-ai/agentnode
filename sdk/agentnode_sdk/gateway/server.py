@@ -1784,13 +1784,13 @@ class _Handler(BaseHTTPRequestHandler):
         form = urllib.parse.parse_qs(
             self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode("utf-8"))
         asked = {k: (v[0] if v else "") for k, v in form.items()}
-        who = _dispatch.identify_session(
-            self.service, _rest._cookie(self.headers, _rest.SESSION_COOKIE),
-            asked.get("confirm", ""), via="browser")
         # Collecting a credential changes what can reach this sandbox, so it needs the same
-        # confirmation value as anything else that does.
-        if not who.authenticated or not self.service.sessions.csrf_matches(
-                who.session_id, asked.get("confirm", "")):
+        # confirmation value as anything else that does -- and whether it matches is decided
+        # where every other such question is decided.
+        who = _dispatch.a_confirmed_session(
+            self.service, _rest._cookie(self.headers, _rest.SESSION_COOKIE),
+            asked.get("confirm", ""))
+        if not who.authenticated:
             return self._send(401, refusal("this is not a session that may collect a setup"))
         try:
             found = self.service.connections.about(asked.get("challenge", ""))
@@ -1889,11 +1889,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-store")
+        # No inline exception anywhere. Scripts and styles come from this origin and nowhere
+        # else, nothing may be fetched from another host, the page cannot be framed, and a form
+        # may only submit back here -- which the setup download needs and nothing else uses.
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-            "img-src 'self' data:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; "
-            "base-uri 'none'")
+            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; "
+            "object-src 'none'")
         self.end_headers()
         self.wfile.write(data)
         return True
@@ -1905,6 +1908,19 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         if self._the_page():
             return None
+        if self.path == "/console/confirm":
+            # What a page asks for after a reload. The cookie survived a browser restart; the
+            # confirmation value did not, because it lives only in the page's memory -- which is
+            # the point of it. A fresh one is issued rather than the old one handed back, since
+            # the old one is not kept either.
+            cookie = _rest._cookie(self.headers, _rest.SESSION_COOKIE)
+            fresh = _dispatch.fresh_confirmation(self.service, cookie)
+            if not fresh:
+                return self._send(401, refusal("not signed in"))
+            who = _dispatch.identify_session(self.service, cookie, fresh, via="browser")
+            return self._send(200, {"csrf": fresh, "device": who.client_id,
+                                    "device_name": who.device_name})
+
         if self.path == "/v1/hello":
             return self._send(200, _dispatch.before_anyone(
                 "hello", {}, service=self.service, via="older_door"))
@@ -1944,18 +1960,18 @@ class _Handler(BaseHTTPRequestHandler):
             if self._the_contract(self.rfile.read(length) if length else b""):
                 return None
 
+        if self.path == "/console/setup":
+            # BEFORE the body is read as JSON, because this one is not JSON. It is a form POST
+            # rather than a link: a URL would put the ticket in the address bar, the history and
+            # the referrer, and the answer streams back as a download rather than as something a
+            # script reads. The credential is created at the moment of collection, so a setup
+            # somebody starts and abandons leaves no connection behind.
+            return self._hand_over_a_setup_file()
+
         try:
             body = self._read_json()
         except (ProtocolError, ValueError) as exc:
             return self._send(400, refusal(str(exc)))
-
-        if self.path == "/console/setup":
-            # Collecting a setup file. A FORM POST rather than a link: a URL would put the
-            # ticket in the address bar, the history and the referrer, and the answer streams
-            # back as a download rather than as something a script reads. The credential is
-            # created here, at the moment of collection, so a setup somebody starts and abandons
-            # leaves no connection behind.
-            return self._hand_over_a_setup_file()
 
         if self.path == "/v1/session":
             # A browser exchanging an invitation. It gets a session, not a token: the credential

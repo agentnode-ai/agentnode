@@ -30,10 +30,13 @@ WHAT_THE_LITERALS_MEAN = {
     "/v1/pair": ("/v1/pair",),
     "/v1/session": ("/v1/session",),
     "/console/setup": ("/console/setup",),
+    "/console/confirm": ("/console/confirm",),
     "/v1/jobs": ("/v1/jobs",),
     "/v1/token/rotate": ("/v1/token/rotate",),
     "/v1/jobs/": ("/v1/jobs/<run>", "/v1/jobs/<run>/cancel"),
     "/console": ("/console",),
+    "/console/app.js": ("/console/app.js",),
+    "/console/app.css": ("/console/app.css",),
     "/console/": ("/console",),
 }
 
