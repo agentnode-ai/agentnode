@@ -112,16 +112,30 @@ class TestNoTwoWritersShareATempName:
             "two writes used the same temp name: %s. One name shared by every writer of a file "
             "is how two of them at once lose one of the writes." % seen)
 
-    @pytest.mark.skipif(not securedir.SUPPORTED,
-                        reason="the descriptor-relative writer is POSIX-only")
-    def test_and_neither_does_the_descriptor_relative_one(self, tmp_path):
+    def test_and_neither_does_the_descriptor_relative_one(self):
+        """POSIX-only CODE, read as text, so this runs everywhere.
+
+        The first version of this skipped itself off POSIX, and the skip is where it went wrong:
+        it asserted that `os.unlink(tmp` appears nowhere, which also forbids the CLEANUP unlink
+        that stops a failed write leaking a temp file -- a thing the writer should do. It was
+        green on the machine it was written on, because it never ran there, and red the first
+        time Linux saw it. A property about source text does not need the platform it describes.
+        """
         source = inspect.getsource(securedir.write_secret)
         assert '"." + name + ".new"' not in source, (
             "write_secret is back to one fixed temp name per file, which two writers share")
         assert "secrets.token_hex" in source, (
             "the temp name has to be unique to THIS write")
-        assert "os.unlink(tmp" not in source, (
-            "the pre-unlink was the window that made the fixed name lose data; it went with it")
+
+        # What was actually wrong: the unlink came BEFORE the create, to make room for a name
+        # somebody else might be using. Between the two, the other writer's temp file was gone.
+        # An unlink that cleans up AFTER a failure is a different thing and is wanted.
+        # The CALL, not the word: the docstring above it explains the pre-unlink that went, and
+        # a test that matched prose would forbid saying why.
+        before_it = source[:source.index("os.open(")]
+        assert "os.unlink(" not in before_it, (
+            "write_secret unlinks the temp name before creating it, which is the window that "
+            "made the shared name lose data")
 
 
 # ------------------------------------------------------------------ the rename is retried
