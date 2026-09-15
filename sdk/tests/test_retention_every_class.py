@@ -1,0 +1,254 @@
+"""Every class this gateway stores has a period, and the sweep actually reaches every one.
+
+A reviewer refused the earlier version because periods existed for two classes. The answer then
+was that the rest expire by themselves, which is true and is not the criterion: a class that
+expires on a schedule nobody chose has a retention period the operator cannot see or change.
+
+So this file does three things a table alone cannot:
+
+  * it checks the table against the files a REAL gateway writes, so a class that starts being
+    stored without being listed fails here rather than being kept for ever;
+  * it plants an old record in every class and requires the sweep to remove it;
+  * it plants a fresh one beside it and requires the sweep to keep it, because a sweep that
+    removed everything would pass the first check and be useless.
+"""
+from __future__ import annotations
+
+import dataclasses
+import json
+import time
+
+import pytest
+
+from agentnode_sdk.access import contract, dispatch
+from agentnode_sdk.gateway import meter, observability, retention
+from agentnode_sdk.gateway.identity import GatewayState
+from agentnode_sdk.gateway.server import GatewayService
+from tests.test_em3c_gateway import StandInBackend, _store_measurement
+from tests.test_two_accounts import _a_customer, _a_run_by
+
+LONG_AGO = 1_000_000.0
+JUST_NOW = 9_000_000_000.0
+
+
+@pytest.fixture()
+def gateway(tmp_path):
+    state = GatewayState(str(tmp_path / "state"), version="test")
+    service = GatewayService(state, backend=StandInBackend())
+    _store_measurement(service)
+    try:
+        yield service
+    finally:
+        state.close()
+
+
+class TestTheTableIsComplete:
+
+    def test_every_class_has_a_field_a_sweeper_and_a_description(self):
+        names = set(retention.CLASSES)
+        fields = {f.name[:-len("_days")] for f in dataclasses.fields(retention.Retention)}
+        assert fields == names, "the table and the settings disagree: %s" % (fields ^ names)
+        assert set(retention._SWEEPERS) == names, (
+            "a class with no sweeper is a class kept for ever: %s"
+            % (set(retention._SWEEPERS) ^ names))
+        for name, what in retention.CLASSES.items():
+            assert what["file"] and what["is"] and what["expiring_means"], name
+            assert what["days"] > 0, "%s defaults to keeping for ever" % name
+
+    def test_and_every_file_a_real_gateway_writes_is_in_it(self, gateway, tmp_path):
+        """The check that catches a class added later. Drives the gateway, then reads the disk."""
+        who = _a_customer(gateway, "alice")
+        _a_run_by(gateway, who)
+        gateway.sessions.open(who.device_id, label="a browser")
+        dispatch.dispatch("connections.enrol", {"way_in": contract.MCP, "label": "an AI"},
+                          who, service=gateway)
+        dispatch.dispatch("usage", {}, who, service=gateway)
+        observability.observe(gateway, observability.LocalFileSink(
+            gateway.state.root / observability.EVENTS_NAME))
+        retention.note_an_export(gateway.state.root, who.account_id, by="operator",
+                                 how_many_bytes=1)
+        from agentnode_sdk.gateway.admission import RateLimit
+        from agentnode_sdk.gateway.allowance import Allowance, write_allowance
+
+        write_allowance(gateway.state.root, Allowance(requests_per_minute=50))
+        RateLimit(gateway.state.root / "rate.json").spend(who.device_id, 50)
+        for _ in range(100):
+            if (gateway.state.root / "use-log.jsonl").exists():
+                break
+            time.sleep(0.05)
+
+        #: Files a gateway writes that are NOT customer data and are therefore not a retention
+        #: class. Each is named with what it is, so this list cannot quietly absorb one that is.
+        NOT_A_CLASS = {
+            "identity.json": "which gateway this is; it has no age",
+            "tokens.json": "credentials; removed by withdrawal and deletion, not by age",
+            "accounts.json": "the customers themselves; removed by deletion, not by age",
+            "pairing.json": "the live invitation; single-use and short-lived by construction",
+            "pairing-throttle.json": "failed pairing attempts, with their own lockout window",
+            "pairing-admission.json": "the pairing attempt budget, with its own window",
+            "allowance.json": "the operator's ceilings; configuration, not a record",
+            "retention.json": "these periods themselves",
+            "retention-last-swept.json": "when the last sweep ran",
+            "operator-policy-versions.json": "the ordering of this gateway's own policies",
+            "conformance.json": "the measurement; replaced, and invalidated by change",
+            "meter-key.pem": "the signing key",
+            "meter-key.pub": "its public half",
+            "use-log.head": "where the metering chain ends",
+            "stopping.json": "cancellations in flight",
+            "config.json": "the gateway's own configuration",
+            "tls-cert.pem": "its certificate",
+            "tls-key.pem": "its private key",
+            "active-state.json": "the operator policy in force, and its authentication tag",
+            "joining.json.lock": "the lock beside the invitations, not a record",
+        }
+        listed = {what["file"] for what in retention.CLASSES.values()}
+        unaccounted = []
+        for path in sorted(gateway.state.root.iterdir()):
+            if not path.is_file() or path.name.endswith((".lock", ".new")) \
+                    or path.name.startswith("."):
+                continue
+            if path.name in listed or path.name in NOT_A_CLASS:
+                continue
+            unaccounted.append(path.name)
+        assert not unaccounted, (
+            "this gateway writes %s, which is neither a retention class nor named as something "
+            "that is not one. Add it to retention.CLASSES with a period, or to NOT_A_CLASS here "
+            "with why it has no age." % unaccounted)
+
+
+class TestEveryClassIsActuallySwept:
+    """Old goes, fresh stays. Both halves, for every class."""
+
+    def _plant(self, root, name):
+        """One old record and one fresh one, in whatever shape that class stores."""
+        path = root / retention.CLASSES[name]["file"]
+        if name == "audit":
+            path.write_text(
+                json.dumps({"at": LONG_AGO, "operation": "usage", "account": "old"}) + "\n"
+                + json.dumps({"at": JUST_NOW, "operation": "usage", "account": "new"}) + "\n",
+                encoding="utf-8")
+        elif name == "metering":
+            for at, who in ((LONG_AGO, "acct-" + "0" * 16), (JUST_NOW, "acct-" + "1" * 16)):
+                meter.record(root, run_id="r%d" % at, client_id="c" * 16, account_id=who,
+                             started_at=at, finished_at=at, cpu=1.0, memory_mb=1,
+                             wall_clock_s=1, state="finished", outcome="ok", bytes_out=1,
+                             worker_topology="single-host-development", worker_id="w",
+                             allowance_sha256="a" * 64, operator_policy_sha256="p" * 64,
+                             operator_policy_version=1)
+        elif name == "sessions":
+            path.write_text(json.dumps({
+                "old": {"client_id": "c", "opened_at": LONG_AGO, "ends_at": JUST_NOW},
+                "new": {"client_id": "c", "opened_at": JUST_NOW, "ends_at": JUST_NOW},
+            }), encoding="utf-8")
+        elif name == "enrolments":
+            path.write_text(json.dumps({
+                "old": {"account": "a", "began_at": LONG_AGO, "expires_at": JUST_NOW},
+                "new": {"account": "a", "began_at": JUST_NOW, "expires_at": JUST_NOW},
+            }), encoding="utf-8")
+        elif name == "ledger":
+            path.write_text(json.dumps({
+                "runs": {"old": {"first_seen": LONG_AGO}, "new": {"first_seen": JUST_NOW}},
+                "nonces": {"old": LONG_AGO, "new": JUST_NOW},
+                "challenges": {"old": {"x": 1}, "new": {"x": 1}},
+            }), encoding="utf-8")
+        elif name == "counters":
+            path.write_text(json.dumps({
+                "old": [{"run_id": "r", "at": LONG_AGO, "seconds": 0.0}],
+                "new": [{"run_id": "r", "at": JUST_NOW, "seconds": 0.0}],
+            }), encoding="utf-8")
+        elif name == "invitations":
+            path.write_text(json.dumps({
+                "old": {"account_id": "a", "made_at": LONG_AGO, "expires_at": JUST_NOW},
+                "new": {"account_id": "a", "made_at": JUST_NOW, "expires_at": JUST_NOW},
+            }), encoding="utf-8")
+        elif name == "rate":
+            path.write_text(json.dumps({"old": [LONG_AGO], "new": [JUST_NOW]}), encoding="utf-8")
+        elif name in ("events", "exports"):
+            path.write_text(json.dumps({"at": LONG_AGO, "kind": "counts", "account_id": "old"})
+                            + "\n"
+                            + json.dumps({"at": JUST_NOW, "kind": "counts", "account_id": "new"})
+                            + "\n", encoding="utf-8")
+        else:                                                 # pragma: no cover - see the test
+            raise AssertionError("nothing plants a record for %r" % name)
+        return path
+
+    def test_every_class_can_be_planted(self):
+        """So a class added to the table without a planter fails here rather than silently."""
+        planted = {"audit", "metering", "sessions", "enrolments", "ledger", "counters", "rate",
+                   "events", "exports", "invitations"}
+        assert planted == set(retention.CLASSES), (
+            "this file does not plant a record for %s" % (planted ^ set(retention.CLASSES)))
+
+    @pytest.mark.parametrize("name", sorted(retention.CLASSES))
+    def test_the_old_one_goes_and_the_fresh_one_stays(self, gateway, name):
+        root = gateway.state.root
+        path = self._plant(root, name)
+        retention.write_retention(root, retention.Retention(**{
+            "%s_days" % each: 1 for each in retention.CLASSES}))
+
+        # A moment just after the fresh record and long after the old one.
+        done = retention.sweep(root, now=JUST_NOW + retention.DAY * 0.5)
+        assert done["problems"] == [], done["problems"]
+        assert done["swept"][name], "%s swept nothing at all" % name
+
+        written = path.read_text(encoding="utf-8")
+        assert "old" not in written or name == "metering", (
+            "%s kept a record older than its period: %s" % (name, written[:200]))
+        if name == "metering":
+            lines = [line for line in meter.read(root) if not meter.is_a_tombstone(line)]
+            assert [line["account_id"] for line in lines] == ["acct-" + "1" * 16]
+            assert meter.verify(root)["ok"], "sweeping the meter broke its chain"
+        else:
+            assert "new" in written, "%s swept the fresh record too" % name
+
+    @pytest.mark.parametrize("name", sorted(retention.CLASSES))
+    def test_a_period_of_zero_keeps_it(self, gateway, name):
+        root = gateway.state.root
+        self._plant(root, name)
+        retention.write_retention(root, retention.Retention(**{
+            "%s_days" % each: (0 if each == name else 1) for each in retention.CLASSES}))
+        done = retention.sweep(root, now=JUST_NOW + retention.DAY * 0.5)
+        assert done["swept"][name] == "kept indefinitely"
+
+    def test_sweeping_twice_removes_nothing_the_second_time(self, gateway):
+        root = gateway.state.root
+        for name in retention.CLASSES:
+            self._plant(root, name)
+        retention.write_retention(root, retention.Retention(**{
+            "%s_days" % each: 1 for each in retention.CLASSES}))
+        first = retention.sweep(root, now=JUST_NOW + retention.DAY * 0.5)
+        second = retention.sweep(root, now=JUST_NOW + retention.DAY * 0.5)
+        assert first["problems"] == [] and second["problems"] == []
+        for name in retention.CLASSES:
+            assert second["swept"][name] == 0, "%s swept again on the second pass" % name
+
+    def test_a_class_that_cannot_be_swept_is_NAMED_rather_than_counted(self, gateway):
+        root = gateway.state.root
+        (root / retention.CLASSES["ledger"]["file"]).write_text("{ truncated", encoding="utf-8")
+        done = retention.sweep(root, now=JUST_NOW)
+        assert any("ledger" in problem for problem in done["problems"]), done
+        assert done["swept"]["ledger"] == "FAILED"
+        # And the rest still happened: one damaged file does not stop the others.
+        assert done["swept"]["audit"] == 0
+
+
+class TestWhatAnOperatorSeesAndSets:
+
+    def test_describe_lists_every_class_with_what_expiring_costs(self):
+        rows = retention.describe()
+        assert {row["name"] for row in rows} == set(retention.CLASSES)
+        for row in rows:
+            assert row["expiring_means"]
+
+    def test_a_period_can_be_set_per_class_and_read_back(self, gateway):
+        root = gateway.state.root
+        retention.write_retention(root, retention.Retention(sessions_days=3, ledger_days=11))
+        back = retention.read_retention(root)
+        assert back.days_for("sessions") == 3 and back.days_for("ledger") == 11
+        assert back.days_for("audit") == retention.CLASSES["audit"]["days"]
+
+    def test_a_period_this_build_does_not_understand_is_refused(self, gateway):
+        (gateway.state.root / retention.RETENTION_NAME).write_text(
+            json.dumps({"audit_days": 5, "job_output_days": 5}), encoding="utf-8")
+        with pytest.raises(retention.RetentionUnreadable):
+            retention.read_retention(gateway.state.root)

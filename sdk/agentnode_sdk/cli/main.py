@@ -320,6 +320,20 @@ def main(argv: list[str] | None = None) -> int:
                            default=None,
                            help="The most output it keeps from one run. 0 = no limit")
 
+    gw_keeps = gw_sub.add_parser(
+        "keeps", help="What this gateway keeps, for how long, and what expiring costs")
+    gw_keeps.add_argument("--dir", default=None)
+    # One flag per class, generated from the table rather than typed out, so a class added there
+    # is settable here without anybody remembering to come back.
+    from agentnode_sdk.gateway.retention import CLASSES as _KEPT
+
+    for _name, _what in sorted(_KEPT.items()):
+        gw_keeps.add_argument("--%s-days" % _name.replace("_", "-"),
+                              dest="%s_days" % _name, type=int, default=None,
+                              help="%s. 0 = keep indefinitely" % _what["is"])
+    gw_sweep = gw_sub.add_parser("sweep", help="Drop what is past its period, now")
+    gw_sweep.add_argument("--dir", default=None)
+
     gw_export = gw_sub.add_parser(
         "export", help="Everything this gateway holds about one customer, as a file")
     gw_export.add_argument("--dir", default=None)
@@ -387,6 +401,10 @@ def main(argv: list[str] | None = None) -> int:
                              help="Let them work again")
     gw_accounts.add_argument("--reason", default="",
                              help="Why. This is what that customer is shown.")
+    gw_accounts.add_argument("--claim", action="store_true",
+                             help="Turn a device that predates accounts into a named customer. "
+                                  "Its credential keeps working.")
+    gw_accounts.add_argument("--name", default="", help="What to call that customer")
     gw_revoke = gw_sub.add_parser("revoke", help="Disconnect a client, at once")
     gw_revoke.add_argument("--client", required=True, help="Its id or name")
     gw_revoke.add_argument("--dir", default=None)

@@ -1,0 +1,506 @@
+"""The cross-account refusals, asked through the surfaces a customer actually holds.
+
+`test_two_accounts.py` asks the dispatcher, which is where the decision is made.
+`test_two_accounts_every_door.py` asks the gateway's own HTTP doors -- REST, remote MCP and the
+older translated routes. What neither of them touches is the code that ships to the customer's
+machine: the SDK client, the command line built on it, and the local stdio bridge. Those are
+separate programs with their own parameter handling, their own output and their own chances to
+print an identifier belonging to somebody else.
+
+Two things are asserted about each of them, because only the pair is evidence:
+
+* the second account is REFUSED, and nothing that comes back names the first account;
+* the first account is still SERVED, so a surface that refused everybody cannot pass.
+
+The last class closes the coverage claim rather than repeating a check: it drives every door this
+gateway can record and then reads the gateway's OWN audit, so "every surface was exercised" is
+read out of the record instead of being asserted by the file that did the driving.
+
+The browser gets a real browser in `test_two_accounts_in_a_browser.py`. What is here is the part
+that belongs with the others: that a browser session is a way of PRESENTING one account's
+identity, and never a second identity of its own.
+"""
+from __future__ import annotations
+
+import io
+import json
+import threading
+import urllib.error
+import urllib.request
+
+import pytest
+
+from agentnode_sdk.access import client as sdk
+from agentnode_sdk.access import contract, dispatch, rest, schemas
+from agentnode_sdk.gateway.identity import GatewayState
+from agentnode_sdk.gateway.server import GatewayService, make_server
+from tests.test_em3c_gateway import StandInBackend, _store_measurement
+from tests.test_two_accounts import _a_customer, _a_run_by
+
+
+class Two:
+    """Named fields rather than a dict, so a typo in a test is an error and not a `None`."""
+
+    def __init__(self, **what) -> None:
+        self.__dict__.update(what)
+
+    def hers(self) -> set:
+        """Every string that would identify the first account if it leaked into an answer."""
+        return {self.alice.account_id, self.alice.device_id, self.her_run, self.her_session}
+
+    def names_her(self, said: str) -> str:
+        """The first identifier of hers that appears, or "" -- so a failure says which one."""
+        for identifier in self.hers():
+            if identifier and identifier in said:
+                return identifier
+        return ""
+
+
+@pytest.fixture()
+def two_customers(tmp_path):
+    """A real gateway on a real socket: two real customers, a real run, a real browser session."""
+    state = GatewayState(str(tmp_path / "state"), version="test")
+    service = GatewayService(state, backend=StandInBackend())
+    _store_measurement(service)
+    server = make_server(service, host="127.0.0.1", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = "http://127.0.0.1:%d" % server.server_address[1]
+    alice, bob = _a_customer(service, "alice"), _a_customer(service, "bob")
+    session, csrf = service.sessions.open(alice.device_id, label="alice's browser")
+    try:
+        yield Two(base=base, service=service, alice=alice, bob=bob,
+                  her_run=_a_run_by(service, alice), her_session=session, her_csrf=csrf,
+                  where=tmp_path)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=10)
+        state.close()
+
+
+# ------------------------------------------------------------------ the SDK
+
+
+class TestTheSdkClient:
+    """`agentnode_sdk.access.client.Sandbox` -- what a program on the customer's machine uses."""
+
+    def test_another_accounts_run_does_not_exist(self, two_customers):
+        theirs = sdk.Sandbox(two_customers.base, two_customers.bob.token)
+        for ask in ("status", "result", "cancel"):
+            with pytest.raises(sdk.TheSandboxRefused) as refused:
+                getattr(theirs, ask)(two_customers.her_run)
+            assert refused.value.refusal == "no_such_run", ask
+            assert refused.value.what_to_do, (
+                "%s refused without saying what to do about it" % ask)
+
+    def test_and_the_refusal_carries_nothing_of_hers(self, two_customers):
+        theirs = sdk.Sandbox(two_customers.base, two_customers.bob.token)
+        with pytest.raises(sdk.TheSandboxRefused) as refused:
+            theirs.result(two_customers.her_run)
+        said = refused.value.in_words()
+        # The run id is the one identifier the asker already supplied, so it is not a leak.
+        leaked = {two_customers.alice.account_id, two_customers.alice.device_id,
+                  two_customers.her_session}
+        assert not [s for s in leaked if s and s in said], said
+
+    def test_the_device_list_is_the_askers_own(self, two_customers):
+        seen = sdk.Sandbox(two_customers.base, two_customers.bob.token).devices()
+        assert {d["device_id"] for d in seen["devices"]} == {two_customers.bob.device_id}
+        assert not two_customers.names_her(json.dumps(seen))
+
+    def test_withdrawing_another_accounts_device_does_nothing(self, two_customers):
+        theirs = sdk.Sandbox(two_customers.base, two_customers.bob.token)
+        said = theirs.revoke(two_customers.alice.device_id)
+        assert said["withdrawn"] is False and said["runs_stopping"] == []
+        assert dispatch.identify(two_customers.service, two_customers.alice.token).authenticated
+        assert two_customers.service.sessions.whose(two_customers.her_session) is not None
+
+    def test_usage_counts_only_the_asker(self, two_customers):
+        said = sdk.Sandbox(two_customers.base, two_customers.bob.token).usage()
+        assert said["runs"] == 0 and said["account_runs"] == 0
+
+    def test_nothing_it_offers_can_name_another_account(self):
+        """Every method is one declared operation, and none of them takes an account at all."""
+        import inspect
+
+        offered = {name for name, _ in inspect.getmembers(sdk.Sandbox, inspect.isfunction)
+                   if not name.startswith("_")}
+        assert offered == {"ask", "speak_mcp", "capabilities", "prepare", "submit", "status",
+                           "result", "cancel", "usage", "devices", "revoke"}, (
+            "a method was added to the SDK surface without this test being told about it")
+        for method in sorted(offered - {"ask", "speak_mcp"}):
+            source = inspect.getsource(getattr(sdk.Sandbox, method))
+            assert "account" not in source, (
+                "%s mentions an account, and an account a caller can name is an account a "
+                "caller can choose" % method)
+
+    def test_and_the_owner_is_still_served_by_every_one_of_them(self, two_customers):
+        """A client that refused everybody would pass every test above."""
+        hers = sdk.Sandbox(two_customers.base, two_customers.alice.token)
+        assert hers.status(two_customers.her_run)["run_id"] == two_customers.her_run
+        assert {d["device_id"] for d in hers.devices()["devices"]} \
+            == {two_customers.alice.device_id}
+        assert hers.usage()["account_runs"] == 1
+
+
+# ------------------------------------------------------------------ the local bridge
+
+
+class TestTheLocalStdioBridge:
+    """`client.bridge` -- the relay a local MCP client speaks to. It holds no authority."""
+
+    def _through(self, two_customers, token, *messages):
+        said = io.StringIO()
+        sdk.bridge(sdk.Sandbox(two_customers.base, token),
+                   io.StringIO("\n".join(json.dumps(m) for m in messages) + "\n"), said)
+        return [json.loads(line) for line in said.getvalue().splitlines() if line.strip()]
+
+    def _call(self, operation, arguments, which=1):
+        return {"jsonrpc": "2.0", "id": which, "method": "tools/call",
+                "params": {"name": schemas.tool_name_for(operation), "arguments": arguments}}
+
+    def test_it_cannot_ask_about_another_accounts_run(self, two_customers):
+        back, = self._through(two_customers, two_customers.bob.token,
+                              self._call("status", {"run_id": two_customers.her_run}))
+        assert back["result"]["isError"] is True
+        assert back["result"]["structuredContent"]["refused"] == "no_such_run"
+
+    def test_the_tools_it_lists_are_the_sandboxs_and_manage_nobodys_access(self, two_customers):
+        back, = self._through(two_customers, two_customers.bob.token,
+                              {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        offered = {tool["name"] for tool in back["result"]["tools"]}
+        for name in ("devices.revoke", "devices.rotate", "devices.invite", "devices.uninvite",
+                     "devices.invitations", "sessions.end", "sessions.list"):
+            assert schemas.tool_name_for(name) not in offered, (
+                "%s reached a model through the bridge" % name)
+
+    def test_and_calling_one_anyway_is_refused_at_the_far_end(self, two_customers):
+        back, = self._through(two_customers, two_customers.bob.token,
+                              self._call("devices.revoke",
+                                         {"device_id": two_customers.alice.device_id}))
+        assert "error" in back, back
+        assert dispatch.identify(two_customers.service, two_customers.alice.token).authenticated
+
+    def test_it_adds_no_authority_of_its_own(self, two_customers):
+        """The relay carries the customer's credential and holds no second one."""
+        with_nothing = self._through(two_customers, "",
+                                     self._call("status", {"run_id": two_customers.her_run}))
+        said = json.dumps(with_nothing)
+        assert "not_authenticated" in said or "error" in said, said
+        assert not two_customers.names_her(said.replace(two_customers.her_run, ""))
+
+    def test_and_the_owner_is_still_served_through_it(self, two_customers):
+        back, = self._through(two_customers, two_customers.alice.token,
+                              self._call("status", {"run_id": two_customers.her_run}))
+        assert not back["result"].get("isError"), back
+        assert back["result"]["structuredContent"]["run_id"] == two_customers.her_run
+
+
+# ------------------------------------------------------------------ the command line
+
+
+def _saved(two_customers, monkeypatch, whose, token, name="sandbox"):
+    """A connection saved the way `agentnode remote connect` saves one."""
+    from agentnode_sdk.gateway import client as gc
+    from agentnode_sdk.gateway.connections import ConnectionStore, SavedGateway
+
+    monkeypatch.setenv("AGENTNODE_HOME", str(two_customers.where / ("home-" + whose)))
+    hello = gc.hello(two_customers.base)
+    saved = SavedGateway(name=name, url=two_customers.base, token=token,
+                         gateway_id=str((hello.get("gateway") or {}).get("gateway_id") or ""),
+                         fingerprint=str(hello.get("fingerprint") or ""))
+    ConnectionStore().save(saved)
+    return saved
+
+
+def _argv(**what):
+    return type("Args", (), dict({"name": "sandbox", "store": None}, **what))()
+
+
+def _connection_for(saved):
+    from agentnode_sdk.gateway.client import GatewayConnection
+
+    return GatewayConnection(base_url=saved.url, token=saved.token,
+                             gateway_id=saved.gateway_id, fingerprint=saved.fingerprint)
+
+
+class TestTheCommandLine:
+    """`agentnode remote ...` -- the program the customer runs in a terminal."""
+
+    def test_asking_about_another_accounts_run_fails_and_names_nothing(
+            self, two_customers, monkeypatch):
+        """`cmd_status` prints; the refusal happens in the library it calls, so ask that."""
+        from agentnode_sdk.gateway import client as gc
+
+        saved = _saved(two_customers, monkeypatch, "bob", two_customers.bob.token)
+        with pytest.raises(gc.GatewayClientError) as refused:
+            gc.status_of(_connection_for(saved), two_customers.her_run)
+        said = str(refused.value).replace(two_customers.her_run, "")
+        assert not two_customers.names_her(said), said
+
+    def test_and_nothing_it_prints_names_the_other_account(self, two_customers, monkeypatch,
+                                                           capsys):
+        from agentnode_sdk.cli import remote_commands
+
+        _saved(two_customers, monkeypatch, "bob", two_customers.bob.token)
+        remote_commands.cmd_status(_argv(verbose=True))
+        printed = capsys.readouterr().out
+        assert not two_customers.names_her(printed), printed
+
+    def test_stopping_another_accounts_run_fails(self, two_customers, monkeypatch, capsys):
+        from agentnode_sdk.cli import remote_commands
+
+        _saved(two_customers, monkeypatch, "bob", two_customers.bob.token)
+        code = remote_commands.cmd_cancel(_argv(run=two_customers.her_run, wait=0))
+        printed = capsys.readouterr().out
+        assert code == 1, printed
+        assert "It stopped" not in printed
+        assert not two_customers.service.runs[two_customers.her_run].cancel_requested.is_set(), (
+            "one customer's terminal stopped another customer's run")
+
+    def test_no_remote_command_takes_an_account_or_a_device_that_is_not_its_own(self):
+        """A parameter naming somebody else is the shape this whole file is about."""
+        import inspect
+
+        from agentnode_sdk.cli import remote_commands
+
+        for name, command in inspect.getmembers(remote_commands, inspect.isfunction):
+            if not name.startswith("cmd_"):
+                continue
+            source = inspect.getsource(command)
+            for asked in ("args.account", "args.device", "args.client", "args.owner"):
+                assert asked not in source, (
+                    "`agentnode remote %s` reads %s, which lets a person at a terminal name "
+                    "somebody else" % (name[4:], asked))
+
+    def test_and_the_owner_is_still_served(self, two_customers, monkeypatch):
+        from agentnode_sdk.gateway import client as gc
+
+        saved = _saved(two_customers, monkeypatch, "alice", two_customers.alice.token)
+        assert gc.status_of(_connection_for(saved),
+                            two_customers.her_run)["run_id"] == two_customers.her_run
+
+
+# ------------------------------------------------------------------ the browser's session
+
+
+class TestABrowserSessionIsOneAccountsIdentity:
+    """Not a second identity. A session PRESENTS the device that opened it."""
+
+    def test_it_reaches_exactly_the_account_that_opened_it(self, two_customers):
+        hers = dispatch.identify_session(two_customers.service, two_customers.her_session,
+                                         two_customers.her_csrf)
+        assert hers.account_id == two_customers.alice.account_id
+        seen = dispatch.dispatch("devices.list", {}, hers, service=two_customers.service)
+        assert {d["device_id"] for d in seen["devices"]} == {two_customers.alice.device_id}
+
+    def test_and_holding_it_does_not_reach_a_run_of_another_account(self, two_customers):
+        service = two_customers.service
+        theirs = _a_run_by(service, two_customers.bob)
+        hers = dispatch.identify_session(service, two_customers.her_session,
+                                         two_customers.her_csrf)
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("status", {"run_id": theirs}, hers, service=service)
+        assert refused.value.refusal == "no_such_run"
+
+    def test_another_account_cannot_list_or_end_it(self, two_customers):
+        service = two_customers.service
+        theirs = sdk.Sandbox(two_customers.base, two_customers.bob.token)
+        assert theirs.ask("sessions.list")["sessions"] == []
+        named = dispatch.dispatch("sessions.list", {}, two_customers.alice,
+                                  service=service)["sessions"]
+        assert named, "alice has no session to try to end"
+        assert theirs.ask("sessions.end", session=named[0]["session"])["ended"] is False
+        assert service.sessions.whose(two_customers.her_session) is not None, (
+            "one customer ended another customer's browser session")
+
+    def test_and_a_session_of_a_withdrawn_device_reaches_nothing(self, two_customers):
+        """A session outlives the request that made it, so withdrawal has to reach it."""
+        service = two_customers.service
+        dispatch.dispatch("devices.revoke", {"device_id": two_customers.alice.device_id},
+                          two_customers.alice, service=service)
+        assert not dispatch.identify_session(service, two_customers.her_session,
+                                             two_customers.her_csrf).authenticated
+
+
+# ------------------------------------------------------------------ an invitation
+
+
+class TestAnotherAccountsInvitation:
+    """An invitation is how a customer adds a machine, so it is a way INTO an account."""
+
+    def test_it_is_not_listed_and_cannot_be_withdrawn(self, two_customers):
+        service = two_customers.service
+        made = dispatch.dispatch("devices.invite", {}, two_customers.alice, service=service)
+        theirs = sdk.Sandbox(two_customers.base, two_customers.bob.token)
+
+        assert theirs.ask("devices.invitations")["invitations"] == []
+        assert theirs.ask("devices.uninvite",
+                          invitation=made["invitation"])["withdrawn"] is False
+
+        joined = dispatch.identify(service, dispatch.before_anyone(
+            "pair", {"code": made["code"], "client_name": "her laptop"},
+            service=service)["token"])
+        assert joined.account_id == two_customers.alice.account_id, (
+            "the invitation stopped working, so the check above proved nothing")
+
+    def test_and_none_of_it_is_offered_to_a_model(self):
+        for name in ("devices.invite", "devices.uninvite", "devices.invitations"):
+            declared = contract.find(name)
+            assert declared is not None and declared.audience != contract.TOOL, name
+
+
+# ------------------------------------------------------------------ the coverage itself
+
+
+#: The doors this gateway can RECORD, and nothing else. `contract.CHANNELS` is a larger set,
+#: because a person enrolling an AI connection names the SHAPE of their client -- a command line,
+#: a local bridge -- and those arrive through one of the doors below. The gateway does not pretend
+#: to tell a CLI from any other REST client: the only thing that could distinguish them is
+#: something the client says about itself, and a program on the customer's machine describing
+#: itself is not evidence of anything.
+DOORS_THAT_ARE_RECORDED = ("browser", "rest", "mcp", "older_door")
+
+
+def _audit_lines(service):
+    with open(str(service.state.root) + "/audit.jsonl", encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+class TestProbingThroughTheOldestDoorLeavesATrace:
+    """The door with the least modern client is the one a probe would pick.
+
+    It was also, until this file was written, the only one where being refused left no record at
+    all: its status route does not go through `dispatch`, so nothing above it audited. Somebody
+    walking another account's run ids through it was refused every time and invisibly.
+    """
+
+    def _ask(self, two_customers, token, run_id):
+        asking = urllib.request.Request(two_customers.base + "/v1/jobs/" + run_id)
+        asking.add_header(rest.TOKEN_HEADER, token)
+        try:
+            with urllib.request.urlopen(asking, timeout=30) as answer:
+                return answer.status, answer.read().decode("utf-8")
+        except urllib.error.HTTPError as refused:
+            return refused.code, refused.read().decode("utf-8")
+
+    def test_the_refusal_is_recorded_against_the_account_that_tried(self, two_customers):
+        status, _said = self._ask(two_customers, two_customers.bob.token,
+                                  two_customers.her_run)
+        assert status == 404
+        theirs = [line for line in _audit_lines(two_customers.service)
+                  if line["account"] == two_customers.bob.account_id
+                  and line["operation"] == "status"]
+        assert theirs, "a refused cross-account read through the oldest door left no record"
+        assert theirs[-1]["via"] == "older_door"
+        assert theirs[-1]["outcome"] == "no_such_run"
+
+    def test_and_repeated_attempts_look_like_what_they_are(self, two_customers):
+        """One refusal is an accident; the point of the record is that ten are not."""
+        for _ in range(10):
+            self._ask(two_customers, two_customers.bob.token, "f" * 32)
+        refused = [line for line in _audit_lines(two_customers.service)
+                   if line["account"] == two_customers.bob.account_id
+                   and line["via"] == "older_door" and line["outcome"] != "carried_out"]
+        assert len(refused) == 10, refused
+
+    def test_and_what_the_door_served_is_recorded_too(self, two_customers):
+        status, _said = self._ask(two_customers, two_customers.alice.token,
+                                  two_customers.her_run)
+        assert status == 200
+        hers = [line for line in _audit_lines(two_customers.service)
+                if line["account"] == two_customers.alice.account_id
+                and line["operation"] == "status" and line["via"] == "older_door"]
+        assert hers and hers[-1]["outcome"] == "carried_out"
+
+    def test_but_cancelling_is_not_recorded_as_a_status_call(self, two_customers):
+        """That door renders a record as a by-product. A client that never asked for one must
+        not appear in the log as having asked, because a compatibility claim is read off these
+        lines and would then be a claim about somebody else's client that nothing measured."""
+        from agentnode_sdk.gateway import client as gc
+
+        before = len([line for line in _audit_lines(two_customers.service)
+                      if line["operation"] == "status"])
+        hers = gc.GatewayConnection(base_url=two_customers.base,
+                                    token=two_customers.alice.token)
+        try:
+            gc.cancel(hers, two_customers.her_run, settle=0)
+        except gc.GatewayClientError:
+            pass                                   # the answer is not what this test is about
+        lines = _audit_lines(two_customers.service)
+        assert len([line for line in lines if line["operation"] == "status"]) == before
+        assert [line for line in lines if line["operation"] == "cancel"
+                and line["via"] == "older_door"], "the cancel itself was not recorded"
+
+
+class TestEveryDoorThisGatewayRecordsWasReallyDriven:
+    """Read out of the gateway's own audit, not asserted by the file that did the driving."""
+
+    def test_the_recorded_doors_are_exactly_the_ones_an_adapter_can_name(self):
+        """If an adapter starts naming a fifth door, this file has stopped covering them all."""
+        import pathlib
+        import re
+
+        import agentnode_sdk
+
+        named = set()
+        for path in pathlib.Path(agentnode_sdk.__file__).parent.rglob("*.py"):
+            named |= set(re.findall(r'via="([a-z_]+)"', path.read_text(encoding="utf-8")))
+        assert named == set(DOORS_THAT_ARE_RECORDED), (
+            "the doors an adapter names are %s; the doors this file covers are %s"
+            % (sorted(named), sorted(DOORS_THAT_ARE_RECORDED)))
+        assert set(DOORS_THAT_ARE_RECORDED) <= set(contract.CHANNELS)
+
+    def test_a_cross_account_attempt_over_each_of_them_is_refused_and_recorded(
+            self, two_customers):
+        theirs, hers = two_customers.bob.token, two_customers.her_run
+        service = two_customers.service
+
+        # rest
+        asking = urllib.request.Request(
+            two_customers.base + rest.NAMESPACE + "status",
+            data=json.dumps({"run_id": hers}).encode("utf-8"), method="POST")
+        asking.add_header("Content-Type", "application/json")
+        asking.add_header(rest.TOKEN_HEADER, theirs)
+        asking.add_header(rest.SPEAKS_HEADER, contract.PROTOCOL_VERSION)
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(asking, timeout=30)
+        said = refused.value.read().decode("utf-8").replace(hers, "")
+        assert not two_customers.names_her(said), said
+
+        # mcp
+        asking = urllib.request.Request(
+            two_customers.base + rest.MCP_PATH, method="POST",
+            data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                             "params": {"name": schemas.tool_name_for("status"),
+                                        "arguments": {"run_id": hers}}}).encode("utf-8"))
+        asking.add_header("Content-Type", "application/json")
+        asking.add_header(rest.TOKEN_HEADER, theirs)
+        with urllib.request.urlopen(asking, timeout=30) as answer:
+            assert json.loads(answer.read().decode("utf-8"))["result"]["isError"] is True
+
+        # older_door
+        asking = urllib.request.Request(two_customers.base + "/v1/jobs/" + hers)
+        asking.add_header(rest.TOKEN_HEADER, theirs)
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(asking, timeout=30)
+        assert refused.value.code == 404
+
+        # browser -- the session belongs to the OTHER account, so bob's run is the foreign one
+        not_hers = _a_run_by(service, two_customers.bob)
+        looking = dispatch.identify_session(service, two_customers.her_session,
+                                            two_customers.her_csrf)
+        with pytest.raises(dispatch.Refused):
+            dispatch.dispatch("status", {"run_id": not_hers}, looking, service=service)
+
+        drove = set()
+        with open(str(service.state.root) + "/audit.jsonl", encoding="utf-8") as fh:
+            for line in fh:
+                entry = json.loads(line)
+                if entry.get("operation") == "status" and entry.get("outcome") != "carried_out":
+                    drove.add(entry.get("via"))
+        missing = set(DOORS_THAT_ARE_RECORDED) - drove
+        assert not missing, (
+            "no refused cross-account attempt was recorded through %s, so this file's claim to "
+            "cover every door is not backed by the gateway's own record" % sorted(missing))

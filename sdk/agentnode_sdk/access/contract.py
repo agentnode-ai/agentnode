@@ -651,6 +651,61 @@ OPERATIONS = (
         changes=True,
     ),
     Operation(
+        name="devices.invite",
+        audience=PERSON,
+        risk=CHANGES_ACCESS,
+        confirms_with_a_person=True,
+        since="2",
+        needs=MANAGE_DEVICES,
+        summary="Make an invitation so another machine of yours can reach this sandbox as you.",
+        params=(Field("label", "string",
+                      "what to call the machine you are adding, in words you would recognise",
+                      required=False),),
+        returns=(
+            Field("code", "string",
+                  "the invitation, shown ONCE. Nothing stores it and nothing can show it "
+                  "again -- a list that could redisplay one would be as good as one"),
+            Field("invitation", "string",
+                  "the name your list shows it under, which is not the code and cannot be "
+                  "typed back in"),
+            Field("expires_at", "integer", "when it stops working"),
+            Field("what_to_do", "string",
+                  "the one command to run on the machine being added"),
+        ),
+        # Deliberately a PERSON's operation. An AI holding a device token must not be able to
+        # invite another device into the account it is in: that is how one compromised
+        # connection becomes two.
+        errors=COMMON + ("over_a_ceiling",),
+        changes=True,
+    ),
+    Operation(
+        name="devices.invitations",
+        audience=PERSON,
+        risk=READS,
+        confirms_with_a_person=False,
+        since="2",
+        needs=MANAGE_DEVICES,
+        summary="The invitations you have open, and when each stops working.",
+        params=(),
+        returns=(Field("invitations", "array",
+                       "each one, by the name this gateway gave it -- never by anything that "
+                       "could be presented as one"),),
+        errors=COMMON,
+    ),
+    Operation(
+        name="devices.uninvite",
+        audience=PERSON,
+        risk=CHANGES_ACCESS,
+        confirms_with_a_person=True,
+        since="2",
+        needs=MANAGE_DEVICES,
+        summary="Take back an invitation before anybody uses it.",
+        params=(Field("invitation", "string", "the one to take back, by the name the list shows"),),
+        returns=(Field("withdrawn", "boolean", "whether there was one to take back"),),
+        errors=COMMON,
+        changes=True,
+    ),
+    Operation(
         name="devices.rotate",
         audience=PERSON,
         risk=CHANGES_ACCESS,

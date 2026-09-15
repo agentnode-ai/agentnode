@@ -224,25 +224,10 @@ class RateLimit:
             return True
 
     def _write(self, body: dict) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle, tmp = tempfile.mkstemp(dir=str(self.path.parent),
-                                       prefix="." + self.path.name + "-")
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps(body, sort_keys=True))
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp, self.path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-        try:
-            os.chmod(self.path, 0o600)
-        except OSError:                                       # pragma: no cover - advisory here
-            pass
+        """Beside and renamed over, with the bounded retry Windows needs. One implementation."""
+        from agentnode_sdk.gateway.filelock import atomically
+
+        atomically(self.path, json.dumps(body, sort_keys=True))
 
 
 # --------------------------------------------------------------------------- the decisions

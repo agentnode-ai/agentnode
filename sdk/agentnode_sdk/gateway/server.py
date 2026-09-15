@@ -367,6 +367,12 @@ class GatewayService:
         #: Connections being set up, and the challenge each has to answer before this gateway
         #: will call it compatible.
         self.connections = Connections(self.state.root)
+        #: Invitations into an account that already exists -- "add my other laptop". Separate
+        #: from the operator's single live pairing code, which creates a NEW customer; see
+        #: `gateway/joining.py` for why one slot is right there and wrong here.
+        from agentnode_sdk.gateway.joining import Joining
+
+        self.joining = Joining(self.state.root)
         self.stopping = Stopping(self.state.root, self._stop_it_and_confirm)
         self._restore_interrupted()
         # A container being torn down does not disappear because the process did. Anything the
@@ -2258,6 +2264,11 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._older_door_refuses(
                     token, refused, run_id=self.path.rsplit("/", 1)[-1],
                     speaks=404 if refused.refusal == "no_such_run" else 0)
+            # What this door SERVED, recorded here rather than inside the render, because this
+            # is the call site where the caller genuinely asked for a record. The older cancel
+            # renders one too, and recording it there would say a client had called `status`
+            # when it had not.
+            _dispatch.record_what_was_done(self.service, "status", who)
             return self._send(200, self.service.sign_answer(
                 self.service.stamp(answer), token))
 
@@ -2420,7 +2431,11 @@ class _Handler(BaseHTTPRequestHandler):
                 via="older_door")
             try:
                 _dispatch.dispatch("cancel", {"run_id": run_id}, who, service=self.service)
-                answer = _dispatch.rendered_record(self.service, who, run_id)
+                # `asked_for` is what the CALLER asked for. A refusal while rendering the record
+                # back is a refused cancel from where this client is standing, and the audit
+                # says that rather than inventing a status call it never made.
+                answer = _dispatch.rendered_record(self.service, who, run_id,
+                                                   asked_for="cancel")
             except _dispatch.Refused as refused:
                 return self._older_door_refuses(
                     token, refused, run_id=run_id,
@@ -2561,20 +2576,28 @@ def make_server(
         from agentnode_sdk.gateway import retention as _retention
 
         acted_on = ""
+        # Retention is swept on the loop that is already running, rather than by a timer somebody
+        # has to install: a review was right that an invocable function is not enforcement, and
+        # until this existed the periods in retention.json described an intention.
+        #
+        # WHEN it looks is held in memory, and that is the whole of the care here. The first
+        # version asked `sweep_if_due` every second, which reads and parses a file to decide
+        # whether an hour has passed -- so this loop went from one stat per tick to several file
+        # operations per tick, and the resource tests started catching a descriptor mid-sweep
+        # under load. Reading a file every second to learn that an hour has not passed is waste
+        # whatever it costs; a monotonic deadline is the same behaviour for none of it.
+        look_at_retention = time.monotonic()
         while getattr(target, "agentnode_serving", False):
             time.sleep(1.0)
-            # Retention is swept HERE, on the loop that is already running, rather than by a
-            # timer somebody has to install. A review was right that an invocable function is
-            # not enforcement: the criterion asks for something that runs, and until this line
-            # existed the periods in retention.json described an intention. `sweep_if_due` is
-            # cheap when nothing is owed -- it reads one small file and returns.
-            try:
-                _retention.sweep_if_due(service.state.root)
-            except Exception:                                 # noqa: BLE001 - never kill the loop
-                # A sweep that cannot run must not stop a gateway from serving or from acting on
-                # the operator's stop. It is visible: `agentnode gateway watch` reports when the
-                # last successful sweep was, and "never" is a value it can report.
-                pass
+            if time.monotonic() >= look_at_retention:
+                look_at_retention = time.monotonic() + _retention.SWEEP_EVERY_SECONDS
+                try:
+                    _retention.sweep_if_due(service.state.root)
+                except Exception:                             # noqa: BLE001 - never kill the loop
+                    # A sweep that cannot run must not stop a gateway serving or acting on the
+                    # operator's stop. It is visible: `agentnode gateway watch` reports when the
+                    # last sweep was, and "never" is a value it can report.
+                    pass
             try:
                 halted = why_it_is_stopped(service.state.root)
             except Exception:                                 # noqa: BLE001 - never kill the loop

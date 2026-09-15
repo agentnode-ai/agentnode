@@ -208,8 +208,20 @@ def _pair(service, params: dict) -> dict:
         # No source address is passed, and that is a decision rather than an omission: behind a
         # reverse proxy every client shares one, and a forwarding header is set by whoever can
         # set one. A limit keyed on either would be a limit on the wrong thing.
-        token = service.state.redeem_pairing(
-            str(params.get("code", "")), client_name=str(params.get("client_name", "")))
+        presented = str(params.get("code", ""))
+        named = str(params.get("client_name", ""))
+        # ONE attempt, charged once, then each store tried. An invitation into an existing
+        # account and the operator's invitation to become a new customer are both guessable in
+        # the same way, so both are bounded by the same counters -- and the account-join store
+        # is tried FIRST so that presenting one does not consume the operator's outstanding
+        # code, which is single-use and would otherwise be spent by somebody else's join.
+        service.state.spend_a_pairing_attempt()
+        joins = service.joining.redeem(presented)
+        if joins:
+            token = service.state.redeem_joining(presented, joins, client_name=named)
+            service.state.a_pairing_attempt_worked()
+        else:
+            token = service.state.redeem_pairing(presented, client_name=named, charge=False)
     except PairingError as exc:
         raise Refused("not_authenticated", str(exc),
                       "Ask whoever runs this sandbox for a fresh invitation.") from exc
@@ -362,22 +374,41 @@ def identify_client(service, client_id: str, via: str = ""):
     return NOBODY
 
 
-def rendered_record(service, principal: Principal, run_id: str) -> dict:
+def rendered_record(service, principal: Principal, run_id: str,
+                    *, asked_for: str = "status") -> dict:
     """The whole run record, for a door whose wire shape predates the contract.
 
     Those doors answer with the entire signed record, and their clients read fields the narrower
     `status` and `result` deliberately do not carry. They are translators now, so they must not
     do their own ownership check: that is a decision, and decisions live here. This performs
     exactly the checks the contract's own operations perform, in the same order, and renders.
+
+    `asked_for` names the operation the CALLER asked for, because that is what an audit line is
+    about. The older status door asks for a record; the older cancel door asks for a cancel and
+    is handed the record afterwards, and a refusal there is a refused cancel rather than a
+    refused status.
+
+    ## Why the refusal is recorded here
+
+    This is the one dispatcher entry point that does not go through `dispatch`, so nothing above
+    it wrote an audit line -- and `test_tenancy_on_every_surface.py` found the consequence:
+    somebody walking another account's run ids through `/v1/jobs/<run>` was refused every time
+    and left no trace at all. That is the oldest door, with the least modern client, and it was
+    the only one a probe could use silently. A log that records probes on three doors out of
+    four is not a log somebody can rely on to see a probe.
     """
-    # Authentication FIRST, as everywhere else. Without this line an unauthenticated caller
-    # reached a record lookup and was saved only by the ownership test that follows -- safe by
-    # accident rather than by order, which is the arrangement this whole layer exists to end.
-    if not principal.authenticated:
-        raise Refused("not_authenticated",
-                      "This request did not come with a credential this sandbox recognises.",
-                      "Pair this device again with a fresh invitation.")
-    return _a_run_of_this_caller(service, principal, run_id).public()
+    try:
+        # Authentication FIRST, as everywhere else. Without this line an unauthenticated caller
+        # reached a record lookup and was saved only by the ownership test that follows -- safe
+        # by accident rather than by order, which this whole layer exists to end.
+        if not principal.authenticated:
+            raise Refused("not_authenticated",
+                          "This request did not come with a credential this sandbox recognises.",
+                          "Pair this device again with a fresh invitation.")
+        return _a_run_of_this_caller(service, principal, run_id).public()
+    except Refused as refusal:
+        _audit(service, asked_for, principal, refusal.refusal, refusal.because)
+        raise
 
 
 def _check_parameters(op, params: dict) -> dict:
@@ -535,6 +566,23 @@ def record_a_refusal(service, operation: str, principal: Principal, outcome: str
     looking for a probe would most want, because a probe rarely gets as far as a real operation.
     """
     _audit(service, operation, principal, outcome, detail)
+
+
+def record_what_was_done(service, operation: str, principal: Principal) -> None:
+    """For a door that carried something out WITHOUT going through `dispatch`.
+
+    Its sibling above records what a transport refused; this records what a transport served.
+    Both exist for the same reason and neither is a licence to decide anything out here: the
+    only caller is a translator that rendered a record the dispatcher had already agreed to
+    hand over, and what it writes is the operation the caller asked for.
+
+    Kept separate from `rendered_record` rather than folded into it, so that a door which was
+    handed a record as a by-product of asking for something else -- the older cancel -- cannot
+    end up recorded as having asked for the record. A compatibility observation is read off
+    these lines, and a line saying a client exercised `status` when it never called it would be
+    a claim about somebody else's client that nothing measured.
+    """
+    _audit(service, operation, principal, "carried_out")
 
 
 def dispatch(operation: str, params: dict, principal: Principal, *, service,
@@ -1608,6 +1656,37 @@ def fingerprint_of(session_id: str) -> str:
     return fingerprint(session_id)
 
 
+def _devices_invite(service, principal, params):
+    """An invitation into the account that asked. Never into any other.
+
+    There is no parameter for which account: it is the caller's, established from the device
+    record, so there is no spelling of this call that invites somebody into an account they are
+    not already in.
+    """
+    from agentnode_sdk.gateway.joining import TooManyOutstanding
+
+    try:
+        made = service.joining.offer(principal.account_id, by_device=principal.device_id,
+                                     label=str(params.get("label") or ""))
+    except TooManyOutstanding as too_many:
+        raise Refused("over_a_ceiling", str(too_many),
+                      "Withdraw one you are not using, then make another.") from too_many
+    return {"code": made["code"], "invitation": made["name"],
+            "expires_at": int(made["expires_at"]),
+            "what_to_do": "agentnode remote connect %s --code %s"
+                          % (service.hello().get("address") or "<this sandbox's address>",
+                             made["code"])}
+
+
+def _devices_invitations(service, principal, params):
+    return {"invitations": service.joining.outstanding(principal.account_id)}
+
+
+def _devices_uninvite(service, principal, params):
+    return {"withdrawn": bool(service.joining.withdraw(principal.account_id,
+                                                       str(params["invitation"])))}
+
+
 def _devices_rotate(service, principal, params):
     """Hand back a replacement credential for the identity already asking.
 
@@ -1656,6 +1735,9 @@ def _devices_revoke(service, principal, params):
         return {"device_id": wanted, "withdrawn": False, "runs_stopping": []}
     service.sessions.end_every(wanted)
     service.connections.drop_everything_touching(wanted)
+    # And any invitation this device made. An unspent one is a way back into the account it was
+    # withdrawn from -- the same shape as an unspent download ticket, and the same reason.
+    service.joining.drop_everything_from(wanted)
 
     stopped = []
     for run_id, record in list(service.runs.items()):
@@ -1719,4 +1801,7 @@ HANDLERS = {
     "devices.list": _devices_list,
     "devices.rotate": _devices_rotate,
     "devices.revoke": _devices_revoke,
+    "devices.invite": _devices_invite,
+    "devices.invitations": _devices_invitations,
+    "devices.uninvite": _devices_uninvite,
 }

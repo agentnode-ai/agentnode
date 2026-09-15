@@ -699,6 +699,87 @@ def cmd_clients(args) -> int:
     return 0
 
 
+def cmd_keeps(args) -> int:
+    """What this gateway keeps, for how long, and what expiring costs. Show or set.
+
+    Every class has a period. An earlier version had two, because two files persisted by default
+    and the rest expired on schedules nobody chose -- which is a retention period the operator
+    cannot see, not an absence of one.
+    """
+    from agentnode_sdk.gateway import retention
+
+    root = _root(args)
+    asked = {name: getattr(args, "%s_days" % name, None) for name in retention.CLASSES}
+    if all(value is None for value in asked.values()):
+        try:
+            now = retention.read_retention(root)
+        except retention.RetentionUnreadable as unreadable:
+            print()
+            print(f"  {bold('This gateway is sweeping nothing.')}")
+            print(f"  {unreadable}")
+            return 1
+        print()
+        print(f"  {bold('What this gateway keeps')}")
+        print()
+        for row in retention.describe():
+            days = now.days_for(row["name"])
+            for_how_long = ("%d days" % days) if days else bold("indefinitely")
+            print(f"    {row['name']:<12} {for_how_long:<22} {row['file']}")
+            print(f"      {dim(row['is'])}")
+            print(f"      {dim('when it expires: ' + row['expiring_means'])}")
+            if row["also_expires_on_its_own"]:
+                print(f"      {dim('also expires on its own, sooner; this is the ceiling')}")
+        print()
+        print("  A job's code and a job's output are in NO class here: they are never written")
+        print("  to disk. They are held in memory for the run and handed back to whoever ran it.")
+        print()
+        print("  To change one:")
+        print("    agentnode gateway keeps --audit-days 30")
+        print("    agentnode gateway keeps --metering-days 0      (0 = indefinitely, on purpose)")
+        return 0
+
+    try:
+        now = retention.read_retention(root)
+    except retention.RetentionUnreadable:
+        now = retention.Retention()
+    changed = retention.Retention(**{
+        **now.as_dict(),
+        **{"%s_days" % name: int(value) for name, value in asked.items() if value is not None},
+    })
+    retention.write_retention(root, changed)
+    print()
+    print(f"  {bold('Set.')} It applies at the next sweep, which is at most an hour away.")
+    for row in retention.describe():
+        days = changed.days_for(row["name"])
+        print(f"    {row['name']:<12} {('%d days' % days) if days else 'indefinitely'}")
+    return 0
+
+
+def cmd_sweep(args) -> int:
+    """Sweep now rather than waiting for the hour. What an operator does after lowering one."""
+    from agentnode_sdk.gateway import retention
+
+    root = _root(args)
+    try:
+        done = retention.sweep(root)
+    except retention.RetentionUnreadable as unreadable:
+        print()
+        print(f"  {bold('Nothing was swept.')}")
+        print(f"  {unreadable}")
+        return 1
+    print()
+    print(f"  {bold('Swept.')}")
+    for name, how_many in sorted(done["swept"].items()):
+        print(f"    {name:<12}: {how_many}")
+    if done["problems"]:
+        print()
+        print(f"  {bold('Some of it could not be done:')}")
+        for problem in done["problems"]:
+            print(f"    - {problem}")
+        return 1
+    return 0
+
+
 def cmd_export(args) -> int:
     """Hand one customer everything this gateway holds about them, and write down that you did.
 
@@ -847,21 +928,78 @@ def cmd_accounts(args) -> int:
         print(f"    agentnode gateway accounts --account {wanted} --restore")
         return 0
 
+    from agentnode_sdk.gateway import accounts as _acc
+
+    if getattr(args, "claim", False):
+        if not wanted or not wanted.startswith(_acc.SOLO_PREFIX):
+            print()
+            print("  --claim turns a device that predates accounts into a named customer.")
+            print("  Name it with the solo: id the list shows, and give it a name:")
+            print('    agentnode gateway accounts --account solo:abcd... --claim --name "Acme"')
+            return 2
+        called = str(getattr(args, "name", "") or "").strip()
+        if not called:
+            print()
+            print("  What is this customer called? A named account is the point of claiming one.")
+            return 2
+        if wanted not in devices:
+            print()
+            print(f"  No device here is in {wanted!r}.")
+            return 1
+        made = state.accounts.create(name=called)
+        moved = 0
+        for entry in devices[wanted]:
+            if state.move_device_to(str(entry.get("client_id") or ""), made.account_id):
+                moved += 1
+        print()
+        print(f"  {bold(called)} is now a customer: {made.account_id}")
+        print(f"  {moved} device(s) moved into it, and nothing else changed -- the same")
+        print("  credentials keep working, and their runs are still theirs.")
+        print()
+        print("  To add another machine to them, they can do it themselves from the console,")
+        print("  or you can:  agentnode gateway pair --account %s" % made.account_id)
+        return 0
+
     print()
     if not devices:
         print("  No customers yet. Run `agentnode gateway pair` to let the first one in.")
         return 0
-    print(f"  {bold('Customers on this gateway')}")
-    print()
-    for account_id in sorted(devices):
-        try:
-            found = state.accounts.get(account_id)
-            standing = "active" if found.active else ("suspended: " + found.suspended_because)
-        except (_accounts.NoSuchAccount, _accounts.AccountsUnreadable) as exc:
-            standing = "cannot be read (%s)" % str(exc)[:60]
-        print(f"    {account_id:<28} {len(devices[account_id]):>2} device(s)  {standing}")
-        for entry in devices[account_id]:
-            print(f"      {dim(str(entry.get('client_name') or 'unnamed'))}")
+
+    named = {a: d for a, d in devices.items() if not a.startswith(_acc.SOLO_PREFIX)}
+    solo = {a: d for a, d in devices.items() if a.startswith(_acc.SOLO_PREFIX)}
+
+    if named:
+        print(f"  {bold('Customers')}")
+        print()
+        for account_id in sorted(named):
+            try:
+                found = state.accounts.get(account_id)
+                standing = ("active" if found.active
+                            else "suspended: " + found.suspended_because)
+                called = found.name or "(unnamed)"
+            except (_acc.NoSuchAccount, _acc.AccountsUnreadable) as exc:
+                standing, called = "cannot be read (%s)" % str(exc)[:50], "?"
+            print(f"    {called:<22} {dim(account_id)}  "
+                  f"{len(named[account_id])} device(s)  {standing}")
+            for entry in named[account_id]:
+                print(f"      {dim(str(entry.get('client_name') or 'unnamed'))}")
+        print()
+
+    if solo:
+        print(f"  {bold('Devices that predate accounts -- NOT customers yet')}")
+        print()
+        print("  Each of these was paired before this gateway had accounts, so each is its own")
+        print("  account: the safe reading, and not a customer model. Several of them may")
+        print("  belong to ONE person, and this gateway has no way to know which.")
+        print()
+        for account_id in sorted(solo):
+            for entry in solo[account_id]:
+                print(f"    {str(entry.get('client_name') or 'unnamed'):<22} "
+                      f"{dim(account_id)}")
+        print()
+        print("  Turn one into a named customer -- their credential keeps working:")
+        print('    agentnode gateway accounts --account <solo:id> --claim --name "Their name"')
+        print()
     print()
     print("  To stop one:     agentnode gateway accounts --account <id> --suspend --reason ...")
     print("  To let them back: agentnode gateway accounts --account <id> --restore")
@@ -1186,6 +1324,8 @@ def dispatch(args) -> int:
         "clients": cmd_clients,
         "accounts": cmd_accounts,
         "export": cmd_export,
+        "keeps": cmd_keeps,
+        "sweep": cmd_sweep,
         "delete": cmd_delete,
         "watch": cmd_watch,
         "revoke": cmd_revoke,

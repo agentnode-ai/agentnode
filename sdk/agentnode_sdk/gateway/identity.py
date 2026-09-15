@@ -357,8 +357,48 @@ class GatewayState:
             self._pairing = None
             return self._claim_pairing_file() is not None
 
-    def redeem_pairing(self, presented: str, client_name: str = "",
+    def redeem_joining(self, presented: str, account_id: str, client_name: str = "",
                        now: float | None = None) -> str:
+        """Issue a credential into an account that already exists, for a code that named it.
+
+        Reached only from `dispatch._pair`, and only after `Joining.redeem` has atomically
+        claimed the code and returned WHICH account it was for. The account therefore comes from
+        the invitation, exactly as it does for the operator's own: nothing a redeemer sends
+        chooses it.
+
+        The same guards as any other pairing apply before this is reached -- the attempt budget
+        and the failure lockout -- because a code that can be guessed is a code that can be
+        ground at, whichever store it lives in.
+        """
+        now = time.time() if now is None else now
+        self._guard_private()
+        if not _accounts.well_formed(account_id):
+            raise PairingError(
+                "that invitation names an account this gateway does not recognise.")
+        return self._issue_token(client_name=client_name, now=now, account_id=account_id)
+
+    def spend_a_pairing_attempt(self, now: float | None = None) -> None:
+        """The budget and the lockout, without claiming any particular code.
+
+        Both kinds of invitation are guessable in the same way and are therefore bounded by the
+        same counters. Split out so `dispatch._pair` can charge an attempt ONCE and then try
+        each store, rather than charging twice or -- worse -- leaving one store uncounted.
+        """
+        now = time.time() if now is None else now
+        try:
+            self._admission.spend(now)
+            self._throttle.check(now)
+        except Locked as exc:
+            raise PairingError(str(exc)) from None
+
+    def a_pairing_attempt_failed(self, now: float | None = None) -> None:
+        self._throttle.record_failure(time.time() if now is None else now)
+
+    def a_pairing_attempt_worked(self, now: float | None = None) -> None:
+        self._throttle.record_success(time.time() if now is None else now)
+
+    def redeem_pairing(self, presented: str, client_name: str = "",
+                       now: float | None = None, charge: bool = True) -> str:
         """Exchange a valid code for a token. The code is consumed whether or not it matched.
 
         Consuming on failure is what stops a wrong guess being cheap: an attacker gets one attempt
@@ -375,11 +415,16 @@ class GatewayState:
         # Three limits, none of them an address. Every attempt costs budget whether it succeeds or
         # not; failures additionally accumulate towards a lockout; and a code is consumed by one
         # attempt, so a wrong guess spends that code and nobody else's.
-        try:
-            self._admission.spend(now)
-            self._throttle.check(now)
-        except Locked as exc:
-            raise PairingError(str(exc)) from None
+        # `charge=False` when the caller has already spent the attempt -- `dispatch._pair`
+        # charges ONCE and then tries each store, so an attempt that falls through from the
+        # account-invitation store to this one is not counted twice. Counting it twice would
+        # halve the budget for exactly the callers who are behaving correctly.
+        if charge:
+            try:
+                self._admission.spend(now)
+                self._throttle.check(now)
+            except Locked as exc:
+                raise PairingError(str(exc)) from None
 
         # Claim the code and clear it in ONE critical section. Reading it and clearing it as two
         # steps lets two concurrent attempts both see the same live code, which would make a
@@ -637,6 +682,30 @@ class GatewayState:
             return ""
         return str(entry.get("account_id")
                    or _accounts.solo_account_for(str(entry.get("client_id") or "")))
+
+    def move_device_to(self, client_id: str, account_id: str) -> bool:
+        """Put an existing device into an account. How a solo device becomes a customer.
+
+        The only mover is the operator, through `agentnode gateway accounts --claim`: a device
+        that predates accounts is its own account by default, which is the SAFE reading and is
+        not a customer. Naming it is what turns nineteen devices that happen to be on one
+        machine into however many customers there really are.
+
+        Refuses an account id this gateway did not issue, for the same reason `_issue_token`
+        does: an account id ends up as a key in counter files and in the meter.
+        """
+        if not _accounts.well_formed(account_id):
+            raise PairingError(
+                "%r is not an account this gateway issued." % str(account_id)[:64])
+        tokens = self._read_tokens()
+        for token_hash, record in list(tokens.items()):
+            if record.get("client_id") != str(client_id):
+                continue
+            record["account_id"] = str(account_id)
+            tokens[token_hash] = record
+            self._write_tokens(tokens)
+            return True
+        return False
 
     def devices_in(self, account_id: str) -> list[dict]:
         """The devices of ONE account, which is what a customer may be shown.

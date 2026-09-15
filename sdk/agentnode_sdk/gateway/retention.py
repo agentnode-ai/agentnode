@@ -1,36 +1,30 @@
 """How long this gateway keeps things, how a customer gets their data out, and how it goes.
 
-## What is actually kept
+## Every class, and a period for each
 
-Most of what this gateway holds already forgets by itself, and saying so precisely matters more
-than adding a policy on top of it:
+`CLASSES` is the table: what the file is, what it holds, how long it is kept by default, and what
+a customer loses when it expires. An operator sets a period per class; the sweep enforces all of
+them; `describe()` renders the table for a command or a page.
 
-    sessions          expire, and are removed when they do
-    enrolments        expire, and are tidied on the next read
-    use counters      a rolling window; entries outside it are dropped on every write
-    rate counters     the same, over a minute
-    ledger nonces     pruned by age, which is what makes replay protection bounded
-    a job's output    held in memory for the run's lifetime and never written to disk
+An earlier version had periods for the two classes that persist by default and said the rest
+forget by themselves. That was true and it was not the point. A class that expires on a schedule
+nobody chose has a retention period the operator cannot see or change, and "it is already short"
+is not a policy. The classes that DO expire on their own still do -- the period here is a ceiling
+over that, so a session that ends after twelve hours never reaches a seven-day period, and the
+period is still the operator's to lower.
 
-Two things do not, and they are the two with a reason to persist:
-
-    audit.jsonl       every operation attempted, so a probe is visible afterwards
-    use-log.jsonl     what each run used, which is what a bill is eventually made from
-
-So there are exactly two configurable periods, and pretending there are twelve would be a
-configuration surface that mostly does nothing.
+**A job's code and a job's output are in no class**, because they are never written to disk. They
+are held in memory for the run and handed to the caller who submitted it.
 
 ## The default is not "for ever"
 
-    audit             90 days
-    metering          400 days
-
-Neither is a legal opinion and both are stated where somebody can change them. 400 rather than 365
-because a yearly reconciliation happens after the year ends.
+Zero means indefinitely and has to be written on purpose; a sweep reports which classes are being
+kept that way. Nothing here is a legal opinion.
 
 An unreadable retention file does **not** silently keep everything. It refuses to sweep and says
 so: deleting on a guess is worse than not deleting, and a sweep that quietly did nothing is how a
-retention policy becomes a document rather than a behaviour.
+retention policy becomes a document rather than a behaviour. A class that cannot be swept is
+named in `problems` rather than counted as swept.
 
 ## Deletion is not retention
 
@@ -43,8 +37,11 @@ see `meter.erase`, which is how erasure and a hash chain are reconciled.
 * **The fact that lines existed**, as signed tombstones: their number, when they were erased and
   why, and nothing about who or what. Removing them outright would mean anybody who can delete
   can also remove a line invisibly, which is the property the chain exists to have.
-* **Nothing else.** Credentials, sessions, enrolments, counters, the account record, the audit
-  lines and the metering contents all go.
+* **Nothing else** on this gateway. Credentials, sessions, enrolments, counters, ledger entries,
+  the account record, the audit lines and the metering contents all go.
+* **Backups and exports taken before the deletion**, which it cannot reach. See
+  `deploy/backup-and-restore.sh` and `delete_account`, both of which say so rather than leaving
+  it to be assumed.
 """
 from __future__ import annotations
 
@@ -58,14 +55,91 @@ from pathlib import Path
 #: Where the operator's periods live.
 RETENTION_NAME = "retention.json"
 
-#: The two classes that persist. Everything else forgets by itself; see the module docstring.
-CLASSES = ("audit", "metering")
-
-#: What each class is kept for when nobody has said otherwise.
-DEFAULT_AUDIT_DAYS = 90
-DEFAULT_METERING_DAYS = 400
-
 DAY = 24 * 60 * 60.0
+
+#: EVERY class this gateway stores, with what it is, what it defaults to, and what a customer
+#: loses when it expires. One table, so a class added later that is not in it is a class the
+#: sweep does not know about -- and a test reads this against the files a real gateway writes.
+#:
+#: Several of these ALSO expire on their own, and keep doing so. The period here is a ceiling
+#: over that rather than a replacement for it: a session that ends after twelve hours never
+#: reaches a seven-day retention period, and the period is still the operator's to lower.
+CLASSES = {
+    "audit": {
+        "file": "audit.jsonl",
+        "days": 90,
+        "is": "every operation attempted, so a probe is visible afterwards",
+        "expiring_means": "nobody can look back further than this at who did what",
+        "also_expires_on_its_own": False,
+    },
+    "metering": {
+        "file": "use-log.jsonl",
+        "days": 400,
+        "is": "what each run used, which is what a bill is made from",
+        "expiring_means": "a run older than this can no longer be billed or disputed",
+        "also_expires_on_its_own": False,
+    },
+    "sessions": {
+        "file": "sessions.json",
+        "days": 7,
+        "is": "browser sign-ins",
+        "expiring_means": "a person has to sign in again",
+        "also_expires_on_its_own": True,
+    },
+    "enrolments": {
+        "file": "enrolling.json",
+        "days": 1,
+        "is": "connections being set up, and their one-time download tickets",
+        "expiring_means": "an unfinished setup has to be started again",
+        "also_expires_on_its_own": True,
+    },
+    "ledger": {
+        "file": "ledger.json",
+        "days": 30,
+        "is": "which runs were accepted, and the nonces that make a replay visible",
+        "expiring_means": "a signed request older than this could be sent again",
+        "also_expires_on_its_own": True,
+    },
+    "counters": {
+        "file": "use.json",
+        "days": 2,
+        "is": "what each device and account has used inside the quota window",
+        "expiring_means": "nothing: the window itself is shorter than this",
+        "also_expires_on_its_own": True,
+    },
+    "rate": {
+        "file": "rate.json",
+        "days": 1,
+        "is": "how many requests each caller made in the last minute",
+        "expiring_means": "nothing: the window itself is one minute",
+        "also_expires_on_its_own": True,
+    },
+    "events": {
+        "file": "events.jsonl",
+        "days": 30,
+        "is": "what an operator watched: counts, capacity, refusals, alerts",
+        "expiring_means": "an incident older than this has no counts behind it",
+        "also_expires_on_its_own": False,
+    },
+    "invitations": {
+        "file": "joining.json",
+        "days": 1,
+        "is": "invitations to join an account that a customer has open",
+        "expiring_means": "an unused invitation has to be made again",
+        "also_expires_on_its_own": True,
+    },
+    "exports": {
+        "file": "exports.jsonl",
+        "days": 400,
+        "is": "who took a copy of an account's data, and when",
+        "expiring_means": "'who has a copy of this' becomes unanswerable for older copies",
+        "also_expires_on_its_own": False,
+    },
+}
+
+#: Kept as names for the two that had them before, so nothing that imported them breaks.
+DEFAULT_AUDIT_DAYS = CLASSES["audit"]["days"]
+DEFAULT_METERING_DAYS = CLASSES["metering"]["days"]
 
 
 class RetentionUnreadable(OSError):
@@ -79,13 +153,38 @@ class RetentionUnreadable(OSError):
 
 @dataclass(frozen=True)
 class Retention:
-    """How long each class is kept. Zero means indefinitely, and has to be written on purpose."""
+    """How long each class is kept. Zero means indefinitely, and has to be written on purpose.
 
-    audit_days: int = DEFAULT_AUDIT_DAYS
-    metering_days: int = DEFAULT_METERING_DAYS
+    One field per entry in `CLASSES`, named `<class>_days`, so the two cannot drift: a test
+    compares the fields of this dataclass against the keys of that table and fails if either
+    grows without the other.
+    """
+
+    audit_days: int = CLASSES["audit"]["days"]
+    metering_days: int = CLASSES["metering"]["days"]
+    sessions_days: int = CLASSES["sessions"]["days"]
+    enrolments_days: int = CLASSES["enrolments"]["days"]
+    ledger_days: int = CLASSES["ledger"]["days"]
+    counters_days: int = CLASSES["counters"]["days"]
+    rate_days: int = CLASSES["rate"]["days"]
+    events_days: int = CLASSES["events"]["days"]
+    exports_days: int = CLASSES["exports"]["days"]
+    invitations_days: int = CLASSES["invitations"]["days"]
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+    def days_for(self, class_name: str) -> int:
+        return int(getattr(self, "%s_days" % class_name))
+
+
+def describe() -> list:
+    """Every class, for an operator command and for a customer-facing page.
+
+    A list rather than prose, because "what do you keep and for how long" is a question with a
+    table for an answer, and a paragraph is how a class quietly stops being in it.
+    """
+    return [dict(name=name, **what) for name, what in sorted(CLASSES.items())]
 
 
 def read_retention(root: str | os.PathLike[str]) -> Retention:
@@ -107,10 +206,10 @@ def read_retention(root: str | os.PathLike[str]) -> Retention:
             "the retention periods in %s name %s, which this gateway does not understand. A "
             "period that reads as configured and is not applied is worse than none."
             % (path, ", ".join(repr(u) for u in unknown)))
-    return Retention(
-        audit_days=max(0, int(body.get("audit_days", DEFAULT_AUDIT_DAYS))),
-        metering_days=max(0, int(body.get("metering_days", DEFAULT_METERING_DAYS))),
-    )
+    return Retention(**{
+        "%s_days" % name: max(0, int(body.get("%s_days" % name, what["days"])))
+        for name, what in CLASSES.items()
+    })
 
 
 def write_retention(root: str | os.PathLike[str], retention: Retention) -> Path:
@@ -168,30 +267,34 @@ def sweep(root: str | os.PathLike[str], now: float | None = None) -> dict:
     """
     at = time.time() if now is None else now
     keep = read_retention(root)
-    done = {"audit_removed": 0, "metering_erased": 0, "problems": []}
+    done = {"problems": [], "swept": {}}
 
-    if keep.audit_days:
+    for name in sorted(CLASSES):
+        days = keep.days_for(name)
+        if not days:
+            # Zero means indefinitely, and has to have been written on purpose. Reported so an
+            # operator reading a sweep can see which classes are being kept for ever.
+            done["swept"][name] = "kept indefinitely"
+            continue
         try:
-            done["audit_removed"] = _sweep_audit(root, at - keep.audit_days * DAY)
-        except OSError as exc:
-            done["problems"].append("the audit could not be swept: %s" % str(exc)[:160])
+            done["swept"][name] = _SWEEPERS[name](Path(root), at - days * DAY)
+        except Exception as exc:                              # noqa: BLE001
+            done["problems"].append("%s could not be swept: %s" % (name, str(exc)[:160]))
+            done["swept"][name] = "FAILED"
 
-    if keep.metering_days:
-        try:
-            from agentnode_sdk.gateway import meter
-
-            cutoff = at - keep.metering_days * DAY
-            done["metering_erased"] = meter.erase(
-                root, "past this gateway's metering retention period",
-                lambda line: float(line.get("finished_at") or 0.0) < cutoff)
-        except (OSError, ValueError) as exc:
-            done["problems"].append("the metering record could not be swept: %s"
-                                    % str(exc)[:160])
+    # The two names the earlier shape used, kept so nothing that read them breaks. They are the
+    # same numbers, said twice, rather than a second source of truth.
+    done["audit_removed"] = done["swept"].get("audit", 0)
+    done["metering_erased"] = done["swept"].get("metering", 0)
     return done
 
 
-def _sweep_audit(root, cutoff: float) -> int:
-    path = Path(root) / "audit.jsonl"
+def _sweep_jsonl(path: Path, cutoff: float, when) -> int:
+    """Drop lines older than the cutoff from a JSON-lines file. Returns how many went.
+
+    `when(line)` says what a line's age is. A line this cannot read is KEPT: sweeping is about
+    age, and a line whose age cannot be established is not a line known to be old.
+    """
     if not path.exists():
         return 0
     kept, dropped = [], 0
@@ -201,17 +304,148 @@ def _sweep_audit(root, cutoff: float) -> int:
         try:
             line = json.loads(raw)
         except ValueError:
-            # A torn line is kept rather than dropped: sweeping is about age, and a line this
-            # cannot read is not a line it knows the age of.
             kept.append(raw)
             continue
-        if float(line.get("at") or 0.0) < cutoff:
+        try:
+            age = float(when(line) or 0.0)
+        except (TypeError, ValueError):
+            kept.append(raw)
+            continue
+        if age < cutoff:
             dropped += 1
             continue
         kept.append(raw)
     if dropped:
         _atomically(path, "\n".join(kept) + ("\n" if kept else ""))
     return dropped
+
+
+def _sweep_map(path: Path, cutoff: float, when, inside: str = "") -> int:
+    """The same, for a file holding one JSON object keyed by id."""
+    if not path.exists():
+        return 0
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # Unreadable is not empty. Rewriting it would destroy whatever is there; the sweep says
+        # it could not do this one and the caller reports it.
+        raise
+    if not isinstance(body, dict):
+        return 0
+    target = body.get(inside) if inside else body
+    if not isinstance(target, dict):
+        return 0
+    going = [key for key, value in target.items()
+             if isinstance(value, dict) and float(when(value) or 0.0) < cutoff]
+    for key in going:
+        del target[key]
+    if going:
+        _atomically(path, json.dumps(body, sort_keys=True))
+    return len(going)
+
+
+def _sweep_ledger(root: Path, cutoff: float) -> int:
+    """Runs, nonces and challenges together -- they are one file and one decision."""
+    path = root / CLASSES["ledger"]["file"]
+    if not path.exists():
+        return 0
+    body = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(body, dict):
+        return 0
+    went = 0
+    runs = body.get("runs")
+    if isinstance(runs, dict):
+        going = [k for k, v in runs.items()
+                 if isinstance(v, dict) and float(v.get("first_seen") or 0.0) < cutoff]
+        for k in going:
+            runs.pop(k, None)
+            if isinstance(body.get("challenges"), dict):
+                body["challenges"].pop(k, None)
+        went += len(going)
+    nonces = body.get("nonces")
+    if isinstance(nonces, dict):
+        going = [k for k, t in nonces.items() if float(t or 0.0) < cutoff]
+        for k in going:
+            del nonces[k]
+        went += len(going)
+    if went:
+        _atomically(path, json.dumps(body, sort_keys=True))
+    return went
+
+
+def _sweep_counters(root: Path, cutoff: float) -> int:
+    """`use.json` is {key: [entry, ...]}. A key whose entries all go, goes."""
+    path = root / CLASSES["counters"]["file"]
+    if not path.exists():
+        return 0
+    body = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(body, dict):
+        return 0
+    went, kept = 0, {}
+    for key, entries in body.items():
+        if not isinstance(entries, list):
+            kept[key] = entries
+            continue
+        fresh = [e for e in entries
+                 if isinstance(e, dict) and float(e.get("at") or 0.0) >= cutoff]
+        went += len(entries) - len(fresh)
+        if fresh:
+            kept[key] = fresh
+    if went:
+        _atomically(path, json.dumps(kept, sort_keys=True))
+    return went
+
+
+def _sweep_rate(root: Path, cutoff: float) -> int:
+    """`rate.json` is {key: [timestamp, ...]}."""
+    path = root / CLASSES["rate"]["file"]
+    if not path.exists():
+        return 0
+    body = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(body, dict):
+        return 0
+    went, kept = 0, {}
+    for key, stamps in body.items():
+        if not isinstance(stamps, list):
+            kept[key] = stamps
+            continue
+        fresh = [t for t in stamps if float(t or 0.0) >= cutoff]
+        went += len(stamps) - len(fresh)
+        if fresh:
+            kept[key] = fresh
+    if went:
+        _atomically(path, json.dumps(kept, sort_keys=True))
+    return went
+
+
+def _sweep_metering(root: Path, cutoff: float) -> int:
+    """Erased to signed tombstones rather than removed. See `meter.erase`."""
+    from agentnode_sdk.gateway import meter
+
+    return meter.erase(root, "past this gateway's metering retention period",
+                       lambda line: float(line.get("finished_at") or 0.0) < cutoff)
+
+
+#: One sweeper per class. A class in `CLASSES` with no sweeper here is a KeyError at sweep time
+#: rather than a class quietly kept for ever, and a test asserts the two sets match.
+_SWEEPERS = {
+    "audit": lambda root, cutoff: _sweep_jsonl(
+        root / CLASSES["audit"]["file"], cutoff, lambda line: line.get("at")),
+    "metering": _sweep_metering,
+    "sessions": lambda root, cutoff: _sweep_map(
+        root / CLASSES["sessions"]["file"], cutoff, lambda v: v.get("opened_at")),
+    "enrolments": lambda root, cutoff: _sweep_map(
+        root / CLASSES["enrolments"]["file"], cutoff, lambda v: v.get("began_at")),
+    "ledger": _sweep_ledger,
+    "counters": _sweep_counters,
+    "rate": _sweep_rate,
+    "events": lambda root, cutoff: _sweep_jsonl(
+        root / CLASSES["events"]["file"], cutoff, lambda line: line.get("at")),
+    "exports": lambda root, cutoff: _sweep_jsonl(
+        root / CLASSES["exports"]["file"], cutoff, lambda line: line.get("at")),
+    "invitations": lambda root, cutoff: _sweep_map(
+        root / CLASSES["invitations"]["file"], cutoff, lambda v: v.get("made_at")),
+}
 
 
 # --------------------------------------------------------------------------- deletion
@@ -259,7 +493,14 @@ def delete_account(state, account_id: str, because: str = "the customer asked") 
     from agentnode_sdk.access.enrolment import Connections
     from agentnode_sdk.access.sessions import Sessions
 
+    from agentnode_sdk.gateway.joining import Joining
+
     sessions, enrolling = Sessions(root), Connections(root)
+    try:
+        went["invitations"] = Joining(root).drop_everything_of(wanted)
+    except (OSError, ValueError) as exc:
+        went["problems"].append("this account's open invitations could not be withdrawn: %s"
+                                % str(exc)[:160])
     for device in devices:
         went["sessions"] += sessions.end_every(device)
         went["enrolments"] += enrolling.drop_everything_touching(device)
@@ -504,21 +745,7 @@ def export_account(state, account_id: str) -> dict:
 
 
 def _atomically(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, tmp = tempfile.mkstemp(dir=str(path.parent), prefix="." + path.name + "-")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as fh:
-            fh.write(text)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    try:
-        os.chmod(path, 0o600)
-    except OSError:                                           # pragma: no cover - advisory here
-        pass
+    """Beside and renamed over, with the bounded retry Windows needs. One implementation."""
+    from agentnode_sdk.gateway.filelock import atomically
+
+    atomically(path, text)

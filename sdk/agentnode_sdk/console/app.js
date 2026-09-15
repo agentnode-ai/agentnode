@@ -889,7 +889,8 @@ function devices(){
 function loadDevices(host){
   host.innerHTML = "";
   host.appendChild(el("p", {}, [el("span", {"class":"spin"}), document.createTextNode(" Lädt…")]));
-  call("devices.list").then(function(d){
+  Promise.all([call("devices.list"), call("devices.invitations")]).then(function(both){
+    var d = both[0], open = (both[1] && both[1].invitations) || [];
     host.innerHTML = "";
     var ul = el("ul", {"class":"list"});
     (d.devices||[]).forEach(function(dev){
@@ -903,9 +904,65 @@ function loadDevices(host){
       ]));
     });
     host.appendChild(ul);
+
+    /* Adding the next machine. One button, then a code and the one line to run with it.
+     * Nothing here asks for an account: which account this joins is decided by the sandbox
+     * from the session making the request, so there is no field to get wrong. */
+    host.appendChild(el("h3", {"class":"sub", text:"Weiteres Gerät hinzufügen"}));
+    host.appendChild(el("p", {"class":"lede",
+      text:"Damit erreicht ein zweiter Rechner — oder ein weiterer Zugang — diese Sandbox als " +
+           "Sie. Die Einladung gilt 30 Minuten und funktioniert genau einmal."}));
+    host.appendChild(el("button", {"class":"b", type:"button", id:"invite-device",
+      text:"Einladung erstellen", onclick:function(){ inviteADevice(host); }}));
+
+    if(open.length){
+      host.appendChild(el("h3", {"class":"sub", text:"Offene Einladungen"}));
+      var ol = el("ul", {"class":"list"});
+      open.forEach(function(inv){
+        ol.appendChild(el("li", {"data-invitation": inv.invitation}, [
+          el("div", {"class":"who"}, [
+            el("b", {text: inv.label || "Ohne Namen"}),
+            el("span", {"class":"faint", text:"läuft ab " + when(inv.expires_at)})
+          ]),
+          el("button", {"class":"b quiet", type:"button", text:"Zurückziehen",
+            onclick:function(){
+              call("devices.uninvite", {invitation: inv.invitation}).then(function(){
+                announce("Einladung zurückgezogen."); loadDevices(host);
+              }).catch(function(e){ host.appendChild(problem(e, null)); });
+            }})
+        ]));
+      });
+      host.appendChild(ol);
+    }
   }).catch(function(e){
     host.innerHTML=""; host.appendChild(problem(e, function(){ loadDevices(host); }));
   });
+}
+
+/* The code is shown ONCE, here, because the sandbox never stores it and cannot show it again.
+ * That is said on the screen rather than left for somebody to discover after closing it. */
+function inviteADevice(host){
+  call("devices.invite", {label: ""}).then(function(made){
+    var box = el("div", {"class":"note n-good", id:"the-invitation"}, [
+      el("h3", {text:"Das hier einmal am anderen Rechner eingeben."}),
+      el("p", {"class":"code", id:"invitation-code", text: made.code}),
+      el("p", {text:"Oder dort direkt diesen Befehl ausführen:"}),
+      el("p", {"class":"code", id:"invitation-command", text: made.what_to_do}),
+      el("p", {"class":"said-by",
+        text:"Wird nur jetzt angezeigt. Diese Sandbox speichert die Einladung nicht im " +
+             "Klartext und kann sie nicht noch einmal zeigen — wenn sie weg ist, erstellen " +
+             "Sie einfach eine neue."}),
+      el("button", {"class":"b ghost", type:"button", id:"invitation-done", text:"Fertig",
+        onclick:function(){ loadDevices(host); }})
+    ]);
+    host.insertBefore(box, host.firstChild);
+    announce("Einladung erstellt.");
+  }).catch(function(e){ host.appendChild(problem(e, null)); });
+}
+
+function when(at){
+  if(!at) return "";
+  try { return new Date(at * 1000).toLocaleTimeString(); } catch(e) { return ""; }
 }
 
 function revoke(dev, host){

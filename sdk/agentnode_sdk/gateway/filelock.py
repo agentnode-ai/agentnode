@@ -76,6 +76,55 @@ class LockUnavailable(Exception):
     """The lock could not be taken in time. Callers fail closed rather than proceeding."""
 
 
+#: How long to keep trying to put a file in place when the platform says somebody else has it.
+#: Bounded: a replace that cannot happen in two seconds is a problem to report, not to wait out.
+REPLACE_SECONDS = 2.0
+
+
+def atomically(path, text: str, mode: int = 0o600) -> None:
+    """Write beside, then rename over, so a reader never sees half a file.
+
+    The retry is the part that is not obvious, and it is here rather than copied into five
+    modules. On Windows `os.replace` FAILS with PermissionError while any other handle has the
+    target open -- so an operator lowering a ceiling while the gateway is reading it gets an
+    error, and a test that changes something under load silently changes nothing. Neither is a
+    race in the data: the rename either happens or does not, and retrying briefly is what makes
+    "it happens" the usual answer.
+
+    On POSIX a rename over an open file always succeeds, so the loop runs once and this costs
+    nothing there.
+    """
+    import tempfile as _tempfile
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, tmp = _tempfile.mkstemp(dir=str(path.parent), prefix="." + path.name + "-")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        deadline = time.monotonic() + REPLACE_SECONDS
+        while True:
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:                           # pragma: no cover - Windows only
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.02)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    try:
+        os.chmod(path, mode)
+    except OSError:                                           # pragma: no cover - advisory here
+        pass
+
+
 class ProcessLock:
     """An exclusive lock on `<path>.lock`, held for the duration of a `with` block."""
 

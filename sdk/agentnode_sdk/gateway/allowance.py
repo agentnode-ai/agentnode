@@ -438,22 +438,7 @@ class Use:
 
 
 def _atomically(path: Path, text: str) -> None:
-    """Written beside and renamed over, so a reader never sees half of it."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, tmp = tempfile.mkstemp(dir=str(path.parent), prefix="." + path.name + "-")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as fh:
-            fh.write(text)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    try:
-        os.chmod(path, 0o600)
-    except OSError:                                           # pragma: no cover - advisory here
-        pass
+    """Beside and renamed over, with the bounded retry Windows needs. One implementation."""
+    from agentnode_sdk.gateway.filelock import atomically
+
+    atomically(path, text)

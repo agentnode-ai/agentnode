@@ -458,8 +458,13 @@ class TestTheSweepIsSomethingThatRuns:
 
         from agentnode_sdk.gateway import server
 
-        block = inspect.getsource(server).split("sweep_if_due", 1)[1][:400]
+        said = inspect.getsource(server)
+        # The LAST mention is the call; the earlier ones are the comment explaining it.
+        block = said[said.rindex("sweep_if_due"):][:400]
         assert "except Exception" in block
+        # And it does not READ A FILE every second to learn that an hour has not passed: the
+        # deadline is held in memory, so the loop costs what it cost before the sweep existed.
+        assert "look_at_retention" in said
 
 
 class TestAMeteredLineCannotBeUnattributedByAccident:
