@@ -308,6 +308,46 @@ class TestDeletingACustomer:
             "the nonce went with the run, so the request that used it can be sent again")
         assert not book.knows_run("r" * 32)
 
+    def test_a_deletion_that_could_not_finish_says_so(self, gateway, monkeypatch):
+        """"We deleted your data" is the one claim that must never be made on a guess.
+
+        Every step used to be wrapped in a bare `except: pass`, so a deletion that failed
+        halfway reported the same shape of success as one that worked.
+        """
+        alice = _a_customer(gateway, "alice")
+        _a_metered_line(gateway.state.root, account_id=alice.account_id)
+
+        def cannot(*_a, **_kw):
+            raise OSError("the metering record is on a read-only filesystem")
+
+        monkeypatch.setattr(meter, "erase", cannot)
+        went = retention.delete_account(gateway, alice.account_id)
+        assert went["complete"] is False
+        assert any("could NOT be erased" in p for p in went["problems"]), went["problems"]
+
+    def test_and_a_deletion_that_did_finish_says_that(self, gateway):
+        alice = _a_customer(gateway, "alice")
+        _a_metered_line(gateway.state.root, account_id=alice.account_id)
+        went = retention.delete_account(gateway, alice.account_id)
+        assert went["complete"] is True and went["problems"] == []
+
+    def test_the_operator_command_refuses_to_claim_a_deletion_that_did_not_happen(
+            self, gateway, monkeypatch, capsys):
+        from agentnode_sdk.cli.main import main
+
+        alice = _a_customer(gateway, "alice")
+        _a_metered_line(gateway.state.root, account_id=alice.account_id)
+
+        def cannot(*_a, **_kw):
+            raise OSError("the metering record is on a read-only filesystem")
+
+        monkeypatch.setattr(meter, "erase", cannot)
+        main(["gateway", "delete", "--dir", str(gateway.state.root),
+              "--account", alice.account_id, "--yes"])
+        said = capsys.readouterr().out
+        assert "THIS DELETION DID NOT COMPLETE" in said
+        assert "Do NOT tell the customer their" in said
+
     def test_deleting_twice_is_not_an_error(self, gateway):
         alice = _a_customer(gateway, "alice")
         retention.delete_account(gateway, alice.account_id)

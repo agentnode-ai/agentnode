@@ -243,8 +243,14 @@ def delete_account(state, account_id: str, because: str = "the customer asked") 
     if not _accounts.well_formed(wanted):
         raise _accounts.NoSuchAccount(wanted)
     root = Path(state.root)
+    # `problems` is not decoration. Every step below used to be wrapped in a bare `except:
+    # pass`, so a deletion that failed halfway reported the same shape of success as one that
+    # worked -- and "we deleted your data" is the one claim that must never be made on a guess.
+    # Anything that could not be done is named here, and `complete` is False when the list is
+    # not empty.
     went = {"devices": 0, "sessions": 0, "enrolments": 0, "audit_lines": 0,
-            "metering_erased": 0, "counters": 0, "ledger_runs": 0, "account_record": False}
+            "metering_erased": 0, "counters": 0, "ledger_runs": 0, "account_record": False,
+            "problems": [], "complete": True}
 
     devices = [str(d.get("client_id") or "") for d in state.devices_in(wanted)]
 
@@ -285,8 +291,9 @@ def delete_account(state, account_id: str, because: str = "the customer asked") 
             lambda _run_id, entry: (str(entry.get("owner_account_id") or "") == wanted
                                     or str(entry.get("owner_client_id") or "")
                                     in set(devices)))
-    except (OSError, ValueError):
-        went["ledger_runs"] = 0
+    except (OSError, ValueError) as exc:
+        went["problems"].append(
+            "the ledger still names this account and its runs: %s" % str(exc)[:160])
 
     # 5. The metering. Erased rather than removed: see `meter.erase` for how that is reconciled
     #    with a chain whose whole purpose is to show that nothing was removed.
@@ -295,11 +302,18 @@ def delete_account(state, account_id: str, because: str = "the customer asked") 
             root, because,
             lambda line: (str(line.get("account_id") or "") == wanted
                           or str(line.get("client_id") or "") in set(devices)))
-    except (OSError, ValueError):
-        went["metering_erased"] = 0
+    except (OSError, ValueError) as exc:
+        went["problems"].append(
+            "this account's metered use could NOT be erased and is still readable: %s"
+            % str(exc)[:160])
 
     # 6. The account itself, last.
-    went["account_record"] = bool(state.accounts.forget(wanted))
+    try:
+        went["account_record"] = bool(state.accounts.forget(wanted))
+    except Exception as exc:                                  # noqa: BLE001
+        went["problems"].append("the account record itself could not be removed: %s"
+                                % str(exc)[:160])
+    went["complete"] = not went["problems"]
     return went
 
 
@@ -324,17 +338,20 @@ def delete_run(state, run_id: str, because: str = "the customer asked") -> dict:
     state = _the_state(state)
     root = Path(state.root)
     wanted = str(run_id or "")
-    went = {"metering_erased": 0, "ledger_runs": 0, "audit_lines": 0}
+    went = {"metering_erased": 0, "ledger_runs": 0, "audit_lines": 0,
+            "problems": [], "complete": True}
     try:
         went["metering_erased"] = meter.erase(
             root, because, lambda line: str(line.get("run_id") or "") == wanted)
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError) as exc:
+        went["problems"].append("this run's metered line could NOT be erased: %s"
+                                % str(exc)[:160])
     try:
         went["ledger_runs"] = Ledger(root / "ledger.json").forget_runs(
             lambda run, _entry: str(run) == wanted)
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError) as exc:
+        went["problems"].append("the ledger still names this run: %s" % str(exc)[:160])
+    went["complete"] = not went["problems"]
     return went
 
 

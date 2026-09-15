@@ -768,8 +768,20 @@ def cmd_delete(args) -> int:
 
     went = retention.delete_account(state, wanted, because="the operator deleted this account")
     print()
-    print(f"  {bold(wanted)} is gone from this gateway.")
+    if not went.get("complete", True):
+        print(f"  {bold('THIS DELETION DID NOT COMPLETE.')} Some of this account's data is still")
+        print("  on this gateway:")
+        for problem in went.get("problems", []):
+            print(f"    - {problem}")
+        print()
+        print("  Fix what is named above and run this again. Do NOT tell the customer their")
+        print("  data is gone until this says it is.")
+        print()
+    else:
+        print(f"  {bold(wanted)} is gone from this gateway.")
     for name, how_many in sorted(went.items()):
+        if name in ("problems", "complete"):
+            continue
         print(f"    {name:<18}: {how_many}")
     print()
     print(f"  {bold('What this did NOT reach, and cannot:')}")
