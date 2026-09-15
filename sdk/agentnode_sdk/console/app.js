@@ -80,7 +80,13 @@ var SAYS = {
     "Das passiert, wenn eine Sitzung beendet, ein Zugang zurückgezogen oder die Einladung " +
     "abgelaufen ist. Mit einer neuen Einladung geht es weiter.", "again"],
   not_permitted: ["Dieses Gerät darf das nicht.",
-    "Bitte bei der Person nachfragen, die die Sandbox betreibt.", ""],
+    "Bitte bei der Person nachfragen, die die Sandbox betreibt.", "retry"],
+  unknown_operation: ["Das kennt diese Sandbox nicht.",
+    "Meist ist die Seite älter als die Sandbox oder umgekehrt. Ein Neuladen holt die " +
+    "aktuelle Fassung.", "retry"],
+  upgrade_required: ["Dieser Zugang ist zu alt dafür.",
+    "Die Sandbox erwartet etwas, das dieser Zugang noch nicht mitschickt. Ein Neuladen holt " +
+    "die aktuelle Fassung der Seite.", "retry"],
   gateway_stopped: ["Die Sandbox nimmt gerade keine Arbeit an.",
     "Der Betrieb wurde angehalten. Sobald er wieder läuft, funktioniert alles Weitere " +
     "unverändert.", "retry"],
@@ -89,23 +95,32 @@ var SAYS = {
     "usage"],
   refused_by_policy: ["Das ist hier nicht erlaubt.",
     "Die Sandbox lässt diesen Auftrag nicht zu. Ein einfacherer Auftrag ohne Netzzugriff " +
-    "geht meist.", ""],
+    "geht meist.", "retry"],
   sandbox_unavailable: ["Die Sandbox selbst läuft gerade nicht.",
     "Ohne sie wird nichts ausgeführt — das ist so gewollt. Bitte später noch einmal versuchen.",
     "retry"],
   disclosure_required: ["Dafür fehlt Ihre Zustimmung.",
     "Bitte noch einmal starten: Sie bekommen zuerst zu sehen, was passieren würde.", "retry"],
   no_such_run: ["Das gibt es hier nicht (mehr).", "Bitte die Übersicht neu laden.", "retry"],
-  not_finished: ["Der Auftrag läuft noch.", "Das Ergebnis erscheint, sobald er fertig ist.", ""],
+  not_finished: ["Der Auftrag läuft noch.", "Das Ergebnis erscheint, sobald er fertig ist.",
+    "retry"],
   malformed: ["Diese Anfrage war nicht in Ordnung.", "Bitte die Seite neu laden.", "retry"],
   unreachable: ["Keine Verbindung zur Sandbox.",
     "Prüfen, ob der Rechner läuft, auf dem die Sandbox betrieben wird.", "retry"]
 };
 function explain(e){
   var k = SAYS[e && e.refused];
-  if(k) return {title:k[0], help:k[1], fix:k[2]};
+  var said = [];
+  // The sandbox's OWN words, when it sent any. The table above says what KIND of thing
+  // happened, in the reader's language, and that is what somebody reads first. It cannot say
+  // what happened to THEM: "die Sandbox nimmt keine Arbeit an" and "Ihr Konto ist gesperrt,
+  // weil ..." arrive under the same refusal name, and showing only the first tells a suspended
+  // customer something that is not true of them and leaves them nothing to do.
+  if(e && e.because) said.push(e.because);
+  if(e && e.what_to_do) said.push(e.what_to_do);
+  if(k) return {title:k[0], help:k[1], fix:k[2], said:said};
   return {title:"Etwas hat nicht funktioniert.",
-          help:(e && e.message) || "Bitte noch einmal versuchen.", fix:"retry"};
+          help:(e && e.message) || "Bitte noch einmal versuchen.", fix:"retry", said:said};
 }
 
 /* --- little helpers ------------------------------------------------------- */
@@ -115,9 +130,10 @@ function el(tag, attrs, kids){
   for(var k in (attrs||{})){
     var v = attrs[k];
     if(v === null || v === undefined || v === false) continue;
-    // Deliberately no innerHTML anywhere in this file. Everything a person or a
-    // gateway supplies becomes a text node, so a device called
-    // "<script>..." is a device with an odd name and nothing more.
+    // innerHTML is never assigned anything but the empty string in this file -- it is
+    // used to CLEAR a node and never to fill one. Everything a person or a gateway
+    // supplies becomes a text node, so a device called "<script>..." is a device with
+    // an odd name and nothing more. A test checks the assignment, not this comment.
     if(k === "text") n.textContent = v;
     else if(k.slice(0,2) === "on") n.addEventListener(k.slice(2), v);
     else if(v === true) n.setAttribute(k, "");
@@ -240,6 +256,13 @@ function problem(e, retry){
   var box = el("div", {"class":"note n-bad", role:"alert"}, [
     el("h3", {text:w.title}), el("p", {text:w.help})
   ]);
+  // Marked off as coming from the sandbox rather than from this page, so a reader can tell
+  // which sentence is a general explanation and which one is about them. Text nodes, like
+  // everything else here.
+  if(w.said && w.said.length){
+    box.appendChild(el("p", {"class":"said-by", text:"Die Sandbox sagt dazu:"}));
+    w.said.forEach(function(line){ box.appendChild(el("p", {text:line})); });
+  }
   // Exactly one. A person meeting an error wants to know what to press.
   if(w.fix === "retry" && retry)
     box.appendChild(el("button", {"class":"b ghost", type:"button",

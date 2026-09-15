@@ -108,6 +108,8 @@ input[type=text]:focus{border-color:var(--accent)}
 .n-plain{background:transparent;border-color:var(--line);color:var(--muted)}
 .note p{margin:.3em 0;color:inherit}
 .note .b{margin-top:.5rem}
+/* What the sandbox itself said, marked off from what this page says about it. */
+.note .said-by{color:var(--faint);font-size:.9em;margin-top:.55em;margin-bottom:.1em}
 
 .pick{display:grid;gap:.6rem}
 .pick button{
