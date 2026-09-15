@@ -1464,9 +1464,19 @@ def _cancel(service, principal, params):
 
 
 def _usage(service, principal, params):
+    """What this device has used, AND what this customer has, because both can refuse them.
+
+    It reported only the device's figures, which is the narrower answer and was safe -- but a
+    customer whose second machine exhausted the account allowance was shown a number well under
+    the ceiling and refused anyway, with nothing in the answer to explain it. The account's
+    ceilings were already published here; its use was not.
+    """
     allowed = service.allowance()
     runs, seconds = service.use.so_far(principal.client_id)
+    account_runs, account_seconds = (
+        service.use.so_far(principal.account_id) if principal.account_id else (0, 0.0))
     return {"runs": int(runs), "seconds": int(seconds),
+            "account_runs": int(account_runs), "account_seconds": int(account_seconds),
             "ceilings": allowed.as_dict(), "clears_at": None}
 
 

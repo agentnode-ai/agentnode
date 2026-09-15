@@ -543,9 +543,21 @@ OPERATIONS = (
         params=(Field("window", "string", "which window to report", required=False,
                       one_of=("current", "all")),),
         returns=(
-            Field("runs", "integer", "how many have been started in the window"),
-            Field("seconds", "integer", "how much wall clock has been used in it"),
-            Field("ceilings", "object", "what the operator has set"),
+            Field("runs", "integer", "how many THIS DEVICE has started in the window"),
+            Field("seconds", "integer", "how much wall clock this device has used in it"),
+            # The account's own figures, because the account's ceiling is one of the two that
+            # can refuse you. A customer shown only their device's use cannot tell why they were
+            # refused when a second machine of theirs is what exhausted the allowance -- and
+            # would reasonably conclude the gateway is wrong.
+            Field("account_runs", "integer",
+                  "how many THIS CUSTOMER has started in the window, across every device "
+                  "they have", since="2"),
+            Field("account_seconds", "integer",
+                  "how much wall clock this customer has used in it, across every device",
+                  since="2"),
+            Field("ceilings", "object",
+                  "what the operator has set -- both the per-device and the per-account "
+                  "ceilings, because both apply and the tighter one decides"),
             Field("clears_at", "integer", "when the oldest run stops counting", required=False),
         ),
         errors=COMMON,
