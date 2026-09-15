@@ -835,14 +835,36 @@ class TestEveryCrossAccountWriteIsRefused:
         declared = contract.find("submit")
         assert not [f for f in declared.params if "account" in f.name or "owner" in f.name]
 
+        # A COMPLETE, otherwise-valid submission, plus the one stray field. The first version of
+        # this sent an incomplete one, so `malformed` came back for a MISSING required parameter
+        # whether or not unknown ones were refused -- and a counter-check found it: removing the
+        # unknown-parameter check left the test green. It was not evidence for the mechanism it
+        # was pointed at.
+        import base64
+        import hashlib
+        import uuid
+
+        code = b"print(1)\n"
+        shown = dispatch.dispatch(
+            "prepare",
+            {"artifact_sha256": hashlib.sha256(code).hexdigest(),
+             "artifact_bytes": len(code), "wall_clock_s": 30},
+            two_customers.bob, service=service)
+        whole = {"run_id": uuid.uuid4().hex,
+                 "artifact": base64.b64encode(code).decode("ascii"),
+                 "wall_clock_s": 30,
+                 "accepted_disclosure": shown["accepted_disclosure"]}
+
         with pytest.raises(dispatch.Refused) as refused:
-            dispatch.dispatch("submit", {"run_id": "a" * 32, "artifact": "",
-                                         "account_id": two_customers.alice.account_id},
+            dispatch.dispatch("submit",
+                              dict(whole, account_id=two_customers.alice.account_id),
                               two_customers.bob, service=service)
         assert refused.value.refusal == "malformed", refused.value.because
+        assert "account_id" in refused.value.because, refused.value.because
 
-        # And what he CAN submit lands in his own account.
-        his = _a_run_by(service, two_customers.bob)
+        # The control: the SAME submission without the stray field is accepted, so what was
+        # refused above was the field and not the request.
+        his = dispatch.dispatch("submit", whole, two_customers.bob, service=service)["run_id"]
         assert service.runs[his].owner_account_id == two_customers.bob.account_id
 
     def test_consume_an_invitation(self, two_customers):

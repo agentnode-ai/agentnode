@@ -223,6 +223,67 @@ class TestNothingWalksPastACeiling:
             "a separate process walked past a ceiling of one: %r / %r"
             % (done.stdout, done.stderr[-300:]))
 
+    def test_and_FOUR_PROCESSES_ARRIVING_AT_ONCE_get_exactly_one_slot(self, gateway, tmp_path):
+        """The one above proves the counter is SHARED across processes. It does not prove it is
+        LOCKED across them, and a counter-check found that out: removing `ProcessLock` from
+        `Use.claim` left it green, because the parent claims and finishes before the child even
+        starts. A test that passes without the mechanism is not evidence for the mechanism.
+
+        So: four real processes, none of which touches the file until all four are ready, each
+        judging against a ceiling of one. Exactly one may come back ADMITTED. Without the lock
+        they read the same empty counter and several get in.
+        """
+        root = str(gateway.state.root)
+        go = tmp_path / "go"
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        script = (
+            "import os, sys, time\n"
+            "sys.path.insert(0, %r)\n"
+            "from agentnode_sdk.gateway.allowance import OverTheCeiling, Use\n"
+            "me = sys.argv[1]\n"
+            "def judge(runs, seconds, oldest):\n"
+            "    if runs >= 1: raise OverTheCeiling('runs_per_window', 'one is the ceiling')\n"
+            "open(os.path.join(%r, 'ready-' + me), 'w').close()\n"
+            # Spin rather than sleep a fixed time: what has to be true is that none of them has
+            # touched the file before all of them are up, and a sleep is a guess about that.
+            "deadline = time.monotonic() + 60\n"
+            "while not os.path.exists(%r) and time.monotonic() < deadline:\n"
+            "    time.sleep(0.005)\n"
+            "try:\n"
+            "    Use(%r).claim('one-client', 'run-' + me, judge)\n"
+            "    print('ADMITTED')\n"
+            "except OverTheCeiling:\n"
+            "    print('REFUSED')\n"
+        ) % (here, str(tmp_path), str(go), os.path.join(root, "use.json"))
+
+        hands = [subprocess.Popen([sys.executable, "-c", script, str(i)],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                 for i in range(4)]
+        try:
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                if len(list(tmp_path.glob("ready-*"))) == len(hands):
+                    break
+                time.sleep(0.01)
+            else:                                             # pragma: no cover - a stuck child
+                raise AssertionError("the four processes never all came up")
+            go.write_text("now", encoding="utf-8")
+
+            said = []
+            for hand in hands:
+                out, err = hand.communicate(timeout=120)
+                said.append((out.strip(), err[-200:]))
+        finally:
+            for hand in hands:
+                if hand.poll() is None:                       # pragma: no cover - a stuck child
+                    hand.kill()
+
+        admitted = [o for o, _ in said if "ADMITTED" in o]
+        assert len(admitted) == 1, (
+            "a ceiling of one admitted %d of four processes arriving together: %r"
+            % (len(admitted), said))
+
     def test_an_unreadable_counter_is_not_an_empty_one(self, gateway):
         who = _a_customer(gateway, "alice")
         write_allowance(gateway.state.root, Allowance(runs_per_window=1))
