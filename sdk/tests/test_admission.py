@@ -17,7 +17,7 @@ import pytest
 from agentnode_sdk.access import contract, dispatch
 from agentnode_sdk.gateway import accounts as accounts_module
 from agentnode_sdk.gateway import admission
-from agentnode_sdk.gateway.allowance import Allowance, write_allowance
+from agentnode_sdk.gateway.allowance import Allowance, Use, write_allowance
 from agentnode_sdk.gateway.identity import GatewayState
 from agentnode_sdk.gateway.server import GatewayService
 from tests.test_em3c_gateway import StandInBackend, _store_measurement
@@ -156,8 +156,12 @@ class TestTheCeilingsOnWork:
     def test_an_unreadable_use_record_refuses_rather_than_restoring_the_window(self, gateway):
         who = _a_customer(gateway, "alice")
         write_allowance(gateway.state.root, Allowance(runs_per_window=1))
-        _a_run_by(gateway, who)
-        (gateway.state.root / "use.json").write_text("{not json", encoding="utf-8")
+        # The counter is filled DIRECTLY rather than by running something. A real run writes to
+        # use.json again from its own thread when it finishes, so a test that ran one and then
+        # corrupted the file is racing that write -- and under load the run wins, rewrites valid
+        # JSON, and the test measures an ordinary ceiling instead of an unreadable counter.
+        Use(gateway.state.root / "use.json").note(who.client_id, "an-earlier-run")
+        (gateway.state.root / "use.json").write_text("{ truncated", encoding="utf-8")
         with pytest.raises(dispatch.Refused) as refused:
             _a_run_by(gateway, who)
         assert refused.value.refusal == "gateway_stopped"

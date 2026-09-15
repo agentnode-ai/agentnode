@@ -454,7 +454,7 @@ class TestWhatTheTwoRealModelsHit:
 # ------------------------------------------------------------------ getting a run to exist
 
 
-def _a_run_by(gateway, who):
+def _a_run_by(gateway, who, wall_clock_s=30):
     """Submit something the stand-in backend will accept, through the dispatcher."""
     import base64
     import hashlib
@@ -465,11 +465,11 @@ def _a_run_by(gateway, who):
     shown = dispatch.dispatch(
         "prepare",
         {"artifact_sha256": hashlib.sha256(code).hexdigest(), "artifact_bytes": len(code),
-         "wall_clock_s": 30},
+         "wall_clock_s": wall_clock_s},
         who, service=gateway)
     answer = dispatch.dispatch(
         "submit",
         {"run_id": run_id, "artifact": base64.b64encode(code).decode("ascii"),
-         "wall_clock_s": 30, "accepted_disclosure": shown["accepted_disclosure"]},
+         "wall_clock_s": wall_clock_s, "accepted_disclosure": shown["accepted_disclosure"]},
         who, service=gateway)
     return answer["run_id"]
