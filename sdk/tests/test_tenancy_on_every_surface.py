@@ -607,3 +607,156 @@ class TestARunHasAnOwnerAndAnOwnerlessOneBelongsToNobody:
         with pytest.raises(dispatch.Refused) as refused:
             dispatch.dispatch("status", {"run_id": half}, two_customers.alice, service=service)
         assert refused.value.refusal == "no_such_run"
+
+
+# ------------------------------------------------------------------ somebody else's setup
+
+
+class TestAnotherAccountsSetupCannotBeCollected:
+    """A setup file carries a WORKING CREDENTIAL, and it is handed out over its own door.
+
+    `/console/setup` is a form POST rather than one of the contract's addresses, because the
+    answer is a download and the ticket must not travel in a URL. That means it is also the one
+    write on this gateway that does not go through the dispatcher, so its scoping is its own and
+    has to be shown rather than inferred from the others.
+    """
+
+    def _a_setup_begun_by(self, two_customers, who):
+        return dispatch.dispatch("connections.enrol",
+                                 {"way_in": contract.MCP, "label": "her AI"},
+                                 who, service=two_customers.service)
+
+    def _collect(self, two_customers, session, csrf, challenge, ticket):
+        import urllib.parse
+
+        body = urllib.parse.urlencode({"challenge": challenge, "ticket": ticket,
+                                       "confirm": csrf}).encode("utf-8")
+        asking = urllib.request.Request(two_customers.base + "/console/setup", data=body,
+                                        method="POST")
+        asking.add_header("Content-Type", "application/x-www-form-urlencoded")
+        asking.add_header("Cookie", "%s=%s" % (rest.SESSION_COOKIE, session))
+        try:
+            with urllib.request.urlopen(asking, timeout=30) as answer:
+                return answer.status, answer.read().decode("utf-8")
+        except urllib.error.HTTPError as refused:
+            return refused.code, refused.read().decode("utf-8")
+
+    def test_the_other_account_is_refused_and_the_ticket_is_not_spent(self, two_customers):
+        service = two_customers.service
+        hers = self._a_setup_begun_by(two_customers, two_customers.alice)
+        his_session, his_csrf = service.sessions.open(two_customers.bob.device_id,
+                                                      label="bob's browser")
+
+        status, said = self._collect(two_customers, his_session, his_csrf,
+                                     hers["challenge"], hers["ticket"])
+        assert status >= 400, said
+        assert not two_customers.names_her(said), said
+
+        # AND IT IS STILL HERS TO COLLECT. A refusal that consumed the ticket on the way past
+        # would be a way for one customer to stop another finishing their setup, which is a
+        # smaller thing than reading their data and still not theirs to do.
+        status, got = self._collect(two_customers, two_customers.her_session,
+                                    two_customers.her_csrf, hers["challenge"], hers["ticket"])
+        assert status == 200, got
+        assert "AGENTNODE_TOKEN" in got or "X-AgentNode-Token" in got, got[:200]
+
+    def test_and_the_ticket_is_spent_exactly_once_by_its_owner(self, two_customers):
+        """Not a tenancy question on its own -- but a second download is a second copy of a
+        credential, so the check above has to be against a door that really is single-use."""
+        hers = self._a_setup_begun_by(two_customers, two_customers.alice)
+        first, _ = self._collect(two_customers, two_customers.her_session,
+                                 two_customers.her_csrf, hers["challenge"], hers["ticket"])
+        again, said = self._collect(two_customers, two_customers.her_session,
+                                    two_customers.her_csrf, hers["challenge"], hers["ticket"])
+        assert first == 200
+        assert again >= 400, said
+
+    def test_and_the_challenge_does_not_exist_to_the_other_account(self, two_customers):
+        """Before the ticket: the enrolment itself is not visible across accounts."""
+        hers = self._a_setup_begun_by(two_customers, two_customers.alice)
+        theirs = sdk.Sandbox(two_customers.base, two_customers.bob.token)
+        with pytest.raises(sdk.TheSandboxRefused) as refused:
+            theirs.ask("connections.check", challenge=hers["challenge"])
+        assert refused.value.refusal == "no_such_run"
+
+
+# ------------------------------------------------------------------ what a refusal gives away
+
+
+class TestWhatOneAccountCanLearnAboutAnother:
+    """A refusal is an answer, and an answer that varies tells somebody something.
+
+    What is established here: a thing that EXISTS BUT IS NOT YOURS is answered exactly as a
+    thing that never existed -- same refusal name, same words, same status, byte for byte once
+    the identifier the asker supplied is taken out. So walking run ids, session names,
+    invitation names or challenges through any door distinguishes nothing.
+
+    WHAT IS NOT ESTABLISHED, said plainly rather than left for a reader to assume: this is not a
+    constant-time claim. Nothing here measures how long a refusal takes, and a measurement of
+    that on a shared machine would be evidence of the machine rather than of the code. If
+    timing resistance is ever required it needs its own work and its own proof; it is not
+    implied by anything below.
+    """
+
+    def _refusal_for(self, two_customers, operation, params):
+        theirs = sdk.Sandbox(two_customers.base, two_customers.bob.token)
+        try:
+            return "carried_out", theirs.ask(operation, **params)
+        except sdk.TheSandboxRefused as refused:
+            return refused.refusal, {"because": refused.because,
+                                     "what_to_do": refused.what_to_do}
+
+    def _without(self, said, *identifiers):
+        text = json.dumps(said, sort_keys=True)
+        for one in identifiers:
+            text = text.replace(str(one), "<the thing that was asked about>")
+        return text
+
+    def test_a_run_of_anothers_reads_exactly_like_a_run_that_never_existed(self, two_customers):
+        never = "e" * 32
+        mine = self._refusal_for(two_customers, "status", {"run_id": two_customers.her_run})
+        none = self._refusal_for(two_customers, "status", {"run_id": never})
+        assert mine[0] == none[0] == "no_such_run"
+        assert self._without(mine[1], two_customers.her_run) \
+            == self._without(none[1], never)
+
+    def test_and_so_does_a_session(self, two_customers):
+        service = two_customers.service
+        named = dispatch.dispatch("sessions.list", {}, two_customers.alice,
+                                  service=service)["sessions"][0]["session"]
+        mine = self._refusal_for(two_customers, "sessions.end", {"session": named})
+        none = self._refusal_for(two_customers, "sessions.end", {"session": "n" * 16})
+        assert self._without(mine[1], named) == self._without(none[1], "n" * 16), (mine, none)
+
+    def test_and_so_does_an_invitation(self, two_customers):
+        made = dispatch.dispatch("devices.invite", {}, two_customers.alice,
+                                 service=two_customers.service)
+        mine = self._refusal_for(two_customers, "devices.uninvite",
+                                 {"invitation": made["invitation"]})
+        none = self._refusal_for(two_customers, "devices.uninvite", {"invitation": "zzzzzzzz"})
+        assert self._without(mine[1], made["invitation"]) == self._without(none[1], "zzzzzzzz")
+
+    def test_and_so_does_a_device(self, two_customers):
+        mine = self._refusal_for(two_customers, "devices.revoke",
+                                 {"device_id": two_customers.alice.device_id})
+        none = self._refusal_for(two_customers, "devices.revoke", {"device_id": "d" * 32})
+        assert self._without(mine[1], two_customers.alice.device_id) \
+            == self._without(none[1], "d" * 32), (mine, none)
+
+    def test_and_the_counters_one_account_is_shown_are_only_its_own(self, two_customers):
+        """A figure that moved when somebody ELSE did something is a channel like any other."""
+        service = two_customers.service
+        before = dispatch.dispatch("usage", {}, two_customers.bob, service=service)
+        for _ in range(3):
+            _a_run_by(service, two_customers.alice)
+        after = dispatch.dispatch("usage", {}, two_customers.bob, service=service)
+        assert before == after, (before, after)
+
+    def test_and_the_operators_own_figures_are_not_on_a_customer_surface_at_all(self,
+                                                                               two_customers):
+        """Totals across the gateway would tell every customer about every other one."""
+        theirs = sdk.Sandbox(two_customers.base, two_customers.bob.token)
+        said = json.dumps(theirs.usage())
+        for leaks in ("accounts", "customers", "total", "everyone", "gateway_runs"):
+            assert leaks not in said, ("usage carries %r, which is about more than the asker"
+                                       % leaks)
