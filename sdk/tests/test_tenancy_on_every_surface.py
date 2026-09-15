@@ -691,11 +691,22 @@ class TestWhatOneAccountCanLearnAboutAnother:
     the identifier the asker supplied is taken out. So walking run ids, session names,
     invitation names or challenges through any door distinguishes nothing.
 
-    WHAT IS NOT ESTABLISHED, said plainly rather than left for a reader to assume: this is not a
-    constant-time claim. Nothing here measures how long a refusal takes, and a measurement of
-    that on a shared machine would be evidence of the machine rather than of the code. If
-    timing resistance is ever required it needs its own work and its own proof; it is not
-    implied by anything below.
+    THROUGH TIMING, stated rather than declined. A refusal for something that exists and a
+    refusal for something that does not are produced by the same code path, but not by the same
+    amount of work: the ownership comparison happens AFTER the lookup, so a record that was found
+    costs a dictionary hit and a string compare that a record that was not found does not. On a
+    shared machine, over enough attempts, that difference is in principle measurable, and it would
+    tell A whether a run id, session name or invitation name exists at all -- and nothing more
+    than that: not whose it is, not what it contains, not what it did.
+
+    **This gateway does not defend against that and does not claim to.** Equalising it means
+    constant-time work on every refusal path, which is a different piece of engineering with its
+    own proof, and it is not implied by anything below. What is asserted here is the part that
+    can be asserted without measuring a machine: the ANSWERS are identical, so nothing short of a
+    timing attack distinguishes them.
+
+    What A cannot learn by any of these routes: who owns the thing, what it contains, whether it
+    ran, what it used, or that account B exists at all.
     """
 
     def _refusal_for(self, two_customers, operation, params):
@@ -760,3 +771,120 @@ class TestWhatOneAccountCanLearnAboutAnother:
         for leaks in ("accounts", "customers", "total", "everyone", "gateway_runs"):
             assert leaks not in said, ("usage carries %r, which is about more than the asker"
                                        % leaks)
+
+
+# ------------------------------------------------------------------ every write, refused
+
+
+class TestEveryCrossAccountWriteIsRefused:
+    """One class, walking the whole list the criterion names, each with a REFUSED attempt.
+
+    Withdraw a device, rotate one, end a session, cancel a run, submit a run, consume or
+    invalidate an invitation or an enrolment ticket, alter a ceiling, cause a suspension. Several
+    of these are covered above from a surface's point of view; they are gathered here from the
+    ACCOUNT's, so the list can be read against the list rather than reassembled by a reader.
+    """
+
+    def test_withdraw_a_device(self, two_customers):
+        service = two_customers.service
+        said = dispatch.dispatch("devices.revoke", {"device_id": two_customers.alice.device_id},
+                                 two_customers.bob, service=service)
+        assert said["withdrawn"] is False and said["runs_stopping"] == []
+        assert dispatch.identify(service, two_customers.alice.token).authenticated
+
+    def test_rotate_a_device(self, two_customers):
+        """`devices.rotate` mints a SUCCESSOR credential, so reaching another account's device
+        with it would be worse than withdrawing one: it hands over a working token."""
+        declared = contract.find("devices.rotate")
+        assert declared is not None
+        assert not [f for f in declared.params if "device" in f.name or "account" in f.name], (
+            "devices.rotate takes a parameter naming a device, so a caller can name one that is "
+            "not theirs: %s" % [f.name for f in declared.params])
+
+        # And what it actually rotates is the CALLER's own credential.
+        service = two_customers.service
+        before = two_customers.bob.token
+        said = dispatch.dispatch("devices.rotate", {}, two_customers.bob, service=service)
+        assert said["token"] != before
+        assert dispatch.identify(service, said["token"]).device_id == two_customers.bob.device_id
+        assert dispatch.identify(service, two_customers.alice.token).authenticated, (
+            "rotating one customer's credential disturbed another's")
+
+    def test_end_a_session(self, two_customers):
+        service = two_customers.service
+        named = dispatch.dispatch("sessions.list", {}, two_customers.alice,
+                                  service=service)["sessions"]
+        assert named, "alice has no session to try to end"
+        said = dispatch.dispatch("sessions.end", {"session": named[0]["session"]},
+                                 two_customers.bob, service=service)
+        assert said["ended"] is False
+        assert service.sessions.whose(two_customers.her_session) is not None
+
+    def test_cancel_a_run(self, two_customers):
+        service = two_customers.service
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("cancel", {"run_id": two_customers.her_run}, two_customers.bob,
+                              service=service)
+        assert refused.value.refusal == "no_such_run"
+        assert not service.runs[two_customers.her_run].cancel_requested.is_set()
+
+    def test_submit_a_run_into_another_account(self, two_customers):
+        """There is no parameter for it, and naming one exactly right is refused rather than
+        ignored -- an unknown field that is dropped silently is a field somebody will rely on."""
+        service = two_customers.service
+        declared = contract.find("submit")
+        assert not [f for f in declared.params if "account" in f.name or "owner" in f.name]
+
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("submit", {"run_id": "a" * 32, "artifact": "",
+                                         "account_id": two_customers.alice.account_id},
+                              two_customers.bob, service=service)
+        assert refused.value.refusal == "malformed", refused.value.because
+
+        # And what he CAN submit lands in his own account.
+        his = _a_run_by(service, two_customers.bob)
+        assert service.runs[his].owner_account_id == two_customers.bob.account_id
+
+    def test_consume_an_invitation(self, two_customers):
+        service = two_customers.service
+        made = dispatch.dispatch("devices.invite", {}, two_customers.alice, service=service)
+        assert dispatch.dispatch("devices.uninvite", {"invitation": made["invitation"]},
+                                 two_customers.bob, service=service)["withdrawn"] is False
+        joined = dispatch.identify(service, dispatch.before_anyone(
+            "pair", {"code": made["code"], "client_name": "hers"}, service=service)["token"])
+        assert joined.account_id == two_customers.alice.account_id, (
+            "the invitation stopped working, so the refusal above proved nothing")
+
+    def test_consume_an_enrolment_ticket(self, two_customers):
+        """The download ticket is a working credential. Driven over its real door in
+        `TestAnotherAccountsSetupCannotBeCollected`; asserted here at the decision."""
+        service = two_customers.service
+        hers = dispatch.dispatch("connections.enrol",
+                                 {"way_in": contract.MCP, "label": "her AI"},
+                                 two_customers.alice, service=service)
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("connections.check", {"challenge": hers["challenge"]},
+                              two_customers.bob, service=service)
+        assert refused.value.refusal == "no_such_run"
+        assert service.connections.about(hers["challenge"])["ticket"] == hers["ticket"], (
+            "a refused attempt spent somebody else's ticket")
+
+    def test_alter_a_ceiling_or_cause_a_suspension(self, two_customers):
+        """Neither is a contract operation at all, so there is no spelling of either that a
+        customer credential can reach. That is the whole mechanism and it is worth stating as
+        one: an operation that does not exist cannot be scoped wrongly."""
+        reachable = {op.name for op in contract.OPERATIONS}
+        for forbidden in ("limits.set", "allowance.set", "accounts.suspend", "accounts.restore",
+                          "policy.set", "stop", "resume"):
+            assert forbidden not in reachable, forbidden
+
+        service = two_customers.service
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("limits.set", {"runs_per_window": 9999}, two_customers.bob,
+                              service=service)
+        assert refused.value.refusal == "unknown_operation"
+
+        from agentnode_sdk.gateway.allowance import read_allowance
+
+        was = read_allowance(service.state.root)
+        assert read_allowance(service.state.root) == was

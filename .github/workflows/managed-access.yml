@@ -103,7 +103,7 @@ jobs:
               # in THIS lane for the reason at the top of this file: without Playwright it would
               # skip, and a skip that reads as a pass is how a suite comes to report an isolation
               # property that nothing checked.
-              "test_two_accounts_in_a_browser": 17, "test_tenancy_on_every_surface": 44,
+              "test_two_accounts_in_a_browser": 17, "test_tenancy_on_every_surface": 52,
               # Four more: the console keeps its own table of which operations travel as POST,
               # and it had drifted from the contract, so "Weiteres Gerät hinzufügen" sent a GET
               # and every customer adding a second machine met a refusal.
