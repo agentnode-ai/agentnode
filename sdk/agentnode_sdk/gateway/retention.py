@@ -232,7 +232,12 @@ LAST_SWEEP_NAME = "retention-last-swept.json"
 
 
 def due(root: str | os.PathLike[str], now: float | None = None) -> bool:
-    """Whether a sweep is owed. A gateway that has never swept owes one."""
+    """Whether a sweep is owed. A gateway that has never swept owes one.
+
+    Reads `at`, which is when a sweep last finished with NOTHING outstanding. A sweep that could
+    not do part of its job does not advance it -- see `sweep_if_due` -- so one that fails keeps
+    being owed instead of being put off for an hour.
+    """
     at = time.time() if now is None else now
     path = Path(root) / LAST_SWEEP_NAME
     try:
@@ -240,6 +245,19 @@ def due(root: str | os.PathLike[str], now: float | None = None) -> bool:
         return (at - float(body.get("at") or 0.0)) >= SWEEP_EVERY_SECONDS
     except (OSError, ValueError):
         return True
+
+
+def last_sweep(root: str | os.PathLike[str]) -> dict:
+    """What the last attempt did, including what it could not do. For an operator to read.
+
+    `{}` when there has never been one. Deliberately not an exception: "this gateway has never
+    swept" is an answer a command should print, not an error it should raise.
+    """
+    try:
+        body = json.loads((Path(root) / LAST_SWEEP_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return body if isinstance(body, dict) else {}
 
 
 def sweep_if_due(root: str | os.PathLike[str], now: float | None = None) -> dict | None:
@@ -253,8 +271,25 @@ def sweep_if_due(root: str | os.PathLike[str], now: float | None = None) -> dict
     if not due(root, at):
         return None
     done = sweep(root, now=at)
-    _atomically(Path(root) / LAST_SWEEP_NAME,
-                json.dumps({"at": at, "removed": done}, sort_keys=True) + "\n")
+
+    # A SWEEP WITH PROBLEMS IS NOT A SWEEP THAT HAPPENED. What stood here recorded the attempt
+    # either way, so a class that could not be swept -- a file gone read-only, a store that will
+    # not parse -- put the next attempt off for an hour and left a gateway reporting that it had
+    # swept. Two things follow from that being wrong, and both are here:
+    #
+    #   * `at` advances only when nothing was outstanding, so `due` keeps saying yes and the
+    #     gateway's own timer tries again on its next tick rather than in an hour;
+    #   * what could not be done is WRITTEN DOWN, with when it was last tried, so an operator
+    #     reading `agentnode gateway keeps` is told rather than having to notice.
+    problems = list(done.get("problems") or ())
+    before = last_sweep(root)
+    _atomically(Path(root) / LAST_SWEEP_NAME, json.dumps({
+        # When a sweep last finished CLEAN. This is the only field `due` reads.
+        "at": float(before.get("at") or 0.0) if problems else at,
+        "last_tried": at,
+        "problems": problems,
+        "removed": done,
+    }, sort_keys=True) + "\n")
     return done
 
 

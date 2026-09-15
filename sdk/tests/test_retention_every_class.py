@@ -248,3 +248,85 @@ class TestWhatAnOperatorSeesAndSets:
             json.dumps({"audit_days": 5, "job_output_days": 5}), encoding="utf-8")
         with pytest.raises(retention.RetentionUnreadable):
             retention.read_retention(gateway.state.root)
+
+
+class TestASweepThatCouldNotFinishIsNotRecordedAsDone:
+    """A class that could not be swept used to look exactly like one with nothing to sweep.
+
+    `sweep_if_due` wrote the marker either way, so a store gone read-only put the next attempt
+    off for an hour and left the gateway reporting that it had swept -- while the data the
+    operator set a period for stayed there. Two things have to be true instead: the sweep stays
+    OWED, and what could not be done is written down where an operator reads it.
+    """
+
+    def _a_class_that_cannot_be_swept(self, gateway, monkeypatch):
+        """One sweeper that fails. Not a damaged file: a damaged file is a different test, and
+        this one is about what the RESULT does, whatever the cause was."""
+        def refuses(*_args, **_kwargs):
+            raise OSError("this store has gone read-only")
+
+        monkeypatch.setitem(retention._SWEEPERS, "audit", refuses)
+
+    def test_it_stays_owed(self, gateway, monkeypatch):
+        root = gateway.state.root
+        retention.write_retention(root, retention.Retention(audit_days=1))
+        self._a_class_that_cannot_be_swept(gateway, monkeypatch)
+
+        at = JUST_NOW
+        done = retention.sweep_if_due(root, now=at)
+        assert done is not None and done["problems"], done
+        assert retention.due(root, at + 1.0), (
+            "a sweep that could not finish put the next one off; the data it was meant to "
+            "remove stays until somebody notices")
+
+    def test_and_says_what_it_could_not_do(self, gateway, monkeypatch):
+        root = gateway.state.root
+        retention.write_retention(root, retention.Retention(audit_days=1))
+        self._a_class_that_cannot_be_swept(gateway, monkeypatch)
+        retention.sweep_if_due(root, now=JUST_NOW)
+
+        last = retention.last_sweep(root)
+        assert last["problems"], last
+        assert "audit" in json.dumps(last["problems"])
+        assert last["last_tried"] == JUST_NOW, last
+        assert not last["at"], "a failed sweep must not count as a clean one"
+
+    def test_and_a_clean_one_after_it_clears_both(self, gateway, monkeypatch):
+        root = gateway.state.root
+        retention.write_retention(root, retention.Retention(audit_days=1))
+        self._a_class_that_cannot_be_swept(gateway, monkeypatch)
+        retention.sweep_if_due(root, now=JUST_NOW)
+
+        monkeypatch.undo()
+        retention.write_retention(root, retention.Retention(audit_days=1))
+        later = JUST_NOW + retention.SWEEP_EVERY_SECONDS + 1
+        done = retention.sweep_if_due(root, now=later)
+        assert done is not None and not done["problems"], done
+
+        last = retention.last_sweep(root)
+        assert last["at"] == later and not last["problems"], last
+        assert not retention.due(root, later + 1.0)
+
+    def test_and_the_operator_command_says_so(self, gateway, monkeypatch, capsys):
+        from agentnode_sdk.cli import gateway_commands
+
+        root = gateway.state.root
+        retention.write_retention(root, retention.Retention(audit_days=1))
+        self._a_class_that_cannot_be_swept(gateway, monkeypatch)
+        retention.sweep_if_due(root, now=JUST_NOW)
+
+        args = type("A", (), {"dir": str(root),
+                              **{"%s_days" % name: None for name in retention.CLASSES}})()
+        assert gateway_commands.cmd_keeps(args) == 0
+        said = capsys.readouterr().out
+        assert "The last sweep could not finish." in said, said
+        assert "read-only" in said, said
+        assert "try again" in said, said
+
+    def test_and_says_plainly_when_it_has_never_swept(self, gateway, capsys):
+        from agentnode_sdk.cli import gateway_commands
+
+        args = type("A", (), {"dir": str(gateway.state.root),
+                              **{"%s_days" % name: None for name in retention.CLASSES}})()
+        assert gateway_commands.cmd_keeps(args) == 0
+        assert "has not swept yet" in capsys.readouterr().out

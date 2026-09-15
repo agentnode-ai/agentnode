@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from agentnode_sdk.cli.output import bold, dim
@@ -732,6 +733,23 @@ def cmd_keeps(args) -> int:
         print()
         print("  A job's code and a job's output are in NO class here: they are never written")
         print("  to disk. They are held in memory for the run and handed back to whoever ran it.")
+
+        # What the last attempt could NOT do. A sweep that failed on a class used to look
+        # exactly like one that had nothing to do, and the operator is the only one who can fix
+        # a store that has gone unwritable.
+        last = retention.last_sweep(root)
+        if last.get("problems"):
+            print()
+            print(f"  {bold('The last sweep could not finish.')}")
+            for problem in last["problems"]:
+                print(f"    {problem}")
+            print("  It is still owed, and this gateway will try again on its next tick.")
+        elif last.get("at"):
+            print()
+            print(f"  {dim('Last clean sweep: ' + time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(last['at'])))}")
+        else:
+            print()
+            print(f"  {dim('This gateway has not swept yet.')}")
         print()
         print("  To change one:")
         print("    agentnode gateway keeps --audit-days 30")
