@@ -200,6 +200,36 @@ class TestNoCrossAccountWriteOrWithdrawal:
         still = gateway.connections.about(begun["challenge"])
         assert still["account"] == alice.account_id
 
+    def test_and_the_credential_layer_refuses_on_its_own(self, gateway):
+        """The second layer, exercised where it actually sits.
+
+        `_devices_revoke` returns before it ever reaches `revoke_client`, so nothing driven
+        through the dispatcher can show this layer working -- a counter-check that removed it
+        and ran the dispatcher test came back GREEN, which is how it was found. It is here for
+        every OTHER caller of the state object: an operator command, a future path, anything
+        that holds the state rather than a principal. A layer whose only evidence is the layer
+        above it is not a layer.
+        """
+        alice, bob = _a_customer(gateway, "alice"), _a_customer(gateway, "bob")
+        assert gateway.state.revoke_client(alice.device_id,
+                                           within_account=bob.account_id) is False
+        assert dispatch.identify(gateway, alice.token).authenticated, (
+            "the state object withdrew a device belonging to another account")
+        # And it is not simply refusing everything, which would pass the line above.
+        assert gateway.state.revoke_client(alice.device_id,
+                                           within_account=alice.account_id) is True
+        assert not dispatch.identify(gateway, alice.token).authenticated
+
+    def test_and_the_operator_is_not_bound_by_it(self, gateway):
+        """Naming no account is the operator's case, and it still works.
+
+        `agentnode gateway revoke` is run by whoever can log in to the machine. Making the
+        account mandatory here would mean the operator could not withdraw a device without
+        first working out whose it was.
+        """
+        alice = _a_customer(gateway, "alice")
+        assert gateway.state.revoke_client(alice.device_id) is True
+
     def test_a_customer_can_withdraw_their_own_second_machine(self, gateway):
         """The counterpart. A scoping that refused everything would pass every test above."""
         alice = _a_customer(gateway, "alice")

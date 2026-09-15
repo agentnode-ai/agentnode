@@ -505,6 +505,13 @@ class TestARecordOfUseCarriesNoSecret:
         # that could not would be one nobody could read. Everything else this gateway holds is.
         whose = state.client_id_for(conn.token)
         assert whose and whose in written, "the meter does not say who used it"
+        # And WHICH CUSTOMER, which is the other identifier a meter cannot do without: a bill
+        # follows the customer, not the credential, and devices are withdrawn and replaced.
+        # Like the client id it is a published identifier -- it appears in the device list, in
+        # the console and in the audit -- so it is exempted below for the same reason, and the
+        # exemption is two named values rather than a rule that could grow.
+        billed_to = state.account_id_for(conn.token)
+        assert billed_to and billed_to in written, "the meter does not say who is billed"
 
         secrets = {conn.token}
         for name in ("tokens.json", "identity.json"):
@@ -528,7 +535,7 @@ class TestARecordOfUseCarriesNoSecret:
             gather(body)
         looked_at = 0
         for secret in secrets:
-            if len(secret) < 16 or secret == whose:
+            if len(secret) < 16 or secret in (whose, billed_to):
                 continue
             looked_at += 1
             assert secret not in written, secret[:24]

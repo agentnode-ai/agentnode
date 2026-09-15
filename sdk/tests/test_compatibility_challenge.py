@@ -45,8 +45,13 @@ def enrol(service, who, way_in="mcp", label="Claude Code on my laptop"):
 
 
 def collect(service, who, begun, label="Claude Code on my laptop"):
-    """What the download route does: create the credential and bind it to the challenge."""
-    token = service.state.redeem_for_connection(label)
+    """What the download route does: create the credential and bind it to the challenge.
+
+    The account comes from the SESSION that set the connection up, exactly as it does in
+    `_hand_over_a_setup_file`. Leaving it out is how every AI a person added from their own
+    console became a separate customer with its own ceilings and its own bill.
+    """
+    token = service.state.redeem_for_connection(label, account_id=who.account_id)
     service.connections.spend_the_ticket(begun["challenge"], begun["ticket"],
                                          service.state.client_id_for(token))
     return token
@@ -109,7 +114,8 @@ class TestWhatWillNotSatisfyIt:
         begun = enrol(service, who)
         collect(service, who, begun)
         somebody_else = dispatch.identify(
-            service, service.state.redeem_for_connection("a different AI"), via="mcp")
+            service, service.state.redeem_for_connection("a different AI",
+                                                         account_id=who.account_id), via="mcp")
         run_something(service, somebody_else)
         assert check(service, who, begun)["satisfied"] is False
 
@@ -136,8 +142,9 @@ class TestWhatWillNotSatisfyIt:
     def test_not_a_job_that_happened_before_the_challenge_existed(self, account):
         """A challenge cannot be answered by something that had already happened."""
         service, who = account
-        early = dispatch.identify(service, service.state.redeem_for_connection("early"),
-                                  via="mcp")
+        early = dispatch.identify(
+            service, service.state.redeem_for_connection("early", account_id=who.account_id),
+            via="mcp")
         run_something(service, early)
         time.sleep(0.01)
 
@@ -296,8 +303,12 @@ class TestWithdrawingADeviceTakesBackWhatItAlreadyHad:
 
     def test_nor_is_somebody_elses(self, account):
         service, who = account
+        # Deliberately a DIFFERENT customer: "somebody else's" is the whole point of the test,
+        # and a connection in the same account would be this person's own other machine.
+        elsewhere = service.state.accounts.create(name="somebody else").account_id
         other = dispatch.identify(
-            service, service.state.redeem_for_connection("not mine"), via="mcp")
+            service, service.state.redeem_for_connection("not mine", account_id=elsewhere),
+            via="mcp")
         theirs = run_something(service, other)
         service.runs[theirs["run_id"]].state = "running"
 

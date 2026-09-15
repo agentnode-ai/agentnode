@@ -73,16 +73,27 @@ class Connections:
 
     # ------------------------------------------------------------------ starting one
 
-    def begin(self, account: str, channel: str, label: str, operation: str = "submit") -> dict:
+    def begin(self, account: str, channel: str, label: str, operation: str = "submit",
+              started_by: str = "") -> dict:
         """Start setting a connection up. Returns what to show and what to poll.
 
         No device yet: the credential is created when the setup file is actually downloaded, so
         a challenge somebody starts and abandons leaves no connection behind that could be used.
+
+        Two identities, because there are two questions and they have different answers:
+
+        * `account` decides who may SEE and finish this setup. A person who starts it on their
+          laptop and finishes on their desktop is one customer doing one thing.
+        * `started_by` is the device that began it, which is what a WITHDRAWAL reaches. These
+          were one field for a while, and the day `account` started holding an account id,
+          withdrawing a device silently stopped dropping the enrolments it had started -- and an
+          unspent download ticket mints a fresh credential when it is collected.
         """
         now = self._clock()
         challenge = secrets.token_urlsafe(24)
         entry = {
             "account": str(account),
+            "started_by": str(started_by or ""),
             "channel": str(channel),
             "label": str(label or ""),
             "operation": str(operation),
@@ -184,7 +195,11 @@ class Connections:
         with self._lock:
             kept = self._read()
             going = [k for k, v in kept.items()
-                     if v.get("account") == device or v.get("device") == device]
+                     if v.get("started_by") == device or v.get("device") == device
+                     # An entry written before `started_by` existed put the starting device in
+                     # `account`. Matching it here keeps a withdrawal complete across an upgrade;
+                     # an account id can never equal a device id, so this cannot over-match.
+                     or v.get("account") == device]
             for k in going:
                 del kept[k]
             if going:

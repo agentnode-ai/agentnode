@@ -1445,7 +1445,8 @@ def _connections_enrol(service, principal, params):
         # their AI from their laptop and finishing on their desktop is one customer doing one
         # thing; a person in another account is not, and that is the line this draws.
         begun = service.connections.begin(principal.account_id, str(params["way_in"]),
-                                          str(params["label"]))
+                                          str(params["label"]),
+                                          started_by=principal.device_id)
     except NoSuchChallenge as exc:                            # pragma: no cover - defensive
         raise Refused("malformed", str(exc), "Start the setup again.") from exc
     return {"challenge": begun["challenge"], "ticket": begun["ticket"],
