@@ -70,6 +70,35 @@ class Sandbox:
                 "Could not reach the sandbox at %s: %s" % (self.base, unreachable.reason),
                 "Check that it is running and that this machine can reach it.") from None
 
+    def speak_mcp(self, message: dict) -> dict | None:
+        """Send one JSON-RPC message to this sandbox's MCP endpoint and return its answer.
+
+        Raw, not translated. The gateway already speaks MCP; a second translation on this side
+        would be a second thing to keep in step, and it was one: the bridge used to rebuild MCP
+        out of REST calls, so the gateway recorded the channel as `rest` while the caller was an
+        MCP client. An approval given for MCP could then never be spent, which is how the most
+        prominent option in the console -- Claude Code or Codex on my machine -- could not
+        complete a job at all.
+        """
+        request = urllib.request.Request(self.base + rest.MCP_PATH,
+                                         data=json.dumps(message).encode("utf-8"), method="POST")
+        request.add_header("Content-Type", "application/json")
+        request.add_header(rest.SPEAKS_HEADER, contract.PROTOCOL_VERSION)
+        if self.token:
+            request.add_header(rest.TOKEN_HEADER, self.token)
+        opener = self.opener.open if self.opener is not None else urllib.request.urlopen
+        try:
+            with opener(request, timeout=self.timeout) as answer:
+                body = answer.read().decode("utf-8")
+        except urllib.error.HTTPError as refused:
+            raise _as_refusal(refused) from None
+        except urllib.error.URLError as unreachable:
+            raise TheSandboxRefused(
+                "sandbox_unavailable",
+                "Could not reach the sandbox at %s: %s" % (self.base, unreachable.reason),
+                "Check that it is running and that this machine can reach it.") from None
+        return json.loads(body) if body.strip() else None
+
     # -- the journey, named the way a person would say it ------------------------------------
 
     def capabilities(self):
@@ -118,9 +147,14 @@ def bridge(sandbox: Sandbox, incoming, outgoing) -> None:
     """Speak MCP on a pipe, and forward every call over the authenticated API.
 
     For programs that will only talk to a local MCP server. It is a relay and holds no authority
-    of its own: the tool list it serves is the one the SANDBOX returned for this device, so a tool
-    that device may not use never appears -- and if it did, calling it would be refused at the far
-    end anyway, which is the property that makes the relay safe to run anywhere.
+    of its own: every message is forwarded to the sandbox's own MCP endpoint, so the tool list,
+    the refusals and the wording are the sandbox's, not this process's. A tool the device may not
+    use never appears, and calling one anyway is refused at the far end.
+
+    FORWARDED, not translated. This used to rebuild MCP out of REST operations, which meant the
+    gateway saw `rest` while the caller was an MCP client -- so an approval given for MCP could
+    never be spent, and the console's most prominent option could not finish a job. A relay that
+    changes what channel you appear to be on is not a relay.
     """
     for line in incoming:
         line = line.strip()
@@ -132,61 +166,24 @@ def bridge(sandbox: Sandbox, incoming, outgoing) -> None:
             _write(outgoing, {"jsonrpc": "2.0", "id": None,
                               "error": {"code": -32700, "message": "that is not JSON"}})
             continue
-        reply = _relay(sandbox, message)
+        reply = _forward(sandbox, message)
         if reply is not None:
             _write(outgoing, reply)
 
 
-def _relay(sandbox: Sandbox, message: dict):
-    from agentnode_sdk.access import mcp
-
+def _forward(sandbox: Sandbox, message: dict):
+    """Hand one message to the sandbox and give back what it said."""
     method = str(message.get("method") or "")
-    call_id = message.get("id")
-    if call_id is None and method.startswith("notifications/"):
+    if message.get("id") is None and method.startswith("notifications/"):
         return None
-    if method == "initialize":
-        return {"jsonrpc": "2.0", "id": call_id, "result": {
-            "protocolVersion": mcp.MCP_PROTOCOL,
-            "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "agentnode-sandbox (bridged)",
-                           "version": contract.PROTOCOL_VERSION}}}
-    if method == "tools/list":
-        try:
-            offered = sandbox.capabilities()
-        except TheSandboxRefused as refusal:
-            return {"jsonrpc": "2.0", "id": call_id,
-                    "error": {"code": -32000, "message": refusal.in_words()}}
-        from agentnode_sdk.access import schemas
-
-        allowed = {o["name"] for o in offered.get("operations", ())}
-        return {"jsonrpc": "2.0", "id": call_id, "result": {"tools": [
-            tool for tool in schemas.mcp_tools()
-            if any(schemas.tool_name_for(name) == tool["name"] for name in allowed)]}}
-    if method == "tools/call":
-        params = message.get("params") or {}
-        name = str(params.get("name") or "")
-        operation = ""
-        from agentnode_sdk.access import schemas
-
-        for op in contract.OPERATIONS:
-            if schemas.tool_name_for(op.name) == name:
-                operation = op.name
-                break
-        if not operation:
-            return {"jsonrpc": "2.0", "id": call_id,
-                    "error": {"code": -32601, "message": "There is no tool called %r." % name}}
-        try:
-            answer = sandbox.ask(operation, **(params.get("arguments") or {}))
-        except TheSandboxRefused as refusal:
-            return {"jsonrpc": "2.0", "id": call_id, "result": {
-                "isError": True,
-                "content": [{"type": "text", "text": refusal.in_words()}],
-                "structuredContent": {"refused": refusal.refusal, "because": refusal.because}}}
-        return {"jsonrpc": "2.0", "id": call_id, "result": {
-            "content": [{"type": "text", "text": mcp._readably(operation, answer)}],
-            "structuredContent": answer}}
-    return {"jsonrpc": "2.0", "id": call_id,
-            "error": {"code": -32601, "message": "This bridge does not do %r." % method}}
+    try:
+        return sandbox.speak_mcp(message)
+    except TheSandboxRefused as refusal:
+        # Reaching the sandbox failed, which is not the same as the sandbox refusing a call. It
+        # is reported as a transport error so a client retries rather than telling a person their
+        # job was rejected.
+        return {"jsonrpc": "2.0", "id": message.get("id"),
+                "error": {"code": -32000, "message": refusal.in_words()}}
 
 
 def _write(outgoing, message) -> None:

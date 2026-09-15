@@ -49,9 +49,22 @@ def tools_for(principal) -> list:
 
 
 def _operation_of(tool_name: str) -> str:
+    """The operation a tool name refers to -- and only ever one a model may call.
+
+    The audience is checked HERE, in the one place a name becomes an operation, rather than only
+    where the list is built. It was only in the list: `tools_for` correctly left out replacing a
+    credential, ending a session and withdrawing a device, and `tools/call` then resolved any
+    declared operation by name and carried it out. The names are predictable, so a model holding
+    a device token could withdraw devices and end sessions by asking for a tool it had never been
+    offered. Filtering what is advertised is not a boundary; this is.
+
+    A person-only operation therefore does not exist from a model's side: the same "there is no
+    tool called that" as a name that was never declared, because from where the model stands
+    those are the same fact.
+    """
     for op in contract.OPERATIONS:
         if schemas.tool_name_for(op.name) == tool_name:
-            return op.name
+            return op.name if op.audience == contract.TOOL else ""
     return ""
 
 

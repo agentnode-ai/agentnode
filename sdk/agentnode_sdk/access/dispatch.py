@@ -35,6 +35,8 @@ adapter that needed to make a decision to translate would be a decision made twi
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import hmac
 import json
 import secrets
@@ -705,6 +707,31 @@ def _what_was_disclosed(answer: dict) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+def _which_part_drifted(was: dict | None, now: dict) -> str:
+    """Name the fields that differ, for a caller that can act on knowing.
+
+    Found by giving the tools to a real model with a job to do. It changed the network setting
+    between being shown the job and submitting it -- which this refuses, correctly -- but the
+    refusal said only that SOMETHING had changed. It guessed, guessed again, and gave up. A
+    caller supplied both sides of this comparison, so naming which one moved tells it nothing it
+    did not already have, and turns a dead end into a thing it can fix.
+
+    Nothing is echoed back: the field NAMES, never the values. A refusal is not a place to
+    reflect a caller's payload.
+    """
+    if not isinstance(was, dict):
+        return ""
+    # BOUND_BY_THE_DISCLOSURE is a tuple of PATHS, not of names: the head of each is the field
+    # at the top of the answer. Comparing against the paths themselves would match nothing and
+    # this would silently always say "nothing moved", which is worse than not saying it.
+    bound = [path[0] for path in BOUND_BY_THE_DISCLOSURE]
+    moved = sorted({name for name in bound if was.get(name) != now.get(name)})
+    if not moved:
+        return ""
+    return ("\n\nWhat is different: " + ", ".join(moved)
+            + ". Everything else matches what was shown.")
+
+
 def _spend_the_disclosure(service, principal, presented: str, about: dict) -> None:
     """Claim a disclosure for THIS submission, from THIS connection, or refuse.
 
@@ -760,15 +787,16 @@ def _spend_the_disclosure(service, principal, presented: str, about: dict) -> No
                       "Submit it from the connection that was approved, or have somebody "
                       "approve this job for the connection you are using.")
 
-    expected = _what_was_disclosed(_what_would_happen(
-        service, principal, about,
-        approved_by=kept["approved_by"], will_run_as=meant_for))
+    would_be = _what_would_happen(service, principal, about,
+                                  approved_by=kept["approved_by"], will_run_as=meant_for)
+    expected = _what_was_disclosed(would_be)
     if not hmac.compare_digest(carried, expected):
         raise Refused("disclosure_required",
                       "This submission is not the job that was disclosed. Something that "
                       "changes what would actually happen -- the code, the command, the network "
                       "it may reach, or how long it may run -- is different from what a person "
-                      "was shown.",
+                      "was shown."
+                      + _which_part_drifted(kept.get("disclosed"), would_be),
                       "Call prepare again with exactly this job, show a person the answer, and "
                       "submit against that.")
 
@@ -795,7 +823,11 @@ def _remember_the_disclosure(service, nonce: str, answer: dict) -> None:
         shown = service._disclosures_shown = {}
     shown[nonce] = {"when": time.time(),
                     "approved_by": answer["approved_by"],
-                    "will_run_as": answer["will_run_as"]}
+                    "will_run_as": answer["will_run_as"],
+                    # Kept so a refusal can say WHICH bound part moved. The bound fields only --
+                    # this is not a copy of the job.
+                    "disclosed": {path[0]: answer.get(path[0])
+                                  for path in BOUND_BY_THE_DISCLOSURE}}
 
 
 def _capabilities(service, principal, params):
@@ -959,6 +991,52 @@ def _digest_of_the_policy(policy) -> str:
         return "(this gateway could not digest the policy in force)"
 
 
+def _with_the_digest_worked_out(params: dict) -> dict:
+    """Fill in the artifact's digest and size from the artifact, when it was supplied.
+
+    A caller that already knows them keeps sending them and nothing changes. A caller that does
+    not -- which is any AI holding only these tools, because none of them can hash anything --
+    sends the code instead and is told what it is about to agree to.
+
+    When both are given they must AGREE. Trusting the stated digest over the bytes in hand would
+    let a caller have one thing described and another thing bound; recomputing silently would
+    hide that they disagreed. So it is a refusal, and it says which is which.
+    """
+    artifact = params.get("artifact")
+    if not artifact:
+        return params
+    try:
+        raw = base64.b64decode(str(artifact), validate=True)
+    except Exception as broke:                                # noqa: BLE001
+        raise Refused("malformed", "The artifact is not valid base64: %s" % broke,
+                      "Send the code base64-encoded, or leave it out and send the digest.")             from None
+    worked_out = hashlib.sha256(raw).hexdigest()
+    stated = str(params.get("artifact_sha256") or "")
+    if stated and stated != worked_out:
+        # `malformed` rather than a new name: the declared vocabulary of refusals is small on
+        # purpose, and "the parameters disagree with each other" is exactly what it covers.
+        raise Refused(
+            "malformed",
+            "The digest you gave does not match the code you sent: you said %s, the code is %s."
+            % (stated[:16], worked_out[:16]),
+            "Send the code without a digest and this gateway will work it out, or send the "
+            "digest of the code you actually mean.")
+    said_bytes = params.get("artifact_bytes")
+    if said_bytes not in (None, "") and int(said_bytes) != len(raw):
+        raise Refused(
+            "malformed",
+            "The size you gave does not match the code you sent: you said %s bytes, it is %d."
+            % (said_bytes, len(raw)),
+            "Leave the size out and this gateway will work it out.")
+    filled = dict(params)
+    filled["artifact_sha256"] = worked_out
+    filled["artifact_bytes"] = len(raw)
+    # Not part of what is described, and not carried into the disclosure: `prepare` says what
+    # WOULD happen. The code travels with `submit`.
+    filled.pop("artifact", None)
+    return filled
+
+
 def _prepare(service, principal, params):
     """Show what would happen, and issue a single-use proof that it was shown.
 
@@ -969,6 +1047,7 @@ def _prepare(service, principal, params):
     submitting twice would work off one consent, and spending one would silently spend the
     other.
     """
+    params = _with_the_digest_worked_out(params)
     answer = _what_would_happen(service, principal, params)
     nonce = secrets.token_hex(16)
     answer["accepted_disclosure"] = "%s.%s" % (nonce, _what_was_disclosed(answer))

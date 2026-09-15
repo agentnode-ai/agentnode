@@ -449,3 +449,200 @@ class TestWhatTheApprovalIsBoundTo:
         }
         missing = must_bind - set(dispatch.BOUND_BY_THE_DISCLOSURE)
         assert not missing, "no longer bound: %s" % sorted(missing)
+
+
+class TestAModelCanDescribeWhatItIsAboutToRun:
+    """`prepare` asked for a digest that no tool of ours can produce.
+
+    Found by giving a real AI the MCP tools and a job. It called capabilities, summarised the
+    protection accurately -- and then stopped, because `prepare` requires `artifact_sha256` and
+    nothing in the tool list computes one. It refused to invent a value, and it was right to:
+    a disclosure naming bytes other than the ones that run is agreement to something else.
+
+    So the code itself may be sent to `prepare`, and the gateway works the digest out. That binds
+    at least as tightly as a caller's own number -- it is taken over the bytes in hand rather
+    than over whatever the caller decided to hash.
+    """
+
+    def test_sending_the_code_is_enough_to_be_shown_what_would_happen(self, sandbox):
+        service, who = sandbox
+        code = b"print('hello')\n"
+        shown = dispatch.dispatch("prepare", {
+            "command": ["python", "-c", code.decode()],
+            "artifact": base64.b64encode(code).decode("ascii"),
+            "wall_clock_s": 30}, who, service=service)
+        assert shown["transfers"]["artifact_sha256"] == hashlib.sha256(code).hexdigest()
+        assert shown["transfers"]["bytes"] == len(code)
+        assert shown["accepted_disclosure"]
+
+    def test_and_that_disclosure_is_spendable_by_the_submission_it_describes(self, sandbox):
+        service, who = sandbox
+        code = b"print('hello')\n"
+        shown = dispatch.dispatch("prepare", {
+            "command": ["python", "-c", code.decode()],
+            "artifact": base64.b64encode(code).decode("ascii"),
+            "wall_clock_s": 30}, who, service=service)
+        started = dispatch.dispatch("submit", {
+            "run_id": "b" * 32, "artifact": base64.b64encode(code).decode("ascii"),
+            "command": ["python", "-c", code.decode()], "wall_clock_s": 30,
+            "accepted_disclosure": shown["accepted_disclosure"]}, who, service=service)
+        assert started["run_id"] == "b" * 32
+
+    def test_a_digest_that_disagrees_with_the_code_is_refused_rather_than_corrected(self, sandbox):
+        service, who = sandbox
+        """Quietly recomputing would hide that the caller meant something else; trusting the
+        stated one would let a caller have one thing described and another thing bound."""
+        code = b"print('hello')\n"
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("prepare", {
+                "command": ["python", "-c", code.decode()],
+                "artifact": base64.b64encode(code).decode("ascii"),
+                "artifact_sha256": "0" * 64,
+                "wall_clock_s": 30}, who, service=service)
+        assert refused.value.because.startswith("The digest you gave does not match")
+
+    def test_a_size_that_disagrees_is_refused_too(self, sandbox):
+        service, who = sandbox
+        code = b"print('hello')\n"
+        with pytest.raises(dispatch.Refused):
+            dispatch.dispatch("prepare", {
+                "command": ["python", "-c", code.decode()],
+                "artifact": base64.b64encode(code).decode("ascii"),
+                "artifact_bytes": 999, "wall_clock_s": 30}, who, service=service)
+
+    def test_the_old_way_still_works_exactly_as_it_did(self, sandbox):
+        service, who = sandbox
+        """Callers that already know the digest are untouched: this is additive."""
+        code = b"print('hello')\n"
+        shown = dispatch.dispatch("prepare", {
+            "command": ["python", "-c", code.decode()],
+            "artifact_sha256": hashlib.sha256(code).hexdigest(),
+            "artifact_bytes": len(code), "wall_clock_s": 30}, who, service=service)
+        assert shown["transfers"]["artifact_sha256"] == hashlib.sha256(code).hexdigest()
+
+    def test_the_code_is_not_carried_into_what_was_disclosed(self, sandbox):
+        service, who = sandbox
+        """`prepare` says what WOULD happen. The artifact travels with `submit`."""
+        code = b"print('hello')\n"
+        shown = dispatch.dispatch("prepare", {
+            "command": ["python", "-c", code.decode()],
+            "artifact": base64.b64encode(code).decode("ascii"),
+            "wall_clock_s": 30}, who, service=service)
+        # The base64 of the code, not the word "artifact" -- `artifact_sha256` legitimately
+        # contains that word, and asserting on it would be checking the wrong thing.
+        assert base64.b64encode(code).decode("ascii") not in json.dumps(shown)
+        assert "print('hello')" in json.dumps(shown), "the command is shown, which is the point"
+
+
+class TestARefusalSaysWhichPartMoved:
+    """A refusal a caller cannot act on is a dead end.
+
+    A real model, given these tools and a job, changed the network setting between being shown
+    the job and submitting it. That is refused, and should be. But the refusal said only that
+    SOMETHING had changed, so the model guessed, guessed again, and stopped. Both sides of the
+    comparison came from the caller, so naming the field that moved tells it nothing it did not
+    already have.
+    """
+
+    def test_it_names_the_field_that_changed(self, sandbox):
+        service, who = sandbox
+        agreed = disclosure_for(service, who)
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("submit", {
+                "run_id": "c" * 32, "artifact": base64.b64encode(CODE).decode("ascii"),
+                "command": ["python", "-c", CODE.decode()],
+                "network": "allowlist", "allowed_domains": ["example.com"],
+                "wall_clock_s": 30, "accepted_disclosure": agreed}, who, service=service)
+        said = refused.value.because
+        assert "What is different: network" in said, said
+
+    def test_and_it_names_the_limits_when_those_are_what_moved(self, sandbox):
+        service, who = sandbox
+        agreed = disclosure_for(service, who, wall_clock_s=30)
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("submit", {
+                "run_id": "d" * 32, "artifact": base64.b64encode(CODE).decode("ascii"),
+                "command": ["python", "-c", CODE.decode()], "wall_clock_s": 600,
+                "accepted_disclosure": agreed}, who, service=service)
+        assert "limits" in refused.value.because
+
+    def test_it_never_echoes_the_values_back(self, sandbox):
+        """Names, not payloads. A refusal is not a mirror for what a caller sent."""
+        service, who = sandbox
+        agreed = disclosure_for(service, who)
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("submit", {
+                "run_id": "e" * 32, "artifact": base64.b64encode(CODE).decode("ascii"),
+                "command": ["python", "-c", CODE.decode()],
+                "network": "allowlist", "allowed_domains": ["secret-host.invalid"],
+                "wall_clock_s": 30, "accepted_disclosure": agreed}, who, service=service)
+        assert "secret-host.invalid" not in refused.value.because
+        assert "secret-host.invalid" not in (refused.value.what_to_do or "")
+
+    def test_a_submission_that_matches_is_not_told_anything_moved(self, sandbox):
+        service, who = sandbox
+        agreed = disclosure_for(service, who)
+        started = dispatch.dispatch("submit", {
+            "run_id": "f" * 32, "artifact": base64.b64encode(CODE).decode("ascii"),
+            "command": ["python", "-c", CODE.decode()], "wall_clock_s": 30,
+            "accepted_disclosure": agreed}, who, service=service)
+        assert started["run_id"] == "f" * 32
+
+
+class TestNoModelIsOfferedTheKeysToTheAccount:
+    """What an AI may call, and what stays with a person.
+
+    The rule is not "these particular names are hidden". It is that nothing which changes who may
+    reach this sandbox, what they may do, or what credential they hold is offered to a model at
+    all -- so a tool added later cannot quietly become an access-management tool by being
+    classified carelessly.
+    """
+
+    #: Changing any of these changes who can get in, or with what. A model may never do them.
+    THE_KEYS = ("devices.revoke", "devices.rotate", "sessions.end", "sessions.list",
+                "connections.enrol", "connections.check", "hello", "pair", "open_session")
+
+    def test_not_one_of_them_is_offered_as_a_tool(self):
+        from agentnode_sdk.access import schemas
+
+        offered = {t["name"] for t in schemas.mcp_tools()}
+        for name in self.THE_KEYS:
+            found = contract.find(name)
+            if found is None:
+                continue                       # not declared at all, which is stronger still
+            assert schemas.tool_name_for(name) not in offered, name
+
+    def test_bootstrap_operations_are_not_even_declared(self):
+        """hello, pair and open_session are not operations. There is nothing to filter."""
+        for name in ("hello", "pair", "open_session"):
+            assert contract.find(name) is None, name
+
+    def test_the_rule_is_structural_and_not_a_list(self):
+        """Every declared operation a model may call is read-only or runs work. None of them
+        changes access. A new one that did would have to be classified as changing access, and
+        this fails the moment such a thing is offered to a tool."""
+        for op in contract.OPERATIONS:
+            if op.audience != contract.TOOL:
+                continue
+            assert op.risk in (contract.READS, contract.AFFECTS_A_RUN), (
+                "%s is offered to a model but its risk is %r" % (op.name, op.risk))
+
+    def test_and_asking_anyway_over_mcp_is_refused(self, sandbox):
+        """The list is not the boundary. Naming a management operation over the tool channel is
+        refused by the dispatcher, which is the thing that actually decides."""
+        from agentnode_sdk.access import mcp
+
+        service, who = sandbox
+        answered = mcp.handle(service, {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                        "params": {"name": "agentnode_devices_revoke",
+                                                   "arguments": {"device_id": "x"}}}, who)
+        assert "error" in answered or answered["result"].get("isError"), answered
+
+    def test_what_a_model_may_do_with_devices_is_look(self, sandbox):
+        """devices.list IS offered, and that is a deliberate difference: reading which of your
+        own devices exist is not managing them. Recorded here so the line is explicit rather
+        than incidental."""
+        listing = contract.find("devices.list")
+        assert listing.audience == contract.TOOL
+        assert listing.risk == contract.READS
+        assert not listing.changes
