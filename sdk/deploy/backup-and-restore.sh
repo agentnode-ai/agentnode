@@ -41,12 +41,17 @@
 # ## Why the check is part of it
 #
 # A restore that produced a gateway which *looks* fine is the failure mode worth designing
-# against. So `check` asks the four questions that would actually be wrong:
+# against. So `check` asks the five questions that would actually be wrong:
 #
 #   1. does the metering chain still verify, end to end and to its head
 #   2. does the gateway still know its own identity, and is it the SAME identity
 #   3. are the devices still there, and the accounts still attached to them
-#   4. are the permissions still owner-only
+#   4. CAN A GATEWAY BUILT ON THIS STATE READ ITS OWN OPERATOR POLICY
+#   5. are the permissions still owner-only
+#
+# The fourth was added after a drill: the first four-question version passed on a restore whose
+# gateway then refused every job, because the key authenticating the policy was not in the
+# archive. Checking files is not checking that a gateway made of them works.
 #
 # `restore` runs `check` afterwards and fails if any of them does. A restore that cannot answer
 # them is reported as a failed restore, not as a restore with a warning.
@@ -62,6 +67,9 @@
 set -euo pipefail
 
 STATE_DIR="/var/lib/agentnode/state"
+# The key that authenticates the operator policy lives BESIDE the state directory rather than
+# inside it, on purpose. A backup has to take both, and until a drill started the restored
+# gateway nothing noticed that this one did not.
 BACKUP_ROOT="/root/agentnode-backups"
 FROM=""
 VERB="${1:-}"
@@ -75,6 +83,8 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+SECRET_DIR="${STATE_DIR}.secret"
 
 say() { printf '  %s\n' "$*"; }
 die() { printf '\n  FAILED: %s\n\n' "$*" >&2; exit 1; }
@@ -129,6 +139,23 @@ for line in bad:
 sys.exit(1 if bad else 0)
 PYEOF
 
+  # THE FIFTH QUESTION, and the one that caught a real defect: is the key that authenticates
+  # the operator policy in this archive at all? It lives BESIDE the state directory on purpose,
+  # so a backup of the state alone restores to a gateway that refuses every job -- correctly,
+  # because it cannot tell whether its own policy was changed by something else.
+  #
+  # Asked as "is it here", not as "does a gateway built on this copy read its policy". That
+  # second question needs a WORKER, because reading the active state validates it against the
+  # worker's configuration, and a copy in a temporary directory has no worker and should not be
+  # given one. `restore` asks the full question on the real path, where there is one.
+  if [ -f "$where/../.secret-present" ] || [ -d "${where}.secret" ]; then
+    say "    policy key     : in the archive"
+  else
+    say "    PROBLEM        : the key that authenticates the operator policy is NOT in this"
+    say "                     archive. Restoring it produces a gateway that refuses every job."
+    failed=1
+  fi
+
   # Owner-only. A restore that widened the permissions is a restore that handed this machine's
   # other accounts a list of credentials.
   if [ "$(stat -c '%a' "$where")" != "700" ]; then
@@ -156,10 +183,23 @@ case "$VERB" in
     fi
     echo
     say "backing up $STATE_DIR"
-    say "NOTE: this archive contains the meter signing key and the TLS private key. It has to."
-    say "      Wherever you copy it, it is those keys in that place."
+    say "NOTE: this archive contains the meter signing key, the TLS private key AND the key that"
+    say "      authenticates the operator policy. Wherever you copy it, it is those keys there."
     tar -C "$(dirname "$STATE_DIR")" -cf "$WHERE/state.tar" "$(basename "$STATE_DIR")"
-    ( cd "$WHERE" && sha256sum state.tar > SHA256SUMS )
+    # AND the key directory beside it. This was missing, and the first drill that actually
+    # STARTED the restored gateway is what found it: the tag authenticating the operator policy
+    # is keyed from a file kept deliberately OUTSIDE the state directory, so a backup of the
+    # state alone restores to a gateway that refuses every job -- correctly, because it cannot
+    # tell whether its own policy was changed by something else. A backup that restores to a
+    # gateway which will not run anything is not a backup.
+    if [ -d "$SECRET_DIR" ]; then
+      tar -C "$(dirname "$SECRET_DIR")" -cf "$WHERE/secret.tar" "$(basename "$SECRET_DIR")"
+      say "     and $SECRET_DIR, without which the restored gateway cannot read its own policy"
+      ( cd "$WHERE" && sha256sum state.tar secret.tar > SHA256SUMS )
+    else
+      say "     (no $SECRET_DIR on this gateway; nothing to take)"
+      ( cd "$WHERE" && sha256sum state.tar > SHA256SUMS )
+    fi
     chmod 600 "$WHERE"/*
     say "wrote $WHERE/state.tar"
     say "     $(cat "$WHERE/SHA256SUMS")"
@@ -176,7 +216,13 @@ case "$VERB" in
     ( cd "$FROM" && sha256sum -c SHA256SUMS >/dev/null ) || die "the backup does not match its own SHA256SUMS"
     say "the archive matches its own digests"
     tar -C "$TMP" -xf "$FROM/state.tar"
-    INNER="$TMP/$(ls "$TMP")"
+    if [ -f "$FROM/secret.tar" ]; then tar -C "$TMP" -xf "$FROM/secret.tar"; fi
+    INNER="$TMP/$(ls "$TMP" | head -1)"
+    # The archive carries the gateway account's ownership. Checking a copy means reading it as
+    # WHOEVER IS CHECKING, and the gateway refuses to touch a state directory owned by somebody
+    # else -- correctly, since that is somebody who could change it mid-read. So the copy is
+    # taken over for the duration of the check. The live directory is untouched.
+    chown -R "$(id -u):$(id -g)" "$TMP"
     chmod 700 "$INNER"
     check_state "$INNER" || die "the backup does not restore to a gateway that checks out"
     echo
@@ -200,12 +246,46 @@ case "$VERB" in
     fi
     tar -C "$(dirname "$STATE_DIR")" -xf "$FROM/state.tar"
     chmod 700 "$STATE_DIR"
+    if [ -f "$FROM/secret.tar" ]; then
+      rm -rf "$SECRET_DIR"
+      tar -C "$(dirname "$SECRET_DIR")" -xf "$FROM/secret.tar"
+      chmod 700 "$SECRET_DIR"
+    fi
     if id agentnode-gateway >/dev/null 2>&1; then
       chown -R agentnode-gateway:agentnode-gateway "$STATE_DIR"
+      [ -d "$SECRET_DIR" ] && chown -R agentnode-gateway:agentnode-gateway "$SECRET_DIR"
     fi
     say "restored $STATE_DIR"
 
     check_state "$STATE_DIR" || die "restored, and it does not check out. The previous state is still at $ASIDE"
+
+    # And the question a copy could not answer: does a gateway on THIS state, on this machine,
+    # with this machine's worker, read its own operator policy? A restore that leaves a gateway
+    # refusing every job is a failed restore, not a restore with a note.
+    say "asking whether a gateway on it reads its own policy"
+    runuser -u agentnode-gateway -- env HOME=/var/lib/agentnode "$PY" - "$STATE_DIR" <<'READYEOF' || die "restored, and a gateway on it cannot read its own operator policy. The previous state is still at $ASIDE"
+import sys
+from pathlib import Path
+
+from agentnode_sdk.gateway.identity import GatewayState
+from agentnode_sdk.gateway.server import GatewayService
+
+state = GatewayState(str(Path(sys.argv[1])), version="restore-check")
+try:
+    service = GatewayService(state)
+    service.active_state()
+    print("    reads its policy: yes (%s)" % service.operator_envelope().mode)
+except Exception as exc:                                      # noqa: BLE001
+    said = str(exc)
+    if "authentication tag" in said or "generation" in said:
+        print("    PROBLEM        : it cannot. The key that authenticates the operator policy "
+              "lives BESIDE the state directory; this archive did not carry it.")
+    else:
+        print("    PROBLEM        : the operator policy cannot be read (%s)" % said[:140])
+    sys.exit(1)
+finally:
+    state.close()
+READYEOF
     echo
     say "restored, and it checks out."
     say "restart the gateway:  systemctl restart agentnode-gateway"
