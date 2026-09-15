@@ -58,12 +58,26 @@ class Refused(Exception):
     """A refusal that names itself. Adapters render this; none of them composes one."""
 
     def __init__(self, refusal: str, because: str, what_to_do: str = "") -> None:
+        from agentnode_sdk.gateway.redaction import scrub
+
         if refusal not in contract.REFUSALS:
             raise ValueError("%r is not a declared refusal" % refusal)
-        super().__init__(because)
+        if not str(what_to_do or "").strip():
+            # A refusal with nothing to do about it leaves somebody stuck, and stuck is
+            # indistinguishable from broken to the person it happens to. Refused where the
+            # refusal is BUILT, so a path that forgot one cannot reach a caller -- and every
+            # refusal in this product goes through here.
+            raise ValueError(
+                "%r was refused with nothing the refused party can do about it. Every refusal "
+                "names one action." % refusal)
+        # Scrubbed at construction rather than at each raise site. Refusal text is composed from
+        # whatever went wrong, which is exactly where a URL with a code in it, or an exception
+        # quoting one, gets in. The structural rules above this are what keep secrets out; this
+        # is the second line, and it is in the one place every refusal passes through.
+        super().__init__(scrub(because))
         self.refusal = refusal
-        self.because = because
-        self.what_to_do = what_to_do
+        self.because = scrub(because)
+        self.what_to_do = scrub(what_to_do)
 
     def as_answer(self) -> dict:
         answer = {"refused": self.refusal, "because": self.because}
@@ -80,6 +94,11 @@ class Principal:
     device_id: str
     client_id: str
     capabilities: tuple = ()
+    #: WHICH CUSTOMER. Established from the device this credential belongs to, and from nothing
+    #: a caller sends. A device is what is holding the credential; an account is who the
+    #: credential is FOR, and every question of the form "may I see this / may I change this"
+    #: is answered against the account rather than against the device that happens to be asking.
+    account_id: str = ""
     #: True when the caller showed it holds the token's SECRET rather than merely a copy of the
     #: token. The older doors have always required that, and an answer to such a caller can be
     #: signed -- it is the only caller able to check the signature.
@@ -270,6 +289,7 @@ def identify(service, token: str, proof=None, via: str = "") -> Principal:
                 held = tuple(c for c in recorded if c in contract.CAPABILITIES)
             break
     return Principal(token=token, device_id=client_id, client_id=client_id,
+                     account_id=service.state.account_id_for(token),
                      capabilities=held, device_name=name, proved=proved, via=via)
 
 
@@ -292,6 +312,7 @@ def identify_session(service, session_id: str, csrf: str = "", via: str = "brows
         # so reaching here means something went the other way round; either way, nobody.
         return NOBODY
     return Principal(token=known.token, device_id=known.device_id, client_id=known.client_id,
+                     account_id=known.account_id,
                      capabilities=known.capabilities, device_name=known.device_name,
                      proved=False, session_id=session_id, csrf_presented=csrf, via=via)
 
@@ -330,7 +351,11 @@ def identify_client(service, client_id: str, via: str = ""):
             continue
         held = tuple(c for c in (device.get("capabilities") or contract.CAPABILITIES)
                      if c in contract.CAPABILITIES)
+        from agentnode_sdk.gateway import accounts as _accounts
+
         return Principal(token="", device_id=str(client_id), client_id=str(client_id),
+                         account_id=str(device.get("account_id")
+                                        or _accounts.solo_account_for(str(client_id))),
                          capabilities=held or contract.CAPABILITIES,
                          device_name=str(device.get("client_name")
                                          or device.get("name") or ""), via=via)
@@ -428,6 +453,11 @@ def _audit(service, op_name: str, principal: Principal, outcome: str, detail: st
         "at": round(time.time(), 3),
         "operation": _a_name_we_know(op_name),
         "device": principal.device_id or "(nobody)",
+        # WHICH CUSTOMER this line is about. Not caller-supplied: it comes from the device
+        # record. Without it the audit could only ever be read per device, which means the one
+        # question an operator actually asks of it -- what has this customer been doing -- could
+        # not be answered without first reconstructing who owned which credential.
+        "account": principal.account_id or "(nobody)",
         # WHICH DOOR. Not caller-supplied: the adapter that calls `dispatch` names itself, and
         # anything that is not one of the ways in we declare is written as "(other)". A
         # compatibility observation is bound to this, so a value a caller could choose would let
@@ -436,10 +466,16 @@ def _audit(service, op_name: str, principal: Principal, outcome: str, detail: st
         "outcome": outcome if outcome in _OUTCOMES else "(other)",
         "about": _which_parameters(op_name, detail),
     }
+    from agentnode_sdk.gateway.redaction import scrub_everything
+
     try:
         path = os.path.join(str(service.state.root), "audit.jsonl")
         with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, sort_keys=True) + "\n")
+            # Every value above already comes from the contract rather than from a caller, which
+            # is what actually keeps this file clean. The scrub is the second line: it costs one
+            # pass over a five-key object and it is what catches the field somebody adds next
+            # year without reading why the others are shaped the way they are.
+            fh.write(json.dumps(scrub_everything(line), sort_keys=True) + "\n")
     except OSError:                                           # pragma: no cover - a full disk
         pass
 
@@ -618,20 +654,27 @@ def _carry_out(operation: str, params: dict, principal: Principal, *, service,
                       % (op.name, ", ".join(principal.capabilities) or "nothing"),
                       "Ask whoever runs the sandbox to pair a device that may.")
 
-    if op.needs == contract.RUN:
-        # Before the parameters, not after. `GatewayService.admit` asks the stop first of all,
-        # and the same reason applies here: telling somebody their parameters are wrong while the
-        # gateway is stopped sends them off to fix something that was never the obstacle.
-        halted = _the_operator_has_stopped_it(service)
-        if halted:
-            from agentnode_sdk.gateway.allowance import STOPPED_SAYS
+    # Before the parameters, not after, and for EVERY operation rather than only the ones that
+    # run something. Telling somebody their parameters are wrong while the gateway is stopped or
+    # their account is suspended sends them off to fix something that was never the obstacle --
+    # and a gateway that bounds only the expensive operation has not bounded anything, because a
+    # probe uses the cheap ones.
+    #
+    # It is one call. What it asks -- the operator's stop, this account's standing, the request
+    # rate -- lives in `GatewayService`, which is the only implementation of each; this is the
+    # one place that asks, and there is no second opinion here about any of them.
+    #
+    # `op.needs == RUN` is what "would run work" means in this contract, and it is the same test
+    # the stop applied before admission existed. It is NOT `op.changes`: `usage` changes nothing
+    # and is exactly what somebody needs while the gateway is stopped, while `cancel` changes
+    # something and was always refused by the stop.
+    from agentnode_sdk.gateway import admission as _admission
 
-            # The words the rest of the product already uses for this. Composing a second
-            # sentence here would mean the same event read differently depending on which door
-            # somebody came through, and a client matching on one of them would be right about
-            # half the time.
-            raise Refused("gateway_stopped", STOPPED_SAYS + halted,
-                          "Nothing will run until whoever runs it starts it again.")
+    try:
+        service.may_this_caller_proceed(principal.account_id, principal.device_id,
+                                        op.needs == contract.RUN)
+    except _admission.NotAdmitted as refused:
+        raise Refused(refused.refusal, refused.because, refused.what_to_do) from refused
 
     given = _check_parameters(op, params)
 
@@ -1226,6 +1269,15 @@ def _submit(service, principal, params):
     # second request claiming a run id that already exists, say -- produces a record that is not
     # the run filed under that id, so `service.runs[run_id]` would hand back the earlier run and
     # report somebody else's success as this submission's outcome.
+    # A refusal names itself, wherever it was decided. `GatewayService.submit` answers a
+    # refused job with a RECORD rather than by raising, because the older doors hand that whole
+    # record back and their clients read it. The contract's door does not: it refuses, by name,
+    # with something to do about it -- the same shape as every other refusal here.
+    if record.state == "refused" and getattr(record, "refused_as", ""):
+        raise Refused(record.refused_as, record.refusal,
+                      getattr(record, "refusal_remedy", "")
+                      or "Ask whoever runs this sandbox.")
+
     _handoff.record = record
     told = record.public()
     return {"run_id": record.run_id, "state": record.state,
@@ -1235,9 +1287,18 @@ def _submit(service, principal, params):
 
 
 def _a_run_of_this_caller(service, principal, run_id):
+    """A run belongs to the device that submitted it, inside the account that device is in.
+
+    Deliberately BOTH, and deliberately still per device. Per device is the narrower rule and
+    keeping it means accounts did not quietly widen what one credential can reach; the account
+    test is a second, independent condition, so a device id that somehow appeared in two
+    accounts still could not reach across. Neither test is load-bearing alone.
+    """
     record = service.runs.get(str(run_id))
+    owning_account = getattr(record, "owner_account_id", "") if record is not None else ""
     if record is None or (record.owner_client_id and
-                          record.owner_client_id != principal.client_id):
+                          record.owner_client_id != principal.client_id) or (
+                              owning_account and owning_account != principal.account_id):
         # The same answer either way: telling a stranger that a run exists but is not theirs
         # tells them it exists.
         raise Refused("no_such_run",
@@ -1348,10 +1409,16 @@ def _usage(service, principal, params):
 
 
 def _devices_list(service, principal, params):
+    """The devices of the account that asked, and no others.
+
+    This used to be `paired_clients()`, which is everything this gateway holds. On a gateway
+    with one customer those are the same list and the defect is invisible; on a gateway with two
+    it is a customer list handed to whoever asks.
+    """
     return {"devices": [
         {"device_id": d.get("client_id", ""), "name": d.get("client_name", ""),
          "last_used": d.get("last_used"), "paired_at": d.get("issued_at")}
-        for d in service.state.paired_clients()
+        for d in service.state.devices_in(principal.account_id)
     ]}
 
 
@@ -1360,7 +1427,10 @@ def _connections_enrol(service, principal, params):
     from agentnode_sdk.access.enrolment import NoSuchChallenge
 
     try:
-        begun = service.connections.begin(principal.client_id, str(params["way_in"]),
+        # Scoped to the ACCOUNT, not to the device that happened to click. A person setting up
+        # their AI from their laptop and finishing on their desktop is one customer doing one
+        # thing; a person in another account is not, and that is the line this draws.
+        begun = service.connections.begin(principal.account_id, str(params["way_in"]),
                                           str(params["label"]))
     except NoSuchChallenge as exc:                            # pragma: no cover - defensive
         raise Refused("malformed", str(exc), "Start the setup again.") from exc
@@ -1377,7 +1447,7 @@ def _connections_check(service, principal, params):
     except NoSuchChallenge as exc:
         raise Refused("no_such_run", str(exc),
                       "Start setting the connection up again.") from exc
-    if found["account"] != principal.client_id:
+    if found["account"] != principal.account_id:
         # The same answer as one that does not exist. A challenge is not a thing to enumerate.
         raise Refused("no_such_run",
                       "this sandbox is not setting up a connection under that name",
@@ -1476,6 +1546,16 @@ def _devices_revoke(service, principal, params):
     from agentnode_sdk.gateway.protocol import is_terminal
 
     wanted = str(params["device_id"])
+    # WHOSE device, before anything is done to it. Everything below this line takes something
+    # away, and doing any of it to a device belonging to somebody else is the same breach
+    # whether or not the credential removal at the end would have been refused.
+    #
+    # The answer for another account's device is the answer for a device that does not exist:
+    # `withdrawn: false`, nothing stopped, nothing ended. Telling somebody that a device exists
+    # but is not theirs tells them it exists.
+    if wanted not in {str(d.get("client_id") or "")
+                      for d in service.state.devices_in(principal.account_id)}:
+        return {"device_id": wanted, "withdrawn": False, "runs_stopping": []}
     service.sessions.end_every(wanted)
     service.connections.drop_everything_touching(wanted)
 
@@ -1493,7 +1573,9 @@ def _devices_revoke(service, principal, params):
             # rather than quietly counted as stopped.
             pass
 
-    return {"device_id": wanted, "withdrawn": bool(service.state.revoke_client(wanted)),
+    return {"device_id": wanted,
+            "withdrawn": bool(service.state.revoke_client(
+                wanted, within_account=principal.account_id)),
             "runs_stopping": stopped}
 
 

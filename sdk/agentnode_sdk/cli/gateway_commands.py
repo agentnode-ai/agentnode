@@ -587,7 +587,20 @@ def cmd_pair(args) -> int:
 
     from agentnode_sdk.gateway.identity import PAIRING_TTL_SECONDS
 
-    code = state.start_pairing()
+    # An invitation FOR an existing customer is how somebody adds a second machine. Named
+    # here, by the operator, and never by whoever redeems it: a redeemer who could name the
+    # account would be able to walk into one by guessing its name.
+    joining = str(getattr(args, "account", "") or "").strip()
+    if joining:
+        known = {a.account_id for a in state.accounts.all()}
+        known |= {str(d.get("account_id") or "") for d in state.paired_clients()}
+        if joining not in known:
+            print()
+            print(f"  No account here is called {joining!r}.")
+            print("  Run `agentnode gateway accounts` to see them. Leave --account out and this")
+            print("  invitation makes a new customer.")
+            return 1
+    code = state.start_pairing(for_account=joining)
     dies_at = _clock.time() + PAIRING_TTL_SECONDS
     config = _load_config(root)
     where, pin = _where_and_what_to_expect(root, config, args)
@@ -671,12 +684,89 @@ def cmd_clients(args) -> int:
         return 0
     print(f"  {bold('Connected clients')}")
     print()
+    from agentnode_sdk.gateway import accounts as _accounts
+
     for entry in clients:
         name = str(entry.get("client_name") or "unnamed")
         client_id = str(entry.get("client_id") or "")[:12]
-        print(f"    {name:<24} {dim(client_id)}")
+        belongs = str(entry.get("account_id")
+                      or _accounts.solo_account_for(str(entry.get("client_id") or "")))
+        print(f"    {name:<24} {dim(client_id)}  {dim(belongs)}")
     print()
+    print("  The third column is the CUSTOMER. Devices in one account can see each other;")
+    print("  devices in different accounts cannot see each other at all.")
     print("  To disconnect one:  agentnode gateway revoke --client <id>")
+    return 0
+
+
+def cmd_accounts(args) -> int:
+    """List the customers on this gateway, and suspend or restore one.
+
+    An operator command and only an operator command. There is no contract operation that does
+    any of this, so no capability any customer can hold reaches it, over any door -- which is
+    what keeps "the operator is not an account" true by construction rather than by a check
+    somebody has to remember to write.
+    """
+    from agentnode_sdk.gateway import accounts as _accounts
+
+    root = _root(args)
+    state, _service_unused = _service(root)
+    wanted = str(getattr(args, "account", "") or "").strip()
+    because = str(getattr(args, "reason", "") or "").strip()
+
+    devices = {}
+    for entry in state.paired_clients():
+        belongs = str(entry.get("account_id")
+                      or _accounts.solo_account_for(str(entry.get("client_id") or "")))
+        devices.setdefault(belongs, []).append(entry)
+
+    if getattr(args, "suspend", False) or getattr(args, "restore", False):
+        if not wanted:
+            print()
+            print("  Which account? Run `agentnode gateway accounts` to see them.")
+            return 2
+        if wanted not in devices and not state.accounts.recorded(wanted):
+            print()
+            print(f"  No account here is called {wanted!r}.")
+            return 1
+        if getattr(args, "restore", False):
+            state.accounts.restore(wanted)
+            print()
+            print(f"  {bold(wanted)} can send work again.")
+            return 0
+        if not because:
+            print()
+            print("  Why? Whatever you say here is what that customer is shown:")
+            print("    agentnode gateway accounts --account %s --suspend" % wanted)
+            print('      --reason "repeated attempts to reach hosts we do not allow"')
+            return 2
+        state.accounts.suspend(wanted, because, by="operator")
+        print()
+        print(f"  {bold(wanted)} is suspended. Their next job is refused with your words.")
+        print("  Runs already going are NOT stopped by this -- that is what the stop is for:")
+        print("    agentnode gateway stop --reason ...")
+        print("  To let them work again:")
+        print(f"    agentnode gateway accounts --account {wanted} --restore")
+        return 0
+
+    print()
+    if not devices:
+        print("  No customers yet. Run `agentnode gateway pair` to let the first one in.")
+        return 0
+    print(f"  {bold('Customers on this gateway')}")
+    print()
+    for account_id in sorted(devices):
+        try:
+            found = state.accounts.get(account_id)
+            standing = "active" if found.active else ("suspended: " + found.suspended_because)
+        except (_accounts.NoSuchAccount, _accounts.AccountsUnreadable) as exc:
+            standing = "cannot be read (%s)" % str(exc)[:60]
+        print(f"    {account_id:<28} {len(devices[account_id]):>2} device(s)  {standing}")
+        for entry in devices[account_id]:
+            print(f"      {dim(str(entry.get('client_name') or 'unnamed'))}")
+    print()
+    print("  To stop one:     agentnode gateway accounts --account <id> --suspend --reason ...")
+    print("  To let them back: agentnode gateway accounts --account <id> --restore")
     return 0
 
 
@@ -841,18 +931,36 @@ def cmd_limits(args) -> int:
     root = _root(args)
     now = read_allowance(root)
     asked = {name: getattr(args, name, None) for name in
-             ("concurrent_runs", "runs_per_window", "seconds_per_window")}
+             ("concurrent_runs", "runs_per_window", "seconds_per_window",
+              "account_concurrent_runs", "account_runs_per_window",
+              "account_seconds_per_window", "requests_per_minute",
+              "account_requests_per_minute", "max_artifact_bytes", "max_output_bytes")}
     if all(value is None for value in asked.values()):
         print()
-        print(f"  {bold('What one client may use')}")
-        for name, value in now.as_dict().items():
-            if name == "window_seconds":
-                print(f"    window               : {value / 3600:.0f} hours")
-            else:
-                print(f"    {name:<21}: {value if value else 'no limit'}")
+        print(f"  {bold('What one device may use')}")
+        for name in ("concurrent_runs", "runs_per_window", "seconds_per_window"):
+            value = now.as_dict()[name]
+            print(f"    {name:<28}: {value if value else 'no limit'}")
+        print()
+        print(f"  {bold('What one CUSTOMER may use, across every device they have')}")
+        for name in ("account_concurrent_runs", "account_runs_per_window",
+                     "account_seconds_per_window"):
+            value = now.as_dict()[name]
+            print(f"    {name:<28}: {value if value else 'no limit'}")
+        print()
+        print(f"  {bold('How fast, and how big')}")
+        for name in ("requests_per_minute", "account_requests_per_minute",
+                     "max_artifact_bytes", "max_output_bytes"):
+            value = now.as_dict()[name]
+            print(f"    {name:<28}: {value if value else 'no limit'}")
+        print(f"    {'window':<28}: {now.window_seconds / 3600:.0f} hours")
+        print()
+        print("  Both apply and the tighter one decides. A per-device ceiling alone is one a")
+        print("  customer raises by pairing another machine, which is not a ceiling.")
         print()
         print("  To change one:")
         print("    agentnode gateway limits --runs-per-window 200")
+        print("    agentnode gateway limits --account-runs-per-window 500")
         return 0
     changed = Allowance(**{**now.as_dict(),
                            **{k: int(v) for k, v in asked.items() if v is not None}})
@@ -861,7 +969,7 @@ def cmd_limits(args) -> int:
     print(f"  {bold('Set.')} It applies to the next job, not to runs already going.")
     for name, value in changed.as_dict().items():
         if name != "window_seconds":
-            print(f"    {name:<21}: {value if value else 'no limit'}")
+            print(f"    {name:<28}: {value if value else 'no limit'}")
     return 0
 
 
@@ -926,6 +1034,7 @@ def dispatch(args) -> int:
         "doctor": cmd_doctor,
         "pair": cmd_pair,
         "clients": cmd_clients,
+        "accounts": cmd_accounts,
         "revoke": cmd_revoke,
         "verify": cmd_verify,
         "challenge": cmd_challenge,
@@ -933,7 +1042,7 @@ def dispatch(args) -> int:
     handler = handlers.get(action)
     if handler is None:
         print("  Usage: agentnode gateway "
-              "{init|start|status|egress|doctor|pair|clients|revoke|verify}")
+              "{init|start|status|egress|doctor|pair|clients|accounts|revoke|verify}")
         return 2
     try:
         return handler(args)

@@ -33,6 +33,7 @@ import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
+from agentnode_sdk.gateway import accounts as _accounts
 from agentnode_sdk.gateway import securedir
 from agentnode_sdk.gateway.throttle import Budget, Locked, Store, Throttle
 
@@ -167,6 +168,13 @@ class GatewayState:
             path=self.root / "pairing-admission.json",
             established_marker=self._identity_path,
         )
+        # Through the same guarded reader and writer as every other private file. An accounts
+        # record readable by another account on the machine is a list of this gateway's
+        # customers, so it is not stored more loosely than a token hash is.
+        self.accounts = _accounts.Accounts(
+            read=lambda name: self._read_private(name),
+            write=lambda name, textual: self._write_private(name, textual),
+        )
 
     @staticmethod
     def _harden(path: Path) -> None:
@@ -204,13 +212,23 @@ class GatewayState:
 
     # ---------------------------------------------------------------- pairing
 
-    def start_pairing(self, now: float | None = None) -> str:
+    def start_pairing(self, now: float | None = None, for_account: str = "") -> str:
         """Issue a pairing code. Only one is live at a time: a second call replaces the first.
 
         Replacing rather than accumulating is deliberate. Several live codes would each be a way
         in, and a person who pressed the button twice would have no idea how many were valid.
+
+        `for_account` is how an operator adds a second machine to a customer that already
+        exists. Naming it HERE and not at redemption is the whole security property: whoever
+        redeems an invitation does not get to say which customer they are joining, because that
+        would be a way to walk into somebody else's account by guessing its name. The operator
+        decides when the invitation is made; the redeemer decides nothing.
         """
         now = time.time() if now is None else now
+        if for_account and not _accounts.well_formed(for_account):
+            raise PairingError(
+                "%r is not an account this gateway issued, so no invitation was made for it."
+                % str(for_account)[:64])
         code = new_pairing_code()
         expires = now + PAIRING_TTL_SECONDS
         with self._pairing_lock:
@@ -223,7 +241,8 @@ class GatewayState:
             # The HASH is stored, not the code. The file is what an attacker with a copy of the
             # gateway directory gets, and a pairing code sitting in it in plain text would make
             # that copy a working key for fifteen minutes.
-            self._write_pairing({"code_sha256": hash_token(code), "expires": expires})
+            self._write_pairing({"code_sha256": hash_token(code), "expires": expires,
+                                 "for_account": str(for_account or "")})
         return code
 
     def pairing_active(self, now: float | None = None) -> bool:
@@ -376,9 +395,16 @@ class GatewayState:
             on_disk = self._claim_pairing_file()
         pending = None
         expected_hash = ""
+        joins_account = ""
         if on_disk is not None:
             pending = ("", float(on_disk.get("expires", 0)))
             expected_hash = str(on_disk.get("code_sha256", ""))
+            # Read out of the claimed invitation, which the operator wrote and the redeemer
+            # cannot reach. An invitation from before this field existed carries none, and that
+            # means a new customer -- which is what every invitation used to mean.
+            joins_account = str(on_disk.get("for_account", "") or "")
+            if joins_account and not _accounts.well_formed(joins_account):
+                joins_account = ""
 
         if pending is None:
             self._throttle.record_failure(now)
@@ -406,7 +432,10 @@ class GatewayState:
             )
         # Someone who proved they know the code is not who the throttle guards against.
         self._throttle.record_success(now)
-        return self._issue_token(client_name=client_name, now=now)
+        # No account named means a NEW customer, which is what redeeming an invitation usually
+        # is. An invitation issued against an existing account names it, and that is how a
+        # customer adds a second machine without becoming a second customer.
+        return self._issue_token(client_name=client_name, now=now, account_id=joins_account)
 
     # ---------------------------------------------------------------- tokens
 
@@ -554,8 +583,22 @@ class GatewayState:
         entry = self._read_tokens().get(token_hash) or {}
         return entry.get("allowance")
 
-    def _issue_token(self, client_name: str = "", now: float | None = None) -> str:
+    def _issue_token(self, client_name: str = "", now: float | None = None,
+                     account_id: str = "") -> str:
+        """Mint a credential, belonging to a device, belonging to an account.
+
+        `account_id` is not optional in effect: a credential with no account would be one whose
+        holder could not be billed, bounded, suspended or deleted as a customer, and the callers
+        that leave it out get a fresh account rather than none. What is refused is an account id
+        that is not one this gateway could have issued -- a caller-shaped value ends up as a key
+        in counter files and in the meter, where one account could otherwise name another's.
+        """
         now = time.time() if now is None else now
+        if account_id and not _accounts.well_formed(account_id):
+            raise PairingError(
+                "%r is not an account this gateway issued, so nothing was created for it."
+                % str(account_id)[:64])
+        belongs_to = str(account_id) or self.accounts.create(name=client_name, now=now).account_id
         token = secrets.token_urlsafe(32)
         tokens = self._read_tokens()
         # Only the hash is stored. A leaked token file must not hand over working credentials.
@@ -566,9 +609,53 @@ class GatewayState:
             # client IS must survive that, or rotating a token would orphan the client's own
             # runs -- which is what happened the first time this was written.
             "client_id": secrets.token_hex(8),
+            # WHICH CUSTOMER. Not the same question as which device: a customer has several,
+            # and everything a customer is -- ceilings, suspension, billing, deletion -- hangs
+            # off this rather than off any one credential.
+            "account_id": belongs_to,
         }
         self._write_tokens(tokens)
         return token
+
+    def account_of_client(self, client_id: str) -> str:
+        """Which account a device belongs to, including one paired before accounts existed.
+
+        A device with nothing recorded is its own account. See `accounts.solo_account_for`: the
+        alternative would put every pre-existing device on this gateway into one shared account
+        during an upgrade, which is the cross-customer visibility accounts exist to remove.
+        """
+        wanted = str(client_id or "")
+        for record in self._read_tokens().values():
+            if record.get("client_id") == wanted:
+                return str(record.get("account_id") or _accounts.solo_account_for(wanted))
+        return ""
+
+    def account_id_for(self, token: str) -> str:
+        """The account holding this credential, or "" when this gateway did not issue it."""
+        entry = self._read_tokens().get(hash_token(token))
+        if entry is None:
+            return ""
+        return str(entry.get("account_id")
+                   or _accounts.solo_account_for(str(entry.get("client_id") or "")))
+
+    def devices_in(self, account_id: str) -> list[dict]:
+        """The devices of ONE account, which is what a customer may be shown.
+
+        `paired_clients` answers a different question -- everything this gateway holds -- and is
+        the operator's view. Reaching for that one to answer this one is the defect this pair of
+        methods exists to make hard to write: they have different names because they are
+        different questions.
+        """
+        wanted = str(account_id or "")
+        if not wanted:
+            return []
+        out = []
+        for record in self._read_tokens().values():
+            belongs = str(record.get("account_id")
+                          or _accounts.solo_account_for(str(record.get("client_id") or "")))
+            if belongs == wanted:
+                out.append(record)
+        return sorted(out, key=lambda t: t.get("issued_at", 0))
 
     def client_id_for(self, token: str) -> str | None:
         """Who is holding this token, or None if this gateway did not issue it.
@@ -626,7 +713,7 @@ class GatewayState:
         self._write_tokens(tokens)
         return True
 
-    def redeem_for_connection(self, client_name: str = "") -> str:
+    def redeem_for_connection(self, client_name: str = "", account_id: str = "") -> str:
         """Issue a credential for a connection somebody has already been authorised to set up.
 
         No invitation, because the authorisation already happened: a person signed in, chose a
@@ -640,9 +727,16 @@ class GatewayState:
         # The same guard every other credential-issuing path uses: this gateway will not mint
         # anything while its own state directory is readable by other accounts on the machine.
         self._guard_private()
-        return self._issue_token(client_name=client_name)
+        # It joins the account of the session that set it up. That is what "my AI" means, and
+        # leaving it out would make every connection a person adds from their own console a
+        # separate customer with its own ceilings and its own bill.
+        if not account_id:
+            raise PairingError(
+                "a connection has to be set up inside an account, and this call named none. "
+                "Start the setup again from the console.")
+        return self._issue_token(client_name=client_name, account_id=account_id)
 
-    def revoke_client(self, client_id: str) -> bool:
+    def revoke_client(self, client_id: str, within_account: str = "") -> bool:
         """Withdraw a device by WHO it is, not by presenting its credential.
 
         Whoever revokes a device is looking at a list of devices: their own other laptop, a
@@ -653,10 +747,19 @@ class GatewayState:
         """
         tokens = self._read_tokens()
         for token_hash, record in list(tokens.items()):
-            if record.get("client_id") == client_id:
-                del tokens[token_hash]
-                self._write_tokens(tokens)
-                return True
+            if record.get("client_id") != client_id:
+                continue
+            if within_account:
+                belongs = str(record.get("account_id")
+                              or _accounts.solo_account_for(str(record.get("client_id") or "")))
+                if belongs != str(within_account):
+                    # Not this customer's device. The caller is told the same thing it would be
+                    # told about a device that does not exist, because telling somebody that a
+                    # device exists but is not theirs tells them it exists.
+                    return False
+            del tokens[token_hash]
+            self._write_tokens(tokens)
+            return True
         return False
 
     def paired_clients(self) -> list[dict]:

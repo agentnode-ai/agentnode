@@ -137,7 +137,7 @@ class Ledger:
             return dict(entry) if entry else None
 
     def claim(self, run_id: str, nonce: str, request_sha256: str, owner_client_id: str,
-              now: float | None = None) -> bool:
+              now: float | None = None, owner_account_id: str = "") -> bool:
         """Record this run and its nonce, if neither has been seen. True when newly claimed.
 
         One critical section covers both the look and the write, so two identical requests
@@ -158,12 +158,41 @@ class Ledger:
                 "first_seen": now,
                 "request_sha256": str(request_sha256),
                 "owner_client_id": str(owner_client_id),
+                # Which customer, so that a run rebuilt from this ledger after a restart is
+                # still attributable to one. Without it a restarted gateway held runs whose
+                # account was blank, and a blank account matches nothing -- which is the safe
+                # direction, but it also means the customer cannot see their own interrupted
+                # run, so the answer is to record it rather than to relax the comparison.
+                "owner_account_id": str(owner_account_id),
                 "state": "accepted",
             }
             if nonce:
                 self._data["nonces"][str(nonce)] = now
             self._write_locked()
             return True
+
+    def forget_runs(self, matches) -> int:
+        """Remove every run entry `matches` selects. Returns how many. For deletion.
+
+        What this costs, stated rather than discovered: the ledger is also what makes a run id
+        unrepeatable, so a forgotten run id could be claimed again. That is acceptable HERE and
+        only here -- the account those runs belonged to no longer exists, so there is nobody to
+        replay a request as. It would not be acceptable as a general tidying operation, which is
+        why this takes a predicate from one caller rather than an age.
+
+        The nonces are deliberately NOT removed. A nonce is not personal data -- it is a random
+        value a client chose -- and dropping them would turn deletion into a way to make old
+        signed requests replayable.
+        """
+        with self._lock, ProcessLock(self.path):
+            self._load()
+            going = [run_id for run_id, entry in self._data["runs"].items()
+                     if matches(run_id, entry)]
+            for run_id in going:
+                del self._data["runs"][run_id]
+            if going:
+                self._write_locked()
+            return len(going)
 
     def note_challenge(self, run_id: str, binding: dict) -> None:
         """Write down what this gateway issued for a run, before the job starts.

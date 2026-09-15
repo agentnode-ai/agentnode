@@ -102,6 +102,10 @@ class RunRecord:
     #: owner and by nobody else. This is the client's identity, NOT its token: rotating a
     #: credential must not orphan the runs the client already submitted.
     owner_client_id: str = ""
+    #: Which CUSTOMER this run belongs to. Not derivable from the owning device later: a device
+    #: can be withdrawn, and a run that outlived its device would then have no account at all --
+    #: which is exactly when somebody is trying to find out what happened.
+    owner_account_id: str = ""
     binding: dict = field(default_factory=dict)
     signature: str = ""
     state: str = "accepted"          # accepted | running | finished | refused | cancelled
@@ -139,6 +143,14 @@ class RunRecord:
     stdout: str = ""
     stderr: str = ""
     refusal: str = ""
+    #: WHICH refusal, by the contract's name, when this record is one. A record carrying only
+    #: prose meant the contract door answered "it is refused, here is a sentence" -- so a client
+    #: that branches on the closed list of refusals could not tell "over a ceiling" from
+    #: "malformed" without reading English, which is exactly what the closed list exists to
+    #: avoid. Empty means this record is not a refusal.
+    refused_as: str = ""
+    #: What the refused party can actually do. Empty for a record that is not a refusal.
+    refusal_remedy: str = ""
     container_name: str = ""
     cleanup_verified: bool | None = None
     started_at: float = field(default_factory=time.time)
@@ -215,6 +227,43 @@ RECOVERY_BUDGET_SECONDS = 30.0
 #: The first release whose client calls prepare and carries back what a person agreed to.
 #: Named in the refusal an older client gets, so "update" is an instruction rather than advice.
 MIGRATED_CLIENT = "0.25.0"
+
+
+def name_the_refusal(exc: Exception) -> tuple:
+    """What to call a refusal raised during admission, and what to tell the refused party.
+
+    One classifier, so the name a record carries and the name a door renders are the same name.
+    Two copies of this would eventually disagree, and the door's copy would be the one a client
+    saw.
+    """
+    from agentnode_sdk.gateway import admission
+    from agentnode_sdk.gateway.accounts import AccountsUnreadable
+    from agentnode_sdk.gateway.allowance import (
+        CannotReadTheCeilings,
+        CannotReadWhatWasUsed,
+        OverTheCeiling,
+        Stopped,
+    )
+    from agentnode_sdk.gateway.protocol import ProtocolError
+
+    if isinstance(exc, admission.NotAdmitted):
+        return exc.refusal, exc.what_to_do
+    if isinstance(exc, Stopped):
+        return "gateway_stopped", (
+            "Nothing will run until whoever runs it starts it again. You can still ask what "
+            "happened to runs you already submitted.")
+    if isinstance(exc, OverTheCeiling):
+        return "over_a_ceiling", (
+            "Wait until the window clears, or ask whoever runs this sandbox for a higher "
+            "ceiling. Nothing was started and nothing was counted.")
+    if isinstance(exc, (CannotReadTheCeilings, CannotReadWhatWasUsed, AccountsUnreadable)):
+        return "gateway_stopped", (
+            "Ask whoever runs this sandbox to look at its state directory. It is refusing work "
+            "rather than applying a limit it cannot read.")
+    if isinstance(exc, ProtocolError):
+        return "malformed", "Correct the request and send it again."
+    return "sandbox_unavailable", (
+        "Try again; if it keeps happening, tell whoever runs this sandbox.")
 
 
 def container_name_for(run_id: str) -> str:
@@ -483,10 +532,28 @@ class GatewayService:
 
         from agentnode_sdk.conformance.report import SUITE_VERSION
 
+        from agentnode_sdk.gateway import policy_version as _versions
+
         identity = self.state.identity
         isolation = self.worker.can_it_isolate()
         boot_value, _method = boot_identity()
+        # The ordinal for whichever policy this report is ABOUT -- the pending one while it is
+        # being measured, the one in force otherwise. Assigned here rather than read, because
+        # measuring a policy is exactly the moment it becomes one of this gateway's policies.
+        wanted = policy_digest or ""
+        if not wanted:
+            try:
+                wanted = self.operator_envelope().digest()
+            except Exception:                                 # noqa: BLE001
+                wanted = ""
+        try:
+            ordinal = _versions.version_for(self.state.root, wanted) if wanted else 0
+        except OSError:
+            # An ordering this gateway cannot read leaves the field EMPTY. A version that was
+            # guessed would make a report look checked against something nobody checked.
+            ordinal = 0
         return ReportBinding(
+            operator_policy_version=str(ordinal) if ordinal > 0 else "",
             gateway_id=identity.gateway_id,
             gateway_version=identity.version,
             backend=isolation.backend if isolation.backend != "none" else "",
@@ -773,6 +840,7 @@ class GatewayService:
                 job_id=str(entry.get("job_id", "")),
                 request_sha256=str(entry.get("request_sha256", "")),
                 owner_client_id=str(entry.get("owner_client_id", "")),
+                owner_account_id=str(entry.get("owner_account_id", "")),
                 state="interrupted",
             )
             record.refusal = (
@@ -840,6 +908,7 @@ class GatewayService:
                 job_id=str(entry.get("job_id", "")),
                 request_sha256=str(entry.get("request_sha256", "")),
                 owner_client_id=str(entry.get("owner_client_id", "")),
+                owner_account_id=str(entry.get("owner_account_id", "")),
                 state="interrupted",
             )
             record.refusal = (
@@ -937,7 +1006,68 @@ class GatewayService:
             self._use = held
         return held
 
-    def within_its_allowance(self, client_id: str, asking_for: int) -> str:
+    @property
+    def rate(self):
+        """How many requests each device and each account has made lately, durably."""
+        from agentnode_sdk.gateway.admission import RATE_NAME, RateLimit
+
+        held = getattr(self, "_rate", None)
+        if held is None:
+            held = RateLimit(self.state.root / RATE_NAME)
+            self._rate = held
+        return held
+
+    def standing_of(self, account_id: str, device_id: str = ""):
+        """Whether this customer is in good standing, asked once and answered here.
+
+        An unreadable accounts record is NOT good standing. It is reported as "cannot tell",
+        which admission treats as a stop -- the same reading as an unreadable kill switch, and
+        for the same reason: a gateway that cannot tell whether a customer is suspended is not
+        one to keep taking their work.
+        """
+        from agentnode_sdk.gateway import accounts as _accounts
+        from agentnode_sdk.gateway.admission import Standing
+
+        if not account_id:
+            return Standing(account_id="", device_id=str(device_id))
+        try:
+            found = self.state.accounts.get(str(account_id))
+        except _accounts.AccountsUnreadable:
+            return Standing(account_id=str(account_id), device_id=str(device_id),
+                            cannot_tell=True)
+        except (_accounts.NoSuchAccount, OSError):
+            # A malformed id, or state this gateway will not touch. Neither is an account in
+            # good standing, and neither is an account at all.
+            return Standing(account_id="", device_id=str(device_id))
+        return Standing(account_id=found.account_id, device_id=str(device_id),
+                        suspended_because="" if found.active else (
+                            found.suspended_because
+                            or "the operator suspended this account"))
+
+    def may_this_caller_proceed(self, account_id: str, device_id: str,
+                                would_run_work: bool) -> None:
+        """The one pre-operation admission decision. Raises `admission.NotAdmitted` to refuse.
+
+        Reached from the dispatcher for EVERY operation. The stop, suspension and the request
+        rate are properties of the caller rather than of the job, so asking them per operation is
+        what makes them apply to the cheap operations a probe actually uses -- and asking them
+        HERE is what keeps there being one implementation of each.
+        """
+        from agentnode_sdk.gateway import admission
+        from agentnode_sdk.gateway.allowance import why_it_is_stopped
+
+        try:
+            stopped = why_it_is_stopped(self.state.root) or ""
+        except Exception as exc:                              # noqa: BLE001
+            stopped = ("this gateway cannot tell whether it has been stopped (%s)"
+                       % str(exc)[:120])
+        admission.before_an_operation(
+            self.standing_of(account_id, device_id),
+            stopped_because=stopped, allowance=self.allowance(), rate=self.rate,
+            would_run_work=bool(would_run_work))
+
+    def within_its_allowance(self, client_id: str, asking_for: int,
+                             account_id: str = "") -> str:
         """Raise `OverTheCeiling` if this client may not have another run right now.
 
         With a `run_id`, the looking and the claiming happen inside ONE transaction: two requests
@@ -955,22 +1085,53 @@ class GatewayService:
             # Nothing to count against. Admission refuses an unpaired caller elsewhere; this is
             # not the place that decides that, and counting against "" would pool every client.
             return granted
-        if allowed.concurrent_runs:
-            with self._lock:
-                going = sum(1 for r in self.runs.values()
-                            if r.owner_client_id == client_id and not is_terminal(r.state))
-            if going >= allowed.concurrent_runs:
-                raise OverTheCeiling(
-                    "concurrent_runs",
-                    "this client already has %d runs going and may have %d at once. Wait for one "
-                    "to finish." % (going, allowed.concurrent_runs))
-        if allowed.runs_per_window or allowed.seconds_per_window:
-            runs, seconds = self.use.so_far(client_id)
-            self._judge_window(allowed, runs, seconds, self.use.oldest(client_id), asking_for)
+        self._concurrency(allowed.concurrent_runs, "owner_client_id", client_id, "device")
+        self._concurrency(allowed.account_concurrent_runs, "owner_account_id", account_id,
+                          "account")
+        for whose, key, ceilings in self._window_scopes(allowed, client_id, account_id):
+            runs, seconds = self.use.so_far(key)
+            self._judge_window(ceilings, runs, seconds, self.use.oldest(key), asking_for,
+                               whose=whose)
         return granted
 
+    def _window_scopes(self, allowed, client_id: str, account_id: str):
+        """The scopes a run is counted against, each with the ceilings that apply to it.
+
+        Both, always, and the tighter one decides. A per-credential ceiling alone is one a
+        customer raises by pairing another device, which is not a ceiling; a per-account ceiling
+        alone lets one runaway credential consume the whole customer's allowance before anybody
+        notices which one it was.
+        """
+        from agentnode_sdk.gateway.allowance import Allowance
+
+        out = []
+        if client_id and (allowed.runs_per_window or allowed.seconds_per_window):
+            out.append(("device", client_id, allowed))
+        if account_id and (allowed.account_runs_per_window
+                           or allowed.account_seconds_per_window):
+            out.append(("account", account_id, Allowance(
+                runs_per_window=allowed.account_runs_per_window,
+                seconds_per_window=allowed.account_seconds_per_window,
+                window_seconds=allowed.window_seconds)))
+        return out
+
+    def _concurrency(self, ceiling: int, field_name: str, whose: str, called: str) -> None:
+        """How many of this scope's runs are going, and whether another may start."""
+        from agentnode_sdk.gateway.protocol import is_terminal
+
+        if not ceiling or not whose:
+            return
+        with self._lock:
+            going = sum(1 for r in self.runs.values()
+                        if getattr(r, field_name, "") == whose and not is_terminal(r.state))
+        if going >= ceiling:
+            raise OverTheCeiling(
+                "concurrent_runs" if called == "device" else "account_concurrent_runs",
+                "this %s already has %d runs going and may have %d at once. Wait for one to "
+                "finish." % (called, going, ceiling))
+
     def _judge_window(self, allowed, runs: int, seconds: float, oldest: float,
-                      asking_for: int) -> None:
+                      asking_for: int, whose: str = "client") -> None:
         """Whether a client may start another run in this window. One definition, two callers.
 
         The early look in `within_its_allowance` and the authoritative claim in `reserve` have to
@@ -978,19 +1139,21 @@ class GatewayService:
         more permissive one would be the one that decided.
         """
         lifts = oldest + allowed.window_seconds
+        named = "runs_per_window" if whose != "account" else "account_runs_per_window"
         if allowed.runs_per_window and runs >= allowed.runs_per_window:
             raise OverTheCeiling(
-                "runs_per_window",
-                "this client has started %d runs and may start %d in this window. The oldest "
-                "stops counting in %.0f seconds." % (runs, allowed.runs_per_window,
+                named,
+                "this %s has started %d runs and may start %d in this window. The oldest "
+                "stops counting in %.0f seconds." % (whose, runs, allowed.runs_per_window,
                                                      max(0.0, lifts - time.time())),
                 lifts_at=lifts)
+        named = "seconds_per_window" if whose != "account" else "account_seconds_per_window"
         if allowed.seconds_per_window and seconds + asking_for > allowed.seconds_per_window:
             raise OverTheCeiling(
-                "seconds_per_window",
-                "this client has used %.0f of %d seconds in this window and this job asks "
+                named,
+                "this %s has used %.0f of %d seconds in this window and this job asks "
                 "for up to %d more. The oldest stops counting in %.0f seconds."
-                % (seconds, allowed.seconds_per_window, asking_for,
+                % (whose, seconds, allowed.seconds_per_window, asking_for,
                    max(0.0, lifts - time.time())),
                 lifts_at=lifts)
 
@@ -1024,8 +1187,19 @@ class GatewayService:
         # commit point in `reserve`, because a claim taken here would be kept by a request that
         # one of the checks BELOW went on to refuse -- and a refused request must not consume the
         # allowance it was refused for.
+        # How big the job itself is, before anything is done with it. The runtime bounds what
+        # a job DOES; it cannot bound what was handed to this gateway, because by then the bytes
+        # are already here.
+        from agentnode_sdk.gateway import admission as _admission
+
+        try:
+            _admission.artifact_within_ceiling(self.allowance(), len(artifact or b""))
+        except _admission.NotAdmitted as too_big:
+            raise OverTheCeiling("max_artifact_bytes", too_big.because) from too_big
+
         granted_digest = self.within_its_allowance(
-            self.state.client_id_for(token) or "", request.wall_clock_s)
+            self.state.client_id_for(token) or "", request.wall_clock_s,
+            account_id=self.state.account_id_for(token) or "")
 
         actual = digest(artifact)
         if actual != request.artifact_sha256:
@@ -1212,6 +1386,9 @@ class GatewayService:
             blocked.refusal = readiness.reason + (
                 (" Next: " + readiness.next_steps[0]) if readiness.next_steps else ""
             )
+            blocked.refused_as = "sandbox_unavailable"
+            blocked.refusal_remedy = (readiness.next_steps[0] if readiness.next_steps else
+                                      "Ask whoever runs this sandbox to measure it again.")
             blocked.finished_at = time.time()
             return blocked
 
@@ -1219,7 +1396,8 @@ class GatewayService:
         record = RunRecord(run_id=request.run_id, job_id=request.job_id,
                            request_sha256=request_sha,
                            required_properties=tuple(request.required_properties),
-                           owner_client_id=self.state.client_id_for(token) or "")
+                           owner_client_id=self.state.client_id_for(token) or "",
+                           owner_account_id=self.state.account_id_for(token) or "")
         try:
             granted, _props, req_shape, eff_shape, granted_digest, deltas = self.admit(
                 request, artifact, token)
@@ -1235,6 +1413,7 @@ class GatewayService:
         except Exception as exc:                              # noqa: BLE001 - refusal is an answer
             record.move_to("refused")
             record.refusal = str(exc)
+            record.refused_as, record.refusal_remedy = name_the_refusal(exc)
             record.finished_at = time.time()
             # Recorded, so a refused job cannot be retried into an acceptance by resending it.
             with self._lock:
@@ -1267,13 +1446,18 @@ class GatewayService:
         # It runs AFTER admission, not before. Before, it recorded the very nonce that admission
         # was about to check, so every first submission was refused as a replay of itself.
         if not self.ledger.claim(request.run_id, request.nonce, request_sha,
-                                 record.owner_client_id):
+                                 record.owner_client_id,
+                                 owner_account_id=record.owner_account_id):
             refused = RunRecord(run_id=request.run_id, job_id=request.job_id,
                                 request_sha256=request_sha, state="refused")
             refused.refusal = (
                 "this run id has already been submitted; re-sending a signed job is a replay. "
                 f"Ask for its status at /v1/jobs/{request.run_id}. Nothing was started."
             )
+            refused.refused_as = "malformed"
+            refused.refusal_remedy = (
+                "Ask for the status of that run id instead of sending it again. A retry needs "
+                "a new run id.")
             refused.finished_at = time.time()
             return refused
 
@@ -1302,7 +1486,8 @@ class GatewayService:
         # admission in between -- so two requests arriving together both saw a free slot and a
         # ceiling of one admitted two. And the window claim was taken at the top of admission, so
         # a request that a later check refused kept the allowance it had claimed.
-        self.reserve(record.owner_client_id, request.run_id, record, request.wall_clock_s)
+        self.reserve(record.owner_client_id, request.run_id, record, request.wall_clock_s,
+                     account_id=record.owner_account_id)
         # Kept, not just started. Daemon status is not ownership: it means the interpreter will
         # not wait at exit, which is a different question from whether this service knows what it
         # set going. A review was right that a run thread could outlive the service that created
@@ -1544,11 +1729,35 @@ class GatewayService:
         started = float(record.started_at or 0.0)
         finished = float(record.finished_at or started)
         if record.owner_client_id:
-            self.use.finished(record.owner_client_id, record.run_id, max(0.0, finished - started))
+            # Every scope that counted it, or an account ceiling would be charged for the run
+            # starting and never for it ending.
+            self.use.finished_every(
+                [k for k in (record.owner_client_id, record.owner_account_id) if k],
+                record.run_id, max(0.0, finished - started))
         try:
+            # Which policy this run was admitted under, by digest and by ordinal. Read from
+            # the record's own effective policy rather than from whatever is configured now: a
+            # policy edited while a run was going must not rewrite what that run ran under.
+            from agentnode_sdk.gateway import policy_version as _versions
+
+            operator_digest = ""
+            operator_version = _versions.UNKNOWN
+            try:
+                operator_digest = self.operator_envelope().digest()
+                operator_version = _versions.version_for(self.state.root, operator_digest)
+            except Exception:                                 # noqa: BLE001
+                # A policy that cannot be read or ordered leaves the fields EMPTY rather than
+                # filled in with a guess. A record binding a version nobody checked looks
+                # checked, which is worse than one binding none.
+                pass
+
             meter.record(
                 self.state.root,
                 run_id=record.run_id, client_id=record.owner_client_id,
+                account_id=record.owner_account_id,
+                worker_id=self.worker.instance_label(),
+                operator_policy_sha256=operator_digest,
+                operator_policy_version=operator_version,
                 started_at=started, finished_at=finished,
                 cpu=float(granted.limits.cpu), memory_mb=int(granted.limits.memory_mb),
                 wall_clock_s=int(granted.limits.wall_clock_s),
@@ -1566,12 +1775,18 @@ class GatewayService:
             # refusing to publish the terminal state over it would lose the run instead.
             pass
 
-    def reserve(self, client_id: str, run_id: str, record, asking_for: int) -> None:
+    def reserve(self, client_id: str, run_id: str, record, asking_for: int,
+                account_id: str = "") -> None:
         """Take the slot and the allowance, or raise -- as one indivisible step.
 
         The count of what a client has going and the insertion of the new run are the same
         decision, so they are made without letting go of the lock in between. Reading the count,
         doing a page of other work, and then inserting is how a ceiling of one admits two.
+
+        Both scopes are claimed in ONE transaction. Claiming the device and then the account as
+        two steps means a job counted against the device, refused by the account, and the
+        device's allowance spent on a run that never happened -- a quota that charges the
+        customer for the gateway's own ordering.
         """
         from agentnode_sdk.gateway.protocol import is_terminal
 
@@ -1581,8 +1796,12 @@ class GatewayService:
                 self.runs[run_id] = record
             return
 
-        def judge(runs: int, seconds: float, oldest: float) -> None:
-            self._judge_window(allowed, runs, seconds, oldest, asking_for)
+        scopes = self._window_scopes(allowed, client_id, account_id)
+
+        def judging(ceilings, whose):
+            def judge(runs: int, seconds: float, oldest: float) -> None:
+                self._judge_window(ceilings, runs, seconds, oldest, asking_for, whose=whose)
+            return judge
 
         with self._lock:
             if allowed.concurrent_runs:
@@ -1591,13 +1810,24 @@ class GatewayService:
                 if going >= allowed.concurrent_runs:
                     raise OverTheCeiling(
                         "concurrent_runs",
-                        "this client already has %d runs going and may have %d at once. Wait "
+                        "this device already has %d runs going and may have %d at once. Wait "
                         "for one to finish." % (going, allowed.concurrent_runs))
-            if allowed.runs_per_window or allowed.seconds_per_window:
-                # Raises before anything is written if this client is over a window ceiling.
-                self.use.claim(client_id, run_id, judge)
+            if allowed.account_concurrent_runs and account_id:
+                going = sum(1 for r in self.runs.values()
+                            if getattr(r, "owner_account_id", "") == account_id
+                            and not is_terminal(r.state))
+                if going >= allowed.account_concurrent_runs:
+                    raise OverTheCeiling(
+                        "account_concurrent_runs",
+                        "this account already has %d runs going and may have %d at once. Wait "
+                        "for one to finish." % (going, allowed.account_concurrent_runs))
+            if scopes:
+                # Raises before anything is written if any scope is over a window ceiling.
+                self.use.claim_every(
+                    [(key, judging(ceilings, whose)) for whose, key, ceilings in scopes],
+                    run_id)
             else:
-                self.use.note(client_id, run_id)
+                self.use.note_every([k for k in (client_id, account_id) if k], run_id)
             # Taken in the same breath as it was checked.
             self.runs[run_id] = record
 
@@ -1847,9 +2077,13 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(401, refusal("this is not a session that may collect a setup"))
         try:
             found = self.service.connections.about(asked.get("challenge", ""))
-            if found["account"] != who.client_id:
+            if found["account"] != who.account_id:
                 raise enrolment.NoSuchChallenge("not this account's setup")
-            token = self.service.state.redeem_for_connection(found["label"])
+            # The connection joins the account that set it up. Leaving this out made every AI a
+            # person added from their own console a separate customer, with its own ceilings,
+            # its own bill and no way for the person to see it in their own device list.
+            token = self.service.state.redeem_for_connection(found["label"],
+                                                             account_id=who.account_id)
             bound = self.service.connections.spend_the_ticket(
                 asked.get("challenge", ""), asked.get("ticket", ""),
                 self.service.state.client_id_for(token))

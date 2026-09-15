@@ -295,7 +295,12 @@ OPERATIONS = (
                   "run for you, which is what you want unless you need a particular "
                   "interpreter or flags. Give one and the code arrives base64-encoded "
                   "on standard input -- it is NOT written to a file, so a command "
-                  "naming one (python main.py) finds nothing there"),
+                  "naming one (python main.py) finds nothing there",
+                  # Optional in the shape as well as in the words. It was declared REQUIRED
+                  # while its own description told the caller to leave it out, so a client that
+                  # did what the schema said was refused as malformed by the same schema. Every
+                  # real caller happened to send one, which is why nothing caught it.
+                  required=False),
             # Supply the CODE and these two are worked out here. An AI holding only these tools
             # has no way to hash anything -- a real one stopped at exactly this point, correctly
             # refusing to invent a digest, because a disclosure naming the wrong bytes would be
@@ -371,7 +376,12 @@ OPERATIONS = (
                   "run for you, which is what you want unless you need a particular "
                   "interpreter or flags. Give one and the code arrives base64-encoded "
                   "on standard input -- it is NOT written to a file, so a command "
-                  "naming one (python main.py) finds nothing there"),
+                  "naming one (python main.py) finds nothing there",
+                  # Optional in the shape as well as in the words. It was declared REQUIRED
+                  # while its own description told the caller to leave it out, so a client that
+                  # did what the schema said was refused as malformed by the same schema. Every
+                  # real caller happened to send one, which is why nothing caught it.
+                  required=False),
             Field("network", "string", "the access asked for", required=False,
                   one_of=("none", "allowlist", "unrestricted")),
             Field("allowed_domains", "array", "where it may connect, if any", required=False),

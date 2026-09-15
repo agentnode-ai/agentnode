@@ -109,6 +109,34 @@ class Allowance:
     seconds_per_window: int = 0
     window_seconds: float = WINDOW_SECONDS
 
+    # ---------------------------------------------------------------- the customer
+    #
+    # The three above bound ONE CREDENTIAL. A customer holds several -- a laptop, a server, an
+    # AI connection -- so a per-credential ceiling is one a customer raises by pairing another
+    # device, which is not a ceiling. These bound the account however many devices are in it.
+    #
+    # Both apply. A device ceiling stops one credential running away with the account's
+    # allowance; an account ceiling stops the account running away with the machine. Neither
+    # substitutes for the other and the tighter one decides.
+    account_concurrent_runs: int = 0
+    account_runs_per_window: int = 0
+    account_seconds_per_window: int = 0
+
+    # ---------------------------------------------------------------- the rate
+    #
+    # Volume over a day is not the same question as volume over a minute: a client that may
+    # start 500 runs a day and starts them all in ten seconds is inside its quota and is a
+    # problem. Zero means no ceiling of that kind, like everything else here.
+    requests_per_minute: int = 0
+    account_requests_per_minute: int = 0
+
+    # ---------------------------------------------------------------- what one job may be
+    #
+    # Enforced by this gateway rather than by the runtime, which is why they are here and not in
+    # the operator policy: the runtime cannot refuse an artifact it was never handed.
+    max_artifact_bytes: int = 0
+    max_output_bytes: int = 0
+
     def as_dict(self) -> dict:
         return asdict(self)
 
@@ -164,11 +192,28 @@ def read_allowance(root: str | os.PathLike[str]) -> Allowance:
         raise CannotReadTheCeilings(
             "the limits in " + str(path) + " are not an object, so this gateway cannot tell what "
             "it is supposed to allow. It will not take work until that is fixed.")
+    unknown = sorted(set(body) - set(Allowance().as_dict()))
+    if unknown:
+        # An unrecognised ceiling reads as configured and is not honoured, which is the one
+        # failure an operator cannot see. Refused rather than ignored, for the same reason the
+        # operator policy refuses an unknown key.
+        raise CannotReadTheCeilings(
+            "the limits in " + str(path) + " name " + ", ".join(repr(u) for u in unknown)
+            + ", which this gateway does not understand. A setting that reads as configured and "
+            "is not applied is worse than no setting, so it will not take work until that is "
+            "fixed.")
     return Allowance(
         concurrent_runs=int(body.get("concurrent_runs") or 0),
         runs_per_window=int(body.get("runs_per_window") or 0),
         seconds_per_window=int(body.get("seconds_per_window") or 0),
         window_seconds=float(body.get("window_seconds") or WINDOW_SECONDS),
+        account_concurrent_runs=int(body.get("account_concurrent_runs") or 0),
+        account_runs_per_window=int(body.get("account_runs_per_window") or 0),
+        account_seconds_per_window=int(body.get("account_seconds_per_window") or 0),
+        requests_per_minute=int(body.get("requests_per_minute") or 0),
+        account_requests_per_minute=int(body.get("account_requests_per_minute") or 0),
+        max_artifact_bytes=int(body.get("max_artifact_bytes") or 0),
+        max_output_bytes=int(body.get("max_output_bytes") or 0),
     )
 
 
@@ -300,6 +345,72 @@ class Use:
             body.setdefault(str(client_id), []).append(
                 {"run_id": str(run_id), "at": at, "seconds": 0.0})
             _atomically(self.path, json.dumps(body, sort_keys=True))
+
+    def claim_every(self, scopes, run_id: str, now: float | None = None) -> None:
+        """Judge SEVERAL scopes and write to all of them, as one transaction.
+
+        `scopes` is a sequence of `(key, judge)`. Every judge is called while the lock is held,
+        before anything is written; if any of them raises, nothing is written at all.
+
+        This exists because a device ceiling and an account ceiling are two ceilings on one
+        event. Claiming them one after another means a job can be counted against the device,
+        refused by the account, and leave the device's allowance spent on a run that never
+        happened -- which is a quota that punishes the customer for the gateway's own ordering.
+        """
+        at = time.time() if now is None else now
+        keys = [str(key) for key, _judge in scopes]
+        if len(set(keys)) != len(keys):
+            # Two scopes with one key would be counted twice for one run and judged against
+            # their own double-counting. It cannot happen with the keys this gateway uses --
+            # a device id and an account id are differently shaped -- and it is refused here
+            # rather than being relied on not to happen.
+            raise ValueError("the same counter cannot be claimed twice for one run")
+        with self._lock, ProcessLock(self.path):
+            body = self._forget(self._load(), at)
+            for key, judge in scopes:
+                mine = body.get(str(key), [])
+                judge(len(mine), sum(float(e.get("seconds", 0.0)) for e in mine),
+                      min((float(e.get("at", at)) for e in mine), default=at))
+            for key, _judge in scopes:
+                body.setdefault(str(key), []).append(
+                    {"run_id": str(run_id), "at": at, "seconds": 0.0})
+            _atomically(self.path, json.dumps(body, sort_keys=True))
+
+    def note_every(self, keys, run_id: str, now: float | None = None) -> None:
+        """Record a run against several scopes with nothing to judge."""
+        at = time.time() if now is None else now
+        with self._lock, ProcessLock(self.path):
+            body = self._forget(self._load(), at)
+            for key in keys:
+                if not key:
+                    continue
+                body.setdefault(str(key), []).append(
+                    {"run_id": str(run_id), "at": at, "seconds": 0.0})
+            _atomically(self.path, json.dumps(body, sort_keys=True))
+
+    def finished_every(self, keys, run_id: str, seconds: float,
+                       now: float | None = None) -> None:
+        """How long it took, added to every scope that was counting it."""
+        at = time.time() if now is None else now
+        with self._lock, ProcessLock(self.path):
+            body = self._forget(self._load(), at)
+            for key in keys:
+                if not key:
+                    continue
+                for entry in body.get(str(key), []):
+                    if entry.get("run_id") == str(run_id):
+                        entry["seconds"] = float(seconds)
+            _atomically(self.path, json.dumps(body, sort_keys=True))
+
+    def forget_everything_about(self, key: str) -> bool:
+        """Drop one scope's counters entirely. What deleting a customer has to imply."""
+        with self._lock, ProcessLock(self.path):
+            body = self._load()
+            if str(key) not in body:
+                return False
+            del body[str(key)]
+            _atomically(self.path, json.dumps(body, sort_keys=True))
+            return True
 
     def finished(self, client_id: str, run_id: str, seconds: float,
                  now: float | None = None) -> None:

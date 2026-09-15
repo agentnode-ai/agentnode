@@ -61,10 +61,10 @@ METER_NAME = "use-log.jsonl"
 
 #: Exactly the fields a line has. Named here so that adding one is a decision somebody makes on
 #: purpose, in a place a reviewer reads, rather than a keyword appearing at a call site.
-FIELDS = ("run_id", "client_id", "started_at", "finished_at", "seconds",
+FIELDS = ("run_id", "client_id", "account_id", "started_at", "finished_at", "seconds",
           "cpu", "memory_mb", "wall_clock_s", "state", "outcome", "bytes_out",
-          "worker_topology", "worker_topology_means", "allowance_sha256",
-          "allowance_admitted_under")
+          "worker_topology", "worker_topology_means", "worker_id", "allowance_sha256",
+          "allowance_admitted_under", "operator_policy_sha256", "operator_policy_version")
 
 #: What binds one line to the one before it. Not in FIELDS: those are what a line SAYS, these are
 #: what makes it hard to change, and keeping them apart stops a reader mistaking one for the
@@ -90,6 +90,9 @@ HEAD_NAME = "use-log.head"
 #: named constant rather than at "" means a file whose first line was removed does not look like
 #: a file that always began there.
 GENESIS = "the first line of this gateway's meter"
+
+#: What a line becomes when its contents are erased. See `erase`.
+TOMBSTONE_FIELDS = ("seq", "erased_at", "erased_because", "stood_for", "signature")
 
 
 def _canonical(line: dict) -> bytes:
@@ -130,15 +133,29 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
            finished_at: float, cpu: float, memory_mb: int, wall_clock_s: int, state: str,
            outcome: str, bytes_out: int, worker_topology: str,
            allowance_sha256: str,
-           allowance_admitted_under: dict | None = None) -> Path:
+           allowance_admitted_under: dict | None = None,
+           account_id: str = "", worker_id: str = "",
+           operator_policy_sha256: str = "", operator_policy_version: int = -1) -> Path:
     """Write one line about one run.
 
     Every value is named. There is deliberately no parameter that takes free-form content: a
     meter with somewhere to put "anything else" is a meter that will one day hold a secret.
+
+    Four attributions, and a line that could not be charged to anybody is not worth keeping:
+
+        run                what happened
+        account            WHO. Not the device: a customer holds several, devices are withdrawn
+                           and replaced, and a bill follows the customer rather than a credential
+        operator policy    under WHAT RULES, by digest and by version. A run admitted under a
+                           policy that has since been edited must still say which one it was
+        worker             WHERE. Two runs can be seen to have been executed by the same thing
+                           or by different ones, which is what makes a per-worker statement
+                           possible at all
     """
     line = {
         "run_id": str(run_id),
         "client_id": str(client_id),
+        "account_id": str(account_id),
         "started_at": float(started_at),
         "finished_at": float(finished_at),
         "seconds": round(max(0.0, float(finished_at) - float(started_at)), 3),
@@ -154,6 +171,14 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
         # a record months from now has no other way to know what it does not protect against,
         # and that is the reason the label is there at all.
         "worker_topology_means": what_it_does_not_establish(worker_topology),
+        # WHICH worker. A topology says what KIND of arrangement; this says which instance of
+        # it, so a statement can be made per worker rather than per arrangement.
+        "worker_id": str(worker_id),
+        # Under which rules. The digest says exactly which policy and cannot be turned back into
+        # one; the version orders it among this gateway's policies, which is the part a person
+        # reading a record months later can actually use. Neither alone is enough.
+        "operator_policy_sha256": str(operator_policy_sha256),
+        "operator_policy_version": int(operator_policy_version),
         "allowance_sha256": str(allowance_sha256),
         # The digest says WHICH ceilings, and a digest cannot be turned back into numbers. A
         # reader holding one line has to be able to see what was actually in force when the run
@@ -221,6 +246,96 @@ def _writing(root):
     return ProcessLock(Path(root) / METER_NAME)
 
 
+def is_a_tombstone(line: dict) -> bool:
+    return bool(line.get("stood_for"))
+
+
+def erase(root: str | os.PathLike[str], because: str, matches) -> int:
+    """Replace the CONTENTS of matching lines with a signed marker. Returns how many.
+
+    ## Why this exists at all
+
+    A hash chain is a promise that nothing was removed. Erasing somebody's data is the removal
+    of something. Those pull against each other and a product that needs both cannot simply pick
+    one: deleting the line breaks the chain from there on, and refusing to delete means the
+    record of use is also a record a person cannot get out of.
+
+    ## How it is reconciled
+
+    A tombstone keeps the DIGEST the next line points back at -- `stood_for` -- and is itself
+    signed. So:
+
+    * the chain still verifies end to end, because the link the next line needs is still there;
+    * the file still says how many lines there are and which ones were erased, when, and why;
+    * an UNAUTHORISED removal is still caught, because forging a tombstone needs the signing
+      key, exactly as forging a line does. Somebody who has the key can already write any chain
+      they like and no arrangement of a self-signed log changes that -- it is the same limit
+      this module states about itself in its own docstring.
+
+    What is deliberately NOT preserved is what the line said. That is the point: an erasure that
+    kept the account id would not be an erasure.
+
+    `matches(line)` decides. It is given each chained line and returns True to erase it.
+    """
+    from agentnode_sdk.signing_key import sign_payload
+
+    path = Path(root) / METER_NAME
+    with _writing(root):
+        lines = read(root)
+        if not lines:
+            return 0
+        at = now()
+        erased = 0
+        out = []
+        for line in lines:
+            if "seq" not in line or is_a_tombstone(line) or not matches(line):
+                out.append(line)
+                continue
+            marker = {
+                "seq": int(line["seq"]),
+                "erased_at": round(at, 3),
+                "erased_because": str(because)[:200],
+                # The link. Without it the next line points at something that is no longer
+                # there and every line after this one reads as tampered with.
+                "stood_for": _digest_of(_without_signature(line)),
+            }
+            marker["signature"] = sign_payload(_canonical(marker), signing_key(root)).hex()
+            assert set(marker) == set(TOMBSTONE_FIELDS), "a tombstone has exactly these fields"
+            out.append(marker)
+            erased += 1
+        if not erased:
+            return 0
+        handle = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            for line in out:
+                fh.write(json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n")
+        # The head names the LAST line by digest. If that line was just erased, what the head
+        # points at is the digest the tombstone now stands for, so it is rewritten to agree --
+        # otherwise an erasure of the final line would read as a truncation.
+        chained = [line for line in out if "seq" in line]
+        if chained:
+            last = chained[-1]
+            _write_head_digest(root, int(last["seq"]),
+                               last["stood_for"] if is_a_tombstone(last)
+                               else _digest_of(_without_signature(last)))
+        return erased
+
+
+def _write_head_digest(root, seq: int, digest: str) -> None:
+    from agentnode_sdk.signing_key import sign_payload
+
+    head = {"seq": int(seq), "digest": str(digest)}
+    head["signature"] = sign_payload(_canonical(head), signing_key(root)).hex()
+    path = Path(root) / HEAD_NAME
+    tmp = path.with_suffix(".new")
+    tmp.write_text(json.dumps(head, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:                                           # pragma: no cover - advisory here
+        pass
+
+
 def verify(root: str | os.PathLike[str]) -> dict:
     """Walk the chain and say whether it holds, and where it stops holding if it does not.
 
@@ -254,9 +369,33 @@ def verify(root: str | os.PathLike[str]) -> dict:
                           "none of them can be checked" % len(lines)}
 
     expected_prev, expected_seq = GENESIS, 1
+    erased = 0
     for index, line in enumerate(chained, start=before_the_chain + 1):
         where = {"ok": False, "lines": len(lines), "at": index,
                  "run_id": str(line.get("run_id", ""))[:32]}
+        if is_a_tombstone(line):
+            # An erased line. Its own signature is checked exactly as a real line's is -- so
+            # forging one needs the key, and an unauthorised removal still breaks the chain --
+            # and the link it stands for carries the walk forward.
+            if int(line.get("seq", 0)) != expected_seq:
+                return {**where, "detail": "the erased line %d says it is number %s, and the one "
+                                           "before it was number %d -- something was removed or "
+                                           "reordered" % (index, line.get("seq"),
+                                                          expected_seq - 1)}
+            try:
+                marker_raw = bytes.fromhex(str(line.get("signature", "")))
+            except ValueError:
+                marker_raw = b""
+            if not marker_raw or not verify_signature(
+                    _canonical(_without_signature(line)), marker_raw, public):
+                return {**where, "detail": "line %d says it was erased, and the note saying so "
+                                           "is not signed by this gateway -- so the line was "
+                                           "taken out by something that does not hold its key"
+                                           % index}
+            expected_prev = str(line.get("stood_for", ""))
+            expected_seq += 1
+            erased += 1
+            continue
         if int(line.get("seq", 0)) != expected_seq:
             return {**where, "detail": "line %d says it is number %s, and the one before it was "
                                        "number %d -- a line has been removed or reordered"
@@ -298,13 +437,19 @@ def verify(root: str | os.PathLike[str]) -> dict:
                           "%s line(s) have been taken off the end"
                           % (expected_seq - 1, head.get("seq"),
                              int(head.get("seq", 0)) - (expected_seq - 1))}
+    if erased:
+        return {"ok": True, "lines": len(lines), "unchecked": before_the_chain, "erased": erased,
+                "detail": "every line is signed, points at the one before it, and the log ends "
+                          "where it is supposed to. %d line(s) have been ERASED on request: the "
+                          "chain shows they were there, when they went and why, and not what "
+                          "they said" % erased}
     if before_the_chain:
         return {"ok": True, "lines": len(lines), "unchecked": before_the_chain,
                 "detail": "the %d line(s) after the first %d are signed, point at the one before "
                           "each, and end where they are supposed to. The first %d were written "
                           "before this gateway kept a chain and cannot be checked at all"
                           % (len(chained), before_the_chain, before_the_chain)}
-    return {"ok": True, "lines": len(lines), "unchecked": 0,
+    return {"ok": True, "lines": len(lines), "unchecked": 0, "erased": 0,
             "detail": "every line is signed, points at the one before it, and the log ends "
                       "where it is supposed to"}
 
@@ -327,10 +472,39 @@ def read(root: str | os.PathLike[str]) -> list[dict]:
     return out
 
 
+def summarise_accounts(root: str | os.PathLike[str], since: float = 0.0) -> dict[str, dict]:
+    """The same totals, per CUSTOMER rather than per credential.
+
+    What a bill is made from. A line with no account is counted under "(unattributed)" rather
+    than dropped or silently folded into somebody else: lines written before accounts existed
+    are real use and must be visible as use that cannot be charged to anyone.
+    """
+    out: dict[str, dict] = {}
+    for line in read(root):
+        if is_a_tombstone(line):
+            continue                       # it says nothing about anybody, on purpose
+        if float(line.get("finished_at") or 0.0) < since:
+            continue
+        who = str(line.get("account_id") or "") or "(unattributed)"
+        totals = out.setdefault(who, {"runs": 0, "seconds": 0.0, "bytes_out": 0,
+                                      "policy_versions": set()})
+        totals["runs"] += 1
+        totals["seconds"] += float(line.get("seconds") or 0.0)
+        totals["bytes_out"] += int(line.get("bytes_out") or 0)
+        version = line.get("operator_policy_version")
+        if isinstance(version, int) and version > 0:
+            totals["policy_versions"].add(version)
+    for totals in out.values():
+        totals["policy_versions"] = sorted(totals["policy_versions"])
+    return out
+
+
 def summarise(root: str | os.PathLike[str], since: float = 0.0) -> dict[str, dict]:
     """Per client: how many runs and how many seconds. What an operator actually asks."""
     totals: dict[str, dict] = {}
     for line in read(root):
+        if is_a_tombstone(line):
+            continue                       # it says nothing about anybody, on purpose
         if float(line.get("started_at", 0)) < since:
             continue
         who = str(line.get("client_id") or "")

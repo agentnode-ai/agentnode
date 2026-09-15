@@ -292,6 +292,33 @@ def main(argv: list[str] | None = None) -> int:
     gw_limits.add_argument("--seconds-per-window", dest="seconds_per_window", type=int,
                            default=None,
                            help="How many seconds of sandbox time it may use. 0 = no limit")
+    # The same three for the CUSTOMER rather than for one credential. Both apply and the
+    # tighter one decides: a per-device ceiling alone is one a customer raises by pairing
+    # another machine, which is not a ceiling.
+    gw_limits.add_argument("--account-concurrent-runs", dest="account_concurrent_runs",
+                           type=int, default=None,
+                           help="How many runs one CUSTOMER may have going at once, across "
+                                "every device they have. 0 = no limit")
+    gw_limits.add_argument("--account-runs-per-window", dest="account_runs_per_window",
+                           type=int, default=None,
+                           help="How many one customer may start in a window. 0 = no limit")
+    gw_limits.add_argument("--account-seconds-per-window", dest="account_seconds_per_window",
+                           type=int, default=None,
+                           help="How many seconds of sandbox time one customer may use. "
+                                "0 = no limit")
+    gw_limits.add_argument("--requests-per-minute", dest="requests_per_minute", type=int,
+                           default=None,
+                           help="How many requests one device may make in a minute. A daily "
+                                "quota does not bound a burst. 0 = no limit")
+    gw_limits.add_argument("--account-requests-per-minute", dest="account_requests_per_minute",
+                           type=int, default=None,
+                           help="The same for one customer, across every device. 0 = no limit")
+    gw_limits.add_argument("--max-artifact-bytes", dest="max_artifact_bytes", type=int,
+                           default=None,
+                           help="The largest job this gateway accepts. 0 = no limit")
+    gw_limits.add_argument("--max-output-bytes", dest="max_output_bytes", type=int,
+                           default=None,
+                           help="The most output it keeps from one run. 0 = no limit")
 
     gw_used = gw_sub.add_parser("used", help="What each client has used")
     gw_used.add_argument("--dir", default=None)
@@ -327,8 +354,24 @@ def main(argv: list[str] | None = None) -> int:
                          help="Override the address in the invitation, for a gateway reached at "
                               "more than one")
     gw_pair.add_argument("--port", type=int, default=None)
+    gw_pair.add_argument("--account", default="",
+                         help="Add this device to a customer that already exists, instead of "
+                              "making a new one. Run `agentnode gateway accounts` for the list.")
     gw_clients = gw_sub.add_parser("clients", help="Who is connected")
     gw_clients.add_argument("--dir", default=None)
+    # The operator's own view of customers. Deliberately NOT a contract operation: anything
+    # declared there is reachable by whoever holds a capability, and a capability is something a
+    # customer holds. Suspension has to be somewhere no customer can reach, and this is it.
+    gw_accounts = gw_sub.add_parser(
+        "accounts", help="The customers on this gateway, and stopping or restoring one")
+    gw_accounts.add_argument("--dir", default=None)
+    gw_accounts.add_argument("--account", default="", help="Which customer")
+    gw_accounts.add_argument("--suspend", action="store_true",
+                             help="Refuse this customer's work until you restore them")
+    gw_accounts.add_argument("--restore", action="store_true",
+                             help="Let them work again")
+    gw_accounts.add_argument("--reason", default="",
+                             help="Why. This is what that customer is shown.")
     gw_revoke = gw_sub.add_parser("revoke", help="Disconnect a client, at once")
     gw_revoke.add_argument("--client", required=True, help="Its id or name")
     gw_revoke.add_argument("--dir", default=None)
