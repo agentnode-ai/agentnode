@@ -266,6 +266,48 @@ class TestDeletingACustomer:
         assert meter.verify(gateway.state.root)["ok"], (
             "deleting a customer left a record that no longer verifies")
 
+    def test_deleting_one_run_reaches_the_meter_and_the_ledger(self, gateway):
+        """Built from records rather than from a live run, on purpose.
+
+        A run that is still finishing writes its metered line on its own thread, so driving
+        this from a real submission would race the thing being tested and the failure would
+        look like a defect in deletion. What deletion can remove is what exists when it runs,
+        and that is the property here.
+        """
+        from agentnode_sdk.gateway.ledger import Ledger
+
+        alice = _a_customer(gateway, "alice")
+        mine, theirs = "a" * 32, "b" * 32
+        book = Ledger(gateway.state.root / "ledger.json")
+        book.claim(mine, "nonce-one", "d" * 64, alice.device_id,
+                   owner_account_id=alice.account_id)
+        book.claim(theirs, "nonce-two", "e" * 64, alice.device_id,
+                   owner_account_id=alice.account_id)
+        _a_metered_line(gateway.state.root, run_id=mine, account_id=alice.account_id)
+        _a_metered_line(gateway.state.root, run_id=theirs, account_id=alice.account_id)
+
+        went = retention.delete_run(gateway, mine)
+        assert went["metering_erased"] == 1
+        assert went["ledger_runs"] == 1, "the ledger still names this run and its account"
+        written = (gateway.state.root / "ledger.json").read_text(encoding="utf-8")
+        metered = (gateway.state.root / meter.METER_NAME).read_text(encoding="utf-8")
+        assert mine not in written and mine not in metered
+        assert theirs in written and theirs in metered, "the other run went too"
+        assert meter.verify(gateway.state.root)["ok"]
+
+    def test_but_the_nonce_it_used_is_kept(self, gateway):
+        """Otherwise deleting a run would make the signed request that started it replayable."""
+        from agentnode_sdk.gateway.ledger import Ledger
+
+        alice = _a_customer(gateway, "alice")
+        book = Ledger(gateway.state.root / "ledger.json")
+        book.claim("r" * 32, "a-nonce-somebody-chose", "d" * 64, alice.device_id,
+                   owner_account_id=alice.account_id)
+        retention.delete_run(gateway, "r" * 32)
+        assert book.knows_nonce("a-nonce-somebody-chose"), (
+            "the nonce went with the run, so the request that used it can be sent again")
+        assert not book.knows_run("r" * 32)
+
     def test_deleting_twice_is_not_an_error(self, gateway):
         alice = _a_customer(gateway, "alice")
         retention.delete_account(gateway, alice.account_id)

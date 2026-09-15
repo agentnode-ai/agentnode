@@ -270,19 +270,33 @@ def delete_account(state, account_id: str, because: str = "the customer asked") 
 def delete_run(state, run_id: str, because: str = "the customer asked") -> dict:
     """Remove one run. Everything the gateway holds about it, by the same rules.
 
-    The audit deliberately never recorded a run id -- it records WHICH operation and which of
-    its declared parameter NAMES a refusal was about, never a value -- so there is nothing to
-    remove there, and saying so is more useful than a line of code that removes nothing.
+    Three stores, and one of them is deliberately empty:
+
+    * the metering line, erased to a signed tombstone like any other;
+    * the ledger entry, which names the run, the device that submitted it and the account;
+    * the audit -- which never recorded a run id at all. It records WHICH operation and which
+      of its declared parameter NAMES a refusal was about, never a value. Saying so is more
+      useful than a line of code that removes nothing.
+
+    The NONCE is kept. A nonce is a random value a client chose, it identifies nobody, and
+    dropping it would turn deleting a run into a way to make the signed request that started it
+    replayable. So the run id becomes free again and the request that used it does not.
     """
     from agentnode_sdk.gateway import meter
+    from agentnode_sdk.gateway.ledger import Ledger
 
     state = _the_state(state)
+    root = Path(state.root)
     wanted = str(run_id or "")
-    went = {"metering_erased": 0, "ledger": False, "record": False}
+    went = {"metering_erased": 0, "ledger_runs": 0, "audit_lines": 0}
     try:
         went["metering_erased"] = meter.erase(
-            Path(state.root), because,
-            lambda line: str(line.get("run_id") or "") == wanted)
+            root, because, lambda line: str(line.get("run_id") or "") == wanted)
+    except (OSError, ValueError):
+        pass
+    try:
+        went["ledger_runs"] = Ledger(root / "ledger.json").forget_runs(
+            lambda run, _entry: str(run) == wanted)
     except (OSError, ValueError):
         pass
     return went
@@ -339,8 +353,14 @@ def export_account(state, account_id: str) -> dict:
     device_ids = {str(d.get("client_id") or "") for d in devices}
 
     lines = []
-    for raw in (root / "audit.jsonl").read_text(encoding="utf-8").splitlines() \
-            if (root / "audit.jsonl").exists() else []:
+    try:
+        written = (root / "audit.jsonl").read_text(encoding="utf-8")
+    except OSError:
+        # Absent, or unreadable. Two states with one reading here, and that is acceptable only
+        # because an export is a copy rather than a decision: nothing is refused or permitted on
+        # the strength of it. `what_is_not_here` below says what an export leaves out.
+        written = ""
+    for raw in written.splitlines():
         if not raw.strip():
             continue
         try:
