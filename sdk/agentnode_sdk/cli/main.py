@@ -368,6 +368,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="I have read what this will do and I accept it")
     rm_run.add_argument("--max-seconds", dest="max_seconds", type=int, default=60,
                         help="How long the sandbox lets it run before stopping it")
+    rm_bridge = rm_sub.add_parser(
+        "bridge", help="Serve this sandbox's tools to a local AI over MCP on stdin/stdout")
+    rm_bridge.add_argument("--name", default="",
+                           help="Which connected sandbox. Not needed when AGENTNODE_URL and "
+                                "AGENTNODE_TOKEN are set, which is what a setup file does.")
     rm_cancel = rm_sub.add_parser("cancel", help="Stop a run that is still going")
     rm_cancel.add_argument("--run", required=True, help="The run id printed when it started")
     rm_cancel.add_argument("--name", default="")

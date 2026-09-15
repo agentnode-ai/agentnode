@@ -290,9 +290,25 @@ OPERATIONS = (
         summary="What would happen if this job were run: where, what leaves the machine, what it "
                 "may reach, what it may use, and what it is expected to cost.",
         params=(
-            Field("command", "array", "the command, as a list of arguments"),
-            Field("artifact_sha256", "string", "digest of the code that would be sent"),
-            Field("artifact_bytes", "integer", "how much would be transferred"),
+            Field("command", "array",
+                  "the command, as a list of arguments. LEAVE IT OUT and the code is "
+                  "run for you, which is what you want unless you need a particular "
+                  "interpreter or flags. Give one and the code arrives base64-encoded "
+                  "on standard input -- it is NOT written to a file, so a command "
+                  "naming one (python main.py) finds nothing there"),
+            # Supply the CODE and these two are worked out here. An AI holding only these tools
+            # has no way to hash anything -- a real one stopped at exactly this point, correctly
+            # refusing to invent a digest, because a disclosure naming the wrong bytes would be
+            # agreement to something other than what runs. Sending the artifact is the honest
+            # way out: the gateway computes the digest over what it was actually given, which
+            # binds it at least as tightly as a caller's own number and cannot disagree with it.
+            Field("artifact", "string", "the code itself, base64, when you want this gateway to "
+                                        "work out the digest and size for you", required=False,
+                  since="2"),
+            Field("artifact_sha256", "string", "digest of the code that would be sent; optional "
+                                               "when `artifact` is given", required=False),
+            Field("artifact_bytes", "integer", "how much would be transferred; optional when "
+                                               "`artifact` is given", required=False),
             Field("network", "string", "the access being asked for", required=False,
                   one_of=("none", "allowlist", "unrestricted")),
             Field("allowed_domains", "array", "where it may connect, if any", required=False),
@@ -350,7 +366,12 @@ OPERATIONS = (
         params=(
             Field("run_id", "string", "chosen by the caller, so a retry is not a second run"),
             Field("artifact", "bytes", "the code to run"),
-            Field("command", "array", "the command, as a list of arguments"),
+            Field("command", "array",
+                  "the command, as a list of arguments. LEAVE IT OUT and the code is "
+                  "run for you, which is what you want unless you need a particular "
+                  "interpreter or flags. Give one and the code arrives base64-encoded "
+                  "on standard input -- it is NOT written to a file, so a command "
+                  "naming one (python main.py) finds nothing there"),
             Field("network", "string", "the access asked for", required=False,
                   one_of=("none", "allowlist", "unrestricted")),
             Field("allowed_domains", "array", "where it may connect, if any", required=False),

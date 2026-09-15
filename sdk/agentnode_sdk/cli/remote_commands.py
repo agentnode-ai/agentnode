@@ -534,6 +534,55 @@ def cmd_rotate(args) -> int:
     return 0
 
 
+def cmd_bridge(args) -> int:
+    """Speak MCP on this process's own pipes, and relay every call to the sandbox.
+
+    The console's first option is "Claude Code or Codex on my machine -- tools over a local
+    bridge". This is that bridge. It existed as a library function with no way to run it, so the
+    thing the console offered could not actually be done.
+
+    It is a RELAY and holds no authority. The tools it serves are the ones the sandbox returned
+    for this device, so a tool this device may not use never appears -- and calling one anyway
+    would be refused at the far end. That is what makes it safe to hand to a model.
+
+    Two ways to be told which sandbox, because there are two ways people arrive:
+
+    * `--name`, using a connection this machine already paired with `remote connect`;
+    * `AGENTNODE_URL` / `AGENTNODE_TOKEN` / `AGENTNODE_CERT_SHA256` in the environment, which is
+      what a setup file downloaded from the console can fill in, so somebody who has never used
+      the command line still gets a working bridge.
+
+    Nothing is printed on stdout but MCP. Anything else would be read by the client as protocol.
+    """
+    import os
+    import sys
+
+    from agentnode_sdk.access import client as access
+    from agentnode_sdk.gateway import pinning
+
+    url = os.environ.get("AGENTNODE_URL", "")
+    token = os.environ.get("AGENTNODE_TOKEN", "")
+    pin = os.environ.get("AGENTNODE_CERT_SHA256", "")
+    if not (url and token):
+        saved, _ = _connection(args)
+        if saved is None:
+            return _no_gateway()
+        url, token, pin = saved.url, saved.token, saved.certificate_sha256
+
+    opener = pinning.opener_for(pin) if pin else None
+    sandbox = access.Sandbox(url, token, opener=opener)
+    # Errors go to stderr, where an MCP client shows them to a person instead of trying to parse
+    # them. A traceback on stdout would look like a malformed message and say nothing useful.
+    try:
+        access.bridge(sandbox, sys.stdin, sys.stdout)
+    except KeyboardInterrupt:                                 # pragma: no cover - a person's ^C
+        pass
+    except Exception as broke:                                # noqa: BLE001
+        print("  The bridge stopped: %s" % broke, file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_disconnect(args) -> int:
     store = _store(args)
     name = getattr(args, "name", "") or store.default_name()
@@ -576,11 +625,12 @@ def dispatch(args) -> int:
         "rotate": cmd_rotate,
         "disconnect": cmd_disconnect,
         "verify": cmd_verify,
+        "bridge": cmd_bridge,
     }
     handler = handlers.get(action)
     if handler is None:
         print("  Usage: agentnode remote "
-              "{connect|list|use|status|test|run|cancel|rotate|disconnect|verify}")
+              "{connect|list|use|status|test|run|cancel|rotate|disconnect|verify|bridge}")
         return 2
     try:
         return handler(args)

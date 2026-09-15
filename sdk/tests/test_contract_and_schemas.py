@@ -205,3 +205,32 @@ class TestWhatThePreExecutionDisclosureMustCarry:
     def test_and_submit_can_say_which_disclosure_it_was_started_against(self):
         submit = contract.find("submit")
         assert "accepted_disclosure" in {f.name for f in submit.params}
+
+
+class TestAModelIsToldWhereTheCodeArrives:
+    """The artifact is never a file, and a model cannot guess that.
+
+    A real AI, given these tools, wrote `python main.py` and got exit 2: Python could not find
+    the file, because there is none. The code reaches the container on standard input -- either
+    exec'd for you when no command is given, or piped base64 when one is. Nothing in the tool
+    schema said so, and the model had spent a real run finding out.
+    """
+
+    def test_the_tool_schema_says_there_is_no_file(self):
+        import json
+
+        from agentnode_sdk.access import schemas
+
+        for tool in schemas.mcp_tools():
+            if tool["name"].endswith(("prepare", "submit")):
+                said = json.dumps(tool)
+                assert "standard input" in said, tool["name"]
+                assert "not written to a file" in said.lower(), tool["name"]
+
+    def test_and_it_says_leaving_it_out_is_the_ordinary_case(self):
+        import json
+
+        from agentnode_sdk.access import schemas
+
+        described = json.dumps(schemas.mcp_tools())
+        assert "LEAVE IT OUT" in described

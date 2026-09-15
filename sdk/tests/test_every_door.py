@@ -192,8 +192,14 @@ class TestTheLocalStdioBridge:
         door = adapter.Sandbox(base, token)
         run_id = "b" * 32
         # The bridge goes through prepare like every other door: nothing runs undisclosed.
+        #
+        # `execution_channel="mcp"` because that is what the bridge IS. This prepare arrives over
+        # REST and the submission will arrive over MCP, which is precisely the case the approval
+        # targets exist for -- approving in one place for something that runs in another. It used
+        # to be unnecessary here only because the bridge mislabelled itself as REST.
         told = door.prepare(command=["python", "-c", "print('hi')"],
-                            artifact_sha256=HI_SHA, artifact_bytes=len(HI), wall_clock_s=30)
+                            artifact_sha256=HI_SHA, artifact_bytes=len(HI), wall_clock_s=30,
+                            execution_channel="mcp")
         incoming = io.StringIO(chr(10).join([
             json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
             json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
@@ -336,3 +342,65 @@ class TestNoDoorTakesAShortcut:
             assert "service.submit(" not in source, door.__name__
             assert "service.runs" not in source, door.__name__
         assert "HANDLERS" in inspect.getsource(dispatch)
+
+
+class TestTheBridgeIsOnTheChannelItClaims:
+    """A relay that changes which channel you appear to be on is not a relay.
+
+    Found by giving Claude Code the bridge and a job. It declared, truthfully, that it was an
+    MCP client -- and every submission was refused, because the bridge rebuilt MCP out of REST
+    calls and the gateway recorded `rest`. An approval for MCP could never be spent, so the
+    console's most prominent option, "Claude Code or Codex on my machine", could not finish a
+    job at all.
+    """
+
+    def test_what_the_gateway_writes_down_is_mcp(self, sandbox):
+        service, base, token = sandbox
+        door = adapter.Sandbox(base, token)
+        incoming = io.StringIO(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": schemas.tool_name_for("capabilities"), "arguments": {}}}) + chr(10))
+        adapter.bridge(door, incoming, io.StringIO())
+
+        through = [line for line in dispatch._audit_lines(service)
+                   if line.get("operation") == "capabilities"]
+        assert through, "the call was not recorded at all"
+        assert through[-1]["via"] == "mcp", (
+            "the bridge appeared as %r, so an approval for mcp could never be spent"
+            % through[-1]["via"])
+
+    def test_an_approval_for_mcp_can_actually_be_spent_through_it(self, sandbox):
+        """The whole journey, as the console sets it up: approved for mcp, submitted through the
+        bridge, which is the case that could not work before."""
+        service, base, token = sandbox
+        door = adapter.Sandbox(base, token)
+        run_id = "e" * 32
+        told = door.ask("prepare", command=["python", "-c", "print('hi')"],
+                        artifact=base64.b64encode(HI).decode("ascii"),
+                        wall_clock_s=30, execution_channel="mcp")
+        assert told["will_run_as"]["channel"] == "mcp"
+
+        incoming = io.StringIO(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                "name": schemas.tool_name_for("submit"), "arguments": {
+                    "run_id": run_id, "artifact": base64.b64encode(HI).decode("ascii"),
+                    "command": ["python", "-c", "print('hi')"], "wall_clock_s": 30,
+                    "accepted_disclosure": told["accepted_disclosure"]}}}) + chr(10))
+        outgoing = io.StringIO()
+        adapter.bridge(door, incoming, outgoing)
+        reply = json.loads(outgoing.getvalue())
+        assert not reply["result"].get("isError"), reply["result"]["content"][0]["text"]
+        assert reply["result"]["structuredContent"]["run_id"] == run_id
+
+    def test_the_wording_comes_from_the_sandbox_and_not_from_the_relay(self, sandbox):
+        """Forwarded rather than translated: what a model reads is the gateway's own text, so
+        there is one place where it is written and it cannot drift."""
+        service, base, token = sandbox
+        door = adapter.Sandbox(base, token)
+        incoming = io.StringIO(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize"}) + chr(10))
+        outgoing = io.StringIO()
+        adapter.bridge(door, incoming, outgoing)
+        said = json.loads(outgoing.getvalue())["result"]
+        assert said["serverInfo"]["name"] == "agentnode-sandbox"
+        assert "What this does not establish" in said["instructions"]
