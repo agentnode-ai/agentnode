@@ -619,3 +619,66 @@ class TestDeletionReachesTheRecordOfWhoTookACopy:
         retention.delete_account(gateway, alice.account_id)
         assert "{ not json" in path.read_text(encoding="utf-8")
         assert alice.account_id not in path.read_text(encoding="utf-8")
+
+
+class TestCallerSuppliedTextNeverReachesARecord:
+    """The planted-secret suite proves secrets are not in the stores. It did NOT prove WHY.
+
+    A counter-check found that out: neutering `scrub_everything` entirely -- so nothing is ever
+    scrubbed -- left the whole file green, and so did writing the caller's own refusal detail
+    into the audit. Both mean the same thing: nothing in those tests ever pushed caller-supplied
+    text AT a record, so they could not fail when the things that stop it were removed.
+
+    So this drives it. A secret is put where a caller can put one -- in a parameter -- and the
+    request is refused. What must be true is that the refusal is recorded and the secret is not
+    in the record, and the mechanism that makes it true is that every value in an audit line
+    comes from the CONTRACT rather than from the caller. The scrubber is the second line, and
+    it has its own tests.
+    """
+
+    SECRET = "sk-live-51H8tPlantedByTheTestAndNotARealCredential"
+
+    def _audit_text(self, gateway):
+        path = gateway.state.root / "audit.jsonl"
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def test_a_secret_in_an_unknown_parameter_is_refused_and_not_written_down(self, gateway):
+        who = _a_customer(gateway, "alice")
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("usage", {self.SECRET: "1"}, who, service=gateway)
+        assert refused.value.refusal == "malformed"
+
+        said = self._audit_text(gateway)
+        assert said, "the refusal was not recorded at all, so this proves nothing"
+        assert "usage" in said, "the refusal was recorded without naming the operation"
+        assert self.SECRET not in said, (
+            "a value the CALLER chose reached the audit: %s" % said[-400:])
+
+    def test_and_a_secret_in_a_declared_parameters_VALUE_does_not_either(self, gateway):
+        who = _a_customer(gateway, "alice")
+        with pytest.raises(dispatch.Refused):
+            dispatch.dispatch("status", {"run_id": self.SECRET}, who, service=gateway)
+
+        said = self._audit_text(gateway)
+        assert "status" in said
+        assert self.SECRET not in said, (
+            "the VALUE of a declared parameter reached the audit: %s" % said[-400:])
+
+    def test_and_the_line_is_still_worth_having(self, gateway):
+        """The control. A record that kept NOTHING would pass both tests above and be useless to
+        somebody reading the log for a probe -- which is the other half of what the audit is for.
+
+        What a line keeps: which operation, which account, which door, how it went. Every one of
+        those comes from the contract or from the device record. `about` holds declared parameter
+        NAMES and is empty here, because this refusal's wording does not name one -- an empty
+        list rather than the caller's text is the right answer and is asserted as such.
+        """
+        who = _a_customer(gateway, "alice")
+        with pytest.raises(dispatch.Refused):
+            dispatch.dispatch("status", {"run_id": self.SECRET}, who, service=gateway)
+        lines = [json.loads(raw) for raw in self._audit_text(gateway).splitlines() if raw.strip()]
+        mine = [line for line in lines if line.get("operation") == "status"]
+        assert mine, lines
+        assert mine[-1]["outcome"] == "no_such_run"
+        assert mine[-1]["account"] == who.account_id
+        assert mine[-1]["about"] == [], mine[-1]
