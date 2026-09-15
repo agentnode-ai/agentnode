@@ -521,9 +521,15 @@ def cmd_rotate(args) -> int:
     except Exception as exc:                                  # noqa: BLE001
         print(f"  Could not replace your access: {exc}")
         return 1
+    # The certificate travels with the connection, not with the credential. Rotating replaces
+    # the token and nothing else; rebuilding the saved connection without the pin silently
+    # unpinned it, and the next call then fell back to ordinary verification -- which fails
+    # against a gateway serving its own certificate. Replacing your access is a thing people are
+    # told to do, and it broke the connection it was protecting.
     _store(args).save(SavedGateway(name=saved.name, url=saved.url, token=rotated.token,
                                    gateway_id=rotated.gateway_id,
-                                   fingerprint=rotated.fingerprint))
+                                   fingerprint=rotated.fingerprint,
+                                   certificate_sha256=saved.certificate_sha256))
     print(f"  Your access to {bold(saved.name)} was replaced. The old one no longer works.")
     return 0
 
