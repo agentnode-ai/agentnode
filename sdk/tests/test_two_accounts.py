@@ -405,6 +405,42 @@ class TestWhatTheTwoRealModelsHit:
             dispatch.dispatch("submit", sending, who, service=gateway)
         assert refused.value.refusal == "disclosure_required"
 
+    def test_the_policy_digest_a_person_approves_is_the_one_the_run_reports(self, gateway):
+        """Claude Code: "approved at a check with the fingerprint 0c1c..., but the submission
+        reported bb53...". It was right, and the cause was worse than a mismatch: prepare was
+        digesting an INTEGER, so the field was one constant for every job ever disclosed."""
+        import base64
+        import hashlib
+        import uuid
+
+        who = _a_customer(gateway, "alice")
+        code = b"print(1)\n"
+
+        def prepared(**extra):
+            asking = {"artifact_sha256": hashlib.sha256(code).hexdigest(),
+                      "artifact_bytes": len(code), "wall_clock_s": 30}
+            asking.update(extra)
+            return dispatch.dispatch("prepare", asking, who, service=gateway)
+
+        plain = prepared()
+        assert plain["requested_policy_sha256"] != prepared(
+            wall_clock_s=99)["requested_policy_sha256"], "it does not vary with the wall clock"
+        assert plain["requested_policy_sha256"] != prepared(
+            network="unrestricted")["requested_policy_sha256"], (
+            "a job with no network and a job with unrestricted network digest the same -- so "
+            "this field binds nothing, which is the whole of what it is for")
+
+        shown = prepared()
+        answer = dispatch.dispatch(
+            "submit",
+            {"run_id": uuid.uuid4().hex, "artifact": base64.b64encode(code).decode("ascii"),
+             "wall_clock_s": 30, "accepted_disclosure": shown["accepted_disclosure"]},
+            who, service=gateway)
+        assert shown["requested_policy_sha256"] == answer["request_policy_sha256"], (
+            "the number a person approves and the number the run reports are the same fact "
+            "under two names, and comparing them is the obvious way to check that what was "
+            "approved is what ran")
+
     def test_a_device_list_says_when_each_was_last_used(self, gateway):
         """Claude Code: "it says the device has never been used, even though I had just used it"."""
         who = _a_customer(gateway, "alice")

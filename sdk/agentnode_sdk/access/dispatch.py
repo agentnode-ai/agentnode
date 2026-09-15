@@ -1029,7 +1029,13 @@ def _what_would_happen(service, principal, params, *, approved_by=None, will_run
         "shown_as": principal.device_name or principal.client_id,
     }
     answer["will_run_as"] = will_run_as or _the_connection_this_is_for(service, principal, params)
-    answer["requested_policy_sha256"] = _digest_of_the_policy(asked_for)
+    # THE POLICY, not the wall clock. This read `_digest_of_the_policy(asked_for)`, where
+    # `asked_for` is an integer -- so `policy_shape` found no attributes on it, yielded every
+    # field as None, and produced one constant for every job this gateway had ever disclosed.
+    # Composed here exactly as `submit` composes it, so the number a person approves and the
+    # number a run reports are the same number and can be compared.
+    answer["requested_policy_sha256"] = _digest_of_the_policy(
+        _the_policy_being_asked_for(network, domains, asked_for))
     answer["operator_policy_sha256"] = _digest_of_the_policy(
         getattr(service, "operator_policy", None))
     # Names only, and there are none: this sandbox does not release named secrets into a job at
@@ -1052,6 +1058,28 @@ def _what_would_happen(service, principal, params, *, approved_by=None, will_run
         "and the operator policy in force; what was granted comes back with the submission.",
     ]
     return answer
+
+
+def _the_policy_being_asked_for(network: str, domains, wall_clock_s: int):
+    """What the caller is asking for, as a policy object.
+
+    One construction, used by `prepare` and by `submit`, because they publish the same number
+    under two names -- `requested_policy_sha256` and `request_policy_sha256` -- and a client
+    checking that what it approved is what ran will compare them. Two constructions would
+    eventually disagree, and the disagreement would look like tampering.
+    """
+    from agentnode_sdk.sandbox.contract import Limits, NetworkRules, SandboxPolicy
+
+    if network == "none":
+        rules = NetworkRules(enabled=False, allowed_destinations=frozenset())
+    elif network == "unrestricted":
+        # None is not the empty set: collapsing them would digest the widest and the narrowest
+        # policy to the same value.
+        rules = NetworkRules(enabled=True, allowed_destinations=None)
+    else:
+        rules = NetworkRules(enabled=True, allowed_destinations=frozenset(domains))
+    return SandboxPolicy(network=rules,
+                         limits=Limits(wall_clock_s=max(1, int(wall_clock_s))))
 
 
 def _digest_of_the_policy(policy) -> str:
@@ -1221,15 +1249,7 @@ def _submit(service, principal, params):
     # The policy the caller is ASKING for, digested the same way the existing client digests it.
     # Composed here rather than accepted from the caller: a digest a caller chose would bind
     # whatever the caller decided to hash.
-    if network == "none":
-        rules = NetworkRules(enabled=False, allowed_destinations=frozenset())
-    elif network == "unrestricted":
-        # None is not the empty set here, and collapsing them would digest the widest and the
-        # narrowest policy to the same value. The older door could ask for this; so can this one.
-        rules = NetworkRules(enabled=True, allowed_destinations=None)
-    else:
-        rules = NetworkRules(enabled=True, allowed_destinations=frozenset(domains))
-    asked_for = SandboxPolicy(network=rules, limits=Limits(wall_clock_s=wall_clock))
+    asked_for = _the_policy_being_asked_for(network, domains, wall_clock)
     composed = digest(canonical_bytes(policy_shape(asked_for)))
     said_policy = str(params.get("policy_sha256") or "")
     if said_policy and not hmac.compare_digest(said_policy, composed):
