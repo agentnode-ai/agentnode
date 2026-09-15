@@ -346,3 +346,55 @@ class TestTheStoreItself:
         kept = store.Sessions(str(tmp_path))
         with pytest.raises(ValueError):
             kept.whose("anything")
+
+
+class TestTheSetupFileSaysWhereToActuallyConnect:
+    """A setup file names an address, and that address has to be one that answers.
+
+    Found on a real deployment rather than here, which is the point of the case. The handler read
+    `self.server.is_tls` to pick the scheme; nothing sets that attribute -- the server sets
+    `agentnode_tls` -- so the getattr default made every gateway with a certificate hand out an
+    `http://` URL. The gateway refuses plain HTTP, so a person following the file they had just
+    been given got a connection refused with nothing to tell them why.
+
+    This suite's gateway runs without TLS, where `http://` is the right answer, so it agreed with
+    the bug. The test therefore asks the question both ways round.
+    """
+
+    def a_handler(self, tls):
+        """The scheme-picking half of the handler, with a server that is or is not on TLS."""
+        from agentnode_sdk.gateway.server import _Handler
+
+        class StandInServer:
+            server_address = ("127.0.0.1", 8099)
+            agentnode_tls = tls
+
+        handler = _Handler.__new__(_Handler)
+        handler.server = StandInServer()
+        handler.headers = {"Host": "gateway.example:8099"}
+        return handler
+
+    def test_a_gateway_on_tls_hands_out_https(self):
+        where = self.a_handler(True)._where_we_are()
+        assert where.startswith("https://"), where
+        assert where == "https://gateway.example:8099"
+
+    def test_and_one_without_it_hands_out_http(self):
+        """The other half, so the fix is 'read the right attribute' and not 'always say https'."""
+        assert self.a_handler(False)._where_we_are() == "http://gateway.example:8099"
+
+    def test_the_attribute_it_reads_is_the_one_the_server_sets(self):
+        """The defect was a name nobody set. A test on behaviour alone would pass again if the
+        name drifted a second time, so the name itself is pinned to its writer."""
+        import inspect
+
+        from agentnode_sdk.gateway import server as gateway_server
+
+        reader = inspect.getsource(gateway_server._Handler._where_we_are)
+        writer = inspect.getsource(gateway_server.make_server)
+        # The CALL, not the prose around it -- the docstring names the old attribute on purpose,
+        # so a check against the whole source would be reading the explanation of the bug.
+        asked = [line for line in reader.splitlines() if "getattr(self.server" in line]
+        assert len(asked) == 1, asked
+        assert "agentnode_tls" in asked[0], asked[0]
+        assert "server.agentnode_tls = True" in writer, "the server stopped setting it"

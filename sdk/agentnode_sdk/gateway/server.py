@@ -1868,8 +1868,18 @@ class _Handler(BaseHTTPRequestHandler):
         return None
 
     def _where_we_are(self) -> str:
+        """The address to put in a setup file: the one this request actually arrived on.
+
+        The attribute is `agentnode_tls`, which is what make_server sets. This read `is_tls`,
+        which nothing has ever set, so the getattr default made every TLS gateway hand out an
+        http:// URL -- and the gateway refuses plain HTTP, so anybody following the file they
+        were just given got a connection refused. The suite did not catch it because its gateway
+        runs without TLS, where http:// happens to be right. A deployment with a certificate is
+        where it shows, which is where it was found.
+        """
         host = self.headers.get("Host") or ("%s:%d" % self.server.server_address[:2])
-        return "%s://%s" % ("https" if getattr(self.server, "is_tls", False) else "http", host)
+        return "%s://%s" % ("https" if getattr(self.server, "agentnode_tls", False) else "http",
+                            host)
 
     def _older_door_refuses(self, token: str, refused, run_id: str = "", speaks: int = 0):
         """Refuse an older client in a way it can verify and a person can act on.
