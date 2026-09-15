@@ -123,6 +123,42 @@ def write_retention(root: str | os.PathLike[str], retention: Retention) -> Path:
 # --------------------------------------------------------------------------- the sweep
 
 
+#: How often a running gateway sweeps. Hourly rather than daily: a sweep that only happens at
+#: some particular time of day never happens on a gateway that is restarted before it.
+SWEEP_EVERY_SECONDS = 60 * 60.0
+
+#: Where the last sweep is recorded, so a restart does not mean starting the clock again and a
+#: gateway that has never swept can be told from one whose sweep is failing.
+LAST_SWEEP_NAME = "retention-last-swept.json"
+
+
+def due(root: str | os.PathLike[str], now: float | None = None) -> bool:
+    """Whether a sweep is owed. A gateway that has never swept owes one."""
+    at = time.time() if now is None else now
+    path = Path(root) / LAST_SWEEP_NAME
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+        return (at - float(body.get("at") or 0.0)) >= SWEEP_EVERY_SECONDS
+    except (OSError, ValueError):
+        return True
+
+
+def sweep_if_due(root: str | os.PathLike[str], now: float | None = None) -> dict | None:
+    """The call a running gateway makes. Returns what was swept, or None if nothing was owed.
+
+    This exists because a review was right that an invocable function is not enforcement. The
+    criterion says retention must be enforced by something that RUNS, and until this was wired
+    into the gateway's own timer the periods in `retention.json` described an intention.
+    """
+    at = time.time() if now is None else now
+    if not due(root, at):
+        return None
+    done = sweep(root, now=at)
+    _atomically(Path(root) / LAST_SWEEP_NAME,
+                json.dumps({"at": at, "removed": done}, sort_keys=True) + "\n")
+    return done
+
+
 def sweep(root: str | os.PathLike[str], now: float | None = None) -> dict:
     """Drop what is past its period. Idempotent, and safe to interrupt.
 
@@ -327,6 +363,50 @@ def _drop_audit_lines(root: Path, matches) -> int:
 # --------------------------------------------------------------------------- export
 
 
+#: Where the fact that an export happened is recorded. Beside the audit, not in it: the audit is
+#: per-operation and an export is an operator act, so folding one into the other would mean an
+#: operator action appearing as though a customer had performed it.
+EXPORTS_NAME = "exports.jsonl"
+
+
+def note_an_export(root: str | os.PathLike[str], account_id: str, by: str,
+                   how_many_bytes: int, now: float | None = None) -> None:
+    """Write down that somebody took a copy of an account's data.
+
+    An export hands over everything the service holds about a person. Producing one without a
+    record means nobody can answer "who has a copy of this, and since when" -- which is the
+    first question asked when a copy turns up somewhere it should not be.
+    """
+    at = time.time() if now is None else now
+    path = Path(root) / EXPORTS_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(handle, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"at": round(at, 3), "account_id": str(account_id),
+                             "by": str(by or "")[:64], "bytes": int(how_many_bytes)},
+                            sort_keys=True) + "\n")
+
+
+def exports_of(root: str | os.PathLike[str], account_id: str = "") -> list:
+    """Every export taken, or every export of one account."""
+    path = Path(root) / EXPORTS_NAME
+    out = []
+    try:
+        written = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for raw in written.splitlines():
+        if not raw.strip():
+            continue
+        try:
+            line = json.loads(raw)
+        except ValueError:
+            continue
+        if not account_id or str(line.get("account_id")) == str(account_id):
+            out.append(line)
+    return out
+
+
 def export_account(state, account_id: str) -> dict:
     """Everything this gateway holds about one customer, as plain JSON.
 
@@ -380,6 +460,12 @@ def export_account(state, account_id: str) -> dict:
 
     return scrub_everything({
         "about": "everything AgentNode holds about one account on this gateway",
+        # What an export CANNOT do, said in the export itself rather than in a document the
+        # person holding it will not have. A copy taken before a deletion is still a copy.
+        "what_this_copy_means": (
+            "This is a copy taken at one moment. Deleting this account later removes it from "
+            "the gateway and cannot remove it from this file or from any backup taken before "
+            "the deletion. Whoever holds a copy holds it until they delete it."),
         "account": account,
         "devices": [{"device_id": str(d.get("client_id") or ""),
                      "name": str(d.get("client_name") or ""),

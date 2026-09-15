@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from agentnode_sdk.access import dispatch
+from agentnode_sdk.access import contract, dispatch
 from agentnode_sdk.gateway import meter, redaction, retention
 from agentnode_sdk.gateway.identity import GatewayState
 from agentnode_sdk.gateway.server import GatewayService
@@ -378,3 +378,144 @@ class TestTheMeterAttributesWhatItRecords:
                         encoding="utf-8")
         with pytest.raises(billing.CannotBeBilled):
             billing.statement(root)
+
+class TestTheSweepIsSomethingThatRuns:
+    """An invocable function is not enforcement. This is the difference."""
+
+    def test_a_gateway_that_has_never_swept_owes_one(self, gateway):
+        assert retention.due(gateway.state.root) is True
+
+    def test_sweeping_records_that_it_did_and_then_is_not_owed_again(self, gateway):
+        first = retention.sweep_if_due(gateway.state.root)
+        assert first is not None
+        assert (gateway.state.root / retention.LAST_SWEEP_NAME).exists()
+        assert retention.due(gateway.state.root) is False
+        assert retention.sweep_if_due(gateway.state.root) is None
+
+    def test_and_it_is_owed_again_once_the_period_has_passed(self, gateway):
+        retention.sweep_if_due(gateway.state.root)
+        later = __import__("time").time() + retention.SWEEP_EVERY_SECONDS + 1
+        assert retention.due(gateway.state.root, now=later) is True
+
+    def test_the_serving_gateway_calls_it(self):
+        """Read off the source. A timer somebody has to install is not enforcement either."""
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        said = inspect.getsource(server)
+        assert "sweep_if_due" in said, (
+            "nothing in the running gateway invokes the sweep, so the periods in retention.json "
+            "describe an intention rather than a behaviour")
+
+    def test_a_sweep_that_cannot_run_does_not_stop_the_gateway_serving(self, gateway):
+        (gateway.state.root / retention.RETENTION_NAME).write_text("{bad", encoding="utf-8")
+        with pytest.raises(retention.RetentionUnreadable):
+            retention.sweep_if_due(gateway.state.root)
+        # And the caller in the serving loop swallows it deliberately -- losing a sweep must not
+        # lose the ability to act on the operator's stop.
+        import inspect
+
+        from agentnode_sdk.gateway import server
+
+        block = inspect.getsource(server).split("sweep_if_due", 1)[1][:400]
+        assert "except Exception" in block
+
+
+class TestAMeteredLineCannotBeUnattributedByAccident:
+
+    @pytest.mark.parametrize("missing", ["run_id", "client_id", "account_id", "worker_id",
+                                         "operator_policy_sha256"])
+    def test_an_empty_attribution_is_refused(self, gateway, missing):
+        with pytest.raises(ValueError) as refused:
+            _a_metered_line(gateway.state.root, **{missing: ""})
+        assert missing in str(refused.value)
+
+    def test_but_it_can_be_said_out_loud(self, gateway):
+        """A run whose device was withdrawn mid-flight has no owner. That is a real state."""
+        _a_metered_line(gateway.state.root, account_id=meter.UNATTRIBUTED,
+                        client_id=meter.UNATTRIBUTED)
+        line = meter.read(gateway.state.root)[-1]
+        assert line["account_id"] == meter.UNATTRIBUTED
+        totals = meter.summarise_accounts(gateway.state.root)
+        assert meter.UNATTRIBUTED in totals
+
+    def test_and_a_statement_reports_what_it_could_not_charge(self, gateway):
+        from agentnode_sdk.gateway import billing
+
+        _a_metered_line(gateway.state.root, account_id=meter.UNATTRIBUTED)
+        _a_metered_line(gateway.state.root, account_id="acct-" + "3" * 16)
+        said = billing.statement(gateway.state.root)
+        assert said["accounts"], "the attributable line is missing"
+        assert meter.UNATTRIBUTED in said["accounts"] or said[
+            "runs_that_could_not_be_attributed"] >= 0
+
+    def test_a_policy_version_of_zero_is_refused(self, gateway):
+        """0 is indistinguishable from a field nobody filled in. -1 means 'could not order'."""
+        with pytest.raises(ValueError):
+            _a_metered_line(gateway.state.root, operator_policy_version=0)
+        _a_metered_line(gateway.state.root, operator_policy_version=-1)
+
+
+class TestAnExportIsAuthorisedAndRecorded:
+
+    def test_producing_one_is_written_down(self, gateway):
+        alice = _a_customer(gateway, "alice")
+        out = retention.export_account(gateway, alice.account_id)
+        retention.note_an_export(gateway.state.root, alice.account_id, by="operator",
+                                 how_many_bytes=len(json.dumps(out)))
+        taken = retention.exports_of(gateway.state.root, alice.account_id)
+        assert len(taken) == 1
+        assert taken[0]["by"] == "operator" and taken[0]["bytes"] > 0
+        assert retention.exports_of(gateway.state.root, "acct-" + "9" * 16) == []
+
+    def test_there_is_no_contract_operation_that_produces_one(self):
+        """The authority to take a copy of everything about a person is not a capability."""
+        for op in contract.OPERATIONS:
+            assert "export" not in op.name, (
+                "%s is addressable at /v1/op/ and reachable by whoever holds a capability"
+                % op.name)
+
+    def test_the_export_says_what_a_copy_of_it_means(self, gateway):
+        alice = _a_customer(gateway, "alice")
+        out = retention.export_account(gateway, alice.account_id)
+        assert "what_this_copy_means" in out
+        assert "backup" in out["what_this_copy_means"]
+
+    def test_the_operator_command_exists_and_records(self, gateway, tmp_path):
+        from agentnode_sdk.cli.main import main
+
+        alice = _a_customer(gateway, "alice")
+        where = tmp_path / "out.json"
+        code = main(["gateway", "export", "--dir", str(gateway.state.root),
+                     "--account", alice.account_id, "--to", str(where)])
+        assert code == 0 and where.exists()
+        body = json.loads(where.read_text(encoding="utf-8"))
+        assert body["account"]["account_id"] == alice.account_id
+        assert alice.token not in where.read_text(encoding="utf-8")
+        assert len(retention.exports_of(gateway.state.root, alice.account_id)) == 1
+
+
+class TestDeletionSaysWhatItCannotReach:
+
+    def test_the_command_names_backups_and_prior_exports(self, gateway, capsys):
+        from agentnode_sdk.cli.main import main
+
+        alice = _a_customer(gateway, "alice")
+        retention.note_an_export(gateway.state.root, alice.account_id, by="operator",
+                                 how_many_bytes=10)
+        code = main(["gateway", "delete", "--dir", str(gateway.state.root),
+                     "--account", alice.account_id, "--yes"])
+        said = capsys.readouterr().out
+        assert code == 0
+        assert "backups taken before now" in said
+        assert "export(s) of this account have been handed out" in said
+
+    def test_and_it_asks_first(self, gateway, capsys):
+        from agentnode_sdk.cli.main import main
+
+        alice = _a_customer(gateway, "alice")
+        code = main(["gateway", "delete", "--dir", str(gateway.state.root),
+                     "--account", alice.account_id])
+        assert code == 2
+        assert dispatch.identify(gateway, alice.token).authenticated, "it deleted anyway"

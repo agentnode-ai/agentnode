@@ -91,6 +91,10 @@ HEAD_NAME = "use-log.head"
 #: a file that always began there.
 GENESIS = "the first line of this gateway's meter"
 
+#: What an attribution is when there genuinely is none. A VALUE, passed deliberately, so that a
+#: reader can tell "nobody could be charged for this" from "somebody left the field empty".
+UNATTRIBUTED = "(unattributed)"
+
 #: What a line becomes when its contents are erased. See `erase`.
 TOMBSTONE_FIELDS = ("seq", "erased_at", "erased_because", "stood_for", "signature")
 
@@ -134,8 +138,8 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
            outcome: str, bytes_out: int, worker_topology: str,
            allowance_sha256: str,
            allowance_admitted_under: dict | None = None,
-           account_id: str = "", worker_id: str = "",
-           operator_policy_sha256: str = "", operator_policy_version: int = -1) -> Path:
+           account_id: str, worker_id: str,
+           operator_policy_sha256: str, operator_policy_version: int) -> Path:
     """Write one line about one run.
 
     Every value is named. There is deliberately no parameter that takes free-form content: a
@@ -152,6 +156,22 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
                            or by different ones, which is what makes a per-worker statement
                            possible at all
     """
+    # Every attribution is REQUIRED, and a value that cannot be charged to anybody has to be
+    # said out loud rather than left empty. `UNATTRIBUTED` is a real value a caller passes on
+    # purpose -- for a run whose device was withdrawn mid-flight, say -- and it reads as what it
+    # is in a statement. An empty string reads as a field somebody forgot.
+    for named, value in (("run_id", run_id), ("client_id", client_id),
+                         ("account_id", account_id), ("worker_id", worker_id),
+                         ("operator_policy_sha256", operator_policy_sha256)):
+        if not str(value or "").strip():
+            raise ValueError(
+                "a metered line has to name its %s. Use meter.UNATTRIBUTED if there genuinely "
+                "is none: a line nobody can be charged for is a decision, not a blank." % named)
+    if int(operator_policy_version) == 0:
+        raise ValueError(
+            "operator_policy_version 0 is indistinguishable from a field nobody filled in. "
+            "Use policy_version.UNKNOWN (-1) if this gateway could not order its policies.")
+
     line = {
         "run_id": str(run_id),
         "client_id": str(client_id),

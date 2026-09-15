@@ -1763,10 +1763,13 @@ class GatewayService:
 
             meter.record(
                 self.state.root,
-                run_id=record.run_id, client_id=record.owner_client_id,
-                account_id=record.owner_account_id,
-                worker_id=self.worker.instance_label(),
-                operator_policy_sha256=operator_digest,
+                run_id=record.run_id,
+                # A run whose device was withdrawn while it was going has no owner left to
+                # name. That is a real state and it is said rather than left blank.
+                client_id=record.owner_client_id or meter.UNATTRIBUTED,
+                account_id=record.owner_account_id or meter.UNATTRIBUTED,
+                worker_id=self.worker.instance_label() or meter.UNATTRIBUTED,
+                operator_policy_sha256=operator_digest or meter.UNATTRIBUTED,
                 operator_policy_version=operator_version,
                 started_at=started, finished_at=finished,
                 cpu=float(granted.limits.cpu), memory_mb=int(granted.limits.memory_mb),
@@ -2555,10 +2558,23 @@ def make_server(
         not firing is not.
         """
         from agentnode_sdk.gateway.allowance import why_it_is_stopped
+        from agentnode_sdk.gateway import retention as _retention
 
         acted_on = ""
         while getattr(target, "agentnode_serving", False):
             time.sleep(1.0)
+            # Retention is swept HERE, on the loop that is already running, rather than by a
+            # timer somebody has to install. A review was right that an invocable function is
+            # not enforcement: the criterion asks for something that runs, and until this line
+            # existed the periods in retention.json described an intention. `sweep_if_due` is
+            # cheap when nothing is owed -- it reads one small file and returns.
+            try:
+                _retention.sweep_if_due(service.state.root)
+            except Exception:                                 # noqa: BLE001 - never kill the loop
+                # A sweep that cannot run must not stop a gateway from serving or from acting on
+                # the operator's stop. It is visible: `agentnode gateway watch` reports when the
+                # last successful sweep was, and "never" is a value it can report.
+                pass
             try:
                 halted = why_it_is_stopped(service.state.root)
             except Exception:                                 # noqa: BLE001 - never kill the loop

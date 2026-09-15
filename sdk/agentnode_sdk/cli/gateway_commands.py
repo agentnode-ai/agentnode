@@ -699,6 +699,92 @@ def cmd_clients(args) -> int:
     return 0
 
 
+def cmd_export(args) -> int:
+    """Hand one customer everything this gateway holds about them, and write down that you did.
+
+    An OPERATOR command. There is no contract operation for this and there is deliberately no
+    address: an export is everything about a person in one file, and the authority to produce one
+    is "can log in to the machine that holds it" rather than "holds a capability".
+    """
+    from agentnode_sdk.gateway import retention
+
+    root = _root(args)
+    state, _service_unused = _service(root)
+    wanted = str(getattr(args, "account", "") or "").strip()
+    if not wanted:
+        print()
+        print("  Which account? Run `agentnode gateway accounts` to see them.")
+        return 2
+    known = {str(d.get("account_id") or "") for d in state.paired_clients()}
+    known |= {a.account_id for a in state.accounts.all()}
+    if wanted not in known:
+        print()
+        print(f"  No account here is called {wanted!r}.")
+        return 1
+
+    import json as _json
+
+    body = _json.dumps(retention.export_account(state, wanted), indent=2, sort_keys=True) + "\n"
+    where = str(getattr(args, "to", "") or "").strip() or ("%s-export.json" % wanted)
+    with open(where, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    try:
+        os.chmod(where, 0o600)
+    except OSError:
+        pass
+    retention.note_an_export(root, wanted, by="operator", how_many_bytes=len(body))
+
+    print()
+    print(f"  {bold('Written to ' + where)}  ({len(body)} bytes, readable only by you)")
+    print("  It carries no credential, in any form, and nothing belonging to another account.")
+    print()
+    print("  This is RECORDED: exports.jsonl in the gateway's directory now says an export of")
+    print("  this account was taken, when, and by whom. That is the only way to answer 'who has")
+    print("  a copy of this' later.")
+    print()
+    print(dim("  A copy taken now survives a deletion made later. Say so when you hand it over."))
+    return 0
+
+
+def cmd_delete(args) -> int:
+    """Remove a customer from this gateway, and say what that cannot reach."""
+    from agentnode_sdk.gateway import retention
+
+    root = _root(args)
+    state, _service_unused = _service(root)
+    wanted = str(getattr(args, "account", "") or "").strip()
+    if not wanted:
+        print()
+        print("  Which account? Run `agentnode gateway accounts` to see them.")
+        return 2
+    if not getattr(args, "yes", False):
+        print()
+        print(f"  This removes {bold(wanted)} from this gateway: its devices, sessions,")
+        print("  enrolments, counters, ledger entries and audit lines, and it ERASES its")
+        print("  metering lines to signed tombstones.")
+        print()
+        print("  Run it again with --yes if that is what you want.")
+        return 2
+
+    went = retention.delete_account(state, wanted, because="the operator deleted this account")
+    print()
+    print(f"  {bold(wanted)} is gone from this gateway.")
+    for name, how_many in sorted(went.items()):
+        print(f"    {name:<18}: {how_many}")
+    print()
+    print(f"  {bold('What this did NOT reach, and cannot:')}")
+    taken = retention.exports_of(root, wanted)
+    print("    backups taken before now. They contain this account and this deletion cannot")
+    print("      change a file it does not have. Retire them on their own schedule.")
+    if taken:
+        print("    %d export(s) of this account have been handed out (exports.jsonl says when"
+              % len(taken))
+        print("      and to whom). A copy somebody holds is theirs to delete.")
+    else:
+        print("    no exports of this account were ever taken from this gateway.")
+    return 0
+
+
 def cmd_accounts(args) -> int:
     """List the customers on this gateway, and suspend or restore one.
 
@@ -1087,6 +1173,8 @@ def dispatch(args) -> int:
         "pair": cmd_pair,
         "clients": cmd_clients,
         "accounts": cmd_accounts,
+        "export": cmd_export,
+        "delete": cmd_delete,
         "watch": cmd_watch,
         "revoke": cmd_revoke,
         "verify": cmd_verify,

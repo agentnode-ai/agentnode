@@ -19,6 +19,25 @@
 # restoring a venv from a tarball is how a machine ends up running software nobody can name. If
 # the code needs putting back, re-run single-host-development.sh with the wheel you want.
 #
+# ## THIS ARCHIVE CONTAINS SECRETS. All of them.
+#
+# Said here because it was nowhere stated and a review was right to refuse it on that. The state
+# directory holds the METER SIGNING KEY and the gateway's TLS PRIVATE KEY, and it has to: a
+# restore without them produces a gateway that cannot verify its own record of use and cannot be
+# reached over the certificate its clients pinned. That is not a leak to be fixed; it is what a
+# backup of a gateway IS.
+#
+# Three things follow, and the first is enforced here rather than advised:
+#
+#   * the archive is written 0600 into a 0700 directory, and this script REFUSES if it cannot
+#     make that true;
+#   * anywhere you copy it to inherits that requirement and this script cannot enforce it there.
+#     An archive on a share, in object storage, or attached to a ticket is this gateway's keys
+#     in that place;
+#   * a backup taken before a customer was deleted still contains that customer. Deletion cannot
+#     reach a file it does not have. The schedule on which you retire old backups IS your
+#     retention policy for backups, and nothing else is.
+#
 # ## Why the check is part of it
 #
 # A restore that produced a gateway which *looks* fine is the failure mode worth designing
@@ -129,8 +148,16 @@ case "$VERB" in
     WHERE="$BACKUP_ROOT/$STAMP"
     mkdir -p "$WHERE"
     chmod 700 "$BACKUP_ROOT" "$WHERE"
+    # Refuse rather than warn. This archive is about to contain the gateway's meter signing key
+    # and its TLS private key; writing it somewhere other accounts can read is not a note to put
+    # in the output, it is a reason not to write it at all.
+    if [ "$(stat -c '%a' "$BACKUP_ROOT")" != "700" ] || [ "$(stat -c '%a' "$WHERE")" != "700" ]; then
+      die "$BACKUP_ROOT is not owner-only, and this archive holds this gateway's private keys"
+    fi
     echo
     say "backing up $STATE_DIR"
+    say "NOTE: this archive contains the meter signing key and the TLS private key. It has to."
+    say "      Wherever you copy it, it is those keys in that place."
     tar -C "$(dirname "$STATE_DIR")" -cf "$WHERE/state.tar" "$(basename "$STATE_DIR")"
     ( cd "$WHERE" && sha256sum state.tar > SHA256SUMS )
     chmod 600 "$WHERE"/*

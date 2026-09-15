@@ -726,7 +726,9 @@ class TestTheRecordOfUseCanBeShownNotToHaveChanged:
             meter.record(root, run_id="run%d" % i, client_id="c1", started_at=1.0,
                          finished_at=2.0, cpu=1.0, memory_mb=512, wall_clock_s=60,
                          state="finished", outcome="succeeded", bytes_out=10,
-                         worker_topology="single-host-development", allowance_sha256="a" * 64)
+                         worker_topology="single-host-development", allowance_sha256="a" * 64,
+                         account_id="acct-" + "0" * 16, worker_id="w1",
+                         operator_policy_sha256="p" * 64, operator_policy_version=1)
         return meter
 
     def _rows(self, meter, root):
@@ -920,7 +922,9 @@ class TestALogThatStartedBeforeTheChainDid:
             meter.record(tmp_path, run_id="new%d" % i, client_id="c", started_at=1.0,
                          finished_at=2.0, cpu=1.0, memory_mb=512, wall_clock_s=60,
                          state="finished", outcome="succeeded", bytes_out=1,
-                         worker_topology="x", allowance_sha256="a" * 64)
+                         worker_topology="x", allowance_sha256="a" * 64,
+                         account_id="acct-" + "0" * 16, worker_id="w1",
+                         operator_policy_sha256="p" * 64, operator_policy_version=1)
         return meter
 
     def test_the_chained_part_checks_out_and_the_rest_is_named(self, tmp_path):
@@ -1334,7 +1338,8 @@ class TestWhoCanReadTheRecordOfUse:
         meter.record(tmp_path, run_id="r", client_id="c", started_at=1.0, finished_at=2.0,
                      cpu=1.0, memory_mb=512, wall_clock_s=60, state="finished",
                      outcome="succeeded", bytes_out=1, worker_topology="x",
-                     allowance_sha256="a" * 64)
+                     allowance_sha256="a" * 64, account_id="acct-" + "0" * 16, worker_id="w1",
+                     operator_policy_sha256="p" * 64, operator_policy_version=1)
         path = Path(tmp_path) / meter.METER_NAME
         if os.name != "nt":
             assert (path.stat().st_mode & 0o077) == 0, "somebody else can read what clients used"

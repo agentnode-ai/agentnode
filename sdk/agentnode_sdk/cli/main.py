@@ -320,6 +320,17 @@ def main(argv: list[str] | None = None) -> int:
                            default=None,
                            help="The most output it keeps from one run. 0 = no limit")
 
+    gw_export = gw_sub.add_parser(
+        "export", help="Everything this gateway holds about one customer, as a file")
+    gw_export.add_argument("--dir", default=None)
+    gw_export.add_argument("--account", default="", help="Which customer")
+    gw_export.add_argument("--to", default="", help="Where to write it")
+    gw_delete = gw_sub.add_parser(
+        "delete", help="Remove a customer from this gateway")
+    gw_delete.add_argument("--dir", default=None)
+    gw_delete.add_argument("--account", default="", help="Which customer")
+    gw_delete.add_argument("--yes", action="store_true", help="Yes, really")
+
     gw_watch = gw_sub.add_parser(
         "watch", help="What this gateway looks like right now, and anything worth looking at")
     gw_watch.add_argument("--dir", default=None)
