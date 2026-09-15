@@ -34,6 +34,8 @@ import os
 import secrets
 import threading
 import time
+from agentnode_sdk.gateway.filelock import ProcessLock, atomically
+
 
 #: How long a session lasts without being used. Long enough to be useful across a working day,
 #: short enough that a browser left open on a shared machine is not a standing invitation.
@@ -72,7 +74,7 @@ class Sessions:
         session_id = secrets.token_urlsafe(32)
         csrf = secrets.token_urlsafe(32)
         now = self._clock()
-        with self._lock:
+        with self._lock, ProcessLock(self._path):
             kept = self._read()
             mine = [k for k, v in kept.items() if v.get("client_id") == client_id]
             if len(mine) >= AT_ONCE:
@@ -102,7 +104,7 @@ class Sessions:
             return None
         named = fingerprint(session_id)
         now = self._clock()
-        with self._lock:
+        with self._lock, ProcessLock(self._path):
             kept = self._read()
             found = kept.get(named)
             if found is None:
@@ -128,7 +130,7 @@ class Sessions:
         """
         named = fingerprint(session_id)
         csrf = secrets.token_urlsafe(32)
-        with self._lock:
+        with self._lock, ProcessLock(self._path):
             kept = self._read()
             found = kept.get(named)
             if found is None or self._is_over(found, self._clock()):
@@ -163,7 +165,7 @@ class Sessions:
 
     def end_every(self, client_id: str) -> int:
         """Every session this device has. What withdrawing a device has to imply."""
-        with self._lock:
+        with self._lock, ProcessLock(self._path):
             kept = self._read()
             going = [k for k, v in kept.items() if v.get("client_id") == str(client_id)]
             for k in going:
@@ -173,7 +175,7 @@ class Sessions:
             return len(going)
 
     def _forget(self, named: str) -> bool:
-        with self._lock:
+        with self._lock, ProcessLock(self._path):
             kept = self._read()
             if kept.pop(named, None) is None:
                 return False
@@ -219,11 +221,15 @@ class Sessions:
         return kept if isinstance(kept, dict) else {}
 
     def _write(self, kept: dict) -> None:
-        near = self._path + ".new"
-        with open(near, "w", encoding="utf-8") as fh:
-            json.dump(kept, fh, sort_keys=True)
-        try:
-            os.chmod(near, 0o600)
-        except OSError:                                       # pragma: no cover - platform
-            pass
-        os.replace(near, self._path)
+        """Beside and renamed over, with a temp name NOBODY ELSE IS USING.
+
+        What stood here wrote `<file>.new` -- one fixed name, shared by every writer of this
+        file. Two of them at once is not a near-miss: the second one renames a path the first
+        has already renamed away and fails with `FileNotFoundError`, and in the version where it
+        does not fail, one writer's whole file silently replaces the other's. A concurrent
+        deletion drill on Linux found the first; the second is the one worth fixing it for.
+
+        `filelock.atomically` takes a unique temp name from `mkstemp` and carries the bounded
+        retry Windows needs on the rename. One implementation, for the same reason.
+        """
+        atomically(self._path, json.dumps(kept, sort_keys=True))

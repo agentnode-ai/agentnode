@@ -504,3 +504,106 @@ class TestEveryDoorThisGatewayRecordsWasReallyDriven:
         assert not missing, (
             "no refused cross-account attempt was recorded through %s, so this file's claim to "
             "cover every door is not backed by the gateway's own record" % sorted(missing))
+
+
+# ------------------------------------------------------------------ who owns a run
+
+
+class TestARunHasAnOwnerAndAnOwnerlessOneBelongsToNobody:
+    """Found by two real browsers, and the reason that file exists.
+
+    Ownership was recorded by resolving the submitter's TOKEN. A browser session holds a cookie
+    and no token -- that is the point of it -- so every run started from the web console was
+    written with no owner at all. The ownership test then read
+
+        if record.owner_client_id and record.owner_client_id != principal.client_id: refuse
+
+    which asks the question only when there is an answer. An ownerless run was therefore readable
+    and cancellable by every authenticated customer on the gateway.
+
+    Both halves are covered here, because either one alone would let this back in: the run must
+    GET an owner, and a run without one must belong to nobody.
+    """
+
+    def _her_browser(self, two_customers):
+        service = two_customers.service
+        return dispatch.identify_session(service, two_customers.her_session,
+                                         two_customers.her_csrf)
+
+    def test_a_run_started_from_a_browser_records_who_started_it(self, two_customers):
+        service = two_customers.service
+        run = _a_run_by(service, self._her_browser(two_customers))
+        record = service.runs[run]
+        assert record.owner_client_id == two_customers.alice.device_id
+        assert record.owner_account_id == two_customers.alice.account_id
+
+    def test_and_another_account_cannot_reach_it(self, two_customers):
+        service = two_customers.service
+        run = _a_run_by(service, self._her_browser(two_customers))
+        for operation in ("status", "result", "cancel"):
+            with pytest.raises(dispatch.Refused) as refused:
+                dispatch.dispatch(operation, {"run_id": run}, two_customers.bob,
+                                  service=service)
+            assert refused.value.refusal == "no_such_run", operation
+
+    def test_and_it_is_counted_against_her_account(self, two_customers):
+        """The other consequence of the same cause: a run nobody owns is a run nobody is
+        charged for, and an account ceiling that a whole surface walks around is not a ceiling."""
+        service = two_customers.service
+        before = dispatch.dispatch("usage", {}, two_customers.alice,
+                                   service=service)["account_runs"]
+        _a_run_by(service, self._her_browser(two_customers))
+        after = dispatch.dispatch("usage", {}, two_customers.alice,
+                                  service=service)["account_runs"]
+        assert after == before + 1
+
+    def test_and_that_devices_own_ceiling_is_folded_in(self, two_customers):
+        """And the third: the user scope of the policy fold was looked up by token too, so a
+        console user got the unrestricted middle scope whatever their device was allowed."""
+        service = two_customers.service
+        service.state.set_client_allowance(two_customers.alice.token, ["api.allowed.example"])
+        asked = type("R", (), {"network": "unrestricted", "allowed_domains": (),
+                               "wall_clock_s": 30})()
+        by_identity = service.compose(asked, client_id=two_customers.alice.device_id)
+        assert by_identity.network.allowed_destinations == frozenset(), (
+            "the operator policy is network-off, so nothing may widen past it")
+
+        service.state.set_client_allowance(two_customers.alice.token, [])
+        shut = service.compose(asked, client_id=two_customers.alice.device_id)
+        assert shut.network.enabled is False
+        assert service.policy_of_client(two_customers.alice.device_id).network.enabled is False, (
+            "a device recorded as allowed nothing was folded in as allowed everything")
+
+    def test_a_run_with_no_recorded_owner_belongs_to_nobody(self, two_customers):
+        """The half that keeps holding if the half above ever regresses.
+
+        Constructed rather than submitted, because the point is what happens to a record that
+        HAS no owner -- from an older gateway directory, from a path that forgets to pass one,
+        from whatever comes next. Refused for its own account as well: this is not a scoping
+        rule with a gap in it, it is a record that names nobody.
+        """
+        from agentnode_sdk.gateway.server import RunRecord
+
+        service = two_customers.service
+        orphan = "0" * 32
+        service.runs[orphan] = RunRecord(run_id=orphan, job_id="", state="finished")
+
+        for who in (two_customers.alice, two_customers.bob,
+                    self._her_browser(two_customers)):
+            with pytest.raises(dispatch.Refused) as refused:
+                dispatch.dispatch("status", {"run_id": orphan}, who, service=service)
+            assert refused.value.refusal == "no_such_run"
+
+    def test_and_a_run_that_names_only_a_device_is_not_enough_either(self, two_customers):
+        """Both fields, or nobody. A record with half an owner is a record from a path that
+        did not finish writing one, and half a scoping rule is not a scoping rule."""
+        from agentnode_sdk.gateway.server import RunRecord
+
+        service = two_customers.service
+        half = "1" * 32
+        service.runs[half] = RunRecord(run_id=half, job_id="", state="finished")
+        service.runs[half].owner_client_id = two_customers.alice.device_id
+
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("status", {"run_id": half}, two_customers.alice, service=service)
+        assert refused.value.refusal == "no_such_run"

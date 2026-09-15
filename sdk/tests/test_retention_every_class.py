@@ -42,6 +42,36 @@ def gateway(tmp_path):
         state.close()
 
 
+def a_gateway_that_has_done_everything(gateway):
+    """Drive a gateway until it has written every kind of record it can write.
+
+    Shared with `test_backup_drill.py`, because both files need the same thing and for the same
+    reason: a claim about EVERY class is worth nothing if it is made against a gateway that has
+    only ever paired one device. Returns the customer it made.
+    """
+    from agentnode_sdk.gateway.admission import RateLimit
+    from agentnode_sdk.gateway.allowance import Allowance, write_allowance
+
+    who = _a_customer(gateway, "alice")
+    _a_run_by(gateway, who)
+    gateway.sessions.open(who.device_id, label="a browser")
+    dispatch.dispatch("connections.enrol", {"way_in": contract.MCP, "label": "an AI"},
+                      who, service=gateway)
+    dispatch.dispatch("usage", {}, who, service=gateway)
+    dispatch.dispatch("devices.invite", {}, who, service=gateway)
+    observability.observe(gateway, observability.LocalFileSink(
+        gateway.state.root / observability.EVENTS_NAME))
+    retention.note_an_export(gateway.state.root, who.account_id, by="operator",
+                             how_many_bytes=1)
+    write_allowance(gateway.state.root, Allowance(requests_per_minute=50))
+    RateLimit(gateway.state.root / "rate.json").spend(who.device_id, 50)
+    for _ in range(100):
+        if (gateway.state.root / "use-log.jsonl").exists():
+            break
+        time.sleep(0.05)
+    return who
+
+
 class TestTheTableIsComplete:
 
     def test_every_class_has_a_field_a_sweeper_and_a_description(self):
@@ -55,64 +85,30 @@ class TestTheTableIsComplete:
             assert what["file"] and what["is"] and what["expiring_means"], name
             assert what["days"] > 0, "%s defaults to keeping for ever" % name
 
-    def test_and_every_file_a_real_gateway_writes_is_in_it(self, gateway, tmp_path):
-        """The check that catches a class added later. Drives the gateway, then reads the disk."""
-        who = _a_customer(gateway, "alice")
-        _a_run_by(gateway, who)
-        gateway.sessions.open(who.device_id, label="a browser")
-        dispatch.dispatch("connections.enrol", {"way_in": contract.MCP, "label": "an AI"},
-                          who, service=gateway)
-        dispatch.dispatch("usage", {}, who, service=gateway)
-        observability.observe(gateway, observability.LocalFileSink(
-            gateway.state.root / observability.EVENTS_NAME))
-        retention.note_an_export(gateway.state.root, who.account_id, by="operator",
-                                 how_many_bytes=1)
-        from agentnode_sdk.gateway.admission import RateLimit
-        from agentnode_sdk.gateway.allowance import Allowance, write_allowance
+    def test_and_every_file_a_real_gateway_writes_is_in_it(self, gateway):
+        """The check that catches a class added later. Drives the gateway, then reads the disk.
 
-        write_allowance(gateway.state.root, Allowance(requests_per_minute=50))
-        RateLimit(gateway.state.root / "rate.json").spend(who.device_id, 50)
-        for _ in range(100):
-            if (gateway.state.root / "use-log.jsonl").exists():
-                break
-            time.sleep(0.05)
+        The files that are NOT a retention class are named in `backup.BESIDES`, with what each
+        one is, rather than in a list kept here. They are the same list -- a file with no age is
+        exactly a file the sweep leaves alone and a restore still has to bring back -- and two
+        copies of it would agree until the day one of them was updated.
+        """
+        from agentnode_sdk.gateway import backup
 
-        #: Files a gateway writes that are NOT customer data and are therefore not a retention
-        #: class. Each is named with what it is, so this list cannot quietly absorb one that is.
-        NOT_A_CLASS = {
-            "identity.json": "which gateway this is; it has no age",
-            "tokens.json": "credentials; removed by withdrawal and deletion, not by age",
-            "accounts.json": "the customers themselves; removed by deletion, not by age",
-            "pairing.json": "the live invitation; single-use and short-lived by construction",
-            "pairing-throttle.json": "failed pairing attempts, with their own lockout window",
-            "pairing-admission.json": "the pairing attempt budget, with its own window",
-            "allowance.json": "the operator's ceilings; configuration, not a record",
-            "retention.json": "these periods themselves",
-            "retention-last-swept.json": "when the last sweep ran",
-            "operator-policy-versions.json": "the ordering of this gateway's own policies",
-            "conformance.json": "the measurement; replaced, and invalidated by change",
-            "meter-key.pem": "the signing key",
-            "meter-key.pub": "its public half",
-            "use-log.head": "where the metering chain ends",
-            "stopping.json": "cancellations in flight",
-            "config.json": "the gateway's own configuration",
-            "tls-cert.pem": "its certificate",
-            "tls-key.pem": "its private key",
-            "active-state.json": "the operator policy in force, and its authentication tag",
-            "joining.json.lock": "the lock beside the invitations, not a record",
-        }
+        a_gateway_that_has_done_everything(gateway)
+
         listed = {what["file"] for what in retention.CLASSES.values()}
         unaccounted = []
         for path in sorted(gateway.state.root.iterdir()):
             if not path.is_file() or path.name.endswith((".lock", ".new")) \
                     or path.name.startswith("."):
                 continue
-            if path.name in listed or path.name in NOT_A_CLASS:
+            if path.name in listed or path.name in backup.BESIDES:
                 continue
             unaccounted.append(path.name)
         assert not unaccounted, (
             "this gateway writes %s, which is neither a retention class nor named as something "
-            "that is not one. Add it to retention.CLASSES with a period, or to NOT_A_CLASS here "
+            "that is not one. Add it to retention.CLASSES with a period, or to backup.BESIDES "
             "with why it has no age." % unaccounted)
 
 

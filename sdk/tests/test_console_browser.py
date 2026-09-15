@@ -39,7 +39,7 @@ def _no_browser(why):
 
 
 try:
-    from playwright.sync_api import expect, sync_playwright
+    from playwright.sync_api import expect, sync_playwright  # noqa: F401
 except ImportError as exc:                                    # noqa: BLE001
     _no_browser("playwright is not installed (%s)" % exc)
 
@@ -66,18 +66,9 @@ class ASlowSandbox(StandInBackend):
         return 0, "RAN", ""
 
 
-@pytest.fixture(scope="session")
-def browser():
-    try:
-        with sync_playwright() as play:
-            try:
-                engine = play.chromium.launch(args=["--no-sandbox"])
-            except Exception as exc:                          # noqa: BLE001
-                _no_browser("chromium would not start (%s)" % exc)
-            yield engine
-            engine.close()
-    except Exception as exc:                                  # noqa: BLE001
-        _no_browser("playwright would not start (%s)" % exc)
+#: The browser itself is a SESSION fixture in `conftest.py`, shared with every other module that
+#: drives one. `sync_playwright()` cannot be entered twice in one thread, so a per-module copy of
+#: it works right up until a second module has one too.
 
 
 @pytest.fixture()

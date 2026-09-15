@@ -29,6 +29,8 @@ import os
 import secrets
 import threading
 import time
+from agentnode_sdk.gateway.filelock import ProcessLock, atomically
+
 
 #: How long somebody has to finish setting up their AI and make it do something. Long enough to
 #: paste a file into a config and restart a program; short enough that a challenge left lying
@@ -105,7 +107,7 @@ class Connections:
             "ticket_until": now + DOWNLOAD_SECONDS,
             "satisfied_at": 0.0,
         }
-        with self._lock:
+        with self._lock, ProcessLock(self._path):
             kept = self._read()
             kept[challenge] = entry
             self._write(self._tidied(kept, now))
@@ -130,7 +132,7 @@ class Connections:
         twice would mean the thing under test is no longer the only holder of it.
         """
         now = self._clock()
-        with self._lock:
+        with self._lock, ProcessLock(self._path):
             kept = self._read()
             entry = kept.get(str(challenge))
             if entry is None or now >= float(entry.get("expires_at", 0)):
@@ -172,7 +174,7 @@ class Connections:
             if float(line.get("at", 0)) < float(entry["began_at"]):
                 # Cannot be evidence for a challenge that did not exist when it happened.
                 continue
-            with self._lock:
+            with self._lock, ProcessLock(self._path):
                 kept = self._read()
                 if str(challenge) in kept:
                     kept[str(challenge)]["satisfied_at"] = float(line["at"])
@@ -192,7 +194,7 @@ class Connections:
         would be a withdrawal somebody could walk straight back through.
         """
         device = str(device)
-        with self._lock:
+        with self._lock, ProcessLock(self._path):
             kept = self._read()
             going = [k for k, v in kept.items()
                      if v.get("started_by") == device or v.get("device") == device
@@ -222,11 +224,15 @@ class Connections:
         return kept if isinstance(kept, dict) else {}
 
     def _write(self, kept: dict) -> None:
-        near = self._path + ".new"
-        with open(near, "w", encoding="utf-8") as fh:
-            json.dump(kept, fh, sort_keys=True)
-        try:
-            os.chmod(near, 0o600)
-        except OSError:                                       # pragma: no cover - platform
-            pass
-        os.replace(near, self._path)
+        """Beside and renamed over, with a temp name NOBODY ELSE IS USING.
+
+        What stood here wrote `<file>.new` -- one fixed name, shared by every writer of this
+        file. Two of them at once is not a near-miss: the second one renames a path the first
+        has already renamed away and fails with `FileNotFoundError`, and in the version where it
+        does not fail, one writer's whole file silently replaces the other's. A concurrent
+        deletion drill on Linux found the first; the second is the one worth fixing it for.
+
+        `filelock.atomically` takes a unique temp name from `mkstemp` and carries the bounded
+        retry Windows needs on the rename. One implementation, for the same reason.
+        """
+        atomically(self._path, json.dumps(kept, sort_keys=True))

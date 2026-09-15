@@ -81,6 +81,63 @@ class LockUnavailable(Exception):
 REPLACE_SECONDS = 2.0
 
 
+def replace_with_retry(tmp, path) -> None:
+    """`os.replace`, retried briefly while Windows says the target is in use.
+
+    On Windows a rename over a file FAILS with `PermissionError` for as long as any other handle
+    has the target open -- so an operator changing something while the gateway reads it gets an
+    error, and a concurrent test silently changes nothing. Neither is a race in the DATA: the
+    rename either happened or did not. Retrying briefly is what makes "it happened" the usual
+    answer.
+
+    On POSIX a rename over an open file always succeeds, so the loop runs once and this costs
+    nothing there.
+
+    Here rather than copied into each writer: it was copied into `atomically` only, and the three
+    in `activation.py` -- which write the snapshot that decides whether this gateway may take
+    work at all -- did not have it. A concurrent-change drill found that as a `PermissionError`
+    out of a measurement that had simply not been written.
+    """
+    deadline = time.monotonic() + REPLACE_SECONDS
+    while True:
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:                               # pragma: no cover - Windows only
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
+
+
+def read_text_with_retry(path, encoding: str = "utf-8") -> str:
+    """Read a file, retrying briefly while Windows says it is in use.
+
+    The other side of `replace_with_retry`. A rename over a file is indivisible for a reader that
+    already HOLDS a handle; a reader that tries to OPEN one during the rename gets a sharing
+    violation, which Python raises as `PermissionError`. So a file that is written while it is
+    read -- the cancellation journal is exactly that -- fails to be read for reasons that have
+    nothing to do with its contents.
+
+    UNREADABLE IS STILL NOT EMPTY. This retries and then RAISES; it never answers "" or "{}". A
+    reader that treated a busy file as an absent one would be the fail-open this product spends
+    its time removing, and the journal's own comment says why: "nothing was being stopped"
+    because the file could not be parsed is how a container gets left running with nobody
+    accounting for it.
+
+    On POSIX a reader is never refused for this reason, so the loop runs once and this costs
+    nothing there.
+    """
+    deadline = time.monotonic() + REPLACE_SECONDS
+    while True:
+        try:
+            with open(path, encoding=encoding) as fh:
+                return fh.read()
+        except PermissionError:                               # pragma: no cover - Windows only
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
+
+
 def atomically(path, text: str, mode: int = 0o600) -> None:
     """Write beside, then rename over, so a reader never sees half a file.
 
@@ -104,15 +161,7 @@ def atomically(path, text: str, mode: int = 0o600) -> None:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
-        deadline = time.monotonic() + REPLACE_SECONDS
-        while True:
-            try:
-                os.replace(tmp, path)
-                break
-            except PermissionError:                           # pragma: no cover - Windows only
-                if time.monotonic() >= deadline:
-                    raise
-                time.sleep(0.02)
+        replace_with_retry(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

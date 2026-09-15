@@ -57,6 +57,7 @@ one place that decides whether this gateway may touch its own state stays the on
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import secrets
@@ -164,9 +165,14 @@ class Accounts:
     does and is refused in the same circumstances.
     """
 
-    def __init__(self, read, write) -> None:
+    def __init__(self, read, write, guard=None) -> None:
         self._read_raw = read
         self._write_raw = write
+        # A context manager the caller supplies, held across load-mutate-store. An atomic write
+        # is not enough on its own: two `forget()` calls both load, each removes its own account,
+        # and whichever stores second puts the other one back. Defaults to nothing so a caller
+        # that has no file to lock -- a test with a dict for storage -- still works.
+        self._guard = guard or (lambda: contextlib.nullcontext())
 
     # ------------------------------------------------------------------ the file
 
@@ -231,13 +237,14 @@ class Accounts:
         wanted = str(account_id or new_account_id())
         if not well_formed(wanted):
             raise NoSuchAccount(wanted)
-        body = self._load()
-        if wanted in body:
-            return _account_from(wanted, body[wanted])
-        account = Account(account_id=wanted, name=str(name or "")[:64], created_at=at)
-        body[wanted] = account.as_dict()
-        self._store(body)
-        return account
+        with self._guard():
+            body = self._load()
+            if wanted in body:
+                return _account_from(wanted, body[wanted])
+            account = Account(account_id=wanted, name=str(name or "")[:64], created_at=at)
+            body[wanted] = account.as_dict()
+            self._store(body)
+            return account
 
     def ensure(self, account_id: str, name: str = "", now: float | None = None) -> Account:
         """Record an account that already exists implicitly, so something can be written about it.
@@ -259,20 +266,21 @@ class Accounts:
             # cannot justify later. It is refused at the point of suspending rather than
             # discovered by the customer.
             raise ValueError("a suspension has to say why: the account is shown this.")
-        body = self._load()
-        existing = body.get(wanted) if isinstance(body.get(wanted), dict) else {}
-        account = Account(
-            account_id=wanted,
-            name=str(existing.get("name") or "")[:64],
-            created_at=float(existing.get("created_at") or at),
-            state=SUSPENDED,
-            suspended_because=str(because)[:400],
-            suspended_at=at,
-            suspended_by=str(by or "")[:64],
-        )
-        body[wanted] = account.as_dict()
-        self._store(body)
-        return account
+        with self._guard():
+            body = self._load()
+            existing = body.get(wanted) if isinstance(body.get(wanted), dict) else {}
+            account = Account(
+                account_id=wanted,
+                name=str(existing.get("name") or "")[:64],
+                created_at=float(existing.get("created_at") or at),
+                state=SUSPENDED,
+                suspended_because=str(because)[:400],
+                suspended_at=at,
+                suspended_by=str(by or "")[:64],
+            )
+            body[wanted] = account.as_dict()
+            self._store(body)
+            return account
 
     def restore(self, account_id: str, now: float | None = None) -> Account:
         """Let an account work again. Deliberate, and never a side effect of anything else."""
@@ -280,17 +288,18 @@ class Accounts:
         wanted = str(account_id)
         if not well_formed(wanted):
             raise NoSuchAccount(wanted)
-        body = self._load()
-        existing = body.get(wanted) if isinstance(body.get(wanted), dict) else {}
-        account = Account(
-            account_id=wanted,
-            name=str(existing.get("name") or "")[:64],
-            created_at=float(existing.get("created_at") or at),
-            state=ACTIVE,
-        )
-        body[wanted] = account.as_dict()
-        self._store(body)
-        return account
+        with self._guard():
+            body = self._load()
+            existing = body.get(wanted) if isinstance(body.get(wanted), dict) else {}
+            account = Account(
+                account_id=wanted,
+                name=str(existing.get("name") or "")[:64],
+                created_at=float(existing.get("created_at") or at),
+                state=ACTIVE,
+            )
+            body[wanted] = account.as_dict()
+            self._store(body)
+            return account
 
     def forget(self, account_id: str) -> bool:
         """Remove the record entirely. Used by deletion; not a way to lift a suspension.
@@ -299,12 +308,13 @@ class Accounts:
         reactivate it, so a caller that means "let them work again" has to say so.
         """
         wanted = str(account_id)
-        body = self._load()
-        if wanted not in body:
-            return False
-        del body[wanted]
-        self._store(body)
-        return True
+        with self._guard():
+            body = self._load()
+            if wanted not in body:
+                return False
+            del body[wanted]
+            self._store(body)
+            return True
 
 
 class Suspended(Exception):

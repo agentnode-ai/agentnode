@@ -16,6 +16,7 @@ import ast
 import inspect
 import io
 import os
+import re
 
 import pytest
 
@@ -43,6 +44,17 @@ WHAT_THE_LITERALS_MEAN = {
 
 #: What counts as an address rather than any old string in the handler.
 LOOKS_LIKE_AN_ADDRESS = ("/v1", "/console")
+
+
+def the_console_page() -> str:
+    """The page as it is SHIPPED. Not a copy of it kept beside this test, which would agree with
+    itself while the file a browser loads said something else."""
+    import pathlib
+
+    import agentnode_sdk
+
+    return (pathlib.Path(agentnode_sdk.__file__).parent / "console" / "app.js").read_text(
+        encoding="utf-8")
 
 
 def source_of(module):
@@ -225,3 +237,69 @@ class TestThePageIsNotAWayIn:
         for path in console.FILES:
             assert path.rstrip("/") or path
             assert routes.BY_PATH.get(path.rstrip("/") or path)
+
+
+class TestThePageSendsEveryOperationTheWayItIsDeclared:
+    """The console keeps its own table of which operations travel as POST, and it drifted.
+
+    `devices.invite` was declared, the button was added, and `NEEDS_POST` was not -- so the one
+    thing a customer does to add their second machine sent a GET and was answered "Diese Anfrage
+    war nicht in Ordnung." Nothing red: the tests behind that feature drove the dispatcher, and
+    the dispatcher was right. A real browser found it.
+
+    The table stays (a page that fetched the contract before its first call would pay a round
+    trip on every load). What does not stay is the possibility of it being wrong: the rule is
+    read off the contract here, and the table is compared against it.
+    """
+
+    #: Never reached through `call()`. They happen before anybody has a session -- `hello` and
+    #: `pair` on the way in, `open_session` as the thing that creates one -- so they are sent by
+    #: the code that bootstraps rather than by the operation helper, and the table is not about
+    #: them.
+    BEFORE_THERE_IS_A_SESSION = ("hello", "pair", "open_session")
+
+    def _table(self) -> set:
+        """What the page believes must be POSTed, read out of the page itself."""
+        block = re.search(r"var NEEDS_POST = \{(.*?)\};", the_console_page(), re.S)
+        assert block, "the console no longer has a NEEDS_POST table; this test is looking for it"
+        return set(re.findall(r'"?([a-z_]+(?:\.[a-z_]+)?)"?\s*:\s*1', block.group(1)))
+
+    def _called(self) -> set:
+        """What the page actually asks for, read out of the page itself."""
+        return set(re.findall(r'call\(\s*"([^"]+)"', the_console_page()))
+
+    def test_every_operation_the_page_calls_is_one_this_gateway_declares(self):
+        from agentnode_sdk.access import contract
+
+        called = self._called()
+        assert called, "no `call(...)` was found at all, so this test is reading the wrong file"
+        unknown = sorted(name for name in called if contract.find(name) is None)
+        assert not unknown, (
+            "the console asks for %s, which this gateway does not declare" % unknown)
+
+    def test_and_is_sent_by_the_method_the_contract_gives_it(self):
+        """The contract's rule, applied here rather than remembered there."""
+        from agentnode_sdk.access import contract
+
+        table = self._table()
+        wrong = []
+        for name in sorted(self._called()):
+            declared = contract.find(name)
+            must_post = bool(declared.changes or declared.params)
+            if must_post != (name in table):
+                wrong.append("%s must be sent as %s and the page sends it as %s"
+                             % (name, "POST" if must_post else "GET",
+                                "POST" if name in table else "GET"))
+        assert not wrong, (
+            "the console's NEEDS_POST table disagrees with the contract:\n  " + "\n  ".join(wrong))
+
+    def test_and_the_table_names_nothing_that_is_not_an_operation(self):
+        from agentnode_sdk.access import contract
+
+        strangers = sorted(name for name in self._table()
+                           if contract.find(name) is None
+                           and name not in self.BEFORE_THERE_IS_A_SESSION)
+        assert not strangers, (
+            "NEEDS_POST names %s, which this gateway does not declare -- an entry for an "
+            "operation that does not exist is an entry nobody will notice going stale"
+            % strangers)

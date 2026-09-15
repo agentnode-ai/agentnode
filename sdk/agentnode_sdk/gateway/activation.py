@@ -39,6 +39,8 @@ import json
 import os
 import secrets
 import tempfile
+
+from agentnode_sdk.gateway.filelock import replace_with_retry
 import time
 import uuid
 from dataclasses import dataclass
@@ -119,7 +121,7 @@ class Protected:
                 os.fsync(fh.fileno())
             if os.name == "posix":
                 os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
+            replace_with_retry(tmp, path)
         except BaseException:
             _quiet_unlink(tmp)
             raise
@@ -149,7 +151,7 @@ class Protected:
                 os.fsync(fh.fileno())
             if os.name == "posix":
                 os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
+            replace_with_retry(tmp, path)
         except BaseException:
             _quiet_unlink(tmp)
             raise
@@ -356,7 +358,7 @@ def _write_atomic(path: Path, text: str) -> None:
             os.fsync(fh.fileno())
         if os.name == "posix":
             os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
         if os.name == "posix":
             fd = os.open(str(path.parent), os.O_RDONLY)
             try:

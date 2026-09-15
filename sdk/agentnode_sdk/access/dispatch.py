@@ -1368,7 +1368,11 @@ def _submit(service, principal, params):
         **({"issued_at": float(params["issued_at"])} if params.get("issued_at") else {}),
     )
     try:
-        record = service.submit(request, artifact, token=principal.token)
+        # WHO, explicitly. The dispatcher has already established it, and the service used
+        # to re-derive it from the token -- which a browser session does not have.
+        record = service.submit(request, artifact, token=principal.token,
+                                client_id=principal.client_id,
+                                account_id=principal.account_id)
     except Exception as exc:                                  # noqa: BLE001
         # Nothing started, so the agreement still stands. Both real models were sent back to
         # ask a person again for a job that had never run.
@@ -1406,9 +1410,15 @@ def _a_run_of_this_caller(service, principal, run_id):
     """
     record = service.runs.get(str(run_id))
     owning_account = getattr(record, "owner_account_id", "") if record is not None else ""
-    if record is None or (record.owner_client_id and
-                          record.owner_client_id != principal.client_id) or (
-                              owning_account and owning_account != principal.account_id):
+    # A run with NO recorded owner belongs to nobody, and belonging to nobody is not the same as
+    # belonging to whoever asks. What stood here tested the owner only when there WAS one, so an
+    # ownerless run was readable and cancellable by every authenticated caller on this gateway --
+    # and every run started from the web console was ownerless, because the owner came from a
+    # token and a browser session carries a cookie instead. Both halves are corrected; this is
+    # the half that keeps holding if the other one ever regresses.
+    if record is None or not record.owner_client_id or not owning_account or (
+            record.owner_client_id != principal.client_id) or (
+                owning_account != principal.account_id):
         # The same answer either way: telling a stranger that a run exists but is not theirs
         # tells them it exists.
         raise Refused("no_such_run",

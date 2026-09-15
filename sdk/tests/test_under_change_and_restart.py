@@ -54,7 +54,19 @@ def _again(where):
 
 
 def _together(*what):
-    """Run callables so they really arrive at once, and collect what each produced."""
+    """Run callables so they really arrive at once, and collect what each produced.
+
+    A thunk that RAISED is a failure of this helper, not a result to be inspected. Every caller
+    below either performs the change under test -- which has to happen, or the test that follows
+    asserts nothing -- or submits work through a helper that catches its own refusals. So a
+    raise is always something nobody expected, and returning it quietly is how a concurrency
+    test comes to pass because the concurrent thing never happened.
+
+    That is not hypothetical: `write_allowance` raised on Windows while another thread held the
+    file open, and the ceiling test then measured three submissions against the OLD ceiling and
+    called it a race. This is that lesson applied to all of them at once, instead of to the one
+    where it was noticed.
+    """
     ready = threading.Barrier(len(what) + 1)
     out = [None] * len(what)
 
@@ -72,6 +84,10 @@ def _together(*what):
     ready.wait(timeout=20)
     for hand in hands:
         hand.join(timeout=60)
+    unfinished = [i for i, got in enumerate(out) if got is None]
+    assert not unfinished, "%s never finished within the timeout" % unfinished
+    raised = [(i, got[1]) for i, got in enumerate(out) if got[0] == "raised"]
+    assert not raised, "one of these was not supposed to raise: %r" % (raised,)
     return out
 
 
@@ -105,7 +121,13 @@ class TestAChangeWhileSomethingIsInFlight:
 
         assert read_allowance(gateway.state.root).runs_per_window == 1
 
-        started = [v for kind, v in seen[1:] if kind == "ok" and v not in ("over_a_ceiling",)]
+        # What STARTED, said positively. Naming the one refusal this was expected to produce
+        # made the test flaky rather than wrong: three identical jobs submitted at once share a
+        # disclosure, so the ones that lose that race come back `disclosure_required` -- a
+        # refusal like any other, and counted as a start by a filter that only knew about
+        # ceilings. A refusal is anything the contract declares as one; a start is a run id.
+        started = [v for kind, v in seen[1:]
+                   if kind == "ok" and v not in contract.REFUSALS]
         # However the race lands, the gateway's own count is the authority afterwards.
         runs, _seconds = gateway.use.so_far(who.client_id)
         assert runs == len(started), (
@@ -191,7 +213,15 @@ class TestAChangeWhileSomethingIsInFlight:
             except dispatch.Refused as refused:
                 return refused.refusal
 
-        _together(change, submit, submit)
+        seen = _together(change, submit, submit)
+        assert seen[0] == ("ok", "changed")
+        # And the change LANDED. A measurement that was written and then overwritten by a
+        # concurrent path would leave this gateway measured under the policy it is actually
+        # running, which is the state where the assertion below is right to pass -- and would
+        # mean this test had proved nothing about the change it was named for.
+        assert gateway.active_state().binding.get("operator_policy_digest") == "0" * 40, (
+            "the mismatched measurement did not survive the two submissions beside it")
+
         with pytest.raises(dispatch.Refused) as refused:
             _a_run_by(gateway, who)
         assert refused.value.what_to_do

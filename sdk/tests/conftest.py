@@ -17,6 +17,49 @@ from unittest import mock
 import pytest
 
 
+# ------------------------------------------------------------------ the browser, once
+
+
+@pytest.fixture(scope="session")
+def browser():
+    """ONE Playwright, for the whole session, shared by every module that drives a browser.
+
+    It is here rather than in the module that first needed it because `sync_playwright()` cannot
+    be entered twice in one thread: a second module declaring its own session-scoped `browser`
+    gets a second instance, and it fails with "you are using Playwright Sync API inside the
+    asyncio loop" -- which names the symptom rather than the cause.
+
+    A missing browser is a SKIP by default and a FAILURE under `AGENTNODE_BROWSER_TESTS=required`,
+    which is how the managed-access lane runs it. A skip that reads as a pass is how a suite comes
+    to report a flow that nothing exercised.
+    """
+    required = os.environ.get("AGENTNODE_BROWSER_TESTS", "").lower() == "required"
+
+    def no_browser(why):
+        if required:
+            pytest.fail("the browser tests were required and could not run: %s" % why,
+                        pytrace=False)
+        pytest.skip("%s -- set AGENTNODE_BROWSER_TESTS=required to make this a failure" % why)
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:                                # noqa: BLE001
+        no_browser("playwright is not installed (%s)" % exc)
+
+    try:
+        with sync_playwright() as play:
+            try:
+                engine = play.chromium.launch(args=["--no-sandbox"])
+            except Exception as exc:                          # noqa: BLE001
+                no_browser("chromium would not start (%s)" % exc)
+            yield engine
+            engine.close()
+    except Exception as exc:                                  # noqa: BLE001
+        no_browser("playwright would not start (%s)" % exc)
+
+
+
+
 @pytest.fixture(autouse=True)
 def _no_real_os_keychain():
     """Tests must NEVER touch the real OS keychain (UX-2 vault).

@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agentnode_sdk.gateway import accounts as _accounts
+from agentnode_sdk.gateway import filelock
 from agentnode_sdk.gateway import securedir
 from agentnode_sdk.gateway.throttle import Budget, Locked, Store, Throttle
 
@@ -174,6 +175,11 @@ class GatewayState:
         self.accounts = _accounts.Accounts(
             read=lambda name: self._read_private(name),
             write=lambda name, textual: self._write_private(name, textual),
+            # Held across load-mutate-store, so two changes to the same file cannot each read
+            # the state before the other and write it back afterwards. The lock is on the FILE
+            # rather than on this object: `Accounts` is built fresh by several callers -- a
+            # deletion builds its own -- so a lock belonging to an instance guards nothing.
+            guard=lambda: filelock.ProcessLock(self.root / _accounts.ACCOUNTS_NAME),
         )
 
     @staticmethod
@@ -513,11 +519,17 @@ class GatewayState:
         Named honestly: this is a pathname operation and offers none of the protection the
         descriptor path does. It exists so a gateway on such a platform still functions, and the
         gateway reports its state as unverifiable rather than claiming otherwise.
+
+        It is at least ATOMIC now. What stood here truncated the file in place, so a reader
+        arriving mid-write saw an empty or half-written one -- and `accounts.py` refuses to run
+        anything on a record of customers it cannot parse, which is right. One concurrent write
+        to `accounts.json` could therefore stop the gateway. Beside and renamed over, with the
+        unique temp name and the bounded Windows retry that `filelock.atomically` already has.
         """
+        from agentnode_sdk.gateway.filelock import atomically
+
         self._guard_private()
-        path = self.root / name
-        path.write_text(text, encoding="utf-8")
-        self._harden(path)
+        atomically(self.root / name, text)
 
     def close(self) -> None:
         """Give up the held descriptor. Safe to call twice, and after the finalizer has run."""
@@ -627,6 +639,25 @@ class GatewayState:
         token_hash = hash_token(token)
         entry = self._read_tokens().get(token_hash) or {}
         return entry.get("allowance")
+
+    def allowance_of_client(self, client_id: str):
+        """The same thing, found by WHO the device is rather than by what it presented.
+
+        A browser session presents a cookie and holds no token, so the token-keyed lookup above
+        answers `None` for it -- which reads as "this device has no ceiling of its own" and
+        silently hands a console user the unrestricted user scope. Identity is established once,
+        by the dispatcher; everything below it has to be able to ask by identity.
+        """
+        wanted = str(client_id or "")
+        if not wanted:
+            return None
+        for digest, entry in (self._read_tokens() or {}).items():
+            # The same fallback `client_id_for` uses: entries issued before client ids existed
+            # are known by their token hash, so a gateway directory that predates them keeps
+            # working rather than quietly losing every device.
+            if str((entry or {}).get("client_id") or digest) == wanted:
+                return (entry or {}).get("allowance")
+        return None
 
     def _issue_token(self, client_name: str = "", now: float | None = None,
                      account_id: str = "") -> str:

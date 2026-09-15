@@ -1173,12 +1173,16 @@ class GatewayService:
                    max(0.0, lifts - time.time())),
                 lifts_at=lifts)
 
-    def admit(self, request: JobRequest, artifact: bytes,
-              token: str = "") -> tuple:
+    def admit(self, request: JobRequest, artifact: bytes, token: str = "",
+              *, client_id: str = "", account_id: str = "") -> tuple:
         """Everything that must hold before a container exists. Raises to refuse.
 
         Order matters: the cheap structural checks come before anything that costs work, and
         nothing here has a side effect that would survive a refusal.
+
+        `client_id` and `account_id` are WHO this is, established once by the dispatcher. They
+        used to be re-derived here from a token, and a browser session has none -- so a run
+        started from the console was counted against nobody's concurrency and nobody's window.
         """
         # Before anything else costs anything. `ALPHA-ALLOWANCE`: an operator's stop is the
         # first question asked of every job, and a gateway that cannot tell whether it has been
@@ -1214,8 +1218,8 @@ class GatewayService:
             raise OverTheCeiling("max_artifact_bytes", too_big.because) from too_big
 
         granted_digest = self.within_its_allowance(
-            self.state.client_id_for(token) or "", request.wall_clock_s,
-            account_id=self.state.account_id_for(token) or "")
+            client_id or (self.state.client_id_for(token) or ""), request.wall_clock_s,
+            account_id=account_id or (self.state.account_id_for(token) or ""))
 
         actual = digest(artifact)
         if actual != request.artifact_sha256:
@@ -1251,7 +1255,7 @@ class GatewayService:
         except PolicyPathError as exc:
             raise ProtocolError(f"this job's requirements cannot be enforced: {exc}") from exc
 
-        granted = self.compose(request, token)
+        granted = self.compose(request, token, client_id=client_id)
         requested_shape = policy_shape(self.requested_policy(request))
         effective_shape = policy_shape(granted)
 
@@ -1334,10 +1338,19 @@ class GatewayService:
         The allowance is recorded against the token when the client pairs, so it is bound to an
         authenticated identity rather than to anything the job carries. A client with no recorded
         restriction is unrestricted at this scope, and the operator above it still binds.
+
+        Kept as the TOKEN form for a caller that holds only a token. It resolves who that is and
+        asks `policy_of_client`, which is the real one: a browser session holds no token, and a
+        lookup that can only be done by token answers "no ceiling of its own" for every person
+        using the console.
         """
+        return self.policy_of_client(self.state.client_id_for(token) or "")
+
+    def policy_of_client(self, client_id: str):
+        """What this DEVICE is allowed, asked by identity rather than by credential."""
         from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
 
-        allowance = self.state.client_allowance(token)
+        allowance = self.state.allowance_of_client(client_id)
         if allowance is None:
             return SandboxPolicy(network=NetworkRules(enabled=True, allowed_destinations=None))
         if not allowance:
@@ -1346,8 +1359,14 @@ class GatewayService:
         return SandboxPolicy(network=NetworkRules(enabled=True,
                                                   allowed_destinations=frozenset(allowance)))
 
-    def compose(self, request: JobRequest, token: str = ""):
-        """The fold, server-side. The operator is above the client, and the job is below both."""
+    def compose(self, request: JobRequest, token: str = "", *, client_id: str = ""):
+        """The fold, server-side. The operator is above the client, and the job is below both.
+
+        WHO the client is comes from `client_id` when a caller knows it -- the dispatcher always
+        does -- and is resolved from a token only for a caller that holds nothing else. It used
+        to be the token alone, so a browser session, which has no token by design, folded in the
+        unrestricted user scope instead of its own.
+        """
         from agentnode_sdk.sandbox.contract import (
             Limits,
             NetworkRules,
@@ -1365,7 +1384,8 @@ class GatewayService:
                                  allowed_destinations=frozenset(request.allowed_domains))
         return merge_policies({
             Scope.ORGANISATION: self.operator_policy(),
-            Scope.USER: self.client_policy(token),
+            Scope.USER: self.policy_of_client(
+                client_id or (self.state.client_id_for(token) or "")),
             # The requested wall clock is a REQUEST at the lowest scope, not a setting. Limits
             # narrow by minimum as scopes descend, so an operator's ceiling binds it.
             Scope.PACKAGE: SandboxPolicy(
@@ -1376,7 +1396,8 @@ class GatewayService:
 
     # ------------------------------------------------------------------ execution
 
-    def submit(self, request: JobRequest, artifact: bytes, token: str = "") -> RunRecord:
+    def submit(self, request: JobRequest, artifact: bytes, token: str = "",
+               *, client_id: str = "", account_id: str = "") -> RunRecord:
         """Admission runs first, always. A re-sent request is a replay and is refused.
 
         Two earlier versions got this wrong in the same direction, and the second was worse
@@ -1412,11 +1433,19 @@ class GatewayService:
         record = RunRecord(run_id=request.run_id, job_id=request.job_id,
                            request_sha256=request_sha,
                            required_properties=tuple(request.required_properties),
-                           owner_client_id=self.state.client_id_for(token) or "",
-                           owner_account_id=self.state.account_id_for(token) or "")
+                           # WHO owns this run. From the caller's established identity, and
+                           # from a token only when that is all a caller has. Deriving it from
+                           # the token alone left every console-started run with NO owner -- a
+                           # browser session holds a cookie, not a token -- and an ownerless run
+                           # was readable by every other customer on this gateway.
+                           owner_client_id=client_id or (
+                               self.state.client_id_for(token) or ""),
+                           owner_account_id=account_id or (
+                               self.state.account_id_for(token) or ""))
         try:
             granted, _props, req_shape, eff_shape, granted_digest, deltas = self.admit(
-                request, artifact, token)
+                request, artifact, token, client_id=record.owner_client_id,
+                account_id=record.owner_account_id)
             # From here the run carries what it was admitted under. A limit changed while it is
             # going must not rewrite what this run is recorded as having been allowed.
             record.admitted_under = granted_digest

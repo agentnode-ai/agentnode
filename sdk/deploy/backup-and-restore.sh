@@ -41,17 +41,32 @@
 # ## Why the check is part of it
 #
 # A restore that produced a gateway which *looks* fine is the failure mode worth designing
-# against. So `check` asks the five questions that would actually be wrong:
+# against. So `check` asks the six questions that would actually be wrong:
 #
 #   1. does the metering chain still verify, end to end and to its head
 #   2. does the gateway still know its own identity, and is it the SAME identity
 #   3. are the devices still there, and the accounts still attached to them
 #   4. CAN A GATEWAY BUILT ON THIS STATE READ ITS OWN OPERATOR POLICY
 #   5. are the permissions still owner-only
+#   6. DID EVERY STORE COME BACK THE WAY IT WENT IN
 #
 # The fourth was added after a drill: the first four-question version passed on a restore whose
 # gateway then refused every job, because the key authenticating the policy was not in the
 # archive. Checking files is not checking that a gateway made of them works.
+#
+# The sixth was added after a review, and it is the one the other five cannot substitute for.
+# All of them ask whether the copy looks plausible, and a copy on its own has nothing to
+# disagree with: a restore that came back with half the accounts, no sessions, an empty audit
+# and no tombstones passes every one. So a backup now writes down WHAT IT CONTAINED -- one
+# entry per store, with how many records and a digest over what identifies them -- and the check
+# recomputes it and names each store that differs. The list of stores is not kept in this file:
+# it is `retention.CLASSES` plus `backup.BESIDES`, so a store added to the product is in the
+# drill the same day.
+#
+# Records are summarised by what identifies them. KEYS AND CERTIFICATES ARE NOT: for those the
+# manifest records that the file is there and how long it is, never a digest of its content. A
+# manifest travels with an archive and sometimes out of it, and "we only stored a hash of the
+# signing key" is the sentence that comes just before that being a problem.
 #
 # `restore` runs `check` afterwards and fails if any of them does. A restore that cannot answer
 # them is reported as a failed restore, not as a restore with a warning.
@@ -96,6 +111,7 @@ PY="${AGENTNODE_PYTHON:-/opt/agentnode/venv/bin/python}"
 
 check_state() {
   local where="$1"
+  local manifest="${2:-}"
   local failed=0
 
   say "checking $where"
@@ -156,6 +172,19 @@ PYEOF
     failed=1
   fi
 
+  # THE SIXTH QUESTION: did every store come back the way it went in? Everything above asks
+  # whether this copy looks all right; this is the only one that asks whether it is the SAME.
+  # A backup taken before this existed has no manifest, and that is reported as what it is --
+  # an unverifiable restore -- rather than passed over.
+  if [ -n "$manifest" ] && [ -f "$manifest" ]; then
+    "$PY" -m agentnode_sdk.gateway.backup compare "$where" "$manifest" || failed=1
+  elif [ -n "$manifest" ]; then
+    say "    PROBLEM        : this backup carries no $(basename "$manifest"), so there is"
+    say "                     nothing to compare the restored state against. It was taken"
+    say "                     before the drill recorded what it contained; take a fresh one."
+    failed=1
+  fi
+
   # Owner-only. A restore that widened the permissions is a restore that handed this machine's
   # other accounts a list of credentials.
   if [ "$(stat -c '%a' "$where")" != "700" ]; then
@@ -195,17 +224,39 @@ case "$VERB" in
     if [ -d "$SECRET_DIR" ]; then
       tar -C "$(dirname "$SECRET_DIR")" -cf "$WHERE/secret.tar" "$(basename "$SECRET_DIR")"
       say "     and $SECRET_DIR, without which the restored gateway cannot read its own policy"
-      ( cd "$WHERE" && sha256sum state.tar secret.tar > SHA256SUMS )
     else
       say "     (no $SECRET_DIR on this gateway; nothing to take)"
-      ( cd "$WHERE" && sha256sum state.tar > SHA256SUMS )
     fi
+
+    # WHAT IT CONTAINED, store by store, so a restore has something to disagree with. Written
+    # from the LIVE directory rather than from the archive: the point is to record what was
+    # there at the moment of taking it.
+    "$PY" -m agentnode_sdk.gateway.backup write "$STATE_DIR" "$WHERE/WHAT_IS_IN_IT.json"
+    # Digested with the tarballs, so a manifest edited afterwards to match a damaged restore
+    # fails the same digest check the archive does.
+    if [ -f "$WHERE/secret.tar" ]; then
+      ( cd "$WHERE" && sha256sum state.tar secret.tar WHAT_IS_IN_IT.json > SHA256SUMS )
+    else
+      ( cd "$WHERE" && sha256sum state.tar WHAT_IS_IN_IT.json > SHA256SUMS )
+    fi
+
+    # A store this gateway keeps that the drill does not know how to check is a store whose loss
+    # a restore would report as nothing. The ARCHIVE IS STILL WRITTEN -- refusing to back a
+    # gateway up because somebody added a file is the wrong failure -- but this exits non-zero
+    # so a schedule notices, and `check` will refuse it.
+    UNCHECKED=0
+    "$PY" -m agentnode_sdk.gateway.backup unaccounted "$STATE_DIR" || UNCHECKED=1
     chmod 600 "$WHERE"/*
     say "wrote $WHERE/state.tar"
     say "     $(cat "$WHERE/SHA256SUMS")"
     echo
     say "to put it back:  $0 restore --from $WHERE"
     echo
+    if [ "${UNCHECKED:-0}" != "0" ]; then
+      say "The archive was written. It is NOT fully checkable: see the PROBLEM line above."
+      echo
+      exit 1
+    fi
     ;;
 
   check)
@@ -224,7 +275,8 @@ case "$VERB" in
     # taken over for the duration of the check. The live directory is untouched.
     chown -R "$(id -u):$(id -g)" "$TMP"
     chmod 700 "$INNER"
-    check_state "$INNER" || die "the backup does not restore to a gateway that checks out"
+    check_state "$INNER" "$FROM/WHAT_IS_IN_IT.json" \
+      || die "the backup does not restore to a gateway that checks out"
     echo
     say "this backup restores to a gateway that checks out."
     echo
@@ -257,7 +309,8 @@ case "$VERB" in
     fi
     say "restored $STATE_DIR"
 
-    check_state "$STATE_DIR" || die "restored, and it does not check out. The previous state is still at $ASIDE"
+    check_state "$STATE_DIR" "$FROM/WHAT_IS_IN_IT.json" \
+      || die "restored, and it does not check out. The previous state is still at $ASIDE"
 
     # And the question a copy could not answer: does a gateway on THIS state, on this machine,
     # with this machine's worker, read its own operator policy? A restore that leaves a gateway
@@ -299,9 +352,11 @@ READYEOF
   backup-and-restore.sh restore --from <backup directory>
   backup-and-restore.sh check   --from <backup directory>
 
-  `check` restores into a temporary directory and asks the four questions that would
-  actually be wrong, without touching the live gateway. Run it after every backup;
-  a backup nobody has restored is a hope, not a backup.
+  `check` restores into a temporary directory and asks the six questions that would
+  actually be wrong, without touching the live gateway -- including whether every
+  store came back the way it went in, which is the one the others cannot stand in
+  for. Run it after every backup; a backup nobody has restored is a hope, not a
+  backup.
 
 USAGE
     exit 2

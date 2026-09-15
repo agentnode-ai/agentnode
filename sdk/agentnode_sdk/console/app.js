@@ -41,8 +41,19 @@ function stopEverythingScheduled(){
 
 /* --- talking to the sandbox ---------------------------------------------- */
 
+/* Which operations travel as POST. The rule is the contract's, not this page's: an operation
+ * that changes something OR takes any parameter goes in the body, because a parameter in a URL
+ * ends up in logs, in history and in a referrer.
+ *
+ * This is a copy of that rule, so it can fall out of step with it -- and it did. `devices.invite`
+ * was declared, the button was added, and this table was not, so "Weiteres Gerät hinzufügen" sent
+ * a GET and every customer trying to add their second machine met "Diese Anfrage war nicht in
+ * Ordnung." Nothing caught it, because the tests behind it drove the dispatcher rather than the
+ * page. `test_routes_register.py` now compares this table against the contract, so the next
+ * operation somebody adds cannot arrive here silently wrong. */
 var NEEDS_POST = {prepare:1, submit:1, status:1, result:1, cancel:1, usage:1,
-                  "devices.revoke":1, "sessions.end":1,
+                  "devices.revoke":1, "devices.invite":1, "devices.uninvite":1,
+                  "sessions.end":1,
                   "connections.enrol":1, "connections.check":1};
 
 function call(op, params){
