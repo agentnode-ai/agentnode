@@ -553,12 +553,24 @@ def pytest_sessionfinish(session, exitstatus):
 
 @pytest.fixture(autouse=True)
 def _somewhere_to_keep_a_credential(monkeypatch):
-    """This suite runs headless, where there is no keyring.
+    """This suite has no keyring, and says so rather than hoping.
 
-    Saying so once here rather than in every test that saves a connection: the refusal when
+    Saying it once here rather than in every test that saves a connection: the refusal when
     there is nowhere safe is a real behaviour with its own tests in `test_credentials.py`, and
     every other test is about something else.
+
+    The `_keyring` patch is not belt-and-braces. `credentials.keep` asks the keyring FIRST and
+    only falls back to the file, so the environment variable below decides nothing on a
+    machine that HAS one -- and on such a machine this suite was writing real tokens into the
+    real OS credential store, which is precisely what the fixture above exists to prevent by
+    the other route. It also made three `test_em3c_cli` tests fail there and nowhere else:
+    they read the token out of `gateways.json`, which is deliberately EMPTY when the
+    credential went to a keyring.
+
+    `test_credentials.py` sets `_keyring` itself, to a fake, in the tests that are about
+    having one. A fixture applied here does not stop that: theirs runs later and wins.
     """
     from agentnode_sdk.access import credentials
 
+    monkeypatch.setattr(credentials, "_keyring", lambda: None)
     monkeypatch.setenv(credentials.SAY_SO, "file")
