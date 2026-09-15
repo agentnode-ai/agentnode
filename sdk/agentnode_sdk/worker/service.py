@@ -66,6 +66,12 @@ SOCKET_MODE = 0o660
 DIRECTORY_MODE = 0o2750
 
 
+#: How long the accept loop waits before looking at whether it has been told to stop. It is the
+#: longest a `stop_serving()` can take to be noticed, so it is short; it is also a wake-up per
+#: interval on an idle worker, so it is not shorter than it needs to be.
+LOOK_UP_EVERY_SECONDS = 1.0
+
+
 class Bench:
     """One worker, serving one socket, for one account.
 
@@ -90,6 +96,9 @@ class Bench:
         #: that does not forget.
         self.floor = wire.Floor(remembers_at)
         self._socket: socket.socket | None = None
+        #: Set once, never cleared. Separate from `_serving` so a stop cannot be undone by
+        #: a loop that starts afterwards.
+        self._stopped = False
         self._serving = False
 
     # ------------------------------------------------------------------ the socket
@@ -125,14 +134,32 @@ class Bench:
         # socket exists and anyone may connect to it.
         os.chmod(path, SOCKET_MODE)
         listener.listen(16)
+        # A listening socket that a thread is already blocked in accept() on does NOT wake when
+        # another thread closes it: the close succeeds and the blocked thread stays blocked until
+        # somebody connects. So `stop_serving()` could clear the flag, close the socket, and the
+        # worker would keep serving -- which is a worker that cannot be stopped, and six of them
+        # were found still in accept() after a whole test session had ended.
+        #
+        # A timeout makes the loop come up for air and look at the flag. The accepted connection
+        # is unaffected: accept() hands back a BLOCKING socket when the listener has a timeout.
+        listener.settimeout(LOOK_UP_EVERY_SECONDS)
         self._socket = listener
         return path
 
     def serve_forever(self) -> None:
+        """Accept connections until told to stop, and notice being told within a second.
+
+        A stop that arrived BEFORE this started is honoured rather than overwritten. This
+        used to set the serving flag unconditionally, so `stop_serving()` racing a worker
+        that was still starting was simply lost and the worker served on -- a worker told
+        to stop that does not. The stop is its own flag now, and setting it is one-way.
+        """
+        if self._stopped:
+            return
         if self._socket is None:
             self.open()
         self._serving = True
-        while self._serving:
+        while self._serving and not self._stopped:
             try:
                 connection, _ = self._socket.accept()
             except OSError:
@@ -142,6 +169,8 @@ class Bench:
             threading.Thread(target=self._one, args=(connection,), daemon=True).start()
 
     def stop_serving(self) -> None:
+        """Told once, stopped for good. Safe to call before serving has begun."""
+        self._stopped = True
         self._serving = False
         if self._socket is not None:
             try:

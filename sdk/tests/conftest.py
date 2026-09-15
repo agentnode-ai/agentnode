@@ -408,3 +408,114 @@ def build_score(
     )
     write_score(score)
     return score
+
+
+# ---------------------------------------------------------------- reliability trail
+#
+# A fault that accumulates over a run -- a leaked thread, a leaked descriptor -- is invisible in
+# the test that finally trips over it and obvious in a line going up. One has already been found
+# this way and fixed. Off unless AGENTNODE_DIAGNOSE is set, so a developer running one test pays
+# nothing for it.
+
+
+@pytest.fixture(autouse=True)
+def _reliability_trail(request):
+    from tests import reliability
+
+    if not reliability.enabled():
+        yield
+        return
+    trail = os.environ.get("AGENTNODE_DIAGNOSE_TRAIL") or reliability.TRAIL_NAME
+    name = request.node.nodeid
+    reliability.record(trail, name, "before")
+    try:
+        yield
+    finally:
+        reliability.record(trail, name, "after")
+
+
+# ---------------------------------------------------------------- who owns a started server
+#
+# The ownership boundary for anything a test starts. Servers registered through
+# `tests.serving.owned()` are stopped here whether the test passed, failed, raised, or was
+# interrupted half way through setting something up -- which is the case that used to leave a
+# listening socket and a thread behind with nobody able to reach either.
+
+
+@pytest.fixture(autouse=True)
+def _servers_have_an_owner():
+    import contextlib as _contextlib
+
+    from tests import serving
+
+    with _contextlib.ExitStack() as stack:
+        previous, serving._owner = serving._owner, stack
+        try:
+            yield stack
+        finally:
+            serving._owner = previous
+
+
+# ---------------------------------------------------------------- the lifecycle gate
+#
+# Threads were counted per test before, which cannot tell a leak from a session fixture that is
+# legitimately still serving -- and that ambiguity is why the previous round could not conclude.
+# The count is taken here instead, after the whole session and every fixture it owned has been
+# torn down. At this point nothing owns anything, so any serving or handler thread still alive is
+# unowned by definition, and each one is reported with where it was started rather than as a total.
+#
+# The process ending is NOT the proof. This runs while the process is still alive and asks what
+# it is still holding.
+
+
+def pytest_configure(config):
+    from tests import serving
+
+    serving.remember_births()
+
+
+def _write_the_lifecycle_report(text: str) -> str:
+    where = os.environ.get("AGENTNODE_LIFECYCLE_REPORT") or "lifecycle-at-the-end.txt"
+    try:
+        with open(where, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except OSError:                                           # pragma: no cover
+        pass
+    return where
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Late enough that session and class fixtures have already been finalised."""
+    import time as _time
+
+    from tests import serving
+
+    # Bounded, never assumed: a thread told to stop gets a moment to actually stop.
+    deadline = _time.monotonic() + 10.0
+    left = serving.outstanding()
+    while left and _time.monotonic() < deadline:
+        _time.sleep(0.2)
+        left = serving.outstanding()
+
+    if not left:
+        return
+    report = ("%d serving or handler thread(s) outlived the session and every fixture that could "
+              "have owned one.\n%s" % (len(left), serving.describe(left)))
+    where = _write_the_lifecycle_report(report)
+    print("\n" + report[:4000])
+    print("\n  full report: %s" % where)
+    if os.environ.get("AGENTNODE_LIFECYCLE_GATE") and exitstatus == 0:
+        session.exitstatus = 1
+
+
+@pytest.fixture(autouse=True)
+def _somewhere_to_keep_a_credential(monkeypatch):
+    """This suite runs headless, where there is no keyring.
+
+    Saying so once here rather than in every test that saves a connection: the refusal when
+    there is nowhere safe is a real behaviour with its own tests in `test_credentials.py`, and
+    every other test is about something else.
+    """
+    from agentnode_sdk.access import credentials
+
+    monkeypatch.setenv(credentials.SAY_SO, "file")

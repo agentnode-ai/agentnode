@@ -101,8 +101,18 @@ def gateway(*args, timeout: int = 600) -> subprocess.CompletedProcess:
 
 
 def client(*args, timeout: int = 600, extra_env: dict | None = None) -> subprocess.CompletedProcess:
-    """A client-side command, as the other user, with only its own home."""
-    env_bits = [f"AGENTNODE_HOME={CLIENT_HOME}/.agentnode", f"HOME={CLIENT_HOME}"]
+    """A client-side command, as the other user, with only its own home.
+
+    `AGENTNODE_CREDENTIALS=file` is the choice a headless machine has to make, and making it here
+    is the point rather than a workaround. A token goes in the platform keyring or nowhere; this
+    runner has no keyring, and the product refuses rather than quietly writing the token to disk
+    on your behalf. A server operator gets the same refusal and the same two ways out -- install
+    a keyring, or say this -- and the cost is spelled out in the refusal: the token then travels
+    in any backup of that directory. A test harness that did not have to make the choice would be
+    testing a path no server user has.
+    """
+    env_bits = [f"AGENTNODE_HOME={CLIENT_HOME}/.agentnode", f"HOME={CLIENT_HOME}",
+                "AGENTNODE_CREDENTIALS=file"]
     for key, value in (extra_env or {}).items():
         env_bits.append(f"{key}={value}")
     global last_result
@@ -202,7 +212,10 @@ def main() -> int:
               (connected.stdout or "").strip().replace("\n", " | ")[:200])
 
         say("a job, and its result")
-        tested = client("test")
+        # --yes is not a way round the consent gate, it is the gate's other answer: it says a
+        # person has read what would happen and accepts it. Nothing runs without one or the
+        # other, and a harness with no terminal has to give the explicit one.
+        tested = client("test", "--yes")
         check("the test job ran and came back", tested.returncode == 0,
               (tested.stdout or "").strip().replace("\n", " | ")[:220])
 
@@ -214,7 +227,11 @@ def main() -> int:
         runner = subprocess.Popen(
             ["sudo", "-n", "-u", CLIENT_USER, "env",
              f"AGENTNODE_HOME={CLIENT_HOME}/.agentnode", f"HOME={CLIENT_HOME}",
-             CLIENT_PYTHON, "-m", "agentnode_sdk.cli", "remote", "run", str(script),
+             # This one builds its own environment instead of going through client(), so it has
+             # to be given the same two things by hand -- where the credential lives, and the
+             # agreement -- or it reads a token it cannot find and asks a person who is not there.
+             "AGENTNODE_CREDENTIALS=file",
+             CLIENT_PYTHON, "-m", "agentnode_sdk.cli", "remote", "run", str(script), "--yes",
              "--max-seconds", "900", "--timeout", "300"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         run_id = ""
@@ -250,7 +267,7 @@ def main() -> int:
         subprocess.run(["sudo", "-n", "-u", CLIENT_USER, "tee", str(forever)],
                        input="import time\nprint('going', flush=True)\ntime.sleep(600)\n",
                        capture_output=True, text=True)
-        overran = client("run", str(forever), "--max-seconds", "10", "--timeout", "200")
+        overran = client("run", str(forever), "--yes", "--max-seconds", "10", "--timeout", "200")
         # Nonzero alone would also be satisfied by the job never starting, which is the opposite
         # of what this claims. It has to have STARTED and then been stopped.
         text = (overran.stdout or "") + (overran.stderr or "")
@@ -263,7 +280,7 @@ def main() -> int:
         rotated = client("rotate")
         check("the client rotated its own access", rotated.returncode == 0,
               (rotated.stdout or "").strip()[:160])
-        check("it still works afterwards", client("test").returncode == 0)
+        check("it still works afterwards", client("test", "--yes").returncode == 0)
 
         clients_before = gateway("clients")
         found = re.search(r"two-role\s+([0-9a-f]{6,})", clients_before.stdout)
@@ -272,8 +289,20 @@ def main() -> int:
         if found:
             revoked = gateway("revoke", "--client", found.group(1))
             check("the operator revoked it", revoked.returncode == 0)
+            # The wording changed deliberately, and the check has to follow the contract
+            # rather than the memory of it. `device_revoked` was REMOVED: withdrawing a device
+            # deletes the only record that could tell it from a credential that never existed,
+            # so the gateway stopped claiming a distinction it does not make. A withdrawn
+            # device, an ended session, an expired credential and one this sandbox never issued
+            # all answer not_authenticated.
+            #
+            # --yes matters here for a reason worth spelling out: without it this command is
+            # refused at the CONSENT gate, before authentication is ever reached, and a check
+            # looking only for the word "refused" would have gone green while establishing
+            # nothing about revocation at all.
             check("the revoked client is refused at once, and says why",
-                  refused_because(client("test"), "not paired", "refused"))
+                  refused_because(client("test", "--yes"),
+                                  "credential this sandbox recognises"))
 
         say("what must fail, and did")
         code2 = pairing_code()
@@ -302,7 +331,7 @@ def main() -> int:
         stop_gateway(process)
         process = start_gateway()
         check("the client still works after the gateway restarted",
-              client("test").returncode == 0)
+              client("test", "--yes").returncode == 0)
 
         status = client("status")
         check("status reports a protected sandbox", status.returncode == 0,

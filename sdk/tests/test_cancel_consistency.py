@@ -38,6 +38,7 @@ import time
 
 import pytest
 
+from tests import consent
 from agentnode_sdk.gateway import client as gc
 from agentnode_sdk.gateway.protocol import (
     CANCELLED,
@@ -119,7 +120,7 @@ def waiting_gateway(tmp_path):
 def a_running_job(base, state, service, backend, run_id="run-under-test"):
     """Submit a job and wait until it is really running. Returns the connection."""
     conn = _paired(base, state)
-    gc.submit(conn, b"print('x')", granted=_granted(service), run_id=run_id)
+    consent.submit(conn, b"print('x')", granted=_granted(service), run_id=run_id)
     assert backend.started.wait(timeout=10), "the job never reached the sandbox"
     return conn
 
@@ -314,12 +315,24 @@ class TestACancellationAnswersWhenItIsDone:
         def meddling(url, body, **kw):
             status, answer = real_post(url, body, **kw)
             if isinstance(answer, dict) and answer.get("state"):
-                answer["state"] = RUNNING           # the exact lie E6 displayed
+                # Whatever it really says, say something else. Pinning the lie to RUNNING stopped
+                # being a lie when the gateway stopped waiting: the answer now legitimately says
+                # the run is still going, so overwriting it with RUNNING changed nothing and the
+                # signature still verified. The claim under test is that a CHANGED answer is
+                # refused, so the change has to be one.
+                answer["state"] = "finished" if answer["state"] == RUNNING else RUNNING
             return status, answer
 
         monkeypatch.setattr(gc, "_post", meddling)
-        with pytest.raises(gc.GatewayClientError):
-            gc.cancel(conn, "run-under-test")
+        try:
+            with pytest.raises(gc.GatewayClientError):
+                gc.cancel(conn, "run-under-test")
+        finally:
+            # Whatever happened above, let the run finish. Raising out of a cancellation leaves
+            # the job held and a hand of the stopping pool still working, and a fixture torn
+            # down around either of those is an intermittent teardown error rather than a
+            # result -- which is exactly how this showed up.
+            backend.let_go.set()
 
     def test_cancelling_twice_says_the_same_thing(self, waiting_gateway):
         base, state, service, backend = waiting_gateway
@@ -337,7 +350,12 @@ class TestACancellationAnswersWhenItIsDone:
         base, state, service, backend = waiting_gateway
         service.CANCEL_SETTLE_SECONDS = 0.4
         conn = a_running_job(base, state, service, backend)
-        record, settled = gc.cancel(conn, "run-under-test")
+        # `settle` is how long THIS CLIENT waits, which is what changed in protocol 2: the
+        # gateway answers at once and the waiting belongs to whoever wants the answer. What
+        # `settled` means has not changed -- it is still "terminal, with the sandbox confirmed
+        # gone" -- so a client that gives up early still reports honestly that it did not see it
+        # through, which is the property this test is about.
+        record, settled = gc.cancel(conn, "run-under-test", settle=0.4)
         assert settled is False
         assert not is_terminal(record["state"])
         assert record["state"] == RUNNING
@@ -468,7 +486,7 @@ class TestWhatTheCommandLineShows:
 
         base, state, service, backend = waiting_gateway
         conn = self.a_saved_gateway(tmp_path, base, state, monkeypatch)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="shown")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="shown")
         assert backend.started.wait(timeout=10)
         threading.Timer(0.4, backend.let_go.set).start()
 
@@ -486,11 +504,11 @@ class TestWhatTheCommandLineShows:
         base, state, service, backend = waiting_gateway
         service.CANCEL_SETTLE_SECONDS = 0.4
         conn = self.a_saved_gateway(tmp_path, base, state, monkeypatch)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="unsettled")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="unsettled")
         assert backend.started.wait(timeout=10)
 
         code = remote_commands.cmd_cancel(
-            type("A", (), {"run": "unsettled", "name": "g"})())
+            type("A", (), {"run": "unsettled", "name": "g", "wait": 0.4})())
         out = capsys.readouterr().out
         backend.let_go.set()
         assert code == 1, out
@@ -581,7 +599,7 @@ class TestARealContainer:
             try:
                 conn = _paired(base, state)
                 payload = b"import time\nprint('up', flush=True)\ntime.sleep(120)\n"
-                gc.submit(conn, payload,
+                consent.submit(conn, payload,
                           granted=_granted(service, wall_clock_s=120), run_id="real-cancel")
                 deadline = time.monotonic() + 60
                 while time.monotonic() < deadline:

@@ -106,11 +106,13 @@ def _opener(pin: str):
     return opener_for(pin, _RefuseRedirects)
 
 
-def _post(url: str, body: dict, timeout: float = 30.0, pin: str = "") -> tuple[int, dict]:
+def _post(url: str, body: dict, timeout: float = 30.0, pin: str = "",
+          headers: dict | None = None) -> tuple[int, dict]:
     check_client_url(url)
     data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST",
-                                 headers={"Content-Type": "application/json"})
+    sending = {"Content-Type": "application/json"}
+    sending.update(headers or {})
+    req = urllib.request.Request(url, data=data, method="POST", headers=sending)
     try:
         with _opener(pin).open(req, timeout=timeout) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8") or "{}")
@@ -224,13 +226,62 @@ def pair(base_url: str, code: str, client_name: str = "",
     )
 
 
-def submit(connection: GatewayConnection, artifact: bytes, *, granted=None,
+#: The door this client submits over. The disclosure it asks for names this as the channel the
+#: job will actually be run from, so what a person is shown is where it will really happen.
+SUBMITS_OVER = "older_door"
+
+
+#: What this door has always called each kind of access, against what the contract calls it.
+#: Translated rather than passed through: two names for one thing is a wire detail, and losing
+#: the difference between "these destinations" and "anywhere" would be losing a policy.
+NETWORK_WORDS = {"restricted": "allowlist", "unrestricted": "unrestricted", "none": "none"}
+
+
+def prepare(connection: GatewayConnection, artifact: bytes, *, command=(), network="none",
+            allowed_domains=(), wall_clock_s: int = 60) -> dict[str, Any]:
+    """Ask what would happen, so somebody can be shown it before anything runs.
+
+    This does not agree to anything. It returns what the gateway would do and a single-use proof
+    that it was shown; agreeing is the caller's job, and `submit` will not run without that proof.
+    A client that called this and immediately spent the result on the person's behalf would have
+    turned a gate back into a screen, which is the one thing this must not become.
+    """
+    import hashlib
+
+    asked = {
+        "command": list(command),
+        "artifact_sha256": hashlib.sha256(artifact).hexdigest(),
+        "artifact_bytes": len(artifact),
+        "network": NETWORK_WORDS.get(network, network),
+        "allowed_domains": list(allowed_domains),
+        "wall_clock_s": int(wall_clock_s),
+        # Where the job will be submitted from, named here so the disclosure says it. This
+        # client submits over the older door, and an approval is for one connection.
+        "execution_channel": SUBMITS_OVER,
+    }
+    status, body = _post(f"{connection.base_url}/v1/op/prepare", asked,
+                         pin=connection.certificate_sha256,
+                         headers={"X-AgentNode-Token": connection.token})
+    if status != 200:
+        raise GatewayClientError(body.get("because") or body.get("error")
+                                 or f"the gateway answered {status}")
+    return body
+
+
+def submit(connection: GatewayConnection, artifact: bytes, *, accepted_disclosure: str = "",
+           granted=None,
            command: tuple[str, ...] = (), network: str = "none",
            allowed_domains: tuple[str, ...] = (), wall_clock_s: int = 60,
            required_properties: tuple[str, ...] = (), mandatory: tuple[str, ...] = (),
            optional: tuple[str, ...] = (), job_id: str = "",
            run_id: str = "") -> dict[str, Any]:
-    """Send a job. What is signed is what the gateway will check it against."""
+    """Send a job that somebody has already agreed to. Returns the signed record.
+
+    `accepted_disclosure` is what `prepare` handed back after a person was shown what would
+    happen. It is not optional in effect -- the gateway refuses without it -- and it is not
+    defaulted to something this client could produce on its own, because a client that obtains
+    the consent it is required to present has not obtained consent.
+    """
     import uuid
 
     from agentnode_sdk.gateway.policy_paths import policy_shape
@@ -264,6 +315,10 @@ def submit(connection: GatewayConnection, artifact: bytes, *, granted=None,
         wall_clock_s=int(wall_clock_s),
     )
     payload = request.to_payload()
+    # Inside the signed payload, not beside it. The proof that somebody agreed is part of the
+    # request it belongs to, so it cannot be lifted off one submission and attached to another
+    # on the way past.
+    payload["accepted_disclosure"] = accepted_disclosure
     from agentnode_sdk.gateway.identity import client_token_secret
 
     body = {
@@ -460,7 +515,14 @@ def status_of(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
     return not_backwards(connection, verify_answer(connection, body))
 
 
-def cancel(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
+def cancel(connection: GatewayConnection, run_id: str, settle: float = 60.0) -> dict[str, Any]:
+    """Ask for a run to be stopped, and wait for it to really be over.
+
+    Returns `(record, settled)`, unchanged, and `settled` means what it always meant: the run
+    reached a terminal state with its sandbox confirmed gone. What changed in protocol 2 is
+    where the waiting happens -- the gateway answers at once now, so no caller of it is held
+    while somebody else's container is torn down. Pass `settle=0` to ask and not wait.
+    """
     from agentnode_sdk.gateway.identity import client_token_secret
 
     payload = {"run_id": run_id, "issued_at": time.time()}
@@ -479,7 +541,24 @@ def cancel(connection: GatewayConnection, run_id: str) -> dict[str, Any]:
     # `EM3C-E6-RECORD-0001`: this used to return the body unverified, while `status_of` right
     # above it verified. What a person was shown after a cancellation was therefore the one state
     # in this client that nothing had checked.
-    return not_backwards(connection, verify_answer(connection, answer)), status == 200
+    asked = not_backwards(connection, verify_answer(connection, answer))
+    if status == 200 and asked.get("state") in TERMINAL_STATES:
+        return asked, True                       # a gateway from before protocol 2, still waiting
+    if not settle:
+        return asked, asked.get("state") in TERMINAL_STATES
+
+    # THE WAITING MOVED HERE, and that is the whole of the change. It has to happen somewhere:
+    # a person who cancels wants to be told when it is really over, and really over means the
+    # sandbox is confirmed gone rather than the record having changed. What matters is WHO
+    # waits. A server that held the connection held every caller, including the ones watching a
+    # screen; a client waiting for its own cancellation holds nobody but itself, and can give up
+    # whenever it likes.
+    try:
+        return wait_for(connection, run_id, timeout=settle), True
+    except GatewayClientError:
+        # Honest rather than convenient: it was asked for, and this client did not see it
+        # through. The caller is told which, and the run says what it really is.
+        return status_of(connection, run_id), False
 
 
 def wait_for(connection: GatewayConnection, run_id: str, timeout: float = 120.0,

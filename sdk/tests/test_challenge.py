@@ -21,6 +21,7 @@ import time
 
 import pytest
 
+from tests import consent
 from agentnode_sdk.gateway import challenge as ch
 from agentnode_sdk.gateway import client as gc
 
@@ -201,7 +202,7 @@ class TestWhereTheValueTravels:
         it -- not under any key, not under any name."""
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="in-the-spec")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="in-the-spec")
         gc.wait_for(conn, "in-the-spec", timeout=20)
         assert backend.specs, "the job never reached the sandbox"
         binding = ch.read(service.ledger.challenge_for("in-the-spec"))
@@ -222,7 +223,7 @@ class TestWhatTheGatewayDoes:
     def test_it_writes_the_binding_down_before_the_job_ends(self, a_gateway):
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="written-down")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="written-down")
         gc.wait_for(conn, "written-down", timeout=20)
         binding = ch.read(service.ledger.challenge_for("written-down"))
         assert binding.run_id == "written-down"
@@ -234,7 +235,7 @@ class TestWhatTheGatewayDoes:
     def test_the_value_is_gone_when_the_run_has_ended(self, a_gateway):
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="forgotten")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="forgotten")
         gc.wait_for(conn, "forgotten", timeout=20)
         assert service.runs["forgotten"].challenge == ""
         # And it was never in the ledger to begin with.
@@ -244,7 +245,7 @@ class TestWhatTheGatewayDoes:
     def test_it_is_not_in_what_a_client_may_see(self, a_gateway):
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="not-public")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="not-public")
         answer = gc.wait_for(conn, "not-public", timeout=20)
         assert "challenge" not in answer
         assert "challenge" not in service.runs["not-public"].public()
@@ -252,7 +253,7 @@ class TestWhatTheGatewayDoes:
     def test_a_job_that_brings_its_own_command_is_told_so(self, a_gateway):
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="own-command",
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="own-command",
                   command=("python", "-c", "print(1)"))
         gc.wait_for(conn, "own-command", timeout=20)
         binding = ch.read(service.ledger.challenge_for("own-command"))
@@ -275,7 +276,7 @@ class TestWhatTheGatewayDoes:
 
         backend.run_process = watching
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="untouched",
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="untouched",
                   command=("python", "-c", "print(1)"))
         gc.wait_for(conn, "untouched", timeout=20)
         assert seen and seen[0] == base64.b64encode(b"print('x')").decode("ascii")
@@ -284,7 +285,7 @@ class TestWhatTheGatewayDoes:
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
         for run in ("first", "second"):
-            gc.submit(conn, b"print('x')", granted=_granted(service), run_id=run)
+            consent.submit(conn, b"print('x')", granted=_granted(service), run_id=run)
             gc.wait_for(conn, run, timeout=20)
         one = ch.read(service.ledger.challenge_for("first"))
         other = ch.read(service.ledger.challenge_for("second"))
@@ -294,10 +295,10 @@ class TestWhatTheGatewayDoes:
         """A replay is refused before anything is issued, so the first binding stands."""
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="once-only")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="once-only")
         gc.wait_for(conn, "once-only", timeout=20)
         first = dict(service.ledger.challenge_for("once-only"))
-        again = gc.submit(conn, b"print('x')", granted=_granted(service), run_id="once-only")
+        again = consent.submit(conn, b"print('x')", granted=_granted(service), run_id="once-only")
         assert again["state"] == "refused" and "replay" in str(again.get("refusal"))
         assert service.ledger.challenge_for("once-only") == first
 
@@ -327,7 +328,7 @@ class TestTheReadOnlySurface:
     def test_it_answers_about_the_run_it_is_asked_about(self, a_gateway, capsys):
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="asked-about")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="asked-about")
         gc.wait_for(conn, "asked-about", timeout=20)
         assert self.command(state.root, token=conn.token, run="asked-about") == 0
         printed = json.loads(capsys.readouterr().out)
@@ -352,7 +353,7 @@ class TestTheReadOnlySurface:
         base, state, service, backend = a_gateway
         mine = _paired(base, state)
         yours = _paired(base, state)
-        gc.submit(mine, b"print('x')", granted=_granted(service), run_id="mine-alone")
+        consent.submit(mine, b"print('x')", granted=_granted(service), run_id="mine-alone")
         gc.wait_for(mine, "mine-alone", timeout=20)
 
         assert self.command(state.root, token=yours.token, run="mine-alone") == 1
@@ -369,7 +370,7 @@ class TestTheReadOnlySurface:
     def test_a_token_this_gateway_never_issued(self, a_gateway, capsys):
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="not-for-you")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="not-for-you")
         gc.wait_for(conn, "not-for-you", timeout=20)
         assert self.command(state.root, token="made-up-token", run="not-for-you") == 1
         assert "nothing written down" in capsys.readouterr().out
@@ -377,7 +378,7 @@ class TestTheReadOnlySurface:
     def test_it_refuses_to_answer_nobody_in_particular(self, a_gateway, capsys):
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="who-is-asking")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="who-is-asking")
         gc.wait_for(conn, "who-is-asking", timeout=20)
         assert self.command(state.root, token="", run="who-is-asking") == 2
         assert "Who is asking" in capsys.readouterr().out
@@ -413,7 +414,7 @@ class TestTheReadOnlySurface:
         file in it did not."""
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="unchanged")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="unchanged")
         gc.wait_for(conn, "unchanged", timeout=20)
         from agentnode_sdk.gateway.protocol import is_terminal
 
@@ -468,7 +469,7 @@ class TestTheSandboxIsNotWeakened:
     def test_nothing_new_is_mounted(self, a_gateway):
         base, state, service, backend = a_gateway
         conn = _paired(base, state)
-        gc.submit(conn, b"print('x')", granted=_granted(service), run_id="no-mounts")
+        consent.submit(conn, b"print('x')", granted=_granted(service), run_id="no-mounts")
         gc.wait_for(conn, "no-mounts", timeout=20)
         for spec in backend.specs:
             assert list(spec.mounts) == [], spec.mounts

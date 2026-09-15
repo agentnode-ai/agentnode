@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import hmac
+import urllib.parse
 import json
 import os
 import secrets
@@ -38,6 +39,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from agentnode_sdk.worker import what_it_does_not_establish
+from agentnode_sdk.access import rest as _rest
+from agentnode_sdk.access import sessions as _sessions
+from agentnode_sdk.access.enrolment import Connections
+from agentnode_sdk.access.sessions import Sessions
+from agentnode_sdk.access.stopping import Stopping
+from agentnode_sdk.access import dispatch as _dispatch
+from agentnode_sdk.gateway import client as _gc
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
 from agentnode_sdk.gateway import challenge as ch
 from agentnode_sdk.gateway.ledger import Ledger
@@ -204,6 +212,11 @@ RECOVERY_APPEAR_SECONDS = 1.0
 RECOVERY_BUDGET_SECONDS = 30.0
 
 
+#: The first release whose client calls prepare and carries back what a person agreed to.
+#: Named in the refusal an older client gets, so "update" is an instruction rather than advice.
+MIGRATED_CLIENT = "0.25.0"
+
+
 def container_name_for(run_id: str) -> str:
     """The name this gateway gives a run's container.
 
@@ -282,8 +295,34 @@ class GatewayService:
         #: Which gateway process, and which sandbox behind it. A restart is a different instance,
         #: and a challenge says which one issued it.
         self.instance = "%s:%s" % (self.worker.instance_label(), secrets.token_hex(8))
+        #: The run threads this service has started and not yet seen finish. Held so that close()
+        #: can wait for them: a thread nobody is keeping is a thread nobody can give back.
+        self._running: set = set()
+        self._running_lock = threading.Lock()
+        #: Run threads that were still alive when close() stopped waiting. Set here as well so
+        #: that reading it before close() says "nothing was left behind" rather than raising.
+        self.left_running: list = []
+        # A gateway does not start on a contract that does not describe itself. Checked here
+        # as well as in the generators, so a build where somebody half-declared an operation
+        # fails at the start rather than at the first request for a schema.
+        from agentnode_sdk.access import contract as _contract
+
+        _contract.check_classifications()
         self.readiness = ReadinessGate(self.state.root)
+        #: Who carries out cancellations. Bounded, owned, and durable across a restart -- see
+        #: `access/stopping.py`. Nothing is started until the first cancellation is asked for,
+        #: so a gateway that never cancels anything has no threads for it.
+        #: The browser sessions this gateway has open. A browser is never given a token; it
+        #: is given one of these, in a cookie its own scripts cannot read.
+        self.sessions = Sessions(self.state.root)
+        #: Connections being set up, and the challenge each has to answer before this gateway
+        #: will call it compatible.
+        self.connections = Connections(self.state.root)
+        self.stopping = Stopping(self.state.root, self._stop_it_and_confirm)
         self._restore_interrupted()
+        # A container being torn down does not disappear because the process did. Anything the
+        # journal still remembers is picked up here, on the way back up.
+        self.stopping.pick_up_where_it_left_off()
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ backend
@@ -1264,10 +1303,35 @@ class GatewayService:
         # ceiling of one admitted two. And the window claim was taken at the top of admission, so
         # a request that a later check refused kept the allowance it had claimed.
         self.reserve(record.owner_client_id, request.run_id, record, request.wall_clock_s)
-        thread = threading.Thread(target=self._run, args=(request, artifact, granted, record),
-                                  daemon=True)
+        # Kept, not just started. Daemon status is not ownership: it means the interpreter will
+        # not wait at exit, which is a different question from whether this service knows what it
+        # set going. A review was right that a run thread could outlive the service that created
+        # it, so the service holds them and gives them back in close().
+        thread = threading.Thread(target=self._run_and_let_go,
+                                  args=(request, artifact, granted, record),
+                                  daemon=True, name="agentnode-run-%s" % str(request.run_id)[:8])
+        with self._running_lock:
+            self._running.add(thread)
         thread.start()
         return record
+
+    def _run_and_let_go(self, request: JobRequest, artifact: bytes, granted,
+                        record: RunRecord) -> None:
+        """What the thread actually targets: carry the run out, then stop being held.
+
+        A wrapper rather than a try/finally inside `_run`, because `_run` IS the run and several
+        tests read its source to establish what it does in order -- wrapping the body in a
+        `try` would have moved every one of those statements into a different method and left
+        those tests reading this frame instead. The ownership belongs to the thread's lifetime,
+        not to the work, so it sits where the thread begins and ends.
+        """
+        try:
+            self._run(request, artifact, granted, record)
+        finally:
+            # Taken out of the set on the way past, whatever happened, so what the service holds
+            # is what is actually running rather than everything it ever started.
+            with self._running_lock:
+                self._running.discard(threading.current_thread())
 
     def _run(self, request: JobRequest, artifact: bytes, granted, record: RunRecord) -> None:
         from agentnode_sdk.sandbox.composition import network_mode
@@ -1569,6 +1633,75 @@ class GatewayService:
                          "state": record.state})
         return done
 
+    #: How long `close()` waits for run threads before saying which it could not get back.
+    CLOSE_SECONDS = 20.0
+
+    def _stop_it_and_confirm(self, run_id: str) -> bool:
+        """Stop a run and answer whether the sandbox is CONFIRMED gone. Never guesses.
+
+        This is what the stopping pool calls, and the only thing that decides a cancellation is
+        finished. Returning False leaves the run in the pool's journal, so a gateway that dies
+        here picks it up again rather than leaving a container with nobody accounting for it.
+        Three cases, and the third is the one a restart lands in:
+
+        * still running -- stop it, then confirm;
+        * already terminal -- do not stop it again, but still confirm, because reaching a
+          terminal state is not the same as the sandbox being gone;
+        * not in memory at all -- a restart. The record is rebuilt from the ledger and the
+          container is addressed by the name this gateway derives from the run id.
+        """
+        from agentnode_sdk.gateway.protocol import is_terminal
+
+        run_id = str(run_id)
+        record = self.runs.get(run_id)
+        if record is not None and not is_terminal(record.state):
+            record, _settled = self.cancel(run_id)
+        if record is None:
+            self._ask_again_about(run_id)
+            record = self.runs.get(run_id)
+            return bool(record is not None and record.cleanup_verified)
+        if record.cleanup_verified:
+            return True
+        # Terminal, but nobody has confirmed the sandbox is gone. Asking is what makes a terminal
+        # state worth anything, so it is asked rather than assumed.
+        self._clean_up_what_it_left(record)
+        return bool(record.cleanup_verified)
+
+    def close(self) -> list:
+        """Release what this service owns, and say what would not let go.
+
+        Explicit, because a finalizer is a safety net. Idempotent: closing twice is what happens
+        when a test and a production path both do the right thing, and neither should have to
+        know about the other.
+
+        Returns the names of run threads still alive when the wait ran out -- empty when
+        everything ended, which is the ordinary case. Also kept on `left_running`, so a caller
+        that ignores the return value can still find out.
+        """
+        # What the pool could not get back is part of what THIS close could not get back.
+        # Discarding it meant a cancellation worker could outlive the service while close()
+        # reported nothing left running, which is the same mistake in a different place.
+        pool = getattr(self, "stopping", None)
+        left_stopping = list(pool.close() or ()) if pool is not None else []
+
+        # Then the runs. Bounded, because a job with a long wall clock should not hold a
+        # shutdown open for its whole allowance -- what matters is that this waits, reports what
+        # it could not get back, and never pretends a thread it abandoned has ended.
+        with self._running_lock:
+            waiting = list(self._running)
+        deadline = time.monotonic() + self.CLOSE_SECONDS
+        for thread in waiting:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        self.left_running = left_stopping + [t.name for t in waiting if t.is_alive()]
+        return self.left_running
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+        return False
+
     def cancel(self, run_id: str, settle: float | None = None):
         """Stop a run and answer once it has stopped. Returns `(record, settled)`.
 
@@ -1671,111 +1804,364 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(503, refusal("this gateway has stopped accepting work: " + verdict.reason))
         return False
 
+    def _the_contract(self, body: bytes = b""):
+        """Anything the declared contract covers goes to the dispatcher and nowhere else.
+
+        This handler translates HTTP and makes no decision of its own. The routes are derived
+        from the declarations, so there is nowhere for an undeclared one to come from, and the
+        dispatcher is the only thing that carries an operation out.
+        """
+        from agentnode_sdk.access import rest
+
+        if not rest.ours(self.path):
+            return None
+        status, answer = rest.handle(self.service, self.path, self.command, self.headers, body)
+        # Written directly rather than through `_send`. `_send` stamps every answer with this
+        # gateway's own identity and protocol version, which is right for its own protocol and
+        # wrong here: it overwrote the contract's `protocol` field with the gateway's, so a
+        # client asking which version of the CONTRACT it was talking to got the version of
+        # something else. The contract declares what its answers contain, and this writes exactly
+        # that.
+        data = json.dumps(answer, sort_keys=True).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        return True
+
+    def _hand_over_a_setup_file(self):
+        """The one place a device credential is written out, and it goes to a file."""
+        from agentnode_sdk.access import enrolment
+
+        form = urllib.parse.parse_qs(
+            self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode("utf-8"))
+        asked = {k: (v[0] if v else "") for k, v in form.items()}
+        # Collecting a credential changes what can reach this sandbox, so it needs the same
+        # confirmation value as anything else that does -- and whether it matches is decided
+        # where every other such question is decided.
+        who = _dispatch.a_confirmed_session(
+            self.service, _rest._cookie(self.headers, _rest.SESSION_COOKIE),
+            asked.get("confirm", ""))
+        if not who.authenticated:
+            return self._send(401, refusal("this is not a session that may collect a setup"))
+        try:
+            found = self.service.connections.about(asked.get("challenge", ""))
+            if found["account"] != who.client_id:
+                raise enrolment.NoSuchChallenge("not this account's setup")
+            token = self.service.state.redeem_for_connection(found["label"])
+            bound = self.service.connections.spend_the_ticket(
+                asked.get("challenge", ""), asked.get("ticket", ""),
+                self.service.state.client_id_for(token))
+        except enrolment.NoSuchChallenge as exc:
+            return self._send(403, refusal(str(exc)))
+        name, text = enrolment.setup_file(bound["channel"], self._where_we_are(), token,
+                                          bound["label"])
+        data = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+        return None
+
+    def _where_we_are(self) -> str:
+        host = self.headers.get("Host") or ("%s:%d" % self.server.server_address[:2])
+        return "%s://%s" % ("https" if getattr(self.server, "is_tls", False) else "http", host)
+
+    def _older_door_refuses(self, token: str, refused, run_id: str = "", speaks: int = 0):
+        """Refuse an older client in a way it can verify and a person can act on.
+
+        A client from before the consent gate sends no proof that anybody agreed. What it gets
+        back is not a silent success, and not a quiet policy of running it anyway: it is a
+        refusal that names itself, says what to do, and says which version of this client knows
+        how. Failing safely is not a silent break when the answer is this specific.
+
+        Signed with the same envelope as any other answer from this door, because an older
+        client checks who it is talking to before it reads anything -- and an unsigned error is
+        exactly the thing somebody at a changed address would like to be able to write.
+        """
+        # A run this caller may not see has always been answered with exactly this and nothing
+        # else: no record, no reason beyond the four words. That is deliberate -- telling a
+        # stranger that a run exists but is not theirs tells them it exists -- and the shape is
+        # pinned by tests that read the answer field by field. Preserved rather than improved.
+        if refused.refusal == "no_such_run":
+            return self._send(404, self.service.stamp(refusal("no such run")))
+        # Shaped the way this door has always shaped a refusal: a record with a state and a
+        # reason. Its clients read `answer["state"]`, and handing them a bare error body instead
+        # would be a silent break -- they would not crash on a field that had merely changed
+        # meaning, they would crash on one that had gone. The structured `refused` name and
+        # `what_to_do` come WITH it, so a client that has been migrated gets both.
+        # An actual refused record, rendered the way this door has always rendered one.
+        # Building it rather than hand-listing its fields is what keeps a replay from disclosing
+        # the original run: a fresh record has empty streams and no exit code, so there is
+        # nothing of somebody else's in it to leak, and it cannot fall out of step with whatever
+        # a record carries next year.
+        blocked = RunRecord(run_id=run_id, job_id="", state="refused")
+        blocked.refusal = refused.because
+        body = blocked.public()
+        body.update(refused.as_answer())
+        body["error"] = refused.because
+        body["refusal"] = refused.because
+        body["state"] = "refused"
+        if refused.refusal in ("disclosure_required", "upgrade_required"):
+            body["needs_client"] = MIGRATED_CLIENT
+            body["what_to_do"] = (
+                refused.what_to_do
+                + " This client is older than the gate: update to agentnode %s or later, which "
+                  "calls prepare, shows a person what would happen, and sends back what they "
+                  "agreed to." % MIGRATED_CLIENT)
+        # 403 for "who are you", 409 for "what you asked for". Both are what this door
+        # answered before; `how_it_should_answer` is the contract's mapping and is right for
+        # the contract's own addresses, not for one whose callers were written years earlier.
+        speaks = speaks or (403 if refused.refusal in ("not_authenticated", "not_permitted")
+                            else 409)
+        return self._send(speaks, self.service.sign_answer(self.service.stamp(body), token))
+
+    def _the_page(self):
+        """The console. Reads one file off disk and writes it back; decides nothing.
+
+        Deliberately not authenticated, and it does not need to be: what it serves is the same
+        markup for everybody, carries no credential, and grants nothing. The page then calls the
+        contract like any other client, with a token the person supplies -- so an unauthenticated
+        page does not become an unauthenticated way in.
+        """
+        from agentnode_sdk import console
+
+        if not console.ours(self.path):
+            return None
+        status, content_type, data = console.handle(self.path)
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        # A page holding a credential in memory should not be framed by anything, should not be
+        # sniffed into another type, and should not leak the address it came from.
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        # No inline exception anywhere. Scripts and styles come from this origin and nowhere
+        # else, nothing may be fetched from another host, the page cannot be framed, and a form
+        # may only submit back here -- which the setup download needs and nothing else uses.
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; "
+            "object-src 'none'")
+        self.end_headers()
+        self.wfile.write(data)
+        return True
+
     def do_GET(self):
         if not self._state_is_private():
             return None
+        if self._the_contract():
+            return None
+        if self._the_page():
+            return None
+        if self.path == "/console/confirm":
+            # What a page asks for after a reload. The cookie survived a browser restart; the
+            # confirmation value did not, because it lives only in the page's memory -- which is
+            # the point of it. A fresh one is issued rather than the old one handed back, since
+            # the old one is not kept either.
+            cookie = _rest._cookie(self.headers, _rest.SESSION_COOKIE)
+            fresh = _dispatch.fresh_confirmation(self.service, cookie)
+            if not fresh:
+                return self._send(401, refusal("not signed in"))
+            who = _dispatch.identify_session(self.service, cookie, fresh, via="browser")
+            return self._send(200, {"csrf": fresh, "device": who.client_id,
+                                    "device_name": who.device_name})
+
         if self.path == "/v1/hello":
-            return self._send(200, self.service.hello())
+            return self._send(200, _dispatch.before_anyone(
+                "hello", {}, service=self.service, via="older_door"))
         if self.path.startswith("/v1/jobs/"):
-            run_id = self.path.rsplit("/", 1)[-1]
+            # A TRANSLATOR. Who is asking and whether this run is theirs are both established by
+            # the dispatcher; this reads an address and renders an envelope.
+            #
+            # Worth remembering what used to be here: no authentication at all. It looked a run
+            # up by id and returned it, and a run id is not a secret while a run's output is
+            # somebody's code's output. That check now happens in the one place that makes it.
             token = self._token_of()
-            # This endpoint previously had NO authentication at all: it looked the run up by id
-            # and returned it. A run id is not a secret, and a run's output is the output of
-            # somebody's code, so that handed every job's stdout to anyone who could reach the
-            # port. Both checks now happen before the record is touched.
+            who = _dispatch.identify(self.service, token, via="older_door")
             try:
-                self.service.require_client(token)
-            except ProtocolError as exc:
-                return self._send(403, refusal(str(exc)))
-            record = self.service.owned_run(run_id, token)
-            if record is None:
-                return self._send(404, self.service.stamp(refusal("no such run")))
+                answer = _dispatch.rendered_record(
+                    self.service, who, self.path.rsplit("/", 1)[-1])
+            except _dispatch.Refused as refused:
+                return self._older_door_refuses(
+                    token, refused, run_id=self.path.rsplit("/", 1)[-1],
+                    speaks=404 if refused.refusal == "no_such_run" else 0)
             return self._send(200, self.service.sign_answer(
-                self.service.stamp(record.public()), token))
+                self.service.stamp(answer), token))
+
         return self._send(404, refusal("no such endpoint"))
 
     def do_POST(self):
         if not self._state_is_private():
             return None
+        from agentnode_sdk.access import rest as _rest
+
+        if _rest.ours(self.path):
+            # Read the body as bytes and let the adapter parse it: the contract's own refusal for
+            # a malformed body is part of the contract, and this handler must not invent another.
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BODY_BYTES:
+                return self._send(400, refusal("the request body is larger than this gateway "
+                                               "accepts"))
+            if self._the_contract(self.rfile.read(length) if length else b""):
+                return None
+
+        if self.path == "/console/setup":
+            # BEFORE the body is read as JSON, because this one is not JSON. It is a form POST
+            # rather than a link: a URL would put the ticket in the address bar, the history and
+            # the referrer, and the answer streams back as a download rather than as something a
+            # script reads. The credential is created at the moment of collection, so a setup
+            # somebody starts and abandons leaves no connection behind.
+            return self._hand_over_a_setup_file()
+
         try:
             body = self._read_json()
         except (ProtocolError, ValueError) as exc:
             return self._send(400, refusal(str(exc)))
 
+        if self.path == "/v1/session":
+            # A browser exchanging an invitation. It gets a session, not a token: the credential
+            # is created and kept here, and what goes back is an identifier in a cookie the
+            # page's own scripts cannot read.
+            try:
+                answer = _dispatch.before_anyone("open_session", body, service=self.service,
+                                                 via="browser")
+            except _dispatch.Refused as refused:
+                return self._send(403, refusal(refused.because))
+            given = answer.pop("session")
+            data = json.dumps(answer, sort_keys=True).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            # HttpOnly: no script on the page can read it, so an injected one cannot take it
+            # somewhere else. Secure and __Host-: the browser itself refuses to accept this
+            # cookie unless it is bound to one origin with no Domain and the whole path, so the
+            # binding is the browser's rule rather than a promise made here. SameSite=Strict:
+            # another site's requests carry no cookie at all, which is the first of the two
+            # locks -- the second is the confirmation value, which lives only in the page.
+            self.send_header("Set-Cookie",
+                             "%s=%s; Path=/; Max-Age=%d; Secure; HttpOnly; SameSite=Strict"
+                             % (_rest.SESSION_COOKIE, given, _sessions.AT_MOST_SECONDS))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return None
+
         if self.path == "/v1/pair":
             try:
-                self.service.require_private_state()
-                # No source is passed, and that is the decision rather than an omission: the
-                # limits it feeds are address-free, because behind a reverse proxy every client
-                # shares the peer address and a forwarding header is set by whoever can set one.
-                token = self.service.state.redeem_pairing(
-                    body.get("code", ""), client_name=body.get("client_name", ""),
-                )
-            except PairingError as exc:
-                return self._send(403, refusal(str(exc)))
-            identity = self.service.state.identity
-            return self._send(200, {"token": token, "gateway": identity.as_dict(),
-                                    "fingerprint": identity.fingerprint})
+                answer = _dispatch.before_anyone("pair", body, service=self.service,
+                                                 via="older_door")
+            except _dispatch.Refused as refused:
+                # The shape this door has always used for a pairing that did not work. The
+                # console tells expired, already-used and mistyped apart from the sentence, so
+                # the sentence is passed through rather than generalised away.
+                return self._send(403, refusal(refused.because))
+            return self._send(200, answer)
 
         if self.path == "/v1/jobs":
+            # A TRANSLATOR. It reads the older shape off the wire, hands the request to the
+            # dispatcher, and renders what comes back in the envelope this door has always used.
+            # It decides nothing: who is asking, whether they may, what the policy allows, and
+            # whether anybody agreed are all established in one place, the same place every
+            # other door goes through.
             payload = body.get("payload") or {}
+            token = body.get("token", "")
+            # The signed request stays a signed request. Verifying it is transport work, but
+            # deciding who is asking is not, so the proof goes to the dispatcher rather than
+            # being checked here and the answer trusted.
+            who = _dispatch.identify(
+                self.service, token, proof=(payload, body.get("signature", "")),
+                via="older_door")
+            # PARSED with the wire format's own reader rather than read field by field.
+            # Reading it by hand quietly dropped every check that lives in the parser -- the
+            # protocol version, the shape of each field, what a malformed allowlist means -- and
+            # a translator that loses checks is not a translator. Parsing is transport work;
+            # what the parsed request is ALLOWED to do is still decided in one place.
             try:
-                self.service.authenticate(body.get("token", ""), payload,
-                                          body.get("signature", ""))
                 request = JobRequest.from_payload(payload)
-                artifact = base64.b64decode(body.get("artifact_b64", "") or "")
             except (ProtocolError, ValueError) as exc:
-                return self._send(403, refusal(str(exc)))
-            record = self.service.submit(request, artifact, body.get("token", ""))
-            return self._send(202 if record.state != "refused" else 409,
-                              self.service.sign_answer(
-                                  self.service.stamp(record.public()),
-                                  body.get("token", "")))
+                return self._older_door_refuses(token, _dispatch.Refused(
+                    "malformed", str(exc), "Correct the request and send it again."),
+                    run_id=str(payload.get("run_id") or ""), speaks=403)
+            asked = {
+                "run_id": request.run_id,
+                "job_id": request.job_id,
+                "artifact": body.get("artifact_b64", "") or "",
+                # Carried as CLAIMS for the dispatcher to check, not dropped in favour of what
+                # this gateway would have computed. A signature that covers something other than
+                # what arrived is a refusal, not a detail to be corrected on the way past.
+                "artifact_sha256": request.artifact_sha256,
+                "policy_sha256": request.policy_sha256,
+                "issued_at": request.issued_at,
+                "nonce": request.nonce,
+                "command": list(request.command),
+                "network": _gc.NETWORK_WORDS.get(request.network, request.network),
+                "allowed_domains": list(request.allowed_domains),
+                "wall_clock_s": int(request.wall_clock_s),
+                "required_properties": list(request.required_properties),
+                "mandatory": list(request.mandatory),
+                "optional": list(request.optional),
+                "accepted_disclosure": str(payload.get("accepted_disclosure") or ""),
+            }
+            try:
+                answer = _dispatch.submitted_record(self.service, who, asked)
+            except _dispatch.Refused as refused:
+                return self._older_door_refuses(token, refused, run_id=asked["run_id"])
+            return self._send(202 if answer.get("state") != "refused" else 409,
+                              self.service.sign_answer(self.service.stamp(answer), token))
 
         if self.path == "/v1/token/rotate":
-            # Rotation is client-initiated on purpose. Doing it only from the server side would
-            # mean the operator has to convey a new secret by hand, which is the moment tokens
-            # get pasted into chat windows. The client proves it holds the current token, and
-            # gets its replacement over the same connection it was already trusted on.
+            # A TRANSLATOR onto `devices.rotate`. Client-initiated on purpose: rotating only
+            # from the server side would mean an operator conveying a new secret by hand, which
+            # is the moment secrets get pasted into chat windows. The operation is declared
+            # `audience=person`, so it reaches the dispatcher and is never offered to a model.
             token = body.get("token", "")
+            who = _dispatch.identify(
+                self.service, token, proof=(body.get("payload") or {}, body.get("signature", "")),
+                via="older_door")
             try:
-                self.service.authenticate(token, body.get("payload") or {},
-                                          body.get("signature", ""))
-            except ProtocolError as exc:
-                return self._send(403, refusal(str(exc)))
-            replacement = self.service.state.rotate_token(token)
-            if replacement is None:
-                return self._send(403, refusal("this client is not paired with this gateway"))
+                answer = _dispatch.dispatch("devices.rotate", {}, who, service=self.service)
+            except _dispatch.Refused as refused:
+                return self._older_door_refuses(token, refused)
             identity = self.service.state.identity
-            return self._send(200, {"token": replacement, "gateway": identity.as_dict(),
+            return self._send(200, {"token": answer["token"],
+                                    "gateway": identity.as_dict(),
                                     "fingerprint": identity.fingerprint})
 
         if self.path.endswith("/cancel") and self.path.startswith("/v1/jobs/"):
+            # A TRANSLATOR, and the one whose ANSWER changed in protocol 2.
+            #
+            # It used to carry the cancellation out itself and hold the caller while it did,
+            # answering 200 for "it stopped" and 202 for "it was asked to and had not stopped
+            # yet". It now hands the request to the dispatcher, which comes back at once, and
+            # always answers 202.
+            #
+            # 202 means exactly what it always meant. What has gone is 200, which only a route
+            # that waited could ever have said -- so nothing changed meaning quietly: a value
+            # stopped being sent, the version says so, and a client that has not been migrated
+            # reads "asked, not confirmed stopped", which is true. The waiting moved to the
+            # client, where it holds nobody but itself.
             run_id = self.path.split("/")[3]
             token = body.get("token", "")
+            who = _dispatch.identify(
+                self.service, token, proof=(body.get("payload") or {}, body.get("signature", "")),
+                via="older_door")
             try:
-                self.service.authenticate(token, body.get("payload") or {},
-                                          body.get("signature", ""))
-            except ProtocolError as exc:
-                return self._send(403, refusal(str(exc)))
-            # Being paired was never enough to cancel somebody else's run; it only looked like it
-            # was, because nothing checked. Ownership is checked BEFORE the cancel, so a stranger
-            # cannot stop a run and then be told it was not theirs.
-            if self.service.owned_run(run_id, token) is None:
-                return self._send(404, self.service.stamp(refusal("no such run")))
-            record, settled = self.service.cancel(run_id)
-            if record is None:
-                return self._send(404, self.service.stamp(refusal("no such run")))
-            # Signed with the token that authenticated, not with whatever a header claimed. The
-            # two were different variables, and only one of them had been checked.
-            #
-            # 200 means it stopped; 202 means it was asked to and had not stopped by the time this
-            # gateway would wait no longer. The record is signed either way and says which state
-            # it is really in -- the status is what keeps an unsettled cancellation from reading
-            # like a finished one. No field of the answer changed, so this protocol version still
-            # says everything a client of it needs.
-            return self._send(200 if settled else 202, self.service.sign_answer(
-                self.service.stamp(record.public()), token))
+                _dispatch.dispatch("cancel", {"run_id": run_id}, who, service=self.service)
+                answer = _dispatch.rendered_record(self.service, who, run_id)
+            except _dispatch.Refused as refused:
+                return self._older_door_refuses(
+                    token, refused, run_id=run_id,
+                    speaks=404 if refused.refusal == "no_such_run" else 0)
+            return self._send(202, self.service.sign_answer(
+                self.service.stamp(answer), token))
 
         return self._send(404, refusal("no such endpoint"))
 
@@ -1795,13 +2181,34 @@ class _ServerThatStopsItsWatchers(ThreadingHTTPServer):
     Python version at a time, about half the time.
     """
 
+    #: How long the watchers are waited for. They wake on a one or two second tick, so this is
+    #: a tick or two plus room for a slow filesystem read, not a guess.
+    WATCHERS_SECONDS = 8.0
+
     def shutdown(self) -> None:
         self.agentnode_serving = False
         super().shutdown()
+        self.let_the_watchers_go()
 
     def server_close(self) -> None:
         self.agentnode_serving = False
         super().server_close()
+        self.let_the_watchers_go()
+
+    def let_the_watchers_go(self) -> list:
+        """Wait for the watcher threads and say which would not end.
+
+        Clearing `agentnode_serving` asks them to stop at their next tick; it does not establish
+        that they did. A review was right that starting a thread without keeping it is not
+        ownership -- so they are kept, joined here, and whatever is still alive when the wait
+        runs out is RETURNED rather than assumed gone.
+        """
+        watchers = list(getattr(self, "agentnode_watchers", ()))
+        deadline = time.monotonic() + self.WATCHERS_SECONDS
+        for watcher in watchers:
+            watcher.join(max(0.0, deadline - time.monotonic()))
+        self.agentnode_left_watching = [w.name for w in watchers if w.is_alive()]
+        return self.agentnode_left_watching
 
 
 def make_server(
@@ -1850,7 +2257,13 @@ def make_server(
                     + verdict.remedy + "\n"
                 )
                 target.agentnode_serving = False
-                threading.Thread(target=target.shutdown, daemon=True).start()
+                # On its own thread because shutdown() waits for the serve loop, which is not
+                # this one -- but kept, for the same reason as everything else here: something
+                # has to be able to say whether it ended.
+                closing = threading.Thread(target=target.shutdown, daemon=True,
+                                           name="agentnode-shutdown-on-exposure")
+                target.agentnode_closing = closing
+                closing.start()
                 return
     handler = type("_BoundHandler", (_Handler,), {"service": service})
     server = _ServerThatStopsItsWatchers((host, port), handler)
@@ -1909,8 +2322,16 @@ def make_server(
                            ", ".join(r["run_id"][:12] for r in unsettled)))
                 sys.stderr.flush()
 
-    threading.Thread(target=_watch_permissions, args=(server,), daemon=True).start()
-    threading.Thread(target=_watch_the_stop, args=(server,), daemon=True).start()
+    # Held, not just started, so `let_the_watchers_go()` can wait for them and say what it could
+    # not get back. Named, because a thread nobody can name is one nobody can report.
+    server.agentnode_watchers = [
+        threading.Thread(target=_watch_permissions, args=(server,), daemon=True,
+                         name="agentnode-watch-permissions"),
+        threading.Thread(target=_watch_the_stop, args=(server,), daemon=True,
+                         name="agentnode-watch-the-stop"),
+    ]
+    for watcher in server.agentnode_watchers:
+        watcher.start()
     return server
 
 

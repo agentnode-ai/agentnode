@@ -352,6 +352,8 @@ def main(argv: list[str] | None = None) -> int:
     rm_status.add_argument("--verbose", action="store_true", help="Show the underlying detail")
     rm_test = rm_sub.add_parser("test", help="Send a tiny program and check it comes back")
     rm_test.add_argument("--name", default="")
+    rm_test.add_argument("--yes", "-y", action="store_true",
+                         help="I have read what this will do and I accept it")
     rm_run = rm_sub.add_parser("run", help="Run a file in the sandbox")
     rm_run.add_argument("file")
     rm_run.add_argument("--name", default="")
@@ -359,11 +361,18 @@ def main(argv: list[str] | None = None) -> int:
                         help="A host the code may reach. Repeatable. Everything else is blocked.")
     rm_run.add_argument("--timeout", type=float, default=600,
                         help="How long to wait for the result here")
+    # Additive and non-breaking. It does not mean "agree to whatever comes back" -- it means a
+    # person has read what this prints and accepts it, which is a statement they make. Without a
+    # terminal and without this, there is nobody to ask and nothing runs.
+    rm_run.add_argument("--yes", "-y", action="store_true",
+                        help="I have read what this will do and I accept it")
     rm_run.add_argument("--max-seconds", dest="max_seconds", type=int, default=60,
                         help="How long the sandbox lets it run before stopping it")
     rm_cancel = rm_sub.add_parser("cancel", help="Stop a run that is still going")
     rm_cancel.add_argument("--run", required=True, help="The run id printed when it started")
     rm_cancel.add_argument("--name", default="")
+    rm_cancel.add_argument("--wait", type=float, default=60,
+                           help="How long to wait here for it to be confirmed stopped")
     rm_rotate = rm_sub.add_parser("rotate", help="Replace your access, keeping the connection")
     rm_rotate.add_argument("--name", default="")
     rm_disconnect = rm_sub.add_parser("disconnect", help="Forget a sandbox on this machine")

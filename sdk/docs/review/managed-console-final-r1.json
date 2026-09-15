@@ -1,0 +1,160 @@
+{
+  "_comment": [
+    "TRUSTED REVIEW PROFILE, FROZEN PROSPECTIVELY.",
+    "",
+    "This profile was written and committed BEFORE the code it judges existed. That is the",
+    "point of it. Seven properties (A1-A7) were agreed when the console was still a prototype",
+    "and are carried over unchanged. Seven more (B1-B7) were added when reviewing the prototype",
+    "showed that the first seven were not enough: a prototype can satisfy all of A1-A7 and still",
+    "keep a bearer token in sessionStorage, spawn an unbounded thread per cancellation, and leave",
+    "four older routes deciding for themselves.",
+    "",
+    "Criteria written after the implementation are criteria the implementation cannot fail. The",
+    "freeze is recorded in the branch at sdk/docs/review/ with this file's SHA-256, in a commit",
+    "that contains no code, so the ordering is checkable in git rather than asserted here.",
+    "",
+    "A pass concerns this slice only. It is not a finding that the service is fit for the public,",
+    "and it is not authorisation to expose anything, release, deploy, take payment, buy a domain",
+    "or buy infrastructure. Port 8099 stays closed."
+  ],
+  "profile_id": "managed-console-final-r1",
+  "kind": "review",
+  "mutable_task": false,
+  "stage": "pre-run",
+  "frozen_prospectively": true,
+  "review_object": "The managed access and onboarding slice as a customer-facing product: one declared contract; one server-side dispatcher that is the only place any operation is carried out; the REST, remote MCP, local stdio bridge and CLI doors onto it; the migrated former /v1 routes; the browser console and its session and credential handling; the bounded asynchronous cancellation; the revocation contract; the binding of a compatibility observation; and the automated browser suite that exercises the whole clickable flow.",
+  "out_of_scope": [
+    "the merged sandbox core, which is not reopened here absent a concrete reproducible product defect",
+    "public exposure, payment, release, deployment, domains, new infrastructure or new running costs",
+    "whether a human subject can complete the flow unaided, which remains DEFERRED_EXTERNAL_VALIDATION and must not be treated as established by any automated result"
+  ],
+  "verdict_must_state": "A pass concerns this code, its tests and the measurements presented, and nothing else. The topology is single-host-development: not multi-tenant, not production-safe, not escape-proof. Whether a real person can use the service unaided remains UNVERIFIED. This is not authorisation to expose anything, to deploy, or to charge for it.",
+  "roles_rule": "Any input this profile does not list defaults to the lowest authority, 'context'. A request may name this profile and may not extend it.",
+  "roles": {
+    "evidence.txt": "frozen_evidence",
+    "counter-checks.txt": "frozen_evidence",
+    "test-results.txt": "frozen_evidence",
+    "contract.py.txt": "normative_spec",
+    "dispatch.py.txt": "normative_spec",
+    "rest.py.txt": "normative_spec",
+    "mcp.py.txt": "normative_spec",
+    "client.py.txt": "normative_spec",
+    "schemas.py.txt": "normative_spec",
+    "routes.py.txt": "normative_spec",
+    "compatibility.py.txt": "normative_spec",
+    "sessions.py.txt": "normative_spec",
+    "stopping.py.txt": "normative_spec",
+    "credentials.py.txt": "normative_spec",
+    "console-init.py.txt": "normative_spec",
+    "console-index.html.txt": "normative_spec",
+    "gateway-server.py.txt": "normative_spec",
+    "gateway-client.py.txt": "normative_spec",
+    "remote_commands.py.txt": "normative_spec",
+    "identity.py.txt": "normative_spec",
+    "managed-access-migration.md.txt": "supporting_evidence",
+    "test_console_browser.py.txt": "frozen_evidence",
+    "test_cancel_is_not_a_wait.py.txt": "frozen_evidence",
+    "test_stopping.py.txt": "frozen_evidence",
+    "test_routes_register.py.txt": "frozen_evidence",
+    "test_sessions.py.txt": "frozen_evidence",
+    "test_dispatch.py.txt": "frozen_evidence",
+    "test_end_to_end_rest.py.txt": "frozen_evidence",
+    "test_every_door.py.txt": "frozen_evidence",
+    "test_compatibility.py.txt": "frozen_evidence",
+    "test_contract_and_schemas.py.txt": "frozen_evidence",
+    "test_cancel_consistency.py.txt": "frozen_evidence"
+  },
+  "criteria": [
+    {
+      "id": "A1-NO-BYPASS-BY-ADAPTER-OR-LEGACY-PATH",
+      "blocking": true,
+      "stage": "pre-run",
+      "carried_over": true,
+      "text": "Judge whether authentication or policy can be bypassed through any adapter or through any route that predates the contract. Determine whether an adapter can carry out an operation, weaken or reorder a check, or reach GatewayState, the worker or the runtime directly; whether a former /v1 route can still decide anything for itself; and whether what establishes this is mechanical or merely a reading of the code. State what a caller reaching each door can do that a caller reaching the dispatcher cannot."
+    },
+    {
+      "id": "A2-CANCEL-BLOCKS-NO-CLIENT",
+      "blocking": true,
+      "stage": "pre-run",
+      "carried_over": true,
+      "text": "Judge whether any client is held while a cancellation is carried out, on any door, including the former /v1 routes and the CLI. Determine whether the evidence for this is an ordering established by construction or a duration measured on a machine that happened to be idle, and whether the presented counter-check would fail against a synchronous implementation that kept an identical return shape."
+    },
+    {
+      "id": "A3-INVITATION-IS-SINGLE-USE-AND-EXPIRES",
+      "blocking": true,
+      "stage": "pre-run",
+      "carried_over": true,
+      "text": "Judge whether an invitation can be redeemed more than once, after its expiry, or by brute force, and whether it can reach a server log, a referrer, a query parameter or the browser's history. Determine what a person is told for each of the three failures a person actually hits, whether those are told apart, and whether being told them apart leaks anything an attacker does not already know."
+    },
+    {
+      "id": "A4-REVOCATION-TAKES-EFFECT-AT-ONCE-EVERYWHERE",
+      "blocking": true,
+      "stage": "pre-run",
+      "carried_over": true,
+      "text": "Judge whether withdrawing a device or ending a session stops access immediately on every path -- REST, MCP, the stdio bridge, the CLI and the browser -- or only on the path it was performed from. Determine whether anything already issued keeps working, including an in-flight run, a cached session, a download ticket or an enrolment, and whether 'immediately' is established by a test that would fail without the mechanism."
+    },
+    {
+      "id": "A5-AN-ACTUAL-TOOL-CALL-DECIDES-COMPATIBLE",
+      "blocking": true,
+      "stage": "pre-run",
+      "carried_over": true,
+      "text": "Judge whether COMPATIBLE can be reached without an operation having actually been carried out, and whether what backs the verdict comes from the gateway's own records rather than from whoever benefits from it. Determine whether a system with no external tool interface is named NOT_COMPATIBLE plainly, whether any substitute path is offered for it, and whether the browser console is anywhere presented as making such a system compatible."
+    },
+    {
+      "id": "A6-NO-SECURITY-GUARANTEE-IS-OVERSTATED",
+      "blocking": true,
+      "stage": "pre-run",
+      "carried_over": true,
+      "text": "Judge every reader-facing surface -- the contract's own limits, the schema, the MCP instructions, the console's screens and the documentation -- for a claim stronger than what is enforced. Determine whether the single-host-development topology, the limits of cleanup confirmation, and anything measured as not enforced are stated where a person will meet them rather than only in code. A limit that has become false is as much a defect here as a limit that was always too strong."
+    },
+    {
+      "id": "A7-THE-BROWSER-SUITE-RUNS-WITHOUT-TECHNICAL-SETUP",
+      "blocking": true,
+      "stage": "pre-run",
+      "carried_over": true,
+      "text": "Judge whether the automated end-to-end browser suite runs without a person configuring anything by hand, and whether a missing browser or a missing dependency can produce a run that reads as a pass. Determine what the harness reports when nothing ran, and whether the scenarios drive the page as a person does rather than by reaching into its internals."
+    },
+    {
+      "id": "B1-CANCEL-IS-BOUNDED-IDEMPOTENT-AND-DURABLE",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge the asynchronous cancellation as a production mechanism rather than as a demonstration. Determine: whether more than one cancellation can be in flight for the same run; whether repeated calls return the same operation and the same state; whether the execution structure is bounded, or whether a caller can cause unbounded thread or task creation; whether rate limits and the operator's stop apply to cancellation as they do to other work; whether a gateway restarted while a run is stopping remembers that it was stopping; whether a terminal state can be reached without verified cleanup; and what happens under a storm of concurrent cancellations, a worker that fails, and a stop that times out. State for each whether it is established by a test that would fail without the mechanism."
+    },
+    {
+      "id": "B2-NO-PUBLICLY-REACHABLE-ROUTE-PAST-THE-DISPATCHER",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge whether every address this gateway answers on reaches the dispatcher and nothing else. Determine whether any route retains an authentication, policy, cancellation or runtime decision of its own; whether any route that cannot go through the dispatcher is enumerated, justified and constrained by a check rather than by a comment; whether a route added later would be caught; and whether the former /v1 routes were migrated together with the SDK and CLI clients that used them, or merely left in place behind a note. Determine whether the meaning of any existing answer -- including a 200 or a 202 -- was changed without a version saying so."
+    },
+    {
+      "id": "B3-NO-DURABLE-JAVASCRIPT-READABLE-BROWSER-TOKEN",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge how a browser holds its access. Determine whether any durable bearer credential is readable by JavaScript, in localStorage, sessionStorage, a non-HttpOnly cookie, the DOM, an error, a log or the browser's history; whether the session cookie is Secure, HttpOnly, SameSite-Strict and bound to one origin and path; whether state-changing requests are protected against cross-site forgery and how that protection survives a reload; whether the content security policy admits any script that is not part of the page; whether a credential intended for a program outside the browser ever passes through JavaScript or through a URL; whether sessions can be listed, ended individually and revoked server-side at once; and whether the CLI and the local bridge keep their credential out of plaintext configuration."
+    },
+    {
+      "id": "B4-THE-REVOCATION-CONTRACT-IS-CONSISTENT",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge whether the contract promises a refusal the authentication path can actually produce. Determine which of the two settled options was implemented -- a deliberately generic refusal after withdrawal, with the specific one removed from the declaration, or a data-minimal revocation tombstone allowing a safe distinction without storing raw tokens -- and whether it was carried through the contract, the dispatcher, REST, MCP, the CLI, the console and the documentation consistently, with no surface still describing the other. Determine whether the choice leaks anything about which credentials once existed."
+    },
+    {
+      "id": "B5-COMPATIBILITY-IS-BOUND-TO-DEVICE-WAY-IN-AND-CHALLENGE",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge what an observation of a tool call is bound to. Determine whether it is bound to the specific device identity, the specific way in, the expected operation, a single-use challenge belonging to this run of the setup flow, a matching audit entry, and a limited validity window -- and whether each of those is checked rather than declared. Determine specifically whether a second browser, a concurrent client, a job started before the setup began, or a replay of an earlier observation can satisfy the test, and whether the presented evidence includes an attempt at each."
+    },
+    {
+      "id": "B6-NOTHING-IS-LEFT-RUNNING",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge whether any thread, task, server, socket, browser context or file descriptor outlives what created it. Determine whether the cancellation machinery, the session store, the console's polling and the browser suite each release what they take, including on the failure paths; whether ownership is established mechanically rather than by convention; and whether the measurement distinguishes a leak from a fixture that is still legitimately alive."
+    },
+    {
+      "id": "B7-A-PERSON-CAN-GET-THROUGH-IT",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge the clickable flow as a product. Determine whether a cancellation in progress is visible as such and polled to a verified terminal state; whether a person can return to a valid session without repeating the setup, and end it clearly; whether sessions and devices can be understood and managed; whether every error names exactly one recommended action a person can actually take; whether the flow is operable by keyboard alone with focus managed and status changes announced to a screen reader; and whether anything on the ordinary path requires a person to read SSH, firewall rules, digests, JSON, YAML, addresses or command-line switches. Do not treat an automated pass as evidence that a human subject succeeded."
+    }
+  ]
+}

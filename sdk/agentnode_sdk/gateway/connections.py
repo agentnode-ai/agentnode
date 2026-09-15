@@ -91,10 +91,15 @@ class ConnectionStore:
         entry = data["gateways"].get(wanted)
         if not entry:
             return None
+        from agentnode_sdk.access import credentials
+
+        # The keyring first, then whatever the file has. Both, because a connection saved before
+        # this change has its token in the file and must keep working.
+        token = credentials.fetch(wanted) or str(entry.get("token", ""))
         return SavedGateway(
             name=wanted,
             url=str(entry.get("url", "")),
-            token=str(entry.get("token", "")),
+            token=token,
             gateway_id=str(entry.get("gateway_id", "")),
             fingerprint=str(entry.get("fingerprint", "")),
             certificate_sha256=str(entry.get("certificate_sha256", "")),
@@ -129,10 +134,22 @@ class ConnectionStore:
             raise
 
     def save(self, saved: SavedGateway, make_default: bool = True) -> None:
+        """Write a connection down, and put its token wherever this machine can keep one.
+
+        The keyring when there is one; the file only when somebody has said so. A token in a
+        file is a token in every backup of that file, which is fine right up until the first
+        time somebody pastes their config into a support request.
+        """
+        from agentnode_sdk.access import credentials
+
+        where = credentials.keep(saved.name, saved.token)     # raises if there is nowhere safe
         data = self._read()
         data["gateways"][saved.name] = {
             "url": saved.url,
-            "token": saved.token,
+            # Absent entirely when it is in the keyring, so a file that is read by something
+            # else -- a backup, a sync, a screen share -- contains no credential at all.
+            "token": saved.token if where == "file" else "",
+            "where": where,
             "gateway_id": saved.gateway_id,
             "fingerprint": saved.fingerprint,
             "certificate_sha256": saved.certificate_sha256,
@@ -150,6 +167,9 @@ class ConnectionStore:
         return True
 
     def forget(self, name: str) -> bool:
+        from agentnode_sdk.access import credentials
+
+        credentials.forget(name)
         data = self._read()
         if name not in data["gateways"]:
             return False

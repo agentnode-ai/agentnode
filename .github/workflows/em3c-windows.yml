@@ -169,10 +169,14 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -rs -p no:randomly tests/test_socket_worker.py 2>&1 | tee socket.txt
-          grep -qE "^113 passed, 10 skipped" socket.txt || {
+          grep -qE "^113 passed, 11 skipped" socket.txt || {
             echo "the socket tests did not come out as this lane expects"; exit 1; }
-          # All six skips are one thing: this machine has no unix sockets. The Linux lane runs
-          # exactly those six and is required.
+          # Eleven now, not ten: this branch adds one test that binds a unix socket, so Windows
+          # skips one more. The count is still exact rather than a floor -- the point of it is
+          # that a test quietly disappearing is a failure -- and the number is checkable: on
+          # Linux this file runs 124 with nothing skipped, and 113 + 11 is 124. The comment used
+          # to say "all six skips", which had been wrong since before this change; the skips are
+          # one thing, and how many of them there are is written above.
           grep -q "no unix sockets" socket.txt || {
             echo "the skipped cases are not the ones this lane expects"; exit 1; }
 

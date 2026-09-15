@@ -43,6 +43,8 @@ from agentnode_sdk.worker.remote import RUN_MARGIN_SECONDS, SocketWorker, topolo
 from agentnode_sdk.worker import service
 from agentnode_sdk.worker.service import DIRECTORY_MODE, SOCKET_MODE, Bench
 
+from tests import serving
+
 HAS_UNIX = hasattr(socket, "AF_UNIX")
 needs_unix = pytest.mark.skipif(not HAS_UNIX, reason="this machine has no unix sockets")
 
@@ -674,6 +676,11 @@ class TestTheSocketIsNarrowedBeforeAnythingCanReachIt:
             def listen(self, _backlog):
                 happened.append(("listen", None))
 
+            def settimeout(self, seconds):
+                # The listener gets a timeout so the accept loop can be stopped. Recorded like
+                # everything else, so the ORDER stays the thing this test is about.
+                happened.append(("settimeout", seconds))
+
             def close(self):
                 pass
 
@@ -724,9 +731,39 @@ class TestTheSocketIsReachableByOneAccount:
         bench = Bench(AWorkerThatAnswers(), address, KEY,
                       only_uid=os.getuid() if only_uid is None else only_uid)
         bench.open()
+        serving.owned_bench(bench)
+        return bench, address
+
+    def test_a_worker_told_to_stop_actually_stops(self, tmp_path):
+        """`stop_serving()` used to clear a flag and close a socket, and change nothing.
+
+        A thread already blocked in `accept()` does not wake when another thread closes the
+        socket it is accepting on: the close succeeds and the blocked thread stays blocked until
+        somebody connects. So a worker asked to stop kept serving, and six of them were found
+        still in `accept()` after an entire test session had ended -- each holding a listening
+        socket, with nothing left that could reach them.
+
+        This asks the only question that matters: after `stop_serving()`, does the thread END?
+        With a deadline, because a thread that has genuinely stuck never ends however long
+        anybody waits, and one that is merely between looks ends within a second.
+        """
+        import time
+
+        address = "unix://" + str(tmp_path / "sock" / "worker.sock")
+        bench = Bench(AWorkerThatAnswers(), address, KEY, only_uid=os.getuid())
+        bench.open()
         thread = threading.Thread(target=bench.serve_forever, daemon=True)
         thread.start()
-        return bench, address
+        for _ in range(50):                                   # let it reach accept()
+            if thread.is_alive():
+                break
+            time.sleep(0.02)
+
+        bench.stop_serving()
+        thread.join(timeout=10)
+
+        assert not thread.is_alive(), (
+            "the worker was told to stop and is still accepting; stop_serving() does not stop it")
 
     def test_a_job_really_crosses_a_socket(self, tmp_path):
         bench, address = self.a_bench(tmp_path)
@@ -1083,12 +1120,20 @@ class TestAWorkerThatTakesTheCallAndSaysNothing:
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         listener.bind(path)
         listener.listen(4)
+        # The same timeout the product needed, for the same reason: closing a listening socket
+        # does not wake a thread already blocked accepting on it, so without this the stand-in
+        # outlives the test that made it. Three of these were still in accept() after a whole
+        # session had ended.
+        listener.settimeout(0.5)
         keep = []
+        stopping = threading.Event()
 
         def answer():
-            while True:
+            while not stopping.is_set():
                 try:
                     conn, _ = listener.accept()
+                except TimeoutError:
+                    continue
                 except OSError:
                     return
                 keep.append(conn)
@@ -1099,6 +1144,22 @@ class TestAWorkerThatTakesTheCallAndSaysNothing:
 
         thread = threading.Thread(target=answer, daemon=True)
         thread.start()
+
+        def put_it_away():
+            stopping.set()
+            thread.join(timeout=10)
+            for conn in keep:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+            try:
+                listener.close()
+            except OSError:
+                pass
+
+        if serving._owner is not None:
+            serving._owner.callback(put_it_away)
         return "unix://" + path, listener, keep
 
     def _worker(self, address):

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>AgentNode</title>
+<link rel="stylesheet" href="/console/app.css">
+</head>
+<body>
+<header class="bar">
+  <div class="bar-in">
+    <span class="mark"><span class="dot"></span>AgentNode</span>
+    <nav class="tabs" id="tabs" hidden aria-label="Bereiche"></nav>
+  </div>
+</header>
+
+<main id="main" class="wrap" tabindex="-1"></main>
+
+<!-- Status changes are announced here. A change that exists only visually is a
+     change some people never receive, and moving focus to say it would take the
+     keyboard away from whatever somebody was doing. -->
+<p id="live" class="sr" role="status" aria-live="polite"></p>
+
+<footer class="foot" id="foot"></footer>
+<script src="/console/app.js"></script>
+</body>
+</html>

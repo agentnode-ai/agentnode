@@ -29,6 +29,7 @@ import secrets
 import time
 import tempfile
 import threading
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -100,6 +101,15 @@ class GatewayIdentity:
         ).hexdigest()
 
 
+def _give_back_the_descriptor(fd: int, where: str) -> None:
+    """What happens to a state nobody closed. Quiet, because a finalizer that raises during
+    interpreter shutdown produces noise nobody can act on."""
+    try:
+        os.close(fd)
+    except OSError:                                           # pragma: no cover - already gone
+        pass
+
+
 class GatewayState:
     """The gateway's own files: its identity, its tokens, its live pairing code.
 
@@ -124,9 +134,17 @@ class GatewayState:
         # descriptor is re-judged before each use, so a change of owner or mode on that inode is
         # caught before the next secret is touched.
         self._dir_fd = None
+        self._release = None
         self.state_verifiable = securedir.SUPPORTED
         if securedir.SUPPORTED:
             self._dir_fd = securedir.open_state_dir(self.root)
+            # Held descriptors need a way back even when nobody says close(). `close()` is the
+            # right way and stays the documented one; this is what happens when a state is simply
+            # dropped -- one process holding a state per user or per device would otherwise run
+            # out of descriptors with no call site to blame. Measured: a test run left 390 of
+            # them open, one per state ever constructed.
+            self._release = weakref.finalize(
+                self, _give_back_the_descriptor, self._dir_fd, str(self.root))
         self._pairing_lock = threading.Lock()
         self._pairing_path = self.root / "pairing.json"
         # The counters go through the same verified descriptor as every other secret: one of
@@ -428,8 +446,13 @@ class GatewayState:
         self._harden(path)
 
     def close(self) -> None:
-        """Give up the held descriptor. Safe to call twice."""
+        """Give up the held descriptor. Safe to call twice, and after the finalizer has run."""
         fd, self._dir_fd = self._dir_fd, None
+        release, self._release = self._release, None
+        if release is not None:
+            # Detached rather than left to fire later: closing a descriptor number twice can
+            # close somebody ELSE's file, because the number is reused the moment it is free.
+            release.detach()
         if fd is not None:
             try:
                 import os as _os
@@ -437,6 +460,12 @@ class GatewayState:
                 _os.close(fd)
             except OSError:
                 pass
+
+    def __enter__(self) -> "GatewayState":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
 
     def _fd(self) -> int:
         """The held descriptor, re-judged, and confirmed to still be what the name refers to.
@@ -596,6 +625,39 @@ class GatewayState:
         del tokens[token_hash]
         self._write_tokens(tokens)
         return True
+
+    def redeem_for_connection(self, client_name: str = "") -> str:
+        """Issue a credential for a connection somebody has already been authorised to set up.
+
+        No invitation, because the authorisation already happened: a person signed in, chose a
+        connection, and confirmed it. An invitation exists to let somebody who holds nothing
+        prove they were invited, and that is not this situation -- requiring one here would mean
+        a person setting up their second AI had to go back to the machine and press a button.
+
+        It goes through the same issuing path as every other credential, so what is stored is a
+        hash and nothing else.
+        """
+        # The same guard every other credential-issuing path uses: this gateway will not mint
+        # anything while its own state directory is readable by other accounts on the machine.
+        self._guard_private()
+        return self._issue_token(client_name=client_name)
+
+    def revoke_client(self, client_id: str) -> bool:
+        """Withdraw a device by WHO it is, not by presenting its credential.
+
+        Whoever revokes a device is looking at a list of devices: their own other laptop, a
+        machine they have lost, somebody who has left. They have the device's identity and they
+        do not have its token -- tokens are stored hashed and never handed back. A revoke that
+        required the token would mean the only party able to withdraw a device was the device
+        itself, which is exactly backwards.
+        """
+        tokens = self._read_tokens()
+        for token_hash, record in list(tokens.items()):
+            if record.get("client_id") == client_id:
+                del tokens[token_hash]
+                self._write_tokens(tokens)
+                return True
+        return False
 
     def paired_clients(self) -> list[dict]:
         return sorted(self._read_tokens().values(), key=lambda t: t.get("issued_at", 0))

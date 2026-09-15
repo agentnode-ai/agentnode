@@ -138,14 +138,18 @@ jobs:
             echo "the reachability tests did not all run here"; exit 1; }
 
       # The line between the control plane and the worker. On Linux the socket itself is real,
-      # so the ten cases a machine without unix sockets cannot run are required here -- and they
-      # are the ones that matter: a Windows run of unix-socket tests establishes nothing about a
-      # unix socket. "0 skipped" is the point of the pin, not the count.
+      # so the eleven cases a machine without unix sockets cannot run are required here -- and
+      # they are the ones that matter: a Windows run of unix-socket tests establishes nothing
+      # about a unix socket. "0 skipped" is the point of the pin, not the count.
+      #
+      # 123 becomes 124: one test that binds a unix socket was added. The two lanes reconcile,
+      # which is how you can tell neither has quietly lost a case -- Windows runs 113 and skips
+      # 11, and 113 + 11 is what runs here.
       - name: The socket between the control plane and the worker
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_socket_worker.py 2>&1 | tee em3c-socket.txt
-          grep -qE "^123 passed" em3c-socket.txt || {
+          grep -qE "^124 passed" em3c-socket.txt || {
             echo "the socket tests did not all run here; a skip on Linux is a case nobody ran"
             exit 1; }
 
