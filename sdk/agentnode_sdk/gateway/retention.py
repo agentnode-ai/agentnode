@@ -518,8 +518,8 @@ def delete_account(state, account_id: str, because: str = "the customer asked") 
     # Anything that could not be done is named here, and `complete` is False when the list is
     # not empty.
     went = {"devices": 0, "sessions": 0, "enrolments": 0, "audit_lines": 0,
-            "metering_erased": 0, "counters": 0, "ledger_runs": 0, "account_record": False,
-            "problems": [], "complete": True}
+            "metering_erased": 0, "counters": 0, "ledger_runs": 0, "export_records": 0,
+            "account_record": False, "problems": [], "complete": True}
 
     devices = [str(d.get("client_id") or "") for d in state.devices_in(wanted)]
 
@@ -583,7 +583,24 @@ def delete_account(state, account_id: str, because: str = "the customer asked") 
             "this account's metered use could NOT be erased and is still readable: %s"
             % str(exc)[:160])
 
-    # 6. The account itself, last.
+    # 6. The record of who took a COPY of this account. Every line names the account, so a
+    #    deletion that left them behind left the identifier in a file nobody was looking at --
+    #    and then reported itself complete. A review found it, and nothing here would have: the
+    #    test that checked the identifier was gone never made an export first.
+    #
+    #    What this CANNOT reach is said rather than implied. The copies themselves: an export
+    #    handed to somebody is in their hands, and a backup taken before the deletion still
+    #    contains the customer. Deletion cannot reach a file it does not have. Removing the
+    #    RECORD of those copies stops this gateway holding the identifier, and that is not the
+    #    same as the copies being gone.
+    try:
+        went["export_records"] = _drop_export_lines(
+            root, lambda line: str(line.get("account_id") or "") == wanted)
+    except (OSError, ValueError) as exc:
+        went["problems"].append(
+            "the record of who took a copy of this account is still there: %s" % str(exc)[:160])
+
+    # 7. The account itself, last.
     try:
         went["account_record"] = bool(state.accounts.forget(wanted))
     except Exception as exc:                                  # noqa: BLE001
@@ -631,12 +648,29 @@ def delete_run(state, run_id: str, because: str = "the customer asked") -> dict:
     return went
 
 
+def _drop_export_lines(root: Path, matches) -> int:
+    """The record of who took a COPY. Kept separate from the audit's reader on purpose: two
+    different files with two different reasons, and one function wearing both names would read
+    as though removing from them were one decision."""
+    return _drop_lines(Path(root) / EXPORTS_NAME, matches)
+
+
 def _drop_audit_lines(root: Path, matches) -> int:
-    path = Path(root) / "audit.jsonl"
-    if not path.exists():
+    return _drop_lines(Path(root) / "audit.jsonl", matches)
+
+
+def _drop_lines(path: Path, matches) -> int:
+    """Rewrite a JSON-lines file without the matching lines. Returns how many went.
+
+    A line that does not parse is KEPT. It cannot be shown to be this customer's, and throwing
+    away what cannot be read would turn a damaged file into a deletion nobody asked for.
+    """
+    try:
+        written = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return 0
     kept, dropped = [], 0
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in written.splitlines():
         if not raw.strip():
             continue
         try:

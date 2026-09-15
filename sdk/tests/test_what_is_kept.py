@@ -564,3 +564,58 @@ class TestDeletionSaysWhatItCannotReach:
                      "--account", alice.account_id])
         assert code == 2
         assert dispatch.identify(gateway, alice.token).authenticated, "it deleted anyway"
+
+
+class TestDeletionReachesTheRecordOfWhoTookACopy:
+    """`exports.jsonl` names the account on every line. A deletion that left them behind left
+    the identifier in a file nobody was looking at, and then reported itself complete.
+
+    Found by a frozen review, and nothing here would have found it: the test that checked the
+    identifier was gone never made an export first, so the file it needed to look at was empty.
+    """
+
+    def test_an_export_record_goes_with_the_account(self, gateway):
+        alice = _a_customer(gateway, "alice")
+        bob = _a_customer(gateway, "bob")
+        retention.note_an_export(gateway.state.root, alice.account_id, by="operator",
+                                 how_many_bytes=10)
+        retention.note_an_export(gateway.state.root, bob.account_id, by="operator",
+                                 how_many_bytes=10)
+        assert retention.exports_of(gateway.state.root, alice.account_id)
+
+        went = retention.delete_account(gateway, alice.account_id)
+        assert went["complete"], went["problems"]
+        assert went["export_records"] == 1
+
+        assert retention.exports_of(gateway.state.root, alice.account_id) == []
+        assert alice.account_id not in (
+            gateway.state.root / retention.EXPORTS_NAME).read_text(encoding="utf-8")
+        assert len(retention.exports_of(gateway.state.root, bob.account_id)) == 1, (
+            "deleting one customer took another customer's export record with it")
+
+    def test_and_the_operator_is_still_told_how_many_were_handed_out(self, gateway, capsys):
+        """The number has to survive the removal of the record that carried it. Somebody
+        deleting an account needs to know copies of it are in other people's hands."""
+        from agentnode_sdk.cli.main import main
+
+        alice = _a_customer(gateway, "alice")
+        for _ in range(3):
+            retention.note_an_export(gateway.state.root, alice.account_id, by="operator",
+                                     how_many_bytes=10)
+        assert main(["gateway", "delete", "--dir", str(gateway.state.root),
+                     "--account", alice.account_id, "--yes"]) == 0
+        said = capsys.readouterr().out
+        assert "3 export(s) of this account have been handed out" in said, said
+
+    def test_and_a_line_that_does_not_parse_is_kept_rather_than_thrown_away(self, gateway):
+        """It cannot be shown to be this customer's, and discarding what cannot be read turns a
+        damaged file into a deletion nobody asked for."""
+        alice = _a_customer(gateway, "alice")
+        retention.note_an_export(gateway.state.root, alice.account_id, by="operator",
+                                 how_many_bytes=10)
+        path = gateway.state.root / retention.EXPORTS_NAME
+        path.write_text(path.read_text(encoding="utf-8") + "{ not json\n", encoding="utf-8")
+
+        retention.delete_account(gateway, alice.account_id)
+        assert "{ not json" in path.read_text(encoding="utf-8")
+        assert alice.account_id not in path.read_text(encoding="utf-8")

@@ -884,13 +884,20 @@ def cmd_delete(args) -> int:
         print(f"    {name:<18}: {how_many}")
     print()
     print(f"  {bold('What this did NOT reach, and cannot:')}")
-    taken = retention.exports_of(root, wanted)
+    # HOW MANY WERE HANDED OUT, from what the deletion itself removed. Read out of
+    # `exports.jsonl` afterwards it is now always nought -- the deletion takes those lines with
+    # it, because each one names the account and leaving them behind left the identifier in a
+    # file nobody was looking at. The number still has to be SAID: somebody deleting an account
+    # needs to know that copies of it are in other people's hands, and that is exactly the fact
+    # the record was keeping.
+    taken = int(went.get("export_records") or 0)
     print("    backups taken before now. They contain this account and this deletion cannot")
     print("      change a file it does not have. Retire them on their own schedule.")
     if taken:
-        print("    %d export(s) of this account have been handed out (exports.jsonl says when"
-              % len(taken))
-        print("      and to whom). A copy somebody holds is theirs to delete.")
+        print("    %d export(s) of this account have been handed out (this gateway's record of"
+              % taken)
+        print("      when and to whom has just been removed with the rest of the account).")
+        print("      A copy somebody holds is theirs to delete.")
     else:
         print("    no exports of this account were ever taken from this gateway.")
     return 0
