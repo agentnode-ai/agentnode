@@ -139,6 +139,29 @@ class TestTheOrdinaryPathIsShort:
                 != before["gateways"]["lab"]["token"]), "the token did not change"
         assert main(["remote", "test", "--yes"]) == 0
 
+    def test_and_rotating_keeps_the_certificate_it_was_pinned_to(self, home, running_gateway):
+        """Replacing a credential must not quietly unpin the gateway.
+
+        Found on a real deployment. The gateway there serves its own certificate; after
+        `remote rotate` every call failed with CERTIFICATE_VERIFY_FAILED, because rotate rebuilt
+        the saved connection without the pin and the client fell back to ordinary verification.
+
+        The test gateway here speaks plain HTTP, so it has no certificate to lose and the
+        existing rotate test passed straight through the bug. This one writes a pin in first, so
+        it asks the question whatever the transport is.
+        """
+        url, state, service = running_gateway
+        _connect(url, state, ("--as", "lab"))
+        where = home / "gateways.json"
+        saved = json.loads(where.read_text(encoding="utf-8"))
+        saved["gateways"]["lab"]["certificate_sha256"] = "a" * 64
+        where.write_text(json.dumps(saved), encoding="utf-8")
+
+        assert main(["remote", "rotate"]) == 0
+        after = json.loads(where.read_text(encoding="utf-8"))["gateways"]["lab"]
+        assert after["certificate_sha256"] == "a" * 64, "rotating unpinned the gateway"
+        assert after["token"] != saved["gateways"]["lab"]["token"], "the token did not change"
+
 
 class TestTheCredentialIsLookedAfter:
 
