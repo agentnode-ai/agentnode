@@ -789,7 +789,27 @@ def _which_part_drifted(was: dict | None, now: dict) -> str:
             + ". Everything else matches what was shown.")
 
 
-def _spend_the_disclosure(service, principal, presented: str, about: dict) -> None:
+def _give_the_disclosure_back(service, presented: str, kept) -> None:
+    """Put an approval back, because what it was spent on did not happen.
+
+    Only ever called with the record `_spend_the_disclosure` just removed, and only when the
+    submission was refused without starting anything. It cannot resurrect an approval that was
+    spent on a run that DID start, because that path never reaches here.
+
+    Safe by what an approval is bound to: content, device, channel and expiry. Handing it back
+    lets the caller try the same job again, which is the thing they already agreed to, and
+    nothing else.
+    """
+    nonce = str(presented or "").partition(".")[0]
+    if not nonce or kept is None:
+        return
+    shown = getattr(service, "_disclosures_shown", None)
+    if shown is None:
+        return
+    shown.setdefault(nonce, kept)
+
+
+def _spend_the_disclosure(service, principal, presented: str, about: dict):
     """Claim a disclosure for THIS submission, from THIS connection, or refuse.
 
     `presented` is `<nonce>.<digest>`. The nonce says which approval; the digest says what was
@@ -861,10 +881,14 @@ def _spend_the_disclosure(service, principal, presented: str, about: dict) -> No
     # racing on one approval both reach here; only the one whose `pop` returns the record goes
     # on, which is the same claim-in-one-step the pairing code makes, moved to the end where it
     # costs nothing to a caller who was going to be refused anyway.
-    if shown.pop(nonce, None) is None:
+    spent = shown.pop(nonce, None)
+    if spent is None:
         raise Refused("disclosure_required",
                       "That approval has just been used by something else.",
                       "Call prepare again and submit against what it returns.")
+    # Handed back to the caller so that a submission refused WITHOUT STARTING ANYTHING can
+    # return it. See `_give_the_disclosure_back`.
+    return spent
 
 
 def _remember_the_disclosure(service, nonce: str, answer: dict) -> None:
@@ -1247,7 +1271,7 @@ def _submit(service, principal, params):
                       "submission carried no proof that anything was.",
                       "Call prepare with exactly this job, show a person what it returns, and "
                       "send back the accepted_disclosure it gave you once they have agreed.")
-    _spend_the_disclosure(service, principal, presented, {
+    spent = _spend_the_disclosure(service, principal, presented, {
         "command": list(params.get("command") or ()),
         "artifact_sha256": digest(artifact),
         "artifact_bytes": len(artifact),
@@ -1278,6 +1302,9 @@ def _submit(service, principal, params):
     try:
         record = service.submit(request, artifact, token=principal.token)
     except Exception as exc:                                  # noqa: BLE001
+        # Nothing started, so the agreement still stands. Both real models were sent back to
+        # ask a person again for a job that had never run.
+        _give_the_disclosure_back(service, presented, spent)
         raise _translate(exc) from exc
     # Handed back with the answer, not looked up afterwards. A submission that is REFUSED -- a
     # second request claiming a run id that already exists, say -- produces a record that is not
@@ -1288,6 +1315,7 @@ def _submit(service, principal, params):
     # record back and their clients read it. The contract's door does not: it refuses, by name,
     # with something to do about it -- the same shape as every other refusal here.
     if record.state == "refused" and getattr(record, "refused_as", ""):
+        _give_the_disclosure_back(service, presented, spent)
         raise Refused(record.refused_as, record.refusal,
                       getattr(record, "refusal_remedy", "")
                       or "Ask whoever runs this sandbox.")
@@ -1429,11 +1457,36 @@ def _devices_list(service, principal, params):
     with one customer those are the same list and the defect is invisible; on a gateway with two
     it is a customer list handed to whoever asks.
     """
+    lately = _when_each_device_was_last_used(service)
     return {"devices": [
         {"device_id": d.get("client_id", ""), "name": d.get("client_name", ""),
-         "last_used": d.get("last_used"), "paired_at": d.get("issued_at")}
+         "last_used": lately.get(str(d.get("client_id") or "")),
+         "paired_at": d.get("issued_at")}
         for d in service.state.devices_in(principal.account_id)
     ]}
+
+
+def _when_each_device_was_last_used(service) -> dict:
+    """Read from the audit, which already knows.
+
+    This field answered `null` for every device for as long as it has existed, because nothing
+    ever set it -- and "which of these am I still using" is the question somebody opens a device
+    list to answer.
+
+    Computed rather than recorded on purpose. The alternative is writing a timestamp into
+    `tokens.json` on every request, which means touching the file that holds credentials on the
+    hot path to maintain a field nobody reads between two calls of this operation. The audit
+    already carries the device and the time for every operation attempted.
+    """
+    lately: dict = {}
+    for line in _audit_lines(service):
+        device = str(line.get("device") or "")
+        when = line.get("at")
+        if not device or not isinstance(when, (int, float)):
+            continue
+        if when > lately.get(device, 0):
+            lately[device] = int(when)
+    return lately
 
 
 def _connections_enrol(service, principal, params):

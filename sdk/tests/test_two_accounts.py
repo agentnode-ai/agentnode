@@ -350,6 +350,71 @@ class TestCountersAreNotSharedByAccident:
         assert {line["account"] for line in lines} >= {alice.account_id, bob.account_id}
 
 
+class TestWhatTheTwoRealModelsHit:
+    """Both of them, on the deployed build, within a minute of each other."""
+
+    def test_a_submission_that_never_started_does_not_burn_the_agreement(self, gateway):
+        """Claude Code: "nothing started. That refusal still used up the approval."."""
+        import base64
+        import hashlib
+        import uuid
+
+        who = _a_customer(gateway, "alice")
+        code = b"print(1)\n"
+        taken = uuid.uuid4().hex
+        _a_run_by(gateway, who)                       # something to collide with
+        taken = next(iter(gateway.runs))
+
+        shown = dispatch.dispatch(
+            "prepare",
+            {"artifact_sha256": hashlib.sha256(code).hexdigest(), "artifact_bytes": len(code),
+             "wall_clock_s": 30},
+            who, service=gateway)
+        sending = {"run_id": taken, "artifact": base64.b64encode(code).decode("ascii"),
+                   "wall_clock_s": 30,
+                   "accepted_disclosure": shown["accepted_disclosure"]}
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("submit", dict(sending), who, service=gateway)
+        assert refused.value.refusal != "disclosure_required", (
+            "this refusal is about the run id, not about the agreement")
+
+        # The SAME agreement, a fresh run id. Nothing ran, so nothing was agreed away.
+        sending["run_id"] = uuid.uuid4().hex
+        answer = dispatch.dispatch("submit", sending, who, service=gateway)
+        assert answer["state"] in ("accepted", "running", "finished")
+
+    def test_but_an_agreement_spent_on_a_run_that_started_is_gone(self, gateway):
+        """The property the single use exists for, unchanged."""
+        import base64
+        import hashlib
+        import uuid
+
+        who = _a_customer(gateway, "alice")
+        code = b"print(1)\n"
+        shown = dispatch.dispatch(
+            "prepare",
+            {"artifact_sha256": hashlib.sha256(code).hexdigest(), "artifact_bytes": len(code),
+             "wall_clock_s": 30},
+            who, service=gateway)
+        sending = {"run_id": uuid.uuid4().hex,
+                   "artifact": base64.b64encode(code).decode("ascii"), "wall_clock_s": 30,
+                   "accepted_disclosure": shown["accepted_disclosure"]}
+        dispatch.dispatch("submit", dict(sending), who, service=gateway)
+        sending["run_id"] = uuid.uuid4().hex
+        with pytest.raises(dispatch.Refused) as refused:
+            dispatch.dispatch("submit", sending, who, service=gateway)
+        assert refused.value.refusal == "disclosure_required"
+
+    def test_a_device_list_says_when_each_was_last_used(self, gateway):
+        """Claude Code: "it says the device has never been used, even though I had just used it"."""
+        who = _a_customer(gateway, "alice")
+        dispatch.dispatch("usage", {}, who, service=gateway)
+        listed = dispatch.dispatch("devices.list", {}, who, service=gateway)["devices"]
+        assert listed and listed[0]["last_used"], (
+            "a field that is always absent is a promise the product does not keep")
+        assert listed[0]["last_used"] >= int(listed[0]["paired_at"])
+
+
 # ------------------------------------------------------------------ getting a run to exist
 
 
