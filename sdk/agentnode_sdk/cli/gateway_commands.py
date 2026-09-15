@@ -973,6 +973,58 @@ def cmd_limits(args) -> int:
     return 0
 
 
+def cmd_watch(args) -> int:
+    """What this gateway looks like right now, and anything worth waking somebody for.
+
+    An OPERATOR command rather than an address. Metrics name accounts, and an address that names
+    accounts is one a customer could eventually reach; the command line is reached by whoever can
+    log in to the machine, which is the operator by definition.
+    """
+    from agentnode_sdk.gateway import observability as obs
+
+    root = _root(args)
+    _state, service = _service(root)
+    sink = obs.LocalFileSink(root / obs.EVENTS_NAME)
+    seen = obs.observe(service, sink)
+    counts = seen["counts"]
+
+    print()
+    print(f"  {bold('Right now')}")
+    states = counts["runs_by_state"] or {"(nothing)": 0}
+    print("    runs            : " + ", ".join("%s %d" % (k, v) for k, v in sorted(
+        states.items())))
+    if counts["capacity"]:
+        print("    capacity        : " + ", ".join(
+            "%s %d/%d" % (name, used, ceiling)
+            for name, (used, ceiling) in sorted(counts["capacity"].items())))
+    print(f"    customers       : {counts['accounts']} ({counts['devices']} device(s))")
+    print(f"    cleanups unconfirmed: {counts['cleanups_not_confirmed']}")
+    if counts["stopped_because"]:
+        print(f"    {bold('not taking work')}: {counts['stopped_because']}")
+
+    if counts["refusals_by_reason"]:
+        print()
+        print(f"  {bold('Refused in the last 15 minutes')}")
+        for reason, how_many in sorted(counts["refusals_by_reason"].items(),
+                                       key=lambda kv: -kv[1]):
+            print(f"    {reason:<24} {how_many}")
+
+    print()
+    if seen["alerts"]:
+        print(f"  {bold('Worth looking at')}")
+        for alert in seen["alerts"]:
+            print(f"    [{alert['severity']}] {alert['rule']}")
+            print(f"      {alert['because']}")
+            print(f"      {dim(alert['what_it_means'])}")
+    else:
+        print("  Nothing is asking for attention.")
+    print()
+    print(dim("  Written to %s as well, one JSON object per line, so a collector can read it"
+              % (root / obs.EVENTS_NAME)))
+    print(dim("  without this command. No provider is configured and none is needed."))
+    return 0
+
+
 def cmd_used(args) -> int:
     """What each client has used. What an operator asks before changing a limit."""
     from agentnode_sdk.gateway import meter
@@ -1035,6 +1087,7 @@ def dispatch(args) -> int:
         "pair": cmd_pair,
         "clients": cmd_clients,
         "accounts": cmd_accounts,
+        "watch": cmd_watch,
         "revoke": cmd_revoke,
         "verify": cmd_verify,
         "challenge": cmd_challenge,

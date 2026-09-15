@@ -70,6 +70,8 @@ REASONS = (
     "gateway_unmeasured",         # this gateway cannot say what it enforces
     "account_suspended",          # this customer is suspended, with the operator's words
     "account_unreadable",         # this gateway cannot tell who is suspended
+    "ceilings_unreadable",        # this gateway cannot read the limits it is applying
+    "use_unreadable",             # this gateway cannot read what has already been used
     "device_rate",                # too many requests from one device, too quickly
     "account_rate",               # too many requests from one account, too quickly
     "device_concurrent",          # this device already has as many runs going as it may
@@ -91,6 +93,8 @@ AS_A_REFUSAL = {
     "gateway_unmeasured": "sandbox_unavailable",
     "account_suspended": "gateway_stopped",
     "account_unreadable": "gateway_stopped",
+    "ceilings_unreadable": "gateway_stopped",
+    "use_unreadable": "gateway_stopped",
     "device_rate": "over_a_ceiling",
     "account_rate": "over_a_ceiling",
     "device_concurrent": "over_a_ceiling",
@@ -334,6 +338,38 @@ def before_an_operation(standing: Standing, *, stopped_because: str, allowance,
             "Wait %s and send it again. If this is unexpected, look at your device list: it "
             "counts every device in the account, not only this one." % _when(lifts, at),
             lifts_at=lifts)
+
+
+def what_it_cannot_read(exc: Exception) -> "NotAdmitted | None":
+    """Turn a gateway that cannot read its own bookkeeping into a refusal that names itself.
+
+    Each of these is already fail-closed where it is raised. What this adds is a NAME and an
+    action, so the caller is told "this sandbox is refusing, ask its operator" rather than
+    meeting an error that reads as the service being broken.
+    """
+    from agentnode_sdk.gateway.accounts import AccountsUnreadable
+    from agentnode_sdk.gateway.allowance import CannotReadTheCeilings, CannotReadWhatWasUsed
+
+    if isinstance(exc, CannotReadTheCeilings):
+        return NotAdmitted(
+            "ceilings_unreadable",
+            "This sandbox cannot read the limits it is supposed to be applying, so it is not "
+            "taking work rather than applying none.",
+            "Ask whoever runs this sandbox to look at its state directory. Nothing you send "
+            "will change this and nothing was counted against you.")
+    if isinstance(exc, CannotReadWhatWasUsed):
+        return NotAdmitted(
+            "use_unreadable",
+            "This sandbox cannot read what has already been used, so it cannot tell whether "
+            "the next job is within anyone's allowance.",
+            "Ask whoever runs this sandbox to look at its state directory. Nothing was run.")
+    if isinstance(exc, AccountsUnreadable):
+        return NotAdmitted(
+            "account_unreadable",
+            "This sandbox cannot currently read which of its accounts are suspended, so it is "
+            "not taking work from any of them.",
+            "Ask whoever runs this sandbox to look at its state directory. Nothing was run.")
+    return None
 
 
 def artifact_within_ceiling(allowance, artifact_bytes: int) -> None:

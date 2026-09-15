@@ -32,6 +32,13 @@ refusal now names the field that moved, and Codex recovered from exactly that.
 two can do it. It does not say every model behind them always will, and it says nothing about a
 client not in this table.
 
+**Which build was observed.** The date in the table is the observation, not a claim about every
+build since. Managed Alpha R2 changed the path a connection is set up over — a connection now
+joins the account of the session that set it up rather than becoming its own — so the row above
+describes the build that was running on that date and is re-confirmed against a new build rather
+than carried forward. An observation is a thing that happened, and a thing that happened does not
+update itself.
+
 ## Protocol verified
 
 | Surface | How it is verified | Who this covers |

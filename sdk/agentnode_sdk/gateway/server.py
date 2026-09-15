@@ -1061,9 +1061,19 @@ class GatewayService:
         except Exception as exc:                              # noqa: BLE001
             stopped = ("this gateway cannot tell whether it has been stopped (%s)"
                        % str(exc)[:120])
+        try:
+            ceilings = self.allowance()
+        except Exception as exc:                              # noqa: BLE001
+            # Fail-closed is already right where this is raised. What is added here is a NAME:
+            # an exception escaping the dispatcher is a 500, and a 500 reads as "this service is
+            # broken" when the truth is "this service is refusing on purpose, tell its operator".
+            named = admission.what_it_cannot_read(exc)
+            if named is None:
+                raise
+            raise named from exc
         admission.before_an_operation(
             self.standing_of(account_id, device_id),
-            stopped_because=stopped, allowance=self.allowance(), rate=self.rate,
+            stopped_because=stopped, allowance=ceilings, rate=self.rate,
             would_run_work=bool(would_run_work))
 
     def within_its_allowance(self, client_id: str, asking_for: int,
@@ -2218,6 +2228,14 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(200, {"csrf": fresh, "device": who.client_id,
                                     "device_name": who.device_name})
 
+        if self.path == "/v1/health":
+            # Three booleans and, when it is not ready, why. Nothing that identifies a customer,
+            # a device, a run or what the operator has configured. A load balancer can poll it
+            # and a person can read it, and neither learns anything they could not learn by
+            # trying to use the service.
+            from agentnode_sdk.gateway import observability
+
+            return self._send(200, observability.health(self.service))
         if self.path == "/v1/hello":
             return self._send(200, _dispatch.before_anyone(
                 "hello", {}, service=self.service, via="older_door"))

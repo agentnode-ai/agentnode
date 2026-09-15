@@ -320,6 +320,10 @@ def main(argv: list[str] | None = None) -> int:
                            default=None,
                            help="The most output it keeps from one run. 0 = no limit")
 
+    gw_watch = gw_sub.add_parser(
+        "watch", help="What this gateway looks like right now, and anything worth looking at")
+    gw_watch.add_argument("--dir", default=None)
+
     gw_used = gw_sub.add_parser("used", help="What each client has used")
     gw_used.add_argument("--dir", default=None)
     gw_used.add_argument("--verify", action="store_true",

@@ -683,7 +683,21 @@ def _carry_out(operation: str, params: dict, principal: Principal, *, service,
         raise Refused("unknown_operation",
                       "%s is declared but this build cannot carry it out." % op.name,
                       "This is a fault in the sandbox, not in the request.")
-    answer = handler(service, principal, given)
+    try:
+        answer = handler(service, principal, given)
+    except Refused:
+        raise
+    except Exception as exc:                                  # noqa: BLE001
+        # Only for the bookkeeping this gateway must be able to read. Anything else keeps
+        # travelling: swallowing unknown failures here would turn a fault into a polite
+        # refusal, and a fault somebody has to see.
+        from agentnode_sdk.gateway import admission as _admission
+
+        cannot_read = _admission.what_it_cannot_read(exc)
+        if cannot_read is None:
+            raise
+        raise Refused(cannot_read.refusal, cannot_read.because,
+                      cannot_read.what_to_do) from exc
     _audit(service, op.name, principal, "carried_out")
     return answer
 
@@ -1582,11 +1596,20 @@ def _devices_revoke(service, principal, params):
 def _translate(exc: Exception) -> Refused:
     """Turn what the gateway raises into the contract's own words. One place, so every door
     refuses the same thing the same way."""
+    from agentnode_sdk.gateway import admission as _admission
     from agentnode_sdk.gateway.allowance import OverTheCeiling
     from agentnode_sdk.gateway.protocol import ProtocolError
 
     if isinstance(exc, Refused):
         return exc
+    if isinstance(exc, _admission.NotAdmitted):
+        return Refused(exc.refusal, exc.because, exc.what_to_do)
+    # A gateway that cannot read its own ceilings, its own use record or its own accounts is
+    # already refusing work where each of those is raised. This is what gives that refusal a
+    # name a client can branch on instead of an error that reads as a broken service.
+    cannot_read = _admission.what_it_cannot_read(exc)
+    if cannot_read is not None:
+        return Refused(cannot_read.refusal, cannot_read.because, cannot_read.what_to_do)
     if isinstance(exc, OverTheCeiling):
         return Refused("over_a_ceiling", str(exc),
                        "Wait until the window clears, or ask for a higher ceiling.")

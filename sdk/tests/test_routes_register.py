@@ -26,6 +26,7 @@ from agentnode_sdk.gateway import server as gateway_server
 #: What a path literal in the handler corresponds to in the register. Dynamic paths are matched by
 #: prefix in the source, so one literal can stand for more than one address.
 WHAT_THE_LITERALS_MEAN = {
+    "/v1/health": ("/v1/health",),
     "/v1/hello": ("/v1/hello",),
     "/v1/pair": ("/v1/pair",),
     "/v1/session": ("/v1/session",),
