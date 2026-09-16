@@ -17,6 +17,7 @@ import json
 import os
 import pathlib
 import sys
+import textwrap
 import time
 
 from agentnode_sdk.conformance import Outcome, SuiteOptions, run_conformance
@@ -24,6 +25,19 @@ from agentnode_sdk.conformance.runner import measure_credential_lifecycle, measu
 from agentnode_sdk.sandbox.container_backend import ContainerBackend
 
 OUT = pathlib.Path(os.environ.get("CONFORMANCE_REPORT", "conformance-report.json"))
+
+
+def _evidence(text: str, indent: str = "    ") -> str:
+    """The WHOLE evidence line, wrapped rather than cut.
+
+    It used to be printed as `text[:150]`, and this log is the evidence a review reads. The
+    processor ceiling's line is longer than that, and what fell off the end was the half that
+    makes it evidence at all: whether the kernel's throttling counter moved. A measurement whose
+    log stops before the finding is a measurement nobody can check, and shortening the sentence
+    to fit the printer would be fixing it from the wrong end.
+    """
+    return "\n".join(textwrap.wrap(str(text), width=110, initial_indent=indent,
+                                   subsequent_indent=indent + "  ")) or indent
 
 
 def main() -> int:
@@ -69,7 +83,7 @@ def main() -> int:
     print("-" * 100)
     for r in report.results:
         print(f"{r.check_id:32s} {r.outcome.value:13s} {r.assurance.value:14s} {r.vantage.value}")
-        print(f"    {r.evidence[:150]}")
+        print(_evidence(r.evidence))
     print()
     print(report.summary_line())
     print(f"report written to {OUT}")
@@ -80,7 +94,8 @@ def main() -> int:
         print()
         print(f"FAIL: {len(bad)} required propert{'y is' if len(bad) == 1 else 'ies are'} unproven:")
         for r in bad:
-            print(f"  {r.check_id} -> {r.outcome.value}: {r.evidence[:160]}")
+            print(f"  {r.check_id} -> {r.outcome.value}:")
+            print(_evidence(r.evidence, "      "))
         return 1
     na = [r.check_id for r in report.results if r.outcome is Outcome.NOT_APPLICABLE]
     if na:
