@@ -1,0 +1,124 @@
+{
+  "_comment": [
+    "VERSIONED CORRECTION OF alpha-r2-<slice>-r1. THE CRITERIA ARE BYTE-IDENTICAL.",
+    "",
+    "r1 was frozen prospectively and is preserved unchanged, along with the verdict produced",
+    "under it (ALPHA-R2-TENANCY-0002, BLOCK, all seven NOT_EVIDENCED). This does not reopen",
+    "that verdict and does not weaken anything.",
+    "",
+    "What r1 got wrong was infrastructure, not judgement. It carries the roles_rule -- 'any",
+    "input this profile does not list defaults to the lowest authority, context' -- and then",
+    "lists no inputs at all. So every file in the bundle arrived as context, the reviewer",
+    "instructions say context cannot substitute for evidence, and EVERY criterion was",
+    "necessarily NOT_EVIDENCED whatever the code did. r1 was unsatisfiable by construction.",
+    "",
+    "r2 adds the roles map and changes NOTHING else. Every criterion id, every criterion text,",
+    "the review_object, the out_of_scope list and the verdict_must_state are carried over",
+    "character for character; a diff of the two files touches only the _comment block and the",
+    "new roles section.",
+    "",
+    "The r1 comment follows, unchanged:",
+    "",
+    "TRUSTED REVIEW PROFILE, FROZEN PROSPECTIVELY.",
+    "",
+    "Written and committed BEFORE the code it judges exists. The commit that adds this file",
+    "contains no implementation of anything it names.",
+    "",
+    "This profile judges ONE sub-contract of Managed Alpha R2: what happens BEFORE a job runs.",
+    "Admission, ceilings, suspension, the stop, and the rule that the operator policy is the",
+    "only basis a subordinate policy may narrow and never widen -- together with the binding",
+    "that makes a conformance measurement describe the configuration it was actually taken under.",
+    "",
+    "It deliberately includes a criterion about OVERCLAIMING, because the most likely failure of",
+    "an abuse-protection feature is not that it does too little but that it is described as doing",
+    "something no software can do.",
+    "",
+    "A pass concerns this sub-contract only. It is not authorisation to expose anything, release,",
+    "deploy, take payment, buy a domain or buy infrastructure."
+  ],
+  "profile_id": "alpha-r2-admission-r2",
+  "corrects": "alpha-r2-admission-r1",
+  "kind": "review",
+  "mutable_task": false,
+  "stage": "pre-run",
+  "frozen_prospectively": true,
+  "review_object": "Pre-execution admission for the managed sandbox: the server-side decision that admits or refuses work; account and device quotas, rate limits, concurrency and resource ceilings; account suspension and the operator stop; the reasons a caller is given; the composition rule that an operator policy may only be narrowed by anything below it; and the binding of a conformance measurement to the operator policy, worker configuration, image, runtime and topology it was taken under.",
+  "out_of_scope": [
+    "tenancy and cross-account isolation, which are judged by alpha-r2-tenancy-r1",
+    "retention, deletion, redaction, export and backup, which are judged by alpha-r2-dataops-r1",
+    "public exposure, payment, release, deployment, domains, new infrastructure or new running costs"
+  ],
+  "verdict_must_state": "A pass concerns this code, its tests and the measurements presented, and nothing else. Admission bounds volume, concurrency, resources and known-bad behaviour; it does not and must not be described as determining what a job is FOR. This is not authorisation to expose anything, to deploy, or to charge for it.",
+  "roles_rule": "Any input this profile does not list defaults to the lowest authority, 'context'. A request may name this profile and may not extend it.",
+  "roles": {
+    "brief-admission.md": "supporting_evidence",
+    "gateway-admission.py.txt": "normative_spec",
+    "gateway-allowance.py.txt": "normative_spec",
+    "gateway-server.py.txt": "normative_spec",
+    "gateway-operator_policy.py.txt": "normative_spec",
+    "gateway-policy_version.py.txt": "normative_spec",
+    "gateway-readiness.py.txt": "normative_spec",
+    "sandbox-contract.py.txt": "normative_spec",
+    "access-dispatch.py.txt": "normative_spec",
+    "tests-test_admission.py.txt": "frozen_evidence",
+    "tests-test_only_narrowing.py.txt": "frozen_evidence",
+    "counter-checks.txt": "frozen_evidence",
+    "test-results.txt": "frozen_evidence"
+  },
+  "criteria": [
+    {
+      "id": "D1-ADMISSION-IS-BEFORE-EXECUTION-AND-CANNOT-BE-SKIPPED",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge whether every path that can cause code to run in the sandbox passes the admission decision first, and whether any door, adapter, legacy route, CLI command, recovery path, restart path or internal caller can reach execution without it. Determine whether admission is one decision in one place or a set of checks repeated per call site; whether a path added later would be admitted by default; and whether a job admitted once can be re-executed on a later restart without being admitted again."
+    },
+    {
+      "id": "D2-EVERY-CEILING-IS-REAL-AND-ENFORCED-NOT-DECLARED",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "For each of account quota, device quota, request rate, concurrent runs, wall clock, memory, CPU, processes, disk, artifact size and output size: determine whether the limit is enforced by something that can refuse, whether the enforcement was MEASURED rather than assumed, and whether the presented evidence hits the ceiling and observes the refusal rather than reading a configuration value back. A limit whose evidence is that it was configured is NOT_EVIDENCED. State which ceilings are enforced by the runtime, which by the gateway, and which by nothing."
+    },
+    {
+      "id": "D3-CONCURRENCY-AND-RACES-CANNOT-WALK-PAST-A-CEILING",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge whether simultaneous requests can both be admitted past a ceiling of one, across threads AND across processes. Determine whether the look and the claim happen under one lock; whether an unreadable or absent counter is read as zero use; whether a counter can be emptied by filling it; and whether a restart, a clock change or a window boundary restores an exhausted allowance. State what happens when the counter file cannot be read at all."
+    },
+    {
+      "id": "D4-SUSPENSION-AND-THE-STOP-TAKE-EFFECT-AT-ONCE-EVERYWHERE",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge whether suspending an account and tripping the operator stop refuse work immediately on every door, and what happens to work already in flight. Determine whether either can be undone by anything a caller does; whether an unreadable suspension or stop record is treated as stopped; whether suspension is visible to the suspended account in words it can act on; and whether lifting either is deliberate rather than a side effect."
+    },
+    {
+      "id": "D5-A-SUBORDINATE-POLICY-CAN-ONLY-NARROW-THE-OPERATOR-POLICY",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge whether anything below the operator -- a job request, a package, a device, an account, a session, a default, or a field this contract does not yet declare -- can obtain more than the operator policy allows: a destination not on the operator list, a longer wall clock, more memory, more CPU, a weaker network mode, or a required property the operator did not grant. Determine whether narrowing-only is a property of one composition function that every path uses, or a convention; whether it holds for a field ADDED later; and whether the presented evidence includes an attempt to widen each dimension and shows it refused rather than clamped silently."
+    },
+    {
+      "id": "D6-A-MEASUREMENT-DESCRIBES-THE-CONFIGURATION-IT-WAS-TAKEN-UNDER",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge whether a conformance measurement is bound to, and invalidated by a change in, each of: the operator policy digest, the operator policy version, the worker configuration, the image, the runtime and its version, the topology, the gateway identity and its build, and the boot. Determine whether a required property that was NOT measured -- not_checked, probe_error, not_applicable, missing, stale or foreign -- is treated as false and refuses work, and whether the presented evidence changes each bound value in turn and shows readiness dropping. State whether a report can be moved from one gateway or one policy to another and still be believed."
+    },
+    {
+      "id": "D7-A-REFUSAL-NAMES-ITSELF-AND-CAN-BE-ACTED-ON",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge every refusal admission can produce. Determine whether each carries a name from a closed declared list, a reason a person can understand without reading source, and at least one action the refused party can actually perform; whether telling refusals apart reveals anything about another account or about what the operator has configured; whether a refusal is recorded; and whether any refusal path can produce an empty, generic or unactionable remedy. State whether the completeness of this is established by a test over ALL refusal paths or by inspection of the ones somebody thought of."
+    },
+    {
+      "id": "D8-NO-CLAIM-TO-DETECT-INTENT",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge every reader-facing surface -- code, comments, docstrings, refusal text, console screens, documentation and commit messages -- for any claim that this system detects illegal, malicious, abusive or prohibited INTENT, or that it can tell what a job is for. Determine whether what is actually implemented is described accurately as technical limits, operator rules, behavioural signals and the ability to suspend; whether any behavioural signal is presented as evidence of intent rather than of a pattern; and whether the residual risk that a permitted job is used for something the operator would not want is stated plainly where a reader meets it. An overstatement here is a blocking defect, not a wording preference."
+    },
+    {
+      "id": "D9-THE-EVIDENCE-WOULD-FAIL-WITHOUT-THE-MECHANISM",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge the presented tests and counter-checks rather than the claims. For each admission property, determine whether the counter-check removes that one mechanism, names a DIFFERENT test, shows it failing with a non-zero exit, proves the revert landed, and proves the file was restored. Determine whether any duration is presented as proof of a property rather than as diagnosis, and whether any presented count was reconciled by hand rather than read from a machine-produced report."
+    }
+  ]
+}

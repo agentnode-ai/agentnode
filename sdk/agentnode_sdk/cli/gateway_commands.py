@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from agentnode_sdk.cli.output import bold, dim
@@ -587,7 +588,20 @@ def cmd_pair(args) -> int:
 
     from agentnode_sdk.gateway.identity import PAIRING_TTL_SECONDS
 
-    code = state.start_pairing()
+    # An invitation FOR an existing customer is how somebody adds a second machine. Named
+    # here, by the operator, and never by whoever redeems it: a redeemer who could name the
+    # account would be able to walk into one by guessing its name.
+    joining = str(getattr(args, "account", "") or "").strip()
+    if joining:
+        known = {a.account_id for a in state.accounts.all()}
+        known |= {str(d.get("account_id") or "") for d in state.paired_clients()}
+        if joining not in known:
+            print()
+            print(f"  No account here is called {joining!r}.")
+            print("  Run `agentnode gateway accounts` to see them. Leave --account out and this")
+            print("  invitation makes a new customer.")
+            return 1
+    code = state.start_pairing(for_account=joining)
     dies_at = _clock.time() + PAIRING_TTL_SECONDS
     config = _load_config(root)
     where, pin = _where_and_what_to_expect(root, config, args)
@@ -671,12 +685,349 @@ def cmd_clients(args) -> int:
         return 0
     print(f"  {bold('Connected clients')}")
     print()
+    from agentnode_sdk.gateway import accounts as _accounts
+
     for entry in clients:
         name = str(entry.get("client_name") or "unnamed")
         client_id = str(entry.get("client_id") or "")[:12]
-        print(f"    {name:<24} {dim(client_id)}")
+        belongs = str(entry.get("account_id")
+                      or _accounts.solo_account_for(str(entry.get("client_id") or "")))
+        print(f"    {name:<24} {dim(client_id)}  {dim(belongs)}")
     print()
+    print("  The third column is the CUSTOMER. Devices in one account can see each other;")
+    print("  devices in different accounts cannot see each other at all.")
     print("  To disconnect one:  agentnode gateway revoke --client <id>")
+    return 0
+
+
+def cmd_keeps(args) -> int:
+    """What this gateway keeps, for how long, and what expiring costs. Show or set.
+
+    Every class has a period. An earlier version had two, because two files persisted by default
+    and the rest expired on schedules nobody chose -- which is a retention period the operator
+    cannot see, not an absence of one.
+    """
+    from agentnode_sdk.gateway import retention
+
+    root = _root(args)
+    asked = {name: getattr(args, "%s_days" % name, None) for name in retention.CLASSES}
+    if all(value is None for value in asked.values()):
+        try:
+            now = retention.read_retention(root)
+        except retention.RetentionUnreadable as unreadable:
+            print()
+            print(f"  {bold('This gateway is sweeping nothing.')}")
+            print(f"  {unreadable}")
+            return 1
+        print()
+        print(f"  {bold('What this gateway keeps')}")
+        print()
+        for row in retention.describe():
+            days = now.days_for(row["name"])
+            for_how_long = ("%d days" % days) if days else bold("indefinitely")
+            print(f"    {row['name']:<12} {for_how_long:<22} {row['file']}")
+            print(f"      {dim(row['is'])}")
+            print(f"      {dim('when it expires: ' + row['expiring_means'])}")
+            if row["also_expires_on_its_own"]:
+                print(f"      {dim('also expires on its own, sooner; this is the ceiling')}")
+        print()
+        print("  A job's code and a job's output are in NO class here: they are never written")
+        print("  to disk. They are held in memory for the run and handed back to whoever ran it.")
+
+        # What the last attempt could NOT do. A sweep that failed on a class used to look
+        # exactly like one that had nothing to do, and the operator is the only one who can fix
+        # a store that has gone unwritable.
+        last = retention.last_sweep(root)
+        if last.get("problems"):
+            print()
+            print(f"  {bold('The last sweep could not finish.')}")
+            for problem in last["problems"]:
+                print(f"    {problem}")
+            print("  It is still owed, and this gateway will try again on its next tick.")
+        elif last.get("at"):
+            print()
+            print(f"  {dim('Last clean sweep: ' + time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(last['at'])))}")
+        else:
+            print()
+            print(f"  {dim('This gateway has not swept yet.')}")
+        print()
+        print("  To change one:")
+        print("    agentnode gateway keeps --audit-days 30")
+        print("    agentnode gateway keeps --metering-days 0      (0 = indefinitely, on purpose)")
+        return 0
+
+    try:
+        now = retention.read_retention(root)
+    except retention.RetentionUnreadable:
+        now = retention.Retention()
+    changed = retention.Retention(**{
+        **now.as_dict(),
+        **{"%s_days" % name: int(value) for name, value in asked.items() if value is not None},
+    })
+    retention.write_retention(root, changed)
+    print()
+    print(f"  {bold('Set.')} It applies at the next sweep, which is at most an hour away.")
+    for row in retention.describe():
+        days = changed.days_for(row["name"])
+        print(f"    {row['name']:<12} {('%d days' % days) if days else 'indefinitely'}")
+    return 0
+
+
+def cmd_sweep(args) -> int:
+    """Sweep now rather than waiting for the hour. What an operator does after lowering one."""
+    from agentnode_sdk.gateway import retention
+
+    root = _root(args)
+    try:
+        done = retention.sweep(root)
+    except retention.RetentionUnreadable as unreadable:
+        print()
+        print(f"  {bold('Nothing was swept.')}")
+        print(f"  {unreadable}")
+        return 1
+    print()
+    print(f"  {bold('Swept.')}")
+    for name, how_many in sorted(done["swept"].items()):
+        print(f"    {name:<12}: {how_many}")
+    if done["problems"]:
+        print()
+        print(f"  {bold('Some of it could not be done:')}")
+        for problem in done["problems"]:
+            print(f"    - {problem}")
+        return 1
+    return 0
+
+
+def cmd_export(args) -> int:
+    """Hand one customer everything this gateway holds about them, and write down that you did.
+
+    An OPERATOR command. There is no contract operation for this and there is deliberately no
+    address: an export is everything about a person in one file, and the authority to produce one
+    is "can log in to the machine that holds it" rather than "holds a capability".
+    """
+    from agentnode_sdk.gateway import retention
+
+    root = _root(args)
+    state, _service_unused = _service(root)
+    wanted = str(getattr(args, "account", "") or "").strip()
+    if not wanted:
+        print()
+        print("  Which account? Run `agentnode gateway accounts` to see them.")
+        return 2
+    known = {str(d.get("account_id") or "") for d in state.paired_clients()}
+    known |= {a.account_id for a in state.accounts.all()}
+    if wanted not in known:
+        print()
+        print(f"  No account here is called {wanted!r}.")
+        return 1
+
+    import json as _json
+
+    body = _json.dumps(retention.export_account(state, wanted), indent=2, sort_keys=True) + "\n"
+    where = str(getattr(args, "to", "") or "").strip() or ("%s-export.json" % wanted)
+    with open(where, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    try:
+        os.chmod(where, 0o600)
+    except OSError:
+        pass
+    retention.note_an_export(root, wanted, by="operator", how_many_bytes=len(body))
+
+    print()
+    print(f"  {bold('Written to ' + where)}  ({len(body)} bytes, readable only by you)")
+    print("  It carries no credential, in any form, and nothing belonging to another account.")
+    print()
+    print("  This is RECORDED: exports.jsonl in the gateway's directory now says an export of")
+    print("  this account was taken, when, and by whom. That is the only way to answer 'who has")
+    print("  a copy of this' later.")
+    print()
+    print(dim("  A copy taken now survives a deletion made later. Say so when you hand it over."))
+    return 0
+
+
+def cmd_delete(args) -> int:
+    """Remove a customer from this gateway, and say what that cannot reach."""
+    from agentnode_sdk.gateway import retention
+
+    root = _root(args)
+    state, _service_unused = _service(root)
+    wanted = str(getattr(args, "account", "") or "").strip()
+    if not wanted:
+        print()
+        print("  Which account? Run `agentnode gateway accounts` to see them.")
+        return 2
+    if not getattr(args, "yes", False):
+        print()
+        print(f"  This removes {bold(wanted)} from this gateway: its devices, sessions,")
+        print("  enrolments, counters, ledger entries and audit lines, and it ERASES its")
+        print("  metering lines to signed tombstones.")
+        print()
+        print("  Run it again with --yes if that is what you want.")
+        return 2
+
+    went = retention.delete_account(state, wanted, because="the operator deleted this account")
+    print()
+    if not went.get("complete", True):
+        print(f"  {bold('THIS DELETION DID NOT COMPLETE.')} Some of this account's data is still")
+        print("  on this gateway:")
+        for problem in went.get("problems", []):
+            print(f"    - {problem}")
+        print()
+        print("  Fix what is named above and run this again. Do NOT tell the customer their")
+        print("  data is gone until this says it is.")
+        print()
+    else:
+        print(f"  {bold(wanted)} is gone from this gateway.")
+    for name, how_many in sorted(went.items()):
+        if name in ("problems", "complete"):
+            continue
+        print(f"    {name:<18}: {how_many}")
+    print()
+    print(f"  {bold('What this did NOT reach, and cannot:')}")
+    # HOW MANY WERE HANDED OUT, from what the deletion itself removed. Read out of
+    # `exports.jsonl` afterwards it is now always nought -- the deletion takes those lines with
+    # it, because each one names the account and leaving them behind left the identifier in a
+    # file nobody was looking at. The number still has to be SAID: somebody deleting an account
+    # needs to know that copies of it are in other people's hands, and that is exactly the fact
+    # the record was keeping.
+    taken = int(went.get("export_records") or 0)
+    print("    backups taken before now. They contain this account and this deletion cannot")
+    print("      change a file it does not have. Retire them on their own schedule.")
+    if taken:
+        print("    %d export(s) of this account have been handed out (this gateway's record of"
+              % taken)
+        print("      when and to whom has just been removed with the rest of the account).")
+        print("      A copy somebody holds is theirs to delete.")
+    else:
+        print("    no exports of this account were ever taken from this gateway.")
+    return 0
+
+
+def cmd_accounts(args) -> int:
+    """List the customers on this gateway, and suspend or restore one.
+
+    An operator command and only an operator command. There is no contract operation that does
+    any of this, so no capability any customer can hold reaches it, over any door -- which is
+    what keeps "the operator is not an account" true by construction rather than by a check
+    somebody has to remember to write.
+    """
+    from agentnode_sdk.gateway import accounts as _accounts
+
+    root = _root(args)
+    state, _service_unused = _service(root)
+    wanted = str(getattr(args, "account", "") or "").strip()
+    because = str(getattr(args, "reason", "") or "").strip()
+
+    devices = {}
+    for entry in state.paired_clients():
+        belongs = str(entry.get("account_id")
+                      or _accounts.solo_account_for(str(entry.get("client_id") or "")))
+        devices.setdefault(belongs, []).append(entry)
+
+    if getattr(args, "suspend", False) or getattr(args, "restore", False):
+        if not wanted:
+            print()
+            print("  Which account? Run `agentnode gateway accounts` to see them.")
+            return 2
+        if wanted not in devices and not state.accounts.recorded(wanted):
+            print()
+            print(f"  No account here is called {wanted!r}.")
+            return 1
+        if getattr(args, "restore", False):
+            state.accounts.restore(wanted)
+            print()
+            print(f"  {bold(wanted)} can send work again.")
+            return 0
+        if not because:
+            print()
+            print("  Why? Whatever you say here is what that customer is shown:")
+            print("    agentnode gateway accounts --account %s --suspend" % wanted)
+            print('      --reason "repeated attempts to reach hosts we do not allow"')
+            return 2
+        state.accounts.suspend(wanted, because, by="operator")
+        print()
+        print(f"  {bold(wanted)} is suspended. Their next job is refused with your words.")
+        print("  Runs already going are NOT stopped by this -- that is what the stop is for:")
+        print("    agentnode gateway stop --reason ...")
+        print("  To let them work again:")
+        print(f"    agentnode gateway accounts --account {wanted} --restore")
+        return 0
+
+    from agentnode_sdk.gateway import accounts as _acc
+
+    if getattr(args, "claim", False):
+        if not wanted or not wanted.startswith(_acc.SOLO_PREFIX):
+            print()
+            print("  --claim turns a device that predates accounts into a named customer.")
+            print("  Name it with the solo: id the list shows, and give it a name:")
+            print('    agentnode gateway accounts --account solo:abcd... --claim --name "Acme"')
+            return 2
+        called = str(getattr(args, "name", "") or "").strip()
+        if not called:
+            print()
+            print("  What is this customer called? A named account is the point of claiming one.")
+            return 2
+        if wanted not in devices:
+            print()
+            print(f"  No device here is in {wanted!r}.")
+            return 1
+        made = state.accounts.create(name=called)
+        moved = 0
+        for entry in devices[wanted]:
+            if state.move_device_to(str(entry.get("client_id") or ""), made.account_id):
+                moved += 1
+        print()
+        print(f"  {bold(called)} is now a customer: {made.account_id}")
+        print(f"  {moved} device(s) moved into it, and nothing else changed -- the same")
+        print("  credentials keep working, and their runs are still theirs.")
+        print()
+        print("  To add another machine to them, they can do it themselves from the console,")
+        print("  or you can:  agentnode gateway pair --account %s" % made.account_id)
+        return 0
+
+    print()
+    if not devices:
+        print("  No customers yet. Run `agentnode gateway pair` to let the first one in.")
+        return 0
+
+    named = {a: d for a, d in devices.items() if not a.startswith(_acc.SOLO_PREFIX)}
+    solo = {a: d for a, d in devices.items() if a.startswith(_acc.SOLO_PREFIX)}
+
+    if named:
+        print(f"  {bold('Customers')}")
+        print()
+        for account_id in sorted(named):
+            try:
+                found = state.accounts.get(account_id)
+                standing = ("active" if found.active
+                            else "suspended: " + found.suspended_because)
+                called = found.name or "(unnamed)"
+            except (_acc.NoSuchAccount, _acc.AccountsUnreadable) as exc:
+                standing, called = "cannot be read (%s)" % str(exc)[:50], "?"
+            print(f"    {called:<22} {dim(account_id)}  "
+                  f"{len(named[account_id])} device(s)  {standing}")
+            for entry in named[account_id]:
+                print(f"      {dim(str(entry.get('client_name') or 'unnamed'))}")
+        print()
+
+    if solo:
+        print(f"  {bold('Devices that predate accounts -- NOT customers yet')}")
+        print()
+        print("  Each of these was paired before this gateway had accounts, so each is its own")
+        print("  account: the safe reading, and not a customer model. Several of them may")
+        print("  belong to ONE person, and this gateway has no way to know which.")
+        print()
+        for account_id in sorted(solo):
+            for entry in solo[account_id]:
+                print(f"    {str(entry.get('client_name') or 'unnamed'):<22} "
+                      f"{dim(account_id)}")
+        print()
+        print("  Turn one into a named customer -- their credential keeps working:")
+        print('    agentnode gateway accounts --account <solo:id> --claim --name "Their name"')
+        print()
+    print()
+    print("  To stop one:     agentnode gateway accounts --account <id> --suspend --reason ...")
+    print("  To let them back: agentnode gateway accounts --account <id> --restore")
     return 0
 
 
@@ -841,18 +1192,36 @@ def cmd_limits(args) -> int:
     root = _root(args)
     now = read_allowance(root)
     asked = {name: getattr(args, name, None) for name in
-             ("concurrent_runs", "runs_per_window", "seconds_per_window")}
+             ("concurrent_runs", "runs_per_window", "seconds_per_window",
+              "account_concurrent_runs", "account_runs_per_window",
+              "account_seconds_per_window", "requests_per_minute",
+              "account_requests_per_minute", "max_artifact_bytes", "max_output_bytes")}
     if all(value is None for value in asked.values()):
         print()
-        print(f"  {bold('What one client may use')}")
-        for name, value in now.as_dict().items():
-            if name == "window_seconds":
-                print(f"    window               : {value / 3600:.0f} hours")
-            else:
-                print(f"    {name:<21}: {value if value else 'no limit'}")
+        print(f"  {bold('What one device may use')}")
+        for name in ("concurrent_runs", "runs_per_window", "seconds_per_window"):
+            value = now.as_dict()[name]
+            print(f"    {name:<28}: {value if value else 'no limit'}")
+        print()
+        print(f"  {bold('What one CUSTOMER may use, across every device they have')}")
+        for name in ("account_concurrent_runs", "account_runs_per_window",
+                     "account_seconds_per_window"):
+            value = now.as_dict()[name]
+            print(f"    {name:<28}: {value if value else 'no limit'}")
+        print()
+        print(f"  {bold('How fast, and how big')}")
+        for name in ("requests_per_minute", "account_requests_per_minute",
+                     "max_artifact_bytes", "max_output_bytes"):
+            value = now.as_dict()[name]
+            print(f"    {name:<28}: {value if value else 'no limit'}")
+        print(f"    {'window':<28}: {now.window_seconds / 3600:.0f} hours")
+        print()
+        print("  Both apply and the tighter one decides. A per-device ceiling alone is one a")
+        print("  customer raises by pairing another machine, which is not a ceiling.")
         print()
         print("  To change one:")
         print("    agentnode gateway limits --runs-per-window 200")
+        print("    agentnode gateway limits --account-runs-per-window 500")
         return 0
     changed = Allowance(**{**now.as_dict(),
                            **{k: int(v) for k, v in asked.items() if v is not None}})
@@ -861,7 +1230,59 @@ def cmd_limits(args) -> int:
     print(f"  {bold('Set.')} It applies to the next job, not to runs already going.")
     for name, value in changed.as_dict().items():
         if name != "window_seconds":
-            print(f"    {name:<21}: {value if value else 'no limit'}")
+            print(f"    {name:<28}: {value if value else 'no limit'}")
+    return 0
+
+
+def cmd_watch(args) -> int:
+    """What this gateway looks like right now, and anything worth waking somebody for.
+
+    An OPERATOR command rather than an address. Metrics name accounts, and an address that names
+    accounts is one a customer could eventually reach; the command line is reached by whoever can
+    log in to the machine, which is the operator by definition.
+    """
+    from agentnode_sdk.gateway import observability as obs
+
+    root = _root(args)
+    _state, service = _service(root)
+    sink = obs.LocalFileSink(root / obs.EVENTS_NAME)
+    seen = obs.observe(service, sink)
+    counts = seen["counts"]
+
+    print()
+    print(f"  {bold('Right now')}")
+    states = counts["runs_by_state"] or {"(nothing)": 0}
+    print("    runs            : " + ", ".join("%s %d" % (k, v) for k, v in sorted(
+        states.items())))
+    if counts["capacity"]:
+        print("    capacity        : " + ", ".join(
+            "%s %d/%d" % (name, used, ceiling)
+            for name, (used, ceiling) in sorted(counts["capacity"].items())))
+    print(f"    customers       : {counts['accounts']} ({counts['devices']} device(s))")
+    print(f"    cleanups unconfirmed: {counts['cleanups_not_confirmed']}")
+    if counts["stopped_because"]:
+        print(f"    {bold('not taking work')}: {counts['stopped_because']}")
+
+    if counts["refusals_by_reason"]:
+        print()
+        print(f"  {bold('Refused in the last 15 minutes')}")
+        for reason, how_many in sorted(counts["refusals_by_reason"].items(),
+                                       key=lambda kv: -kv[1]):
+            print(f"    {reason:<24} {how_many}")
+
+    print()
+    if seen["alerts"]:
+        print(f"  {bold('Worth looking at')}")
+        for alert in seen["alerts"]:
+            print(f"    [{alert['severity']}] {alert['rule']}")
+            print(f"      {alert['because']}")
+            print(f"      {dim(alert['what_it_means'])}")
+    else:
+        print("  Nothing is asking for attention.")
+    print()
+    print(dim("  Written to %s as well, one JSON object per line, so a collector can read it"
+              % (root / obs.EVENTS_NAME)))
+    print(dim("  without this command. No provider is configured and none is needed."))
     return 0
 
 
@@ -926,6 +1347,12 @@ def dispatch(args) -> int:
         "doctor": cmd_doctor,
         "pair": cmd_pair,
         "clients": cmd_clients,
+        "accounts": cmd_accounts,
+        "export": cmd_export,
+        "keeps": cmd_keeps,
+        "sweep": cmd_sweep,
+        "delete": cmd_delete,
+        "watch": cmd_watch,
         "revoke": cmd_revoke,
         "verify": cmd_verify,
         "challenge": cmd_challenge,
@@ -933,7 +1360,7 @@ def dispatch(args) -> int:
     handler = handlers.get(action)
     if handler is None:
         print("  Usage: agentnode gateway "
-              "{init|start|status|egress|doctor|pair|clients|revoke|verify}")
+              "{init|start|status|egress|doctor|pair|clients|accounts|revoke|verify}")
         return 2
     try:
         return handler(args)

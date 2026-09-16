@@ -108,6 +108,11 @@ input[type=text]:focus{border-color:var(--accent)}
 .n-plain{background:transparent;border-color:var(--line);color:var(--muted)}
 .note p{margin:.3em 0;color:inherit}
 .note .b{margin-top:.5rem}
+/* What the sandbox itself said, marked off from what this page says about it. */
+.note .said-by{color:var(--faint);font-size:.9em;margin-top:.55em;margin-bottom:.1em}
+/* A subheading inside a tab, and a value meant to be read out or typed. */
+h3.sub{margin-top:1.4rem;margin-bottom:.3rem;font-size:1rem}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:1.05rem;letter-spacing:.04em;background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:.5rem .7rem;margin:.4rem 0;overflow-wrap:anywhere;user-select:all}
 
 .pick{display:grid;gap:.6rem}
 .pick button{

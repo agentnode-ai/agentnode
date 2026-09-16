@@ -1176,7 +1176,9 @@ class TestThePrivateKeyIsInNothingThatLeavesTheMachine:
         meter.record(tmp_path, run_id="r", client_id="c", started_at=1.0, finished_at=2.0,
                      cpu=1.0, memory_mb=512, wall_clock_s=60, state="finished",
                      outcome="succeeded", bytes_out=1, worker_topology="x",
-                     allowance_sha256="a" * 64)
+                     allowance_sha256="a" * 64,
+                     account_id="acct-" + "0" * 16, worker_id="w1",
+                     operator_policy_sha256="p" * 64, operator_policy_version=1)
         written = (Path(tmp_path) / meter.METER_NAME).read_text(encoding="utf-8")
         assert not self._looks_like_a_key(written)
 

@@ -50,6 +50,7 @@ nothing. What that means for a gateway is stated where it is decided, not here.
 from __future__ import annotations
 
 import os
+import secrets
 import stat
 
 #: Whether the descriptor-relative facilities this module needs exist at all.
@@ -162,20 +163,35 @@ def read_secret(fd: int, name: str) -> str | None:
 
 
 def write_secret(fd: int, name: str, text: str) -> None:
-    """Replace a file inside the verified directory, atomically and owner-only."""
+    """Replace a file inside the verified directory, atomically and owner-only.
+
+    The temp name is UNIQUE to this write. It used to be `.<name>.new` -- one name shared by
+    every writer of that file -- and two at once is not a near miss: the `O_EXCL` create fails
+    for one of them, or one renames a path the other has already renamed away, or, in the case
+    that does not raise at all, one writer's whole file silently replaces the other's. A
+    concurrent deletion drill found the first of those; the last is the one worth fixing it for.
+
+    The pre-unlink went with it. It existed to make room for the fixed name and was itself a
+    window: between the unlink and the create, the other writer's temp file was gone.
+    """
     _require_supported()
-    tmp = "." + name + ".new"
-    try:
-        os.unlink(tmp, dir_fd=fd)
-    except FileNotFoundError:
-        pass
+    tmp = ".%s.%s.new" % (name, secrets.token_hex(8))
     handle = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
     try:
         with os.fdopen(os.dup(handle), "w", encoding="utf-8") as writer:
             writer.write(text)
+            writer.flush()
+            os.fsync(writer.fileno())
     finally:
         os.close(handle)
-    os.rename(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
+    try:
+        os.rename(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=fd)
+        except OSError:
+            pass
+        raise
 
 
 def claim_secret(fd: int, name: str, into: str) -> bool:

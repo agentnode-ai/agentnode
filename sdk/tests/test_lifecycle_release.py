@@ -82,10 +82,20 @@ class TestAStateGivesItsDescriptorBack:
             assert descriptors() > before
         assert descriptors() == before
 
+    @pytest.mark.skipif(os.name != "posix",
+                        reason="a directory cannot be opened as a descriptor on Windows, which "
+                               "is the same reason the gateway's descriptor-relative work is "
+                               "POSIX-only -- so there is no descriptor here to hand back")
     def test_the_finalizer_is_detached_when_it_is_closed_by_hand(self, tmp_path):
         """Closing a descriptor NUMBER twice can close somebody else's file, because the number
         is handed out again the moment it is free. So the finalizer is detached, not left to fire
-        later."""
+        later.
+
+        POSIX only, and not because it is awkward elsewhere: this opens a DIRECTORY to take the
+        number that was just freed, and Windows does not allow that at all. What it is asserting
+        -- that the finalizer was detached rather than left to fire on a reused number -- is a
+        property of the descriptor the gateway holds on POSIX and of nothing on Windows.
+        """
         state = GatewayState(str(tmp_path / "five"), version="test")
         state.close()
         keep = os.open(str(tmp_path), os.O_RDONLY)      # very likely the number just freed

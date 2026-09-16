@@ -64,6 +64,8 @@ jobs:
           python -m pytest -v -p no:randomly \
             --junit-xml=report.xml \
             tests/test_console_browser.py \
+            tests/test_two_accounts_in_a_browser.py \
+            tests/test_tenancy_on_every_surface.py \
             tests/test_browser_sessions.py \
             tests/test_one_way_in.py \
             tests/test_routes_register.py \
@@ -96,7 +98,16 @@ jobs:
           # floor still passes while a whole property has stopped being checked.
           FLOOR = {
               "test_console_browser": 30, "test_browser_sessions": 30, "test_one_way_in": 47,
-              "test_routes_register": 34, "test_consent_and_tools": 55,
+              # Two customers in two real browsers, and the same refusals asked through the SDK,
+              # the command line, the local bridge and the older doors. The browser one belongs
+              # in THIS lane for the reason at the top of this file: without Playwright it would
+              # skip, and a skip that reads as a pass is how a suite comes to report an isolation
+              # property that nothing checked.
+              "test_two_accounts_in_a_browser": 17, "test_tenancy_on_every_surface": 52,
+              # Four more: the console keeps its own table of which operations travel as POST,
+              # and it had drifted from the contract, so "Weiteres Gerät hinzufügen" sent a GET
+              # and every customer adding a second machine met a refusal.
+              "test_routes_register": 38, "test_consent_and_tools": 55,
               "test_approval_targets": 13, "test_compatibility_challenge": 24,
               "test_compatibility": 26, "test_credentials": 13, "test_stopping": 34,
               "test_cancel_is_not_a_wait": 9, "test_dispatch": 24,

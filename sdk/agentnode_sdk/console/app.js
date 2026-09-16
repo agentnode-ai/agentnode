@@ -41,8 +41,19 @@ function stopEverythingScheduled(){
 
 /* --- talking to the sandbox ---------------------------------------------- */
 
+/* Which operations travel as POST. The rule is the contract's, not this page's: an operation
+ * that changes something OR takes any parameter goes in the body, because a parameter in a URL
+ * ends up in logs, in history and in a referrer.
+ *
+ * This is a copy of that rule, so it can fall out of step with it -- and it did. `devices.invite`
+ * was declared, the button was added, and this table was not, so "Weiteres Gerät hinzufügen" sent
+ * a GET and every customer trying to add their second machine met "Diese Anfrage war nicht in
+ * Ordnung." Nothing caught it, because the tests behind it drove the dispatcher rather than the
+ * page. `test_routes_register.py` now compares this table against the contract, so the next
+ * operation somebody adds cannot arrive here silently wrong. */
 var NEEDS_POST = {prepare:1, submit:1, status:1, result:1, cancel:1, usage:1,
-                  "devices.revoke":1, "sessions.end":1,
+                  "devices.revoke":1, "devices.invite":1, "devices.uninvite":1,
+                  "sessions.end":1,
                   "connections.enrol":1, "connections.check":1};
 
 function call(op, params){
@@ -80,7 +91,13 @@ var SAYS = {
     "Das passiert, wenn eine Sitzung beendet, ein Zugang zurückgezogen oder die Einladung " +
     "abgelaufen ist. Mit einer neuen Einladung geht es weiter.", "again"],
   not_permitted: ["Dieses Gerät darf das nicht.",
-    "Bitte bei der Person nachfragen, die die Sandbox betreibt.", ""],
+    "Bitte bei der Person nachfragen, die die Sandbox betreibt.", "retry"],
+  unknown_operation: ["Das kennt diese Sandbox nicht.",
+    "Meist ist die Seite älter als die Sandbox oder umgekehrt. Ein Neuladen holt die " +
+    "aktuelle Fassung.", "retry"],
+  upgrade_required: ["Dieser Zugang ist zu alt dafür.",
+    "Die Sandbox erwartet etwas, das dieser Zugang noch nicht mitschickt. Ein Neuladen holt " +
+    "die aktuelle Fassung der Seite.", "retry"],
   gateway_stopped: ["Die Sandbox nimmt gerade keine Arbeit an.",
     "Der Betrieb wurde angehalten. Sobald er wieder läuft, funktioniert alles Weitere " +
     "unverändert.", "retry"],
@@ -89,23 +106,32 @@ var SAYS = {
     "usage"],
   refused_by_policy: ["Das ist hier nicht erlaubt.",
     "Die Sandbox lässt diesen Auftrag nicht zu. Ein einfacherer Auftrag ohne Netzzugriff " +
-    "geht meist.", ""],
+    "geht meist.", "retry"],
   sandbox_unavailable: ["Die Sandbox selbst läuft gerade nicht.",
     "Ohne sie wird nichts ausgeführt — das ist so gewollt. Bitte später noch einmal versuchen.",
     "retry"],
   disclosure_required: ["Dafür fehlt Ihre Zustimmung.",
     "Bitte noch einmal starten: Sie bekommen zuerst zu sehen, was passieren würde.", "retry"],
   no_such_run: ["Das gibt es hier nicht (mehr).", "Bitte die Übersicht neu laden.", "retry"],
-  not_finished: ["Der Auftrag läuft noch.", "Das Ergebnis erscheint, sobald er fertig ist.", ""],
+  not_finished: ["Der Auftrag läuft noch.", "Das Ergebnis erscheint, sobald er fertig ist.",
+    "retry"],
   malformed: ["Diese Anfrage war nicht in Ordnung.", "Bitte die Seite neu laden.", "retry"],
   unreachable: ["Keine Verbindung zur Sandbox.",
     "Prüfen, ob der Rechner läuft, auf dem die Sandbox betrieben wird.", "retry"]
 };
 function explain(e){
   var k = SAYS[e && e.refused];
-  if(k) return {title:k[0], help:k[1], fix:k[2]};
+  var said = [];
+  // The sandbox's OWN words, when it sent any. The table above says what KIND of thing
+  // happened, in the reader's language, and that is what somebody reads first. It cannot say
+  // what happened to THEM: "die Sandbox nimmt keine Arbeit an" and "Ihr Konto ist gesperrt,
+  // weil ..." arrive under the same refusal name, and showing only the first tells a suspended
+  // customer something that is not true of them and leaves them nothing to do.
+  if(e && e.because) said.push(e.because);
+  if(e && e.what_to_do) said.push(e.what_to_do);
+  if(k) return {title:k[0], help:k[1], fix:k[2], said:said};
   return {title:"Etwas hat nicht funktioniert.",
-          help:(e && e.message) || "Bitte noch einmal versuchen.", fix:"retry"};
+          help:(e && e.message) || "Bitte noch einmal versuchen.", fix:"retry", said:said};
 }
 
 /* --- little helpers ------------------------------------------------------- */
@@ -115,9 +141,10 @@ function el(tag, attrs, kids){
   for(var k in (attrs||{})){
     var v = attrs[k];
     if(v === null || v === undefined || v === false) continue;
-    // Deliberately no innerHTML anywhere in this file. Everything a person or a
-    // gateway supplies becomes a text node, so a device called
-    // "<script>..." is a device with an odd name and nothing more.
+    // innerHTML is never assigned anything but the empty string in this file -- it is
+    // used to CLEAR a node and never to fill one. Everything a person or a gateway
+    // supplies becomes a text node, so a device called "<script>..." is a device with
+    // an odd name and nothing more. A test checks the assignment, not this comment.
     if(k === "text") n.textContent = v;
     else if(k.slice(0,2) === "on") n.addEventListener(k.slice(2), v);
     else if(v === true) n.setAttribute(k, "");
@@ -240,6 +267,13 @@ function problem(e, retry){
   var box = el("div", {"class":"note n-bad", role:"alert"}, [
     el("h3", {text:w.title}), el("p", {text:w.help})
   ]);
+  // Marked off as coming from the sandbox rather than from this page, so a reader can tell
+  // which sentence is a general explanation and which one is about them. Text nodes, like
+  // everything else here.
+  if(w.said && w.said.length){
+    box.appendChild(el("p", {"class":"said-by", text:"Die Sandbox sagt dazu:"}));
+    w.said.forEach(function(line){ box.appendChild(el("p", {text:line})); });
+  }
   // Exactly one. A person meeting an error wants to know what to press.
   if(w.fix === "retry" && retry)
     box.appendChild(el("button", {"class":"b ghost", type:"button",
@@ -866,7 +900,8 @@ function devices(){
 function loadDevices(host){
   host.innerHTML = "";
   host.appendChild(el("p", {}, [el("span", {"class":"spin"}), document.createTextNode(" Lädt…")]));
-  call("devices.list").then(function(d){
+  Promise.all([call("devices.list"), call("devices.invitations")]).then(function(both){
+    var d = both[0], open = (both[1] && both[1].invitations) || [];
     host.innerHTML = "";
     var ul = el("ul", {"class":"list"});
     (d.devices||[]).forEach(function(dev){
@@ -880,9 +915,65 @@ function loadDevices(host){
       ]));
     });
     host.appendChild(ul);
+
+    /* Adding the next machine. One button, then a code and the one line to run with it.
+     * Nothing here asks for an account: which account this joins is decided by the sandbox
+     * from the session making the request, so there is no field to get wrong. */
+    host.appendChild(el("h3", {"class":"sub", text:"Weiteres Gerät hinzufügen"}));
+    host.appendChild(el("p", {"class":"lede",
+      text:"Damit erreicht ein zweiter Rechner — oder ein weiterer Zugang — diese Sandbox als " +
+           "Sie. Die Einladung gilt 30 Minuten und funktioniert genau einmal."}));
+    host.appendChild(el("button", {"class":"b", type:"button", id:"invite-device",
+      text:"Einladung erstellen", onclick:function(){ inviteADevice(host); }}));
+
+    if(open.length){
+      host.appendChild(el("h3", {"class":"sub", text:"Offene Einladungen"}));
+      var ol = el("ul", {"class":"list"});
+      open.forEach(function(inv){
+        ol.appendChild(el("li", {"data-invitation": inv.invitation}, [
+          el("div", {"class":"who"}, [
+            el("b", {text: inv.label || "Ohne Namen"}),
+            el("span", {"class":"faint", text:"läuft ab " + when(inv.expires_at)})
+          ]),
+          el("button", {"class":"b quiet", type:"button", text:"Zurückziehen",
+            onclick:function(){
+              call("devices.uninvite", {invitation: inv.invitation}).then(function(){
+                announce("Einladung zurückgezogen."); loadDevices(host);
+              }).catch(function(e){ host.appendChild(problem(e, null)); });
+            }})
+        ]));
+      });
+      host.appendChild(ol);
+    }
   }).catch(function(e){
     host.innerHTML=""; host.appendChild(problem(e, function(){ loadDevices(host); }));
   });
+}
+
+/* The code is shown ONCE, here, because the sandbox never stores it and cannot show it again.
+ * That is said on the screen rather than left for somebody to discover after closing it. */
+function inviteADevice(host){
+  call("devices.invite", {label: ""}).then(function(made){
+    var box = el("div", {"class":"note n-good", id:"the-invitation"}, [
+      el("h3", {text:"Das hier einmal am anderen Rechner eingeben."}),
+      el("p", {"class":"code", id:"invitation-code", text: made.code}),
+      el("p", {text:"Oder dort direkt diesen Befehl ausführen:"}),
+      el("p", {"class":"code", id:"invitation-command", text: made.what_to_do}),
+      el("p", {"class":"said-by",
+        text:"Wird nur jetzt angezeigt. Diese Sandbox speichert die Einladung nicht im " +
+             "Klartext und kann sie nicht noch einmal zeigen — wenn sie weg ist, erstellen " +
+             "Sie einfach eine neue."}),
+      el("button", {"class":"b ghost", type:"button", id:"invitation-done", text:"Fertig",
+        onclick:function(){ loadDevices(host); }})
+    ]);
+    host.insertBefore(box, host.firstChild);
+    announce("Einladung erstellt.");
+  }).catch(function(e){ host.appendChild(problem(e, null)); });
+}
+
+function when(at){
+  if(!at) return "";
+  try { return new Date(at * 1000).toLocaleTimeString(); } catch(e) { return ""; }
 }
 
 function revoke(dev, host){

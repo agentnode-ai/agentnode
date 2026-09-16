@@ -295,7 +295,12 @@ OPERATIONS = (
                   "run for you, which is what you want unless you need a particular "
                   "interpreter or flags. Give one and the code arrives base64-encoded "
                   "on standard input -- it is NOT written to a file, so a command "
-                  "naming one (python main.py) finds nothing there"),
+                  "naming one (python main.py) finds nothing there",
+                  # Optional in the shape as well as in the words. It was declared REQUIRED
+                  # while its own description told the caller to leave it out, so a client that
+                  # did what the schema said was refused as malformed by the same schema. Every
+                  # real caller happened to send one, which is why nothing caught it.
+                  required=False),
             # Supply the CODE and these two are worked out here. An AI holding only these tools
             # has no way to hash anything -- a real one stopped at exactly this point, correctly
             # refusing to invent a digest, because a disclosure naming the wrong bytes would be
@@ -371,7 +376,12 @@ OPERATIONS = (
                   "run for you, which is what you want unless you need a particular "
                   "interpreter or flags. Give one and the code arrives base64-encoded "
                   "on standard input -- it is NOT written to a file, so a command "
-                  "naming one (python main.py) finds nothing there"),
+                  "naming one (python main.py) finds nothing there",
+                  # Optional in the shape as well as in the words. It was declared REQUIRED
+                  # while its own description told the caller to leave it out, so a client that
+                  # did what the schema said was refused as malformed by the same schema. Every
+                  # real caller happened to send one, which is why nothing caught it.
+                  required=False),
             Field("network", "string", "the access asked for", required=False,
                   one_of=("none", "allowlist", "unrestricted")),
             Field("allowed_domains", "array", "where it may connect, if any", required=False),
@@ -533,9 +543,21 @@ OPERATIONS = (
         params=(Field("window", "string", "which window to report", required=False,
                       one_of=("current", "all")),),
         returns=(
-            Field("runs", "integer", "how many have been started in the window"),
-            Field("seconds", "integer", "how much wall clock has been used in it"),
-            Field("ceilings", "object", "what the operator has set"),
+            Field("runs", "integer", "how many THIS DEVICE has started in the window"),
+            Field("seconds", "integer", "how much wall clock this device has used in it"),
+            # The account's own figures, because the account's ceiling is one of the two that
+            # can refuse you. A customer shown only their device's use cannot tell why they were
+            # refused when a second machine of theirs is what exhausted the allowance -- and
+            # would reasonably conclude the gateway is wrong.
+            Field("account_runs", "integer",
+                  "how many THIS CUSTOMER has started in the window, across every device "
+                  "they have", since="2"),
+            Field("account_seconds", "integer",
+                  "how much wall clock this customer has used in it, across every device",
+                  since="2"),
+            Field("ceilings", "object",
+                  "what the operator has set -- both the per-device and the per-account "
+                  "ceilings, because both apply and the tighter one decides"),
             Field("clears_at", "integer", "when the oldest run stops counting", required=False),
         ),
         errors=COMMON,
@@ -625,6 +647,61 @@ OPERATIONS = (
             Field("ended", "boolean", "whether there was one to end"),
             Field("this_one", "boolean", "whether it was the session making the request"),
         ),
+        errors=COMMON,
+        changes=True,
+    ),
+    Operation(
+        name="devices.invite",
+        audience=PERSON,
+        risk=CHANGES_ACCESS,
+        confirms_with_a_person=True,
+        since="2",
+        needs=MANAGE_DEVICES,
+        summary="Make an invitation so another machine of yours can reach this sandbox as you.",
+        params=(Field("label", "string",
+                      "what to call the machine you are adding, in words you would recognise",
+                      required=False),),
+        returns=(
+            Field("code", "string",
+                  "the invitation, shown ONCE. Nothing stores it and nothing can show it "
+                  "again -- a list that could redisplay one would be as good as one"),
+            Field("invitation", "string",
+                  "the name your list shows it under, which is not the code and cannot be "
+                  "typed back in"),
+            Field("expires_at", "integer", "when it stops working"),
+            Field("what_to_do", "string",
+                  "the one command to run on the machine being added"),
+        ),
+        # Deliberately a PERSON's operation. An AI holding a device token must not be able to
+        # invite another device into the account it is in: that is how one compromised
+        # connection becomes two.
+        errors=COMMON + ("over_a_ceiling",),
+        changes=True,
+    ),
+    Operation(
+        name="devices.invitations",
+        audience=PERSON,
+        risk=READS,
+        confirms_with_a_person=False,
+        since="2",
+        needs=MANAGE_DEVICES,
+        summary="The invitations you have open, and when each stops working.",
+        params=(),
+        returns=(Field("invitations", "array",
+                       "each one, by the name this gateway gave it -- never by anything that "
+                       "could be presented as one"),),
+        errors=COMMON,
+    ),
+    Operation(
+        name="devices.uninvite",
+        audience=PERSON,
+        risk=CHANGES_ACCESS,
+        confirms_with_a_person=True,
+        since="2",
+        needs=MANAGE_DEVICES,
+        summary="Take back an invitation before anybody uses it.",
+        params=(Field("invitation", "string", "the one to take back, by the name the list shows"),),
+        returns=(Field("withdrawn", "boolean", "whether there was one to take back"),),
         errors=COMMON,
         changes=True,
     ),
