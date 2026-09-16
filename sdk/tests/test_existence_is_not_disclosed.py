@@ -21,17 +21,19 @@ the caller's own namespace, so a foreign identifier is not found and rejected --
 **(b)** Identical protocol-visible results: refusal name, wording, remedy, response shape, and
 the same visible side effects, including what is written to the audit and what is not.
 
-**(c)** No statistically robust timing difference above a threshold fixed BEFORE the measurement,
-against a null calibration taken in the same run on the same machine.
+**(c) HAS MOVED.** It lived here and it does not belong in a per-commit suite: it was a
+fifteen-minute statistical measurement that passed or failed by luck, and on its last green run
+it passed by luck. `THREAT-MODEL-CRITERION-DECISION-0001` bound the criterion to the threat model
+instead -- see `docs/review/EXISTENCE-ISOLATION-CRITERION-V2.md`. The measurement itself is
+archived, unchanged, in `security-lane/`, and runs deliberately rather than on every commit.
+
+What stays here is what is deterministic: the code path, and what comes back. Those are the two
+parts the whole thing rests on -- finding F-003 against that decision says it plainly: if (a) or
+(b) regresses, the channel is back, and no timing measurement can compensate.
 
 ## What is deliberately NOT claimed
 
-Constant-time execution in CPython. Garbage collection, dictionary probing, the allocator and the
-interpreter's own scheduling all remain. `EXISTENCE-ISOLATION-DECISION-0001` finding
-F2-TIMING-BOUND-LIMIT says so in the reviewer's own words, and it is right: part (c) establishes
-that no difference survives above the noise of the measurement, and that the measurement is
-sensitive enough to catch the regression it was built from. It does not establish the absence of
-every timing channel, and nothing here should be read as saying it does.
+Constant-time execution in CPython, here or anywhere else in this repository.
 """
 from __future__ import annotations
 
@@ -50,21 +52,6 @@ from agentnode_sdk.gateway.server import GatewayService
 from tests.test_em3c_gateway import StandInBackend, _store_measurement
 from tests.test_two_accounts import _a_customer, _a_run_by
 
-# ---------------------------------------------------------------- pre-registered, before the fix
-
-#: Samples per group. Fixed here, before the measurement was written, per the binding next action
-#: of EXISTENCE-ISOLATION-DECISION-0001.
-SAMPLES = 2000
-
-#: How many DIFFERENT identifiers each group draws from. One foreign id and one absent id would
-#: characterise those two ids rather than the two situations -- finding F2 names exactly that.
-IDENTIFIERS = 16
-
-#: How much better than the null an attacker's best single-threshold guess may do. Fixed before
-#: the measurement. 0.5 is chance.
-MARGIN = 0.05
-
-
 @pytest.fixture()
 def two_accounts(tmp_path):
     state = GatewayState(str(tmp_path / "state"), version="test")
@@ -79,27 +66,6 @@ def two_accounts(tmp_path):
 
 def _absent_id() -> str:
     return uuid.uuid4().hex
-
-
-def _best_threshold_accuracy(one, other) -> float:
-    """The best an attacker with a stopwatch can do: one threshold, both orientations.
-
-    0.5 is chance. Computed the same way for the real comparison and for the null, by this same
-    function, so the two numbers are comparable by construction.
-    """
-    marked = sorted([(v, 0) for v in one] + [(v, 1) for v in other])
-    total = len(one) + len(other)
-    best = 0.0
-    below_one = 0
-    below_other = 0
-    for value, which in marked:
-        below_one += which == 0
-        below_other += which == 1
-        # "at or below the threshold is `one`" and the mirror of it.
-        forward = below_one + (len(other) - below_other)
-        backward = below_other + (len(one) - below_one)
-        best = max(best, forward / total, backward / total)
-    return best
 
 
 # ------------------------------------------------------------------ (a) the code path
@@ -220,103 +186,6 @@ class TestAForeignIdentifierIsAnsweredExactlyLikeAnAbsentOne:
                                 {"challenge": hers["challenge"]})
         missing = self._refusal(service, bob, "connections.check", {"challenge": absent})
         assert self._without(foreign[1], hers["challenge"]) == self._without(missing[1], absent)
-
-
-# ------------------------------------------------------------------ (c) the measurement
-
-
-class TestNoTimingDifferenceSurvivesAboveTheNoiseOfTheMeasurement:
-    """Pre-registered: 2000 interleaved samples per group, 16 identifiers each, margin 0.05.
-
-    Measured at the FUNCTION rather than at the door, and that is the stronger choice: a
-    dispatch appends to the audit file, and a millisecond of disk noise would bury a channel
-    rather than disprove one. `_a_run_of_this_caller` is where the branch was. A null here is a
-    null at the door, because the door's extra work is identical for both cases and only adds
-    noise on top.
-    """
-
-    def _samples(self, service, who, foreign, absent, other_absent):
-        """Interleaved round-robin, so drift and scheduling hit all three groups equally."""
-        groups = {"foreign": [], "absent": [], "null": []}
-        pick = [("foreign", foreign), ("absent", absent), ("null", other_absent)]
-        was_enabled = gc.isenabled()
-        gc.disable()
-        try:
-            for i in range(SAMPLES):
-                for name, pool in pick:
-                    run_id = pool[i % len(pool)]
-                    started = time.perf_counter_ns()
-                    try:
-                        dispatch._a_run_of_this_caller(service, who, run_id)
-                    except dispatch.Refused:
-                        pass
-                    groups[name].append(time.perf_counter_ns() - started)
-        finally:
-            if was_enabled:
-                gc.enable()
-        return groups
-
-    def test_an_attacker_with_a_stopwatch_does_no_better_than_chance(self, two_accounts):
-        service, alice, bob = two_accounts
-        foreign = [_a_run_by(service, alice) for _ in range(IDENTIFIERS)]
-        absent = [_absent_id() for _ in range(IDENTIFIERS)]
-        other_absent = [_absent_id() for _ in range(IDENTIFIERS)]
-
-        groups = self._samples(service, bob, foreign, absent, other_absent)
-
-        # The null: two situations that ARE identical, measured the same way in the same run.
-        # Whatever separation this shows is what this machine's noise is worth today.
-        null = _best_threshold_accuracy(groups["absent"], groups["null"])
-        real = _best_threshold_accuracy(groups["foreign"], groups["absent"])
-
-        assert real <= null + MARGIN, (
-            "telling a FOREIGN run from an ABSENT one by timing alone succeeds %.3f of the time, "
-            "against a null of %.3f on the same machine in the same run. The margin fixed before "
-            "this measurement was %.2f." % (real, null, MARGIN))
-
-    def test_and_the_measurement_can_tell_when_there_IS_a_difference(self, two_accounts):
-        """Sensitivity, in the same run, so a passing result above is not a broken instrument.
-
-        A deliberate existence-dependent branch -- the shape that was removed -- must be caught
-        by the same statistic with the same margin. Without this, a measurement that always
-        returns chance would pass the test above for ever.
-        """
-        service, alice, bob = two_accounts
-        foreign = [_a_run_by(service, alice) for _ in range(IDENTIFIERS)]
-        absent = [_absent_id() for _ in range(IDENTIFIERS)]
-        other_absent = [_absent_id() for _ in range(IDENTIFIERS)]
-
-        def with_the_branch_back(run_id):
-            record = service.runs.get(str(run_id))          # the global lookup, restored
-            if record is not None:
-                # What the old code did with what it found: read two fields and compare them.
-                if (record.owner_client_id, record.owner_account_id) != ("", ""):
-                    raise dispatch.Refused("no_such_run", "no", "no")
-            raise dispatch.Refused("no_such_run", "no", "no")
-
-        groups = {"foreign": [], "absent": [], "null": []}
-        pick = [("foreign", foreign), ("absent", absent), ("null", other_absent)]
-        was_enabled = gc.isenabled()
-        gc.disable()
-        try:
-            for i in range(SAMPLES):
-                for name, pool in pick:
-                    started = time.perf_counter_ns()
-                    try:
-                        with_the_branch_back(pool[i % len(pool)])
-                    except dispatch.Refused:
-                        pass
-                    groups[name].append(time.perf_counter_ns() - started)
-        finally:
-            if was_enabled:
-                gc.enable()
-
-        null = _best_threshold_accuracy(groups["absent"], groups["null"])
-        real = _best_threshold_accuracy(groups["foreign"], groups["absent"])
-        assert real > null + MARGIN, (
-            "the instrument did not notice a deliberate existence-dependent branch: %.3f against "
-            "a null of %.3f. A measurement that cannot see the defect it was built from is not "
-            "evidence that the defect is gone." % (real, null))
 
 
 # ------------------------------------------------------------------ the index cannot drift
