@@ -219,3 +219,51 @@ class TestNothingSaysTheKeyOutLoud:
         assert archive.main(["open", "--in", str(box), "--out", str(tmp_path / "back"),
                              "--key", str(tmp_path / "nowhere")]) == 2
         assert "PROBLEM" in capsys.readouterr().out
+
+
+class TestCryptoShreddingIsTheDeletionMechanismForBackups:
+    """`ALPHA-R2-DATAOPS-0009` P4: "prior backups and handed-out exports survive".
+
+    True, and the two halves have different answers. This class is the first half; the second is
+    in `docs/what-is-kept.md` and is a limitation rather than a mechanism, because a file on
+    somebody else's laptop is outside the boundary and no amount of design reaches it.
+
+    What IS reachable: every archive sealed under a key is unreadable once that key is gone. The
+    property is already there -- it is why sealing exists -- and what was missing is that nothing
+    named it as the deletion mechanism, so nothing tested it as one.
+    """
+
+    def test_destroying_the_key_makes_the_archive_unreadable(self, tmp_path):
+        import os
+
+        from agentnode_sdk.gateway import archive
+
+        key = archive.new_key()
+        secret = b"acct-deadbeef the customer who asked to be deleted"
+        sealed = archive.seal(secret, key, about={"gateway": "g", "manifest_sha256": "0" * 64})
+        assert archive.open_sealed(sealed, key) == secret        # the control: it opened
+
+        key_file = tmp_path / "backup.key"
+        key_file.write_bytes(key)
+        os.unlink(key_file)                                      # destroyed
+        del key
+
+        with pytest.raises(archive.CannotOpen):
+            archive.open_sealed(sealed, archive.new_key())
+
+    def test_and_it_shreds_EVERY_archive_under_that_key_not_one_account(self, tmp_path):
+        """The cost, asserted rather than only written down. An operator reading the documented
+        sequence -- new key, fresh backup, verify, then destroy the old one -- needs this to be
+        the reason for it, not a caveat at the bottom."""
+        from agentnode_sdk.gateway import archive
+
+        key = archive.new_key()
+        archives = [archive.seal(("account %d" % n).encode(), key,
+                                 about={"gateway": "g", "manifest_sha256": "0" * 64})
+                    for n in range(3)]
+        assert all(archive.open_sealed(a, key) for a in archives)
+
+        other = archive.new_key()
+        for a in archives:
+            with pytest.raises(archive.CannotOpen):
+                archive.open_sealed(a, other)

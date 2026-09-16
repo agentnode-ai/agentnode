@@ -137,3 +137,53 @@ Stated because it is the part people assume wrongly:
 * **A tombstone remains** where a metered line was, saying a line existed, when it went and why —
   and nothing about who. Removing tombstones outright would mean anybody who can delete can
   remove a line invisibly, which is the property the chain exists to have.
+
+## Deleting an account, and the copies that are not in the gateway
+
+Deleting an account inside the live gateway is exact: the classes in the retention table are
+walked, each one is removed, what was removed is reconciled against what the table said existed,
+and the metering chain keeps a signed tombstone so that an unauthorised removal is still
+detectable afterwards. That part is measured in the drill.
+
+Two kinds of copy live outside it, and a review was right that deletion was not reaching them
+(`ALPHA-R2-DATAOPS-0009`, P4). They are not the same problem and they do not have the same
+answer.
+
+### Backups: crypto-shredding, and what it costs
+
+Every backup this gateway writes is sealed with AES-256-GCM under a key that is kept somewhere
+else and is never inside the archive. That is there so a stolen archive is not a stolen gateway --
+and it has a second consequence that is useful here: **an archive whose key is destroyed is
+unreadable by anyone, including us.** Destroying the key deletes the contents in the only sense
+that survives the archive being copied somewhere we do not control.
+
+    agentnode gateway backup newkey        # a new key, kept outside the backup directory
+    # destroy the old key                  # every archive sealed under it is now unopenable
+
+The cost is real and is the reason this is a deliberate operator action rather than something
+`delete-account` does on its own:
+
+* **It shreds EVERY backup sealed under that key, not one customer's rows.** A sealed archive is
+  one encrypted object; there is no way to remove one account from it without opening it,
+  rewriting it and sealing it again -- which would mean holding every customer's data in the
+  clear during a routine deletion, a worse exposure than the one it fixes.
+* **So the recovery position changes at the moment it is used.** After shredding, the oldest
+  restorable state is the first backup taken under the new key. An operator who shreds and then
+  needs a restore has both of those facts at once.
+
+The honest sequence, therefore, is: take a fresh backup under a new key, verify it opens, and
+only then destroy the old key. Deletion reaches every archive; the recovery window moves forward
+rather than disappearing.
+
+### Handed-out exports: not reachable, and not claimed to be
+
+When a customer exports their own data, the file is theirs. It is on their disk. Nothing this
+gateway can do reaches it, and no mechanism described here should be read as implying otherwise.
+
+What the gateway does instead is keep the export RECORD -- that an export happened, when, and to
+which account -- and that record is itself one of the retention classes, so it is deleted with
+the account. What is not deleted is the copy the customer already has, and the only truthful
+thing to say about it is that it is outside the boundary.
+
+This is a limitation, not a gap waiting for an implementation. A design that claimed to reach a
+file on somebody else's laptop would be claiming something it cannot do.
