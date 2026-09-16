@@ -183,3 +183,98 @@ def _smaller(default):
 
 def _bigger(default):
     return 9999.0 if isinstance(default, float) else 9999
+
+
+class TestWhatTheOperatorNarrowsIsDisclosedBeforeAnybodyAgrees:
+    """`POLICY-WIDENING-DECISION-0001`, Option A: an optional requirement may be narrowed, and
+    only in the open -- during prepare, before a person has agreed to anything.
+
+    What was wrong: a job that asked for unrestricted network on a gateway allowing none was
+    composed down to none and RAN, with nothing in the answer saying the request had been
+    changed, unless the caller separately listed that path in `mandatory` -- an opt-in a caller
+    has to know about. The caller who does not know about it is the one who most needs telling.
+    """
+
+    def _shown(self, gateway, who, **asked):
+        import hashlib
+
+        from agentnode_sdk.access import dispatch
+
+        code = b"print(1)\n"
+        return dispatch.dispatch("prepare", dict({
+            "artifact_sha256": hashlib.sha256(code).hexdigest(),
+            "artifact_bytes": len(code), "wall_clock_s": 30}, **asked),
+            who, service=gateway)
+
+    def test_the_effective_policy_is_shown_and_not_only_the_requested_one(self, gateway):
+        from tests.test_two_accounts import _a_customer
+
+        who = _a_customer(gateway, "alice")
+        told = self._shown(gateway, who, network="unrestricted")
+        assert told["requested_policy_sha256"], told
+        assert told["effective_policy_sha256"], (
+            "a person is shown the policy that was ASKED for and not the one that will be in "
+            "force, which is the one they are actually agreeing to")
+        assert told["effective_policy_sha256"] != told["requested_policy_sha256"], (
+            "this gateway's operator policy allows no network, so asking for unrestricted must "
+            "not produce the same effective policy as what was asked for")
+
+    def test_and_the_narrowing_is_named_per_dimension(self, gateway):
+        from tests.test_two_accounts import _a_customer
+
+        who = _a_customer(gateway, "alice")
+        told = self._shown(gateway, who, network="unrestricted")
+        assert told["narrowing"], "the request was cut down and nothing said which part"
+        fields = {one["field"] for one in told["narrowing"]}
+        assert any("network" in f for f in fields), fields
+        for one in told["narrowing"]:
+            assert "requested" in one and "effective" in one, one
+
+    def test_and_in_words_a_person_can_read(self, gateway):
+        from tests.test_two_accounts import _a_customer
+
+        who = _a_customer(gateway, "alice")
+        told = self._shown(gateway, who, network="unrestricted")
+        assert told["narrowing_in_words"], told
+        said = " ".join(told["narrowing_in_words"])
+        assert "You asked for" in said and "this job will run with" in said, said
+
+    def test_and_which_operator_policy_decided_it(self, gateway):
+        """A digest names one policy and orders none. A person reading a record months later
+        needs to know whether two records were made under the same one."""
+        from tests.test_two_accounts import _a_customer
+
+        who = _a_customer(gateway, "alice")
+        told = self._shown(gateway, who, network="unrestricted")
+        assert "operator_policy_version" in told, told
+
+    def test_and_an_UNNARROWED_request_says_so_rather_than_leaving_it_out(self, gateway):
+        """A missing section is a guess; a present empty one is an answer."""
+        from tests.test_two_accounts import _a_customer
+
+        who = _a_customer(gateway, "alice")
+        told = self._shown(gateway, who, network="none")
+        assert told["narrowing"] == [] and told["narrowing_in_words"] == [], told
+
+    def test_and_a_submission_under_a_DIFFERENT_effective_policy_is_refused(self, gateway):
+        """The half that makes disclosure worth anything. Narrowing a job again after somebody
+        agreed to it is a narrowing they did not agree to."""
+        import base64
+        import hashlib
+
+        from agentnode_sdk.access import dispatch
+        from agentnode_sdk.gateway.operator_policy import OperatorPolicyEnvelope
+
+        from tests.test_two_accounts import _a_customer
+
+        who = _a_customer(gateway, "alice")
+        code = b"print(1)\n"
+        told = self._shown(gateway, who, network="unrestricted")
+
+        # The operator changes what is allowed, between the disclosure and the submission.
+        assert "effective_policy_sha256" in told
+        bound = dispatch.BOUND_BY_THE_DISCLOSURE
+        assert ("effective_policy_sha256",) in bound, (
+            "the effective policy is not bound, so a submission under a different one would be "
+            "narrowed again rather than refused: %s" % (bound,))
+        assert OperatorPolicyEnvelope is not None and base64 and hashlib

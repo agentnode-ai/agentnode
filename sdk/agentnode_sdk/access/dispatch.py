@@ -787,6 +787,17 @@ BOUND_BY_THE_DISCLOSURE = (
     ("limits",),                           # resources asked for, and the ceilings in force
     ("requested_policy_sha256",),          # the policy being asked for
     ("operator_policy_sha256",),           # the policy in force when it was shown
+    # WHAT WILL ACTUALLY BE IN FORCE, and which of this gateway's policies decided it. Bound
+    # rather than merely shown: `POLICY-WIDENING-DECISION-0001` -- a submission whose effective
+    # policy is not the one a person was shown is refused, because narrowing it again after they
+    # agreed is a narrowing they did not agree to.
+    ("effective_policy_sha256",),
+    ("operator_policy_version",),
+    # `narrowing` is NOT bound, deliberately. It is a derived view of the effective policy, and
+    # the digest above already covers every change it could show -- binding it too would add a
+    # second name to every drift message without adding a single thing the digest does not
+    # already catch. A refusal that names three fields when one moved is a refusal somebody has
+    # to decode.
     ("secrets",),                          # which named secrets would be released
     ("expected_use", "this_would_add_seconds"),   # the basis it is counted and charged against
     ("good_for_seconds",),                 # how long the approval was said to last
@@ -1086,6 +1097,12 @@ def _what_would_happen(service, principal, params, *, approved_by=None, will_run
         _the_policy_being_asked_for(network, domains, asked_for))
     answer["operator_policy_sha256"] = _digest_of_the_policy(
         getattr(service, "operator_policy", None))
+    # AND WHAT WILL ACTUALLY BE IN FORCE, which is not the same thing and used not to be shown.
+    # `POLICY-WIDENING-DECISION-0001` chose Option A: an optional requirement may be narrowed,
+    # and only in the open -- during prepare, before anybody has agreed to anything. So the
+    # effective policy is composed HERE, exactly as submit composes it, and what it costs the
+    # request is said in both a person's words and a program's.
+    answer.update(_what_the_operator_narrows(service, principal, network, domains, asked_for))
     # Names only, and there are none: this sandbox does not release named secrets into a job at
     # all. Said rather than omitted, because an empty section a person can see is an answer and
     # a missing section is a guess.
@@ -1106,6 +1123,69 @@ def _what_would_happen(service, principal, params, *, approved_by=None, will_run
         "and the operator policy in force; what was granted comes back with the submission.",
     ]
     return answer
+
+
+def _what_the_operator_narrows(service, principal, network, domains, wall_clock_s) -> dict:
+    """What this job asked for, what it will actually get, and the difference between them.
+
+    Three things the disclosure did not carry and now does, because
+    `POLICY-WIDENING-DECISION-0001` made them part of what a person agrees to:
+
+    * `effective_policy_sha256` -- the policy that will be in force, not the one asked for. Bound,
+      so a submission under a DIFFERENT effective policy is refused rather than narrowed again:
+      a narrowing that happens after somebody agreed is a narrowing they did not agree to.
+    * `operator_policy_version` -- which of this gateway's policies bound it. A digest names one
+      and orders none; a person reading a record months later needs both.
+    * `narrowing` -- per dimension, what was requested and what is effective, structured; and
+      `narrowing_in_words`, the same thing as sentences, because the structured form is for a
+      program and the person confirming this is not one.
+
+    An EMPTY narrowing is reported as empty rather than omitted. A missing section is a guess and
+    a present empty one is an answer.
+    """
+    from agentnode_sdk.gateway import policy_version as _versions
+    from agentnode_sdk.gateway.policy_paths import (
+        describe_deltas,
+        narrowed_paths,
+        policy_shape,
+    )
+
+    asked = _the_policy_being_asked_for(network, domains, wall_clock_s)
+    try:
+        effective = service.compose(
+            type("Requested", (), {"network": network, "allowed_domains": tuple(domains or ()),
+                                   "wall_clock_s": int(wall_clock_s or 60)})(),
+            client_id=principal.client_id)
+    except Exception:                                         # noqa: BLE001
+        # A gateway that cannot work out what it would enforce must not disclose a guess about
+        # it. The fields are present and empty, which `submit` then binds as empty -- so a
+        # submission that CAN compose one is a drift and is refused.
+        return {"effective_policy_sha256": "", "operator_policy_version": _versions.UNKNOWN,
+                "narrowing": [], "narrowing_in_words": []}
+
+    requested_shape, effective_shape = policy_shape(asked), policy_shape(effective)
+    # EVERY narrowing, not only the ones the job thought to list. A field in neither list that
+    # was reduced with no delta is exactly the silence this decision is about.
+    deltas = describe_deltas(narrowed_paths(requested_shape, effective_shape),
+                             requested_shape, effective_shape)
+    operator_digest = _digest_of_the_policy(getattr(service, "operator_policy", None))
+    return {
+        "effective_policy_sha256": _digest_of_the_policy(effective),
+        "operator_policy_version": _versions.known_version(service.state.root, operator_digest),
+        "narrowing": list(deltas),
+        "narrowing_in_words": [_in_words(one) for one in deltas],
+    }
+
+
+def _in_words(delta) -> str:
+    """One narrowing, as a sentence. The person confirming this is not a program."""
+    if not isinstance(delta, dict):
+        return str(delta)
+    where = delta.get("field") or delta.get("path") or "something"
+    asked = delta.get("requested", delta.get("was"))
+    getting = delta.get("effective", delta.get("now"))
+    return ("You asked for %s = %s; this sandbox allows %s, so that is what this job will run "
+            "with." % (where, asked, getting))
 
 
 def _the_policy_being_asked_for(network: str, domains, wall_clock_s: int):
