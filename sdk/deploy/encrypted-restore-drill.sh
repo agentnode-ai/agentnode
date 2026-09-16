@@ -66,6 +66,43 @@ rm -f "$KEY"
 bash /root/backup-and-restore.sh newkey --key "$KEY" || died "could not make a key"
 ls -l "$KEY" | sed 's/^/   /'
 
+step "2b. what this gateway REFUSES, recorded before the backup"
+# `P6` verlangt, dass die wiederhergestellte Instanz dieselben Faelle ablehnt wie vorher. Ein
+# Restore, nach dem etwas durchgeht, das vorher abgelehnt wurde, ist kein gelungener Restore --
+# und ein Restore, nach dem etwas abgelehnt wird, das vorher ging, auch nicht. Beide Richtungen
+# werden hier festgehalten und nach dem Hochfahren byteweise verglichen.
+refusals_now() {
+  $PY - "$1" <<PYEOF
+import json, ssl, sys, urllib.request
+ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+out = {}
+
+def ask(name, path, token, method="GET", body=None):
+    req = urllib.request.Request("https://127.0.0.1:8099" + path, method=method,
+                                 data=json.dumps(body).encode() if body else None)
+    if body: req.add_header("Content-Type", "application/json")
+    if token: req.add_header("X-AgentNode-Token", token)
+    req.add_header("X-AgentNode-Protocol", "2")
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as answer:
+            out[name] = [answer.status, answer.read().decode("utf-8", "replace")]
+    except urllib.error.HTTPError as refused:
+        out[name] = [refused.code, refused.read().decode("utf-8", "replace")]
+    except Exception as broke:
+        out[name] = ["unreachable", str(broke)[:120]]
+
+# Eine Kennung, die es nirgends gibt; eine Anfrage ohne Berechtigung; eine mit einer erfundenen.
+ask("no_such_run", "/v1/op/status", "$TOKEN", "POST", {"run_id": "f" * 32})
+ask("no_credential", "/v1/op/devices/list", "")
+ask("bad_credential", "/v1/op/devices/list", "not-a-real-token")
+ask("older_door_no_such_run", "/v1/jobs/" + "e" * 32, "$TOKEN")
+open(sys.argv[1], "w", encoding="utf-8").write(json.dumps(out, indent=1, sort_keys=True))
+print("   ", len(out), "Ablehnungen festgehalten")
+PYEOF
+}
+refusals_now /root/refusals-before.json || died "konnte die Ablehnungen vorher nicht festhalten"
+cat /root/refusals-before.json | head -6 | sed 's/^/     /'
+
 step "3b. a leftover this gateway holds that the drill does not know about"
 # The drill reported `use-log.jsonl.before-the-chain-20260911-154110` as unaccounted, and it is
 # right: a stale copy of the metering log left by a migration in September. It is NOT given a
@@ -147,6 +184,16 @@ with urllib.request.urlopen(req, context=ctx, timeout=30) as answer:
 print("   the credential works, and sees", len(said.get("devices", [])), "device(s)")
 sys.exit(0 if said.get("devices") else 1)
 PYEOF
+
+step "11b. and it REFUSES exactly what it refused before"
+refusals_now /root/refusals-after.json || died "konnte die Ablehnungen nachher nicht festhalten"
+if diff -u /root/refusals-before.json /root/refusals-after.json > /root/refusals.diff; then
+  echo "   identisch: jeder Fall wird nach der Wiederherstellung genauso abgelehnt wie vorher"
+else
+  echo "   UNTERSCHIED:"
+  sed 's/^/     /' /root/refusals.diff
+  died "die wiederhergestellte Instanz antwortet anders als die, von der das Backup stammt"
+fi
 
 step "12. and the metering chain still verifies"
 runuser -u agentnode-gateway -- env HOME=/var/lib/agentnode $PY - <<PYEOF
