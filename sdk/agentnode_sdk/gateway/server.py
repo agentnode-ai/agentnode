@@ -1191,7 +1191,20 @@ class GatewayService:
         # Before anything else costs anything. `ALPHA-ALLOWANCE`: an operator's stop is the
         # first question asked of every job, and a gateway that cannot tell whether it has been
         # stopped answers it as stopped.
+        # THE CHOKEPOINT. `may_this_caller_proceed` asks this too, for every operation, and for
+        # a while it was the only thing that asked -- which left `submit` and `admit` as callable
+        # paths to execution with no suspension check on them. A caller that did not come through
+        # the dispatcher skipped it. `ALPHA-R2-ADMISSION-0010` found it under D1 and D4.
+        #
+        # Asked here as well, and deliberately not instead: the dispatcher's call refuses the
+        # CHEAP operations too, which is what a probe actually uses. This one refuses the
+        # expensive one however it is reached. The shared function consumes nothing, so asking
+        # twice charges nobody twice -- the rate limit stays at the dispatcher for that reason.
         halted = why_it_is_stopped(self.state.root)
+        from agentnode_sdk.gateway import admission as _admission
+
+        _admission.standing_permits_work(
+            self.standing_of(account_id, client_id), stopped_because=halted or "")
         if halted:
             raise Stopped(halted)
 

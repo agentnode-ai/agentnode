@@ -8,7 +8,9 @@ it was configured is NOT_EVIDENCED.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
+import pathlib
 import json
 import uuid
 
@@ -232,28 +234,87 @@ class TestSuspensionAndTheStop:
 class TestNoClaimToDetectIntent:
     """D8 is blocking in the frozen profile, so it is asserted rather than left to review."""
 
-    def test_no_reader_facing_surface_claims_to_detect_intent(self):
-        import pathlib
+    #: The phrases that would be a claim to know what a job is FOR. Not a filter on rude words:
+    #: each of these asserts a capability this product does not have and cannot acquire, and the
+    #: damage is done by a reader believing it rather than by anyone writing it.
+    FORBIDDEN = ("detects malicious", "detect malicious", "detects abuse",
+                 "detects illegal", "detect illegal", "malicious intent",
+                 "identifies malicious", "blocks malicious code",
+                 "knows what the job is for")
 
+    #: THE READER-FACING SURFACES, enumerated rather than assumed. `ALPHA-R2-ADMISSION-0010`
+    #: returned D8 NOT_EVIDENCED because the test read Python files under the installed package
+    #: and nothing else -- "no complete enumeration of those reader-facing surfaces is supplied",
+    #: which was exactly right. A person meets this product through its documentation far more
+    #: often than through its source.
+    #:
+    #: Each entry is (a directory relative to the repository root, a glob). The test FAILS if a
+    #: directory named here does not exist, so removing a surface has to be a deliberate edit
+    #: here rather than a silent gap that leaves the check passing over nothing.
+    SURFACES = (
+        ("sdk/agentnode_sdk", "**/*.py"),        # the source, including every docstring
+        ("sdk/docs", "**/*.md"),                 # what an operator reads
+        ("sdk", "*.md"),                         # the SDK's own README and friends
+        (".", "*.md"),                           # the repository's front door
+    )
+
+    def _repo_root(self):
         import agentnode_sdk
 
-        forbidden = ("detects malicious", "detect malicious", "detects abuse",
-                     "detects illegal", "detect illegal", "malicious intent",
-                     "identifies malicious", "blocks malicious code",
-                     "knows what the job is for")
-        root = pathlib.Path(agentnode_sdk.__file__).parent
-        offenders = []
-        for path in root.rglob("*.py"):
-            try:
-                text = path.read_text(encoding="utf-8").lower()
-            except (OSError, UnicodeDecodeError):
-                continue
-            for phrase in forbidden:
-                if phrase in text:
-                    offenders.append("%s: %r" % (path.name, phrase))
+        # .../sdk/agentnode_sdk/__init__.py -> .../
+        return pathlib.Path(agentnode_sdk.__file__).resolve().parent.parent.parent
+
+    def test_no_reader_facing_surface_claims_to_detect_intent(self):
+        root = self._repo_root()
+        offenders, looked_at = [], 0
+        for where, pattern in self.SURFACES:
+            directory = root / where
+            assert directory.is_dir(), (
+                "%s is named as a reader-facing surface and is not there. Either it moved, in "
+                "which case fix this list, or it is gone, in which case say so -- a check that "
+                "passes because it looked at nothing is the failure this whole file is about."
+                % directory)
+            for path in sorted(directory.glob(pattern)):
+                if not path.is_file() or "node_modules" in path.parts or ".git" in path.parts:
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8").lower()
+                except (OSError, UnicodeDecodeError):
+                    continue
+                looked_at += 1
+                for phrase in self.FORBIDDEN:
+                    if phrase in text:
+                        offenders.append("%s: %r" % (path.relative_to(root), phrase))
+        assert looked_at > 100, (
+            "only %d files were read, which is too few for this list to have covered the "
+            "product. A green result here would be a green result about nothing." % looked_at)
         assert not offenders, (
             "a claim to determine intent is a claim this product does not have and cannot "
             "acquire: " + "; ".join(offenders))
+
+    def test_the_commit_messages_on_this_branch_do_not_claim_it_either(self):
+        """The surface the enumeration above cannot reach by walking a directory.
+
+        A commit message is read -- in a pull request, in a changelog, in `git log` -- and it is
+        the one reader-facing text that is not a file in the tree. What can be checked is this
+        branch's own range against its base; what CANNOT be checked is a message somebody writes
+        tomorrow, and no test in a repository can check that. The boundary is stated rather than
+        papered over: this covers the work under review, and the future is covered by people.
+        """
+        import subprocess
+
+        root = self._repo_root()
+        try:
+            done = subprocess.run(["git", "log", "--format=%B", "origin/main..HEAD"],
+                                  cwd=root, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            pytest.skip("git is not available to read the branch's messages: %s" % exc)
+        if done.returncode != 0:
+            pytest.skip("the branch's base is not available here: %s" % done.stderr[-160:])
+        body = done.stdout.lower()
+        assert body.strip(), "no commit messages were read, so this test proved nothing"
+        found = [p for p in self.FORBIDDEN if p in body]
+        assert not found, "a commit message on this branch claims to detect intent: %r" % found
 
     def test_and_the_module_that_could_says_so_itself(self):
         import inspect
@@ -261,3 +322,112 @@ class TestNoClaimToDetectIntent:
         said = inspect.getdoc(admission) or ""
         assert "does not detect what a job is for" in said.lower()
         assert "behavioural signals" in said.lower()
+
+
+class TestTheStopAndTheSuspensionHoldOnEveryPathNotOnlyTheDispatcher:
+    """`ALPHA-R2-ADMISSION-0010`, D1 and D4, which are the same finding read twice:
+
+        "submit is itself a callable path to execution and calls admit without calling
+         may_this_caller_proceed. Thus admission is not unskippable for internal callers."
+        "account suspension is checked only by may_this_caller_proceed; direct submit/admit
+         callers bypass that check, so suspension does not take effect on every execution door."
+
+    Both were true. `may_this_caller_proceed` is reached from the dispatcher for every operation,
+    and every customer-facing door goes through the dispatcher -- which is why the tests above
+    this class pass and why the gap was invisible from outside. But `GatewayService.submit` is a
+    public method on a public object, and a check that holds only because every caller remembered
+    to ask for it first is available rather than enforced.
+
+    So the standing checks moved to `admit`, which every path to execution goes through, and the
+    tests below call it DIRECTLY -- no dispatcher, no principal, no adapter. If the only thing
+    standing between a suspended account and a container is the dispatcher, these fail.
+
+    What could not move is the rate limit: `rate.spend` consumes budget, so asking it twice would
+    charge a caller twice for arriving once. The last test here is about that.
+    """
+
+    def _a_job_from(self, gateway, who):
+        import hashlib
+
+        from agentnode_sdk.gateway.policy_paths import policy_shape
+        from agentnode_sdk.gateway.protocol import JobRequest, canonical_bytes, digest
+
+        code = b"print(1)\n"
+        request = JobRequest(job_id="j", run_id=uuid.uuid4().hex, wall_clock_s=5,
+                             artifact_sha256=hashlib.sha256(code).hexdigest(),
+                             policy_sha256="")
+        shape = policy_shape(gateway.requested_policy(request))
+        return dataclasses.replace(
+            request, policy_sha256=digest(canonical_bytes(shape))), code
+
+    def test_admit_refuses_a_suspended_account_with_no_dispatcher_in_sight(self, gateway):
+        who = _a_customer(gateway, "alice")
+        request, code = self._a_job_from(gateway, who)
+        # The control first: it is admitted while the account is in good standing, so the
+        # refusal below is the suspension and not a malformed request.
+        gateway.admit(request, code, client_id=who.device_id, account_id=who.account_id)
+
+        gateway.state.accounts.suspend(who.account_id, "we need to talk about last Tuesday",
+                                       by="the operator")
+        with pytest.raises(admission.NotAdmitted) as refused:
+            gateway.admit(request, code, client_id=who.device_id, account_id=who.account_id)
+        # BOTH halves, because they are deliberately different. `reason` is the internal code and
+        # says which of the four standing checks fired; `refusal` is the wire vocabulary, and
+        # `AS_A_REFUSAL` maps a suspension onto `gateway_stopped` so a caller sees one shape for
+        # "this is not going to run and it is not about your request". Asserting only the wire
+        # word would pass if the suspension check were replaced by the operator stop.
+        assert refused.value.reason == "account_suspended"
+        assert refused.value.refusal == "gateway_stopped"
+        assert "last Tuesday" in refused.value.because
+
+    def test_and_submit_refuses_it_too_because_submit_goes_through_admit(self, gateway):
+        who = _a_customer(gateway, "alice")
+        request, code = self._a_job_from(gateway, who)
+        gateway.state.accounts.suspend(who.account_id, "a reason", by="the operator")
+        # `submit` does not raise: on this path a refusal is an ANSWER, returned as a record with
+        # a state and a reason, because a client that submitted something is owed a record of
+        # what happened to it rather than a stack trace. What matters for D1 is not the shape of
+        # the refusal but that nothing ran -- so both are asserted.
+        record = gateway.submit(request, code, client_id=who.device_id,
+                                account_id=who.account_id)
+        assert record.state == "refused"
+        assert record.refused_as == "gateway_stopped"
+        assert "suspended" in record.refusal.lower()
+        # NOTHING RAN, asked of the backend rather than of the record. `started_at` is stamped
+        # when the submission is RECEIVED, so it is set on a refusal too and would have made a
+        # comfortable and useless assertion. What settles it is that the backend was never asked
+        # to run anything: the stand-in keeps every spec it is handed, and it was handed none.
+        assert gateway.backend.specs == [], (
+            "a refused submission reached the backend: %r" % (gateway.backend.specs,))
+
+    def test_and_an_account_record_it_cannot_read_is_not_good_standing(self, gateway, tmp_path):
+        """"Cannot tell" is a stop, here as everywhere else. An unreadable accounts file used to
+        be the one way past this on the direct path, because the direct path asked nothing."""
+        who = _a_customer(gateway, "alice")
+        request, code = self._a_job_from(gateway, who)
+        # The standing is replaced rather than the file corrupted, because what is being asked
+        # here is whether ADMIT consults standing at all -- not whether `Accounts` re-reads a
+        # file it has already cached, which is a different question with its own tests.
+        unreadable = dataclasses.replace(
+            gateway.standing_of(who.account_id, who.device_id), cannot_tell=True)
+        gateway.standing_of = lambda *a, **k: unreadable
+        with pytest.raises(admission.NotAdmitted) as refused:
+            gateway.admit(request, code, client_id=who.device_id, account_id=who.account_id)
+        assert refused.value.reason == "account_unreadable"
+
+    def test_asking_twice_costs_the_caller_nothing(self, gateway):
+        """The reason the rate limit did NOT move with the rest.
+
+        `may_this_caller_proceed` spends rate budget; it is called per operation, which is the
+        point. If `admit` had simply called it again, one submission would have been charged
+        twice and a customer's limit would have been half what they were told. The function that
+        moved is the one that consumes nothing -- asserted here rather than reasoned about,
+        because "idempotent" is a claim that rots quietly.
+        """
+        who = _a_customer(gateway, "alice")
+        request, code = self._a_job_from(gateway, who)
+        standing = gateway.standing_of(who.account_id, who.device_id)
+        for _ in range(50):
+            admission.standing_permits_work(standing, stopped_because="")
+        # Fifty calls to the moved check, and the rate limit has seen nothing.
+        gateway.admit(request, code, client_id=who.device_id, account_id=who.account_id)

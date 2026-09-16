@@ -245,6 +245,53 @@ class Standing:
     cannot_tell: bool = False
 
 
+def standing_permits_work(standing: Standing, *, stopped_because: str) -> None:
+    """The refusals that are properties of the CALLER and consume nothing. Raises to refuse.
+
+    Split out of `before_an_operation` because of where it has to be asked. The dispatcher asks
+    that function for every operation, and for a while that was the only place any of this was
+    asked -- which made admission unskippable for callers that came through the dispatcher and
+    skippable for every other caller of `submit`. `ALPHA-R2-ADMISSION-0010` found exactly that,
+    under D1 and D4, and it was right: a check that depends on the caller having remembered to
+    call it is not enforced, it is merely available.
+
+    So `admit` calls this too, and `admit` is the one thing every path to execution goes
+    through. What could NOT move with it is the rate limit: `rate.spend` consumes budget, and
+    calling it twice for one request would charge a caller twice for arriving once. The rate
+    therefore stays where the request is counted, and what moves is what is safe to ask again.
+
+    Idempotent on purpose. Asking twice must cost nothing and must give the same answer.
+    """
+    if stopped_because:
+        # STOPPED_SAYS is the stable opening the rest of the product already uses for this.
+        # Composing a second sentence here would mean the same event read differently depending
+        # on which door somebody came through, and a client matching on one of them would be
+        # right about half the time.
+        from agentnode_sdk.gateway.allowance import STOPPED_SAYS
+
+        raise NotAdmitted(
+            "gateway_stopped",
+            STOPPED_SAYS + stopped_because,
+            "Nothing will run until whoever runs it starts it again. You can still ask "
+            "what happened to runs you already submitted.")
+
+    if standing.cannot_tell:
+        raise NotAdmitted(
+            "account_unreadable",
+            "This sandbox cannot currently read which of its accounts are suspended, so it "
+            "is not taking work from any of them.",
+            "Ask whoever runs this sandbox to look at the gateway's state directory. "
+            "Nothing was run and nothing was counted against you.")
+
+    if standing.suspended_because:
+        raise NotAdmitted(
+            "account_suspended",
+            "This account is suspended: %s" % standing.suspended_because,
+            "Reply to whoever runs this sandbox. A suspension is lifted by a person, and "
+            "nothing you send here changes it. You can still read what this account has "
+            "already done.")
+
+
 def before_an_operation(standing: Standing, *, stopped_because: str, allowance,
                         rate: RateLimit, would_run_work: bool,
                         now: float | None = None) -> None:
@@ -276,34 +323,7 @@ def before_an_operation(standing: Standing, *, stopped_because: str, allowance,
             "Pair this device again with a fresh invitation.")
 
     if would_run_work:
-        if stopped_because:
-            # STOPPED_SAYS is the stable opening the rest of the product already uses for this.
-            # Composing a second sentence here would mean the same event read differently
-            # depending on which door somebody came through, and a client matching on one of
-            # them would be right about half the time.
-            from agentnode_sdk.gateway.allowance import STOPPED_SAYS
-
-            raise NotAdmitted(
-                "gateway_stopped",
-                STOPPED_SAYS + stopped_because,
-                "Nothing will run until whoever runs it starts it again. You can still ask "
-                "what happened to runs you already submitted.")
-
-        if standing.cannot_tell:
-            raise NotAdmitted(
-                "account_unreadable",
-                "This sandbox cannot currently read which of its accounts are suspended, so it "
-                "is not taking work from any of them.",
-                "Ask whoever runs this sandbox to look at the gateway's state directory. "
-                "Nothing was run and nothing was counted against you.")
-
-        if standing.suspended_because:
-            raise NotAdmitted(
-                "account_suspended",
-                "This account is suspended: %s" % standing.suspended_because,
-                "Reply to whoever runs this sandbox. A suspension is lifted by a person, and "
-                "nothing you send here changes it. You can still read what this account has "
-                "already done.")
+        standing_permits_work(standing, stopped_because=stopped_because)
 
     lifts = rate.spend(standing.device_id, allowance.requests_per_minute, now=at)
     if lifts:
