@@ -171,17 +171,26 @@ class Joining:
         now = self._clock()
         with self._lock, ProcessLock(self.path):
             kept = self._tidied(self._read(), now)
-            for fingerprint, found in list(kept.items()):
-                if fingerprint[:8] != str(named):
-                    continue
-                if found.get("account_id") != str(account_id):
-                    # The same answer as one that does not exist. Telling somebody an invitation
-                    # exists but is not theirs tells them it exists.
-                    return False
-                del kept[fingerprint]
-                self._write(kept)
-                return True
-            return False
+            # THIS ACCOUNT'S OWN, first. What stood here walked every invitation on the gateway
+            # and compared the account afterwards, so an invitation belonging to somebody else
+            # was found and then refused while one that never existed was not found at all.
+            # Same answer, different work. `EXISTENCE-ISOLATION-DECISION-0001`.
+            mine = self._of_account(kept, account_id)
+            fingerprint = mine.get(str(named))
+            if fingerprint is None:
+                return False
+            del kept[fingerprint]
+            self._write(kept)
+            return True
+
+    def _of_account(self, kept: dict, account_id: str) -> dict:
+        """The names THIS account has open, mapped to their fingerprints.
+
+        Built from the account rather than searched by name, so a name that is not in here is a
+        name this account does not have -- whoever else may or may not have it.
+        """
+        return {fingerprint[:8]: fingerprint for fingerprint, found in kept.items()
+                if found.get("account_id") == str(account_id)}
 
     def drop_everything_of(self, account_id: str) -> int:
         """Every invitation this account has open. What deleting a customer has to imply."""

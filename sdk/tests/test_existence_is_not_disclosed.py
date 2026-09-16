@@ -317,3 +317,82 @@ class TestNoTimingDifferenceSurvivesAboveTheNoiseOfTheMeasurement:
             "the instrument did not notice a deliberate existence-dependent branch: %.3f against "
             "a null of %.3f. A measurement that cannot see the defect it was built from is not "
             "evidence that the defect is gone." % (real, null))
+
+
+# ------------------------------------------------------------------ the index cannot drift
+
+
+class TestTheOwnerIndexSaysExactlyWhatTheContentsSay:
+    """`EXISTENCE-ISOLATION-DECISION-0001` finding F1-INDEX-CONSISTENCY, answered.
+
+    The worry is right and it is the one that matters: an index maintained by whoever remembers
+    to maintain it drifts, and the way it drifts is that a customer's OWN run stops being
+    reachable. So every mutation goes through one class, and `everything_matches()` rebuilds the
+    index from the contents -- these tests drive the paths the finding names and assert they
+    still agree afterwards.
+    """
+
+    def _drive_everything(self, service, alice, bob):
+        """Creation, ownership, replacement, cancellation, deletion, and recovery."""
+        from agentnode_sdk.gateway.server import RunRecord
+
+        made = [_a_run_by(service, alice), _a_run_by(service, bob), _a_run_by(service, alice)]
+        # Replacement in place, which is what a restart's recovery does to a record it re-reads.
+        again = RunRecord(run_id=made[0], job_id="", state="finished")
+        again.owner_client_id = alice.client_id
+        again.owner_account_id = alice.account_id
+        service.runs[made[0]] = again
+        # A record with no owner at all -- the older-door and pre-accounts shape.
+        orphan = _absent_id()
+        service.runs[orphan] = RunRecord(run_id=orphan, job_id="", state="finished")
+        # And one taken away again.
+        del service.runs[made[2]]
+        return made, orphan
+
+    def test_after_every_kind_of_change(self, two_accounts):
+        service, alice, bob = two_accounts
+        self._drive_everything(service, alice, bob)
+        assert service.runs.everything_matches(), (
+            "the owner index and the runs disagree, which is how a customer's own run becomes "
+            "unreachable")
+
+    def test_and_a_run_with_no_owner_is_in_nobodys_namespace(self, two_accounts):
+        service, alice, bob = two_accounts
+        _made, orphan = self._drive_everything(service, alice, bob)
+        assert orphan in service.runs
+        for who in (alice, bob):
+            assert orphan not in service.runs.owned_by(who.account_id, who.client_id)
+        assert service.runs.everything_matches()
+
+    def test_and_each_account_sees_exactly_its_own(self, two_accounts):
+        service, alice, bob = two_accounts
+        made, _orphan = self._drive_everything(service, alice, bob)
+        hers = service.runs.owned_by(alice.account_id, alice.client_id)
+        his = service.runs.owned_by(bob.account_id, bob.client_id)
+        assert made[0] in hers and made[0] not in his
+        assert made[1] in his and made[1] not in hers
+        assert made[2] not in hers and made[2] not in his, "a deleted run is still in a namespace"
+
+    def test_and_an_owner_with_nothing_costs_what_an_unknown_owner_costs(self, two_accounts):
+        """Both are the same empty mapping. An owner who happens to have no runs must not be
+        distinguishable from a name nobody has ever had."""
+        service, _alice, _bob = two_accounts
+        nobody = service.runs.owned_by("acct-" + "0" * 16, "c" * 16)
+        also = service.runs.owned_by("acct-" + "1" * 16, "d" * 16)
+        assert nobody == {} and also == {}
+        assert nobody is also
+
+    def test_and_reindexing_a_record_whose_owner_changed_keeps_them_in_step(self, two_accounts):
+        """Nothing in this product changes a run's owner after it is created. If something
+        starts to, `reindex` is what it must call -- so it has to work."""
+        service, alice, bob = two_accounts
+        run = _a_run_by(service, alice)
+        service.runs[run].owner_account_id = bob.account_id
+        service.runs[run].owner_client_id = bob.client_id
+        assert not service.runs.everything_matches(), (
+            "a field mutated behind the mapping's back went unnoticed, so this test proves "
+            "nothing about reindex")
+        service.runs.reindex(run)
+        assert service.runs.everything_matches()
+        assert run in service.runs.owned_by(bob.account_id, bob.client_id)
+        assert run not in service.runs.owned_by(alice.account_id, alice.client_id)

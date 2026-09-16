@@ -1408,7 +1408,15 @@ def _a_run_of_this_caller(service, principal, run_id):
     test is a second, independent condition, so a device id that somehow appeared in two
     accounts still could not reach across. Neither test is load-bearing alone.
     """
-    record = service.runs.get(str(run_id))
+    # INSIDE THIS CALLER'S OWN NAMESPACE, or not at all. What stood here looked the run up in
+    # every run on the gateway and rejected it afterwards -- so a foreign identifier was FOUND
+    # and refused while an absent one was not found, and the branch structure therefore depended
+    # on whether another account's object existed. The answers were already identical; the work
+    # was not. `EXISTENCE-ISOLATION-DECISION-0001` chose to remove that at its source.
+    #
+    # One dictionary miss now, whether the id belongs to another account, to another device of
+    # this same account, or to nobody.
+    record = service.runs.owned_by(principal.account_id, principal.client_id).get(str(run_id))
     owning_account = getattr(record, "owner_account_id", "") if record is not None else ""
     # A run with NO recorded owner belongs to nobody, and belonging to nobody is not the same as
     # belonging to whoever asks. What stood here tested the owner only when there WAS one, so an
@@ -1598,16 +1606,16 @@ def _connections_check(service, principal, params):
     """Whether that connection has done the thing. Read from this gateway's own audit."""
     from agentnode_sdk.access.enrolment import NoSuchChallenge
 
+    # THIS ACCOUNT'S OWN, resolved in one step. What stood here looked the challenge up among
+    # every enrolment on the gateway and compared the account afterwards -- so a foreign one was
+    # found and refused while an absent one was not found, and the two refusals did not even say
+    # the same words: one mentioned the window closing and the other did not. One lookup, one
+    # message. `EXISTENCE-ISOLATION-DECISION-0001`.
     try:
-        found = service.connections.about(str(params["challenge"]))
+        found = service.connections.about_for(principal.account_id, str(params["challenge"]))
     except NoSuchChallenge as exc:
         raise Refused("no_such_run", str(exc),
                       "Start setting the connection up again.") from exc
-    if found["account"] != principal.account_id:
-        # The same answer as one that does not exist. A challenge is not a thing to enumerate.
-        raise Refused("no_such_run",
-                      "this sandbox is not setting up a connection under that name",
-                      "Start setting the connection up again.")
     said = service.connections.satisfied_by(str(params["challenge"]), lambda: _audit_lines(service))
     return {"satisfied": bool(said.get("satisfied")), "label": found["label"],
             "way_in": found["channel"], "operation": found["operation"],

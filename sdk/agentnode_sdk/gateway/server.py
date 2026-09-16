@@ -49,6 +49,7 @@ from agentnode_sdk.gateway import client as _gc
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
 from agentnode_sdk.gateway import challenge as ch
 from agentnode_sdk.gateway.ledger import Ledger
+from agentnode_sdk.gateway.runs import Runs
 from agentnode_sdk.gateway.readiness import (
     Readiness,
     ReadinessGate,
@@ -337,7 +338,10 @@ class GatewayService:
         self._worker = worker
         self._operator_policy = operator_policy
         self.nonces = NonceCache()
-        self.runs: dict[str, RunRecord] = {}
+        # Every run, AND the same runs indexed by who owns them. A customer's path resolves a
+        # run inside its own namespace, so a foreign identifier is not found and refused -- it
+        # is not found. See `gateway/runs.py` and EXISTENCE-ISOLATION-DECISION-0001.
+        self.runs: Runs = Runs()
         # What must survive this process. In-memory replay protection has a documented way
         # around it: restart the gateway, which on a server happens on its own.
         self.ledger = Ledger(self.state.root / "ledger.json")
@@ -2124,9 +2128,11 @@ class _Handler(BaseHTTPRequestHandler):
         if not who.authenticated:
             return self._send(401, refusal("this is not a session that may collect a setup"))
         try:
-            found = self.service.connections.about(asked.get("challenge", ""))
-            if found["account"] != who.account_id:
-                raise enrolment.NoSuchChallenge("not this account's setup")
+            # THIS SESSION'S OWN ACCOUNT, resolved in one step rather than found globally and
+            # compared afterwards. `EXISTENCE-ISOLATION-DECISION-0001`: a setup belonging to
+            # somebody else must not be FOUND and refused; it must not be found.
+            found = self.service.connections.about_for(who.account_id,
+                                                       asked.get("challenge", ""))
             # The connection joins the account that set it up. Leaving this out made every AI a
             # person added from their own console a separate customer, with its own ceilings,
             # its own bill and no way for the person to see it in their own device list.

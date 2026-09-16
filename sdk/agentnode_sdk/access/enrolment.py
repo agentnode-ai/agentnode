@@ -113,6 +113,28 @@ class Connections:
             self._write(self._tidied(kept, now))
         return dict(entry, challenge=challenge)
 
+    def about_for(self, account: str, challenge: str) -> dict:
+        """One of THIS account's enrolments, by name. The caller's namespace, or nothing.
+
+        `about` below looks a challenge up among every enrolment on the gateway, which is right
+        for the gateway's own paths and wrong for a customer's: a challenge belonging to somebody
+        else was found and then refused, while one that never existed was not found at all. Same
+        answer, different work. `EXISTENCE-ISOLATION-DECISION-0001` removed that shape.
+        """
+        now = self._clock()
+        with self._lock:
+            kept = self._read()
+        # Selected by ACCOUNT first, so a name that is not in here is a name this account does
+        # not have -- whoever else may or may not have it.
+        mine = {name: found for name, found in kept.items()
+                if found.get("account") == str(account)}
+        entry = mine.get(str(challenge))
+        if entry is None or now >= float(entry.get("expires_at", 0)):
+            raise NoSuchChallenge(
+                "this sandbox is not setting up a connection under that name, or the window for "
+                "it has closed")
+        return dict(entry, challenge=str(challenge))
+
     def about(self, challenge: str) -> dict:
         with self._lock:
             kept = self._read()
