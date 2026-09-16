@@ -30,8 +30,73 @@ arrangement this whole layer exists to end.
 """
 from __future__ import annotations
 
-from collections.abc import Iterator, MutableMapping
+import hashlib
+import secrets
+from collections.abc import Iterator, Mapping, MutableMapping
 from typing import Any
+
+#: Every caller-supplied identifier is folded into a buffer of exactly this many bytes before it
+#: is hashed, so a four-character identifier and a four-kilobyte one cost the same to look up.
+#: Identifier LENGTH stops being a variable an attacker can move.
+WIDTH = 64
+
+#: The folded key's width. Sixteen bytes is far more than the number of runs any gateway holds,
+#: and a collision would only ever mean a lookup missing -- never one account reaching another's
+#: run, because the namespace it is looked up in is chosen before the key is computed.
+KEY_WIDTH = 16
+
+
+class _Namespace(Mapping):
+    """One owner's runs, addressed by the identifiers their caller actually sends.
+
+    The mapping inside is keyed by a FOLDED digest rather than by the caller's string. Three
+    things follow, and `TIMING-PROTOCOL-V2-DECISION-0001` chose the design for the third:
+
+    * every lookup costs the same regardless of how long the identifier was;
+    * the fold is bound to the OWNER, so the same string produces different keys in different
+      accounts and bucket structure in one namespace says nothing about another's;
+    * an attacker cannot choose where in the table their probe lands, because the fold is keyed
+      with a secret that exists only in this process's memory.
+
+    What it does NOT do is make the work constant. A hit and a miss still differ. It removes
+    attacker CONTROL over that and removes width as a variable; both are structural, and neither
+    is a timing claim. See `docs/review/TIMING-PROTOCOL-V2.md`.
+    """
+
+    __slots__ = ("_key", "_runs")
+
+    def __init__(self, key: bytes, runs: dict) -> None:
+        self._key = key
+        self._runs = runs
+
+    def _fold(self, run_id) -> bytes:
+        raw = str(run_id).encode("utf-8", "surrogatepass")[:WIDTH].ljust(WIDTH, b"\0")
+        return hashlib.blake2b(raw, key=self._key, digest_size=KEY_WIDTH).digest()
+
+    def get(self, run_id, default=None):
+        return self._runs.get(self._fold(run_id), default)
+
+    def __getitem__(self, run_id):
+        return self._runs[self._fold(run_id)]
+
+    def __contains__(self, run_id) -> bool:
+        return self._fold(run_id) in self._runs
+
+    def __iter__(self) -> Iterator:
+        return iter(self._runs)
+
+    def __len__(self) -> int:
+        return len(self._runs)
+
+    def __eq__(self, other) -> bool:
+        # So that an owner with nothing compares equal to `{}`, which is how a caller asks
+        # "is there anything here" without caring how it is keyed.
+        if isinstance(other, _Namespace):
+            return self._runs == other._runs
+        return len(self._runs) == 0 and isinstance(other, Mapping) and len(other) == 0
+
+    def __hash__(self):                                       # pragma: no cover - not a key
+        return id(self)
 
 
 class Runs(MutableMapping):
@@ -42,14 +107,22 @@ class Runs(MutableMapping):
     every run (the operator's, the gateway's own bookkeeping, restart recovery) are unchanged.
     """
 
-    __slots__ = ("_all", "_by_owner")
+    __slots__ = ("_all", "_by_owner", "_secret", "_owner_keys")
 
     def __init__(self) -> None:
         self._all: dict[str, Any] = {}
-        #: (account_id, client_id) -> {run_id: record}. A run whose owner is not fully recorded
-        #: is in NO owner's namespace: it belongs to nobody, which is what the dispatcher's
-        #: fail-closed ownership test already says about it.
-        self._by_owner: dict[tuple[str, str], dict[str, Any]] = {}
+        #: (account_id, client_id) -> {folded key: record}. A run whose owner is not fully
+        #: recorded is in NO owner's namespace: it belongs to nobody, which is what the
+        #: dispatcher's fail-closed ownership test already says about it.
+        self._by_owner: dict[tuple[str, str], dict[bytes, Any]] = {}
+        #: IN MEMORY, for the life of this process, and never written down. It namespaces the
+        #: fold; it authenticates nothing. So it has no lifecycle, no file, no permissions and
+        #: nothing to leak -- `TIMING-PROTOCOL-V2-DECISION-0001` finding F1-HOT-PATH-AND-SECRET
+        #: asked what its lifecycle is, and the answer is that losing it is what a restart is.
+        #: The index it namespaces is rebuilt at startup anyway.
+        self._secret = secrets.token_bytes(32)
+        #: Derived once per owner, so a lookup costs ONE fold rather than two.
+        self._owner_keys: dict[tuple[str, str], bytes] = {}
 
     # ------------------------------------------------------------------ the mapping
 
@@ -80,15 +153,32 @@ class Runs(MutableMapping):
 
     # ------------------------------------------------------------------ the owner's view
 
-    def owned_by(self, account_id: str, client_id: str) -> dict:
+    def owned_by(self, account_id: str, client_id: str) -> _Namespace:
         """The runs of ONE owner. A caller asking about anything else gets a miss, not a refusal.
 
-        Returns the live mapping when there is one and a shared empty mapping when there is not,
-        so an owner with no runs costs the same as an owner with some. The result is read, never
-        written: writing into it would put a run in an owner's namespace without putting it in
-        the mapping of every run.
+        Returns a namespace over the live mapping when there is one, and a shared EMPTY namespace
+        when there is not -- so an owner with no runs costs what an owner nobody has heard of
+        costs, and both fold the identifier before probing rather than short-cutting on being
+        empty. The result is read, never written: writing into it would put a run in an owner's
+        namespace without putting it in the mapping of every run.
         """
-        return self._by_owner.get((str(account_id), str(client_id)), _NOTHING)
+        where = (str(account_id), str(client_id))
+        # The owner's OWN key either way, including when they have nothing. A shared empty
+        # namespace with one fixed key would be cheaper to hand back, and it would also mean the
+        # fold stopped being owner-bound for exactly the owners who have nothing -- the same
+        # identifier would then fold identically for every one of them. Nothing leaks from that
+        # today, because the mapping is empty and no comparison happens. It is refused anyway: a
+        # property that holds for most owners is not the property.
+        return _Namespace(self._key_for(where), self._by_owner.get(where) or _NOTHING)
+
+    def _key_for(self, where: tuple) -> bytes:
+        """This owner's fold key, derived once from the process secret and remembered."""
+        key = self._owner_keys.get(where)
+        if key is None:
+            key = hashlib.blake2b(
+                ("\x1f".join(where)).encode("utf-8"), key=self._secret, digest_size=32).digest()
+            self._owner_keys[where] = key
+        return key
 
     def owner_of(self, run_id: str) -> tuple:
         """Who a run belongs to, for the paths that legitimately hold every run."""
@@ -108,8 +198,14 @@ class Runs(MutableMapping):
         """
         run_id = str(run_id)
         record = self._all.get(run_id)
-        for where in self._by_owner.values():
-            where.pop(run_id, None)
+        # Folded PER OWNER: the same identifier has a different key in every namespace, which is
+        # the point of binding the fold to the owner. Popping the raw id would find nothing and
+        # leave the record in its old namespace -- reachable by the account it no longer belongs
+        # to, which is the one outcome this whole file exists to prevent.
+        for where, runs in list(self._by_owner.items()):
+            runs.pop(_Namespace(self._key_for(where), runs)._fold(run_id), None)
+            if not runs:
+                del self._by_owner[where]
         if record is not None:
             self._remember(run_id, record)
 
@@ -117,12 +213,13 @@ class Runs(MutableMapping):
 
     def everything_matches(self) -> bool:
         """Whether the index says exactly what the contents say. For tests to assert."""
-        rebuilt: dict[tuple[str, str], dict[str, Any]] = {}
+        rebuilt: dict[tuple[str, str], dict[bytes, Any]] = {}
         for run_id, record in self._all.items():
-            key = self._key(record)
-            if key is None:
+            where = self._key(record)
+            if where is None:
                 continue
-            rebuilt.setdefault(key, {})[run_id] = record
+            runs = rebuilt.setdefault(where, {})
+            runs[_Namespace(self._key_for(where), runs)._fold(run_id)] = record
         held = {k: v for k, v in self._by_owner.items() if v}
         return held == rebuilt
 
@@ -138,23 +235,27 @@ class Runs(MutableMapping):
         return (account, client) if account and client else None
 
     def _remember(self, run_id: str, record) -> None:
-        key = self._key(record)
-        if key is not None:
-            self._by_owner.setdefault(key, {})[run_id] = record
-
-    def _forget(self, run_id: str, record) -> None:
-        key = self._key(record)
-        if key is None:
-            return
-        where = self._by_owner.get(key)
+        where = self._key(record)
         if where is None:
             return
-        where.pop(run_id, None)
-        if not where:
-            del self._by_owner[key]
+        runs = self._by_owner.setdefault(where, {})
+        runs[_Namespace(self._key_for(where), runs)._fold(run_id)] = record
+
+    def _forget(self, run_id: str, record) -> None:
+        where = self._key(record)
+        if where is None:
+            return
+        runs = self._by_owner.get(where)
+        if runs is None:
+            return
+        runs.pop(_Namespace(self._key_for(where), runs)._fold(run_id), None)
+        if not runs:
+            del self._by_owner[where]
 
 
-#: One shared empty mapping for every owner that has no runs, so "nobody by that name" costs
-#: what "nobody with any runs" costs. Never written to: `owned_by` documents that its result is
-#: read-only, and a caller that wrote here would corrupt every other empty owner at once.
+#: One shared empty MAPPING behind every owner that has no runs, so "nobody by that name" costs
+#: what "nobody with any runs" costs -- including the fold, which happens either way rather than
+#: being skipped because there is nothing to find. The namespace around it still carries that
+#: owner's own key. Never written to: a caller that wrote here would corrupt every empty owner
+#: at once, and `owned_by` documents that its result is read-only.
 _NOTHING: dict = {}

@@ -380,7 +380,14 @@ class TestTheOwnerIndexSaysExactlyWhatTheContentsSay:
         nobody = service.runs.owned_by("acct-" + "0" * 16, "c" * 16)
         also = service.runs.owned_by("acct-" + "1" * 16, "d" * 16)
         assert nobody == {} and also == {}
-        assert nobody is also
+        # This asserted `nobody is also` when it was frozen, because one shared empty mapping was
+        # how "the same cost" was expressed. `TIMING-PROTOCOL-V2-DECISION-0001` then made the
+        # fold OWNER-BOUND, and a single shared namespace would mean the fold stopped being
+        # owner-bound for precisely the owners who have nothing. The property being asserted is
+        # unchanged -- the same work, whoever is asking -- and what changed is that identity is
+        # no longer the way to say it. Recorded rather than quietly edited.
+        assert nobody._runs is also._runs, "an empty owner is not the shared empty mapping"
+        assert len(nobody) == len(also) == 0
 
     def test_and_reindexing_a_record_whose_owner_changed_keeps_them_in_step(self, two_accounts):
         """Nothing in this product changes a run's owner after it is created. If something
@@ -396,3 +403,57 @@ class TestTheOwnerIndexSaysExactlyWhatTheContentsSay:
         assert service.runs.everything_matches()
         assert run in service.runs.owned_by(bob.account_id, bob.client_id)
         assert run not in service.runs.owned_by(alice.account_id, alice.client_id)
+
+
+class TestACallerSuppliedIdentifierIsNormalisedBeforeItIsAKey:
+    """`TIMING-PROTOCOL-V2-DECISION-0001`, Option A, first half.
+
+    A caller's identifier is folded into a fixed-width, owner-bound keyed digest before it is
+    used to probe anything. What that buys is structural and is asserted structurally; none of
+    it is a timing claim, and `docs/review/TIMING-PROTOCOL-V2.md` says so in the same words.
+    """
+
+    def test_the_width_of_what_the_caller_sent_does_not_reach_the_lookup(self, two_accounts):
+        """A four-character identifier and a four-kilobyte one become the same-sized key."""
+        from agentnode_sdk.gateway import runs as runs_module
+
+        service, _alice, bob = two_accounts
+        where = service.runs.owned_by(bob.account_id, bob.client_id)
+        for sent in ("x", "y" * 31, "z" * 4096, ""):
+            assert len(where._fold(sent)) == runs_module.KEY_WIDTH
+
+    def test_and_it_is_bound_to_the_OWNER(self, two_accounts):
+        """The same string is a different key in a different account, so bucket structure in
+        one namespace says nothing about another's."""
+        service, alice, bob = two_accounts
+        same = "the-same-identifier"
+        hers = service.runs.owned_by(alice.account_id, alice.client_id)._fold(same)
+        his = service.runs.owned_by(bob.account_id, bob.client_id)._fold(same)
+        assert hers != his
+
+    def test_and_the_key_that_binds_it_is_never_written_down(self, two_accounts):
+        """F1-HOT-PATH-AND-SECRET asked what its lifecycle is. It has none: it lives in this
+        process's memory, it authenticates nothing, and a restart makes a new one."""
+        service, _alice, _bob = two_accounts
+        secret = service.runs._secret
+        assert len(secret) == 32
+        for path in sorted(service.state.root.iterdir()):
+            if path.is_file():
+                assert secret not in path.read_bytes(), path.name
+                assert secret.hex().encode() not in path.read_bytes(), path.name
+
+    def test_and_two_gateways_do_not_share_it(self, two_accounts, tmp_path):
+        from agentnode_sdk.gateway.runs import Runs
+
+        service, _alice, _bob = two_accounts
+        assert service.runs._secret != Runs()._secret
+
+    def test_and_a_run_is_still_reachable_by_the_identifier_its_owner_was_given(self,
+                                                                               two_accounts):
+        """The control. A fold that made every lookup miss would satisfy everything above."""
+        service, alice, _bob = two_accounts
+        mine = _a_run_by(service, alice)
+        hers = service.runs.owned_by(alice.account_id, alice.client_id)
+        assert hers.get(mine) is not None
+        assert mine in hers
+        assert hers[mine].run_id == mine
