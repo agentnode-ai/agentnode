@@ -288,13 +288,6 @@ case "$VERB" in
     "$PY" -m agentnode_sdk.gateway.backup write "$STATE_DIR" "$WHERE/WHAT_IS_IN_IT.json"
     # Digested with the tarballs, so a manifest edited afterwards to match a damaged restore
     # fails the same digest check the archive does.
-    if [ -f "$WHERE/secret.tar.sealed" ]; then
-      ( cd "$WHERE" && sha256sum state.tar.sealed secret.tar.sealed WHAT_IS_IN_IT.json \
-        > SHA256SUMS )
-    else
-      ( cd "$WHERE" && sha256sum state.tar.sealed WHAT_IS_IN_IT.json > SHA256SUMS )
-    fi
-
     # SEALED, and the plaintext tars removed. The manifest digest goes into the archive's
     # authenticated header, so an archive cannot be re-pointed at another gateway's manifest and
     # cannot have its own swapped: changing one byte of that header breaks the whole thing.
@@ -310,6 +303,14 @@ case "$VERB" in
       shred -u "$WHERE/$what.tar" 2>/dev/null || rm -f "$WHERE/$what.tar"
     done
     say "sealed with the key at $KEY -- WITHOUT IT THIS ARCHIVE IS NOTHING"
+
+    if [ -f "$WHERE/secret.tar.sealed" ]; then
+      ( cd "$WHERE" && sha256sum state.tar.sealed secret.tar.sealed WHAT_IS_IN_IT.json \
+        > SHA256SUMS )
+    else
+      ( cd "$WHERE" && sha256sum state.tar.sealed WHAT_IS_IN_IT.json > SHA256SUMS )
+    fi
+
 
     # A store this gateway keeps that the drill does not know how to check is a store whose loss
     # a restore would report as nothing. The ARCHIVE IS STILL WRITTEN -- refusing to back a
