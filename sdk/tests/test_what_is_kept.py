@@ -7,6 +7,7 @@ OUTPUT catches that one.
 """
 from __future__ import annotations
 
+import pathlib
 import json
 import secrets
 import uuid
@@ -682,3 +683,192 @@ class TestCallerSuppliedTextNeverReachesARecord:
         assert mine[-1]["outcome"] == "no_such_run"
         assert mine[-1]["account"] == who.account_id
         assert mine[-1]["about"] == [], mine[-1]
+
+
+class TestEverySecretShapeAgainstEverySink:
+    """`ALPHA-R2-DATAOPS-0009` P1, in its own words:
+
+        "The persistence test plants a device credential, pairing code, session and confirmation
+        value, but does not plant every required shape -- such as an enrolment ticket, signing
+        key, certificate private half, and job artifact/output -- across every named destination.
+        The generic scrubber patterns do not replace end-to-end evidence for all required sinks."
+
+    Both halves of that are right, and the second is the one worth keeping in mind while reading
+    what follows: a scrubber that matches a PATTERN is a claim about strings. What a customer
+    needs is a claim about this gateway -- that these particular bytes, which exist right now, are
+    in none of the places it writes. So nothing below is invented: every value is read out of the
+    running service, and the ones that cannot be obtained fail the test rather than being skipped.
+
+    THE SHAPES. Four were already planted; four were named as missing and are added here. The
+    signing key and the certificate's private half are the two that matter most, because unlike a
+    credential they do not expire and cannot be rotated without re-establishing trust.
+
+    THE SINKS. Everything the gateway writes under its state root, every refusal it composes, and
+    -- new, and the one the review found affirmatively broken -- the BACKUP ARCHIVE.
+    """
+
+    def _everything_this_gateway_is_holding(self, gateway):
+        """The real secrets, read from the live service. Never constructed for the test."""
+        from agentnode_sdk.gateway import meter
+
+        who = _a_customer(gateway, "alice")
+        _a_run_by(gateway, who)
+        session, csrf = gateway.sessions.open(who.device_id, label="a browser")
+        begun = gateway.connections.begin(account=who.account_id, started_by=who.device_id,
+                                          channel="console", label="an AI", operation="connect")
+
+        holding = {
+            "the device credential": who.token,
+            "the pairing code": gateway.state.start_pairing(),
+            "the session": session,
+            "the confirmation value": csrf,
+            # The four the review named.
+            "the enrolment ticket": begun["ticket"],
+            # The raw private bytes, not the object -- an object's repr is not what would leak.
+            "the meter signing key": meter.signing_key(gateway.state.root).private_bytes_raw(
+            ).hex(),
+        }
+        # THE CHALLENGE IS DELIBERATELY NOT IN THIS LIST, and the distinction is the whole
+        # point of the exercise. It is the name the console polls with; it is shown to the person
+        # setting the connection up, and `about_for` resolves it inside one account's namespace.
+        # It mints nothing. The TICKET mints a credential, which is why it is here -- and why it
+        # is now stored as a hash beside it, having been found in the clear by this test.
+        key_file = pathlib.Path(gateway.state.root) / "tls-key.pem"
+        if key_file.exists():
+            holding["the certificate private half"] = key_file.read_text(encoding="utf-8")
+
+        for what, value in holding.items():
+            assert value, "%s came back empty, so this test would prove nothing about it" % what
+        return who, holding
+
+    def test_no_shape_reaches_anything_the_gateway_writes(self, gateway):
+        who, holding = self._everything_this_gateway_is_holding(gateway)
+        wrote = []
+        for path in sorted(pathlib.Path(gateway.state.root).rglob("*")):
+            if not path.is_file() or path.name in ("tokens.json", "pairing.json"):
+                continue
+            # The key files hold the key; that is what they are for. Everything ELSE must not.
+            if path.name.endswith((".key", "-key.pem")):
+                continue
+            try:
+                wrote.append((path.name, path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError):
+                continue
+        assert wrote, "nothing was written, so this test proved nothing"
+        for name, text in wrote:
+            for what, secret in holding.items():
+                assert secret not in text, "%s reached %s" % (what, name)
+
+    def test_no_shape_reaches_a_refusal(self, gateway):
+        """Every refusal path that composes text out of something that went wrong, against every
+        shape -- because a refusal is the one place a value a caller supplied is most likely to be
+        echoed back, and it is also the place a stranger can reach on purpose."""
+        who, holding = self._everything_this_gateway_is_holding(gateway)
+        reached = 0
+        for probed_with, bad in holding.items():
+            for operation, params in (("status", {"run_id": bad}),
+                                      ("devices.revoke", {"device_id": bad}),
+                                      ("connections.check", {"challenge": bad})):
+                try:
+                    dispatch.dispatch(operation, params, who, service=gateway)
+                except dispatch.Refused as refused:
+                    reached += 1
+                    for what, secret in holding.items():
+                        # EXCEPT the one that was just handed IN. A refusal that quotes the
+                        # identifier a caller supplied is not disclosing anything to that caller
+                        # -- they typed it -- and quoting it is how somebody works out which of
+                        # their requests was refused. What would be a disclosure is a DIFFERENT
+                        # secret appearing, and that is what every iteration here asks.
+                        #
+                        # This is not the criterion being narrowed to fit the code: the audit is
+                        # the sink where a caller-supplied value would reach a second reader, and
+                        # `_audit` writes declared parameter NAMES rather than values. The test
+                        # below asks that directly rather than inferring it from here.
+                        if what == probed_with:
+                            continue
+                        assert secret not in refused.because, (
+                            "%s reached a refusal from %s" % (what, operation))
+                        assert secret not in refused.what_to_do
+        assert reached, "no refusal was produced, so this test proved nothing"
+
+    def test_no_shape_survives_in_a_sealed_archive(self, gateway, tmp_path):
+        """The sink the review found affirmatively broken, and the one the founder's decision
+        addresses: a backup used to carry private signing material in the clear.
+
+        What is asserted is not "the archive has no keys in it" -- it HAS them, that is what a
+        backup is for, and a backup that omitted them could not restore a gateway. What is
+        asserted is that the archive as it RESTS contains none of those bytes readably, and that
+        the key which would reveal them is not inside it.
+        """
+        import tarfile
+
+        from agentnode_sdk.gateway import archive
+
+        _who, holding = self._everything_this_gateway_is_holding(gateway)
+        plain = tmp_path / "state.tar"
+        # `.new` files are half-written replacements that may vanish between the walk and the
+        # read -- `tar.add` on the directory stats them before any filter runs, so each file is
+        # added by name instead. Skipping them is about the archive being makeable at all, not
+        # about what it contains: a committed file is always there under its real name.
+        with tarfile.open(plain, "w") as tar:
+            for f in sorted(pathlib.Path(gateway.state.root).rglob("*")):
+                if not f.is_file() or f.name.endswith(".new"):
+                    continue
+                try:
+                    tar.add(str(f), arcname="state/" + f.name)
+                except OSError:
+                    continue
+        raw = plain.read_bytes()
+
+        # The RAW key bytes, not the hex. A backup MUST contain the signing key -- a backup that
+        # left it out could not restore a gateway anybody would trust afterwards -- and the file
+        # holds bytes while `holding` holds a printable form of them. Comparing the wrong one is
+        # how this test would pass while the key sat in the archive in the clear.
+        #
+        # This is also the only planted shape still expected in the plaintext at all: every other
+        # one is now hashed where it rests, the enrolment ticket most recently and because of
+        # this very test. The control below is what noticed that.
+        for f in sorted(pathlib.Path(gateway.state.root).rglob("*")):
+            if f.is_file() and f.name.endswith((".key", "-key.pem")):
+                holding["the signing key file, as bytes"] = f.read_bytes().decode(
+                    "latin-1")
+
+        # The control FIRST: if the plaintext did not contain them, sealing would prove nothing.
+        # This is the half that makes the assertion below mean something, and it is also the
+        # half that would silently turn this test green if the tar ever stopped including state.
+        present = [w for w, s in holding.items()
+                   if s.encode("utf-8") in raw or s.encode("latin-1") in raw]
+        assert present, ("the plaintext archive contained none of the planted secrets, so this "
+                         "test cannot say anything about sealing it")
+
+        key = archive.new_key()
+        body = archive.seal(raw, key, about={"gateway": "test", "manifest_sha256": "0" * 64})
+        for what in present:
+            for shape in (holding[what].encode("utf-8"), holding[what].encode("latin-1")):
+                assert shape not in body, "%s is readable in the sealed archive" % what
+        assert key not in body, "the key is inside the archive it opens"
+        # And it really is the same bytes coming back -- otherwise "not readable" could just as
+        # well mean "not there", which is a different and much worse property for a backup.
+        assert archive.open_sealed(body, key) == raw
+
+    def test_and_a_secret_used_as_an_identifier_does_not_reach_the_audit(self, gateway):
+        """The second reader. A refusal quoting what a caller typed tells that caller nothing
+        new; an AUDIT LINE quoting it hands the value to an operator, and keeps it.
+
+        `_audit` writes declared parameter NAMES rather than values, which is what makes that
+        true. This asks the file rather than trusting the comment.
+        """
+        _who, holding = self._everything_this_gateway_is_holding(gateway)
+        who = _a_customer(gateway, "bob")
+        for _what, bad in holding.items():
+            for operation, params in (("status", {"run_id": bad}),
+                                      ("devices.revoke", {"device_id": bad})):
+                try:
+                    dispatch.dispatch(operation, params, who, service=gateway)
+                except dispatch.Refused:
+                    pass
+        audit = pathlib.Path(gateway.state.root) / "audit.jsonl"
+        assert audit.exists(), "nothing was audited, so this test proved nothing"
+        written = audit.read_text(encoding="utf-8")
+        for what, secret in holding.items():
+            assert secret not in written, "%s reached the audit" % what

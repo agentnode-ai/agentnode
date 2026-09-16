@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import hmac
 import secrets
 import threading
 import time
@@ -91,8 +92,11 @@ class Connections:
           withdrawing a device silently stopped dropping the enrolments it had started -- and an
           unspent download ticket mints a fresh credential when it is collected.
         """
+        from agentnode_sdk.gateway.identity import hash_token
+
         now = self._clock()
         challenge = secrets.token_urlsafe(24)
+        ticket = secrets.token_urlsafe(24)
         entry = {
             "account": str(account),
             "started_by": str(started_by or ""),
@@ -103,7 +107,12 @@ class Connections:
             "began_at": now,
             "expires_at": now + GOOD_FOR_SECONDS,
             "device": "",
-            "ticket": secrets.token_urlsafe(24),
+            # THE HASH, not the ticket. `tokens.json` and `pairing.json` have held only hashes
+            # since they were written, and this file held the real thing -- a ticket that mints a
+            # credential when it is collected. Anyone who could read the state directory could
+            # spend it, and the window is short rather than closed, which is not the same thing.
+            # Found by planting every secret shape against every sink (`ALPHA-R2-DATAOPS-0009`).
+            "ticket_sha256": hash_token(ticket),
             "ticket_until": now + DOWNLOAD_SECONDS,
             "satisfied_at": 0.0,
         }
@@ -111,7 +120,9 @@ class Connections:
             kept = self._read()
             kept[challenge] = entry
             self._write(self._tidied(kept, now))
-        return dict(entry, challenge=challenge)
+        # The ticket itself goes back to the caller ONCE, here, and is never stored. What is on
+        # disk is its hash, so a copy of the state directory does not carry a spendable ticket.
+        return dict(entry, challenge=challenge, ticket=ticket)
 
     def about_for(self, account: str, challenge: str) -> dict:
         """One of THIS account's enrolments, by name. The caller's namespace, or nothing.
@@ -153,17 +164,24 @@ class Connections:
         One download. A setup file carries a working credential, so handing the same one out
         twice would mean the thing under test is no longer the only holder of it.
         """
+        from agentnode_sdk.gateway.identity import hash_token
+
         now = self._clock()
         with self._lock, ProcessLock(self._path):
             kept = self._read()
             entry = kept.get(str(challenge))
             if entry is None or now >= float(entry.get("expires_at", 0)):
                 raise NoSuchChallenge("that setup is no longer being offered")
-            if not ticket or ticket != entry.get("ticket"):
+            # Constant-time against the hash. An unspent ticket leaves a hash behind; a spent
+            # one leaves an empty string, which no hash equals, so spending it once is what
+            # closes it rather than a flag somebody has to remember to check.
+            expected = str(entry.get("ticket_sha256", ""))
+            if not ticket or not expected or not hmac.compare_digest(hash_token(ticket),
+                                                                     expected):
                 raise NoSuchChallenge("that is not this setup's download")
             if now >= float(entry.get("ticket_until", 0)):
                 raise NoSuchChallenge("that download has expired; start the setup again")
-            entry["ticket"] = ""
+            entry["ticket_sha256"] = ""
             entry["device"] = str(device)
             kept[str(challenge)] = entry
             self._write(kept)

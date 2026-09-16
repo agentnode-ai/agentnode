@@ -888,7 +888,10 @@ class TestEveryCrossAccountWriteIsRefused:
             dispatch.dispatch("connections.check", {"challenge": hers["challenge"]},
                               two_customers.bob, service=service)
         assert refused.value.refusal == "no_such_run"
-        assert service.connections.about(hers["challenge"])["ticket"] == hers["ticket"], (
+        # UNSPENT, asked of the hash rather than of the ticket: the ticket is handed to its
+        # owner once and never stored, so there is nothing left to compare it against. Spending
+        # one clears the hash, which makes "still there" the same question it always was.
+        assert service.connections.about(hers["challenge"])["ticket_sha256"], (
             "a refused attempt spent somebody else's ticket")
 
     def test_alter_a_ceiling_or_cause_a_suspension(self, two_customers):
