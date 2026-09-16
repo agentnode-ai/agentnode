@@ -52,6 +52,23 @@ GOOD_STRESS = {
                   "timeout_marker_seen": True, "timeout_signal": True,
                   "stderr_tail": "[sandbox timed out after 5.0s]"},
     "memory": {"requested_mb": 768, "rc": 137, "killed": True, "stdout_tail": ""},
+    # Processes, writable space and processors used to be read out of a cgroup file and nothing
+    # more. A rootless runtime that accepts every flag and applies none passed all three, so each
+    # is now DRIVEN and what stands here is what a runtime that holds looks like.
+    "pids": {"rc": 0, "started": True, "completed": False, "ended_by_the_ceiling": True,
+             "held": True, "asked_for": 1024, "declared": "256", "refused_at": 251,
+             "refusal": "REFUSED_AT 251 RuntimeError 11", "stderr_tail": ""},
+    "disk": {"rc": 0, "started": True, "completed": False, "ended_by_the_ceiling": True,
+             "held": True, "asked_for": 268435456, "declared": 67108864,
+             "refused_at": 58720256, "errno_name": "ENOSPC", "stderr_tail": ""},
+    # The processor run is the odd one: a rate ceiling slows a run rather than ending it, so this
+    # one is EXPECTED to complete, and what stands in for a refusal is the kernel's own throttling
+    # counter agreeing with the processor time actually consumed.
+    "cpu": {"rc": 0, "started": True, "completed": True, "threads": 4, "declared_cpus": 1.0,
+            "wall": 3.01, "cpu_seconds": 3.04, "processors_used": 3.04 / 3.01,
+            "counter": "throttled_usec", "throttled_before": 0, "throttled_after": 2_480_000,
+            "kernel_throttled": True, "within_the_ceiling": True, "held": True,
+            "stderr_tail": ""},
 }
 
 
@@ -70,7 +87,20 @@ def bad_context():
                               "timeout_marker_seen": False, "timeout_signal": False,
                               "stderr_tail": ""},
                 "memory": {"requested_mb": 768, "rc": 0, "killed": False,
-                           "stdout_tail": "ALLOCATED 768"}},
+                           "stdout_tail": "ALLOCATED 768"},
+                # Every one of them walked straight through: the flags were accepted and applied
+                # to nothing, which is the failure these three exist to catch.
+                "pids": {"rc": 0, "started": True, "completed": True,
+                         "ended_by_the_ceiling": False, "held": False, "asked_for": 1024,
+                         "stdout_tail": "SPAWNED_ALL 1024", "stderr_tail": ""},
+                "disk": {"rc": 0, "started": True, "completed": True,
+                         "ended_by_the_ceiling": False, "held": False, "asked_for": 268435456,
+                         "stdout_tail": "WROTE_ALL 268435456", "stderr_tail": ""},
+                "cpu": {"rc": 0, "started": True, "completed": True, "threads": 4,
+                        "declared_cpus": 1.0, "wall": 3.0, "cpu_seconds": 11.8,
+                        "processors_used": 11.8 / 3.0, "counter": "throttled_usec",
+                        "throttled_before": 0, "throttled_after": 0, "kernel_throttled": False,
+                        "within_the_ceiling": False, "held": False, "stderr_tail": ""}},
         host={"runtime_version": "docker 28.0.4", "image": "img", "passthrough_refused": False,
               "leftovers": {"containers": ["agentnode-conformance-x-probe"], "networks":
                             ["agentnode-egress-1"], "filtered_on": "x"},
@@ -815,3 +845,179 @@ class TestTheRunnerDoesNotInventThePolicy:
                                  egress_matrix=GOOD_HOST["egress_matrix"],
                                  egress_expected=["example.com", "other.example"])
         assert self._egress(report).outcome.value != "pass"
+
+
+class TestTheThreeCeilingsThatUsedOnlyToBeRead:
+    """The three that used only to be read.
+
+    `limit-memory` has been driven since EM3B-SUITE-0004, and the finding that produced it was
+    never about memory: reading a cgroup file tells you what the runtime was ASKED for. A rootless
+    runtime with no cgroup manager under it accepts every flag and applies none, and against that
+    runtime `limit-pids`, `limit-cpu` and `limit-disk` all used to pass.
+
+    Each case below removes exactly one thing and names the different answer it must produce.
+    """
+
+    # ---------------------------------------------------------------- it walked straight through
+    def test_a_process_ceiling_that_refuses_nothing_fails(self):
+        ctx = good_context()
+        ctx.stress["pids"] = {**ctx.stress["pids"], "completed": True, "held": False,
+                              "ended_by_the_ceiling": False}
+        r = {x.check_id: x for x in run_all(ctx)}["limit-pids"]
+        assert r.outcome is Outcome.FAIL
+        assert "WALKED STRAIGHT THROUGH" in r.evidence
+
+    def test_a_writable_ceiling_that_refuses_nothing_fails(self):
+        ctx = good_context()
+        ctx.stress["disk"] = {**ctx.stress["disk"], "completed": True, "held": False,
+                              "ended_by_the_ceiling": False}
+        r = {x.check_id: x for x in run_all(ctx)}["limit-disk"]
+        assert r.outcome is Outcome.FAIL
+        assert "WALKED STRAIGHT THROUGH" in r.evidence
+
+    def test_a_processor_ceiling_the_kernel_never_enforced_fails(self):
+        """Four threads got four processors. The quota reads one, and means nothing."""
+        ctx = good_context()
+        ctx.stress["cpu"] = {**ctx.stress["cpu"], "cpu_seconds": 11.8, "processors_used": 3.93,
+                             "kernel_throttled": False, "throttled_after": 0,
+                             "within_the_ceiling": False, "held": False}
+        r = {x.check_id: x for x in run_all(ctx)}["limit-cpu"]
+        assert r.outcome is Outcome.FAIL
+        assert "DID NOT MOVE" in r.evidence
+
+    def test_a_processor_run_that_was_throttled_but_still_overran_fails(self):
+        """The counter moving is not on its own enough -- a ceiling may throttle once and stop.
+
+        This is the case the counter alone would pass and the ratio catches.
+        """
+        ctx = good_context()
+        ctx.stress["cpu"] = {**ctx.stress["cpu"], "cpu_seconds": 9.0, "processors_used": 3.0,
+                             "kernel_throttled": True, "within_the_ceiling": False,
+                             "held": False}
+        assert {x.check_id: x for x in run_all(ctx)}["limit-cpu"].outcome is Outcome.FAIL
+
+    def test_a_processor_run_that_was_never_throttled_fails_even_when_slow(self):
+        """And the ratio alone is not enough either -- a machine with nothing spare is not a
+        ceiling. This is the case the ratio alone would pass and the counter catches."""
+        ctx = good_context()
+        ctx.stress["cpu"] = {**ctx.stress["cpu"], "kernel_throttled": False,
+                             "throttled_after": 0, "within_the_ceiling": True, "held": False}
+        assert {x.check_id: x for x in run_all(ctx)}["limit-cpu"].outcome is Outcome.FAIL
+
+    # ---------------------------------------------------------------- nothing was run at all
+    def test_an_undriven_process_ceiling_is_not_checked_rather_than_passed(self):
+        ctx = good_context()
+        del ctx.stress["pids"]
+        r = {x.check_id: x for x in run_all(ctx)}["limit-pids"]
+        assert r.outcome is Outcome.NOT_CHECKED
+        assert "nothing was ever run against it" in r.evidence
+
+    def test_an_undriven_writable_ceiling_is_not_checked_rather_than_passed(self):
+        ctx = good_context()
+        del ctx.stress["disk"]
+        assert {x.check_id: x for x in run_all(ctx)}["limit-disk"].outcome is Outcome.NOT_CHECKED
+
+    def test_an_undriven_processor_ceiling_is_not_checked_rather_than_passed(self):
+        ctx = good_context()
+        del ctx.stress["cpu"]
+        assert {x.check_id: x for x in run_all(ctx)}["limit-cpu"].outcome is Outcome.NOT_CHECKED
+
+    # ---------------------------------------------------------------- it never began
+    def test_a_run_that_never_began_measures_nothing(self):
+        """EM3B-SUITE-0005, for the other three. A missing interpreter is also a non-zero exit,
+        and it used to read as the ceiling having stopped something."""
+        for key, check in (("pids", "limit-pids"), ("disk", "limit-disk")):
+            ctx = good_context()
+            ctx.stress[key] = {**ctx.stress[key], "started": False, "completed": False,
+                               "held": False, "rc": 127,
+                               "stderr_tail": "python: command not found"}
+            r = {x.check_id: x for x in run_all(ctx)}[check]
+            assert r.outcome is Outcome.PROBE_ERROR, (check, r.outcome)
+            assert "never began" in r.evidence
+
+    def test_an_ending_nobody_can_attribute_is_not_evidence(self):
+        """Neither finished nor refused: a segfault ends a run too, and says nothing about a
+        ceiling."""
+        ctx = good_context()
+        ctx.stress["pids"] = {**ctx.stress["pids"], "completed": False, "held": False,
+                              "ended_by_the_ceiling": False, "rc": -11, "refusal": None}
+        r = {x.check_id: x for x in run_all(ctx)}["limit-pids"]
+        assert r.outcome is Outcome.PROBE_ERROR
+        assert "not attributable" in r.evidence
+
+    def test_the_wrong_errno_is_not_this_ceiling(self):
+        """A write refused for want of permission is a refusal, and it is not this one.
+
+        The proof reports the errno, and only ENOSPC, EDQUOT or EFBIG count. This is the
+        check that the errno is READ rather than the failure merely being counted.
+        """
+        from agentnode_sdk.conformance.runner import disk_ceiling_proof
+
+        class Refuses:
+            def run_process(self, spec, input_text=None, timeout=120.0):
+                return 1, "WRITING\nREFUSED_AT 0 PermissionError EACCES\n", ""
+
+        got = disk_ceiling_proof(Refuses(), declared_bytes=67108864, run_id="x")
+        assert got["errno_name"] == "EACCES"
+        assert got["ended_by_the_ceiling"] is False
+        assert got["held"] is False
+
+    # ---------------------------------------------------------------- and the paper disagreement
+    def test_a_configuration_that_already_disagrees_needs_no_run(self):
+        """A ceiling that is wrong on paper is settled on paper. Driving it would only measure
+        the wrong ceiling, and reporting NOT_CHECKED there would hide a definite failure behind
+        a missing measurement."""
+        ctx = good_context()
+        ctx.readings["cgroup"]["pids_max"] = "4096"
+        del ctx.stress["pids"]
+        r = {x.check_id: x for x in run_all(ctx)}["limit-pids"]
+        assert r.outcome is Outcome.FAIL
+        assert "do not agree" in r.evidence
+
+
+class TestTheTwoCeilingsWhoseCounterCheckCameBackGreen:
+    """Memory and wall clock were DRIVEN long before the other three, and their mechanisms were
+    nevertheless uncovered: removing "the allocation was stopped" and "the backend said it timed
+    out" left the suite green, because no test named either one.
+
+    A green counter-check is not a passing one. These are the tests that were missing.
+    """
+
+    def test_a_memory_ceiling_the_allocation_walked_through_fails(self):
+        """EM3B-SUITE-0004 in a test rather than only in a comment: 512MB configured, 512MB
+        declared, and an allocation of 768MB that finished anyway."""
+        ctx = good_context()
+        ctx.stress["memory"] = {"requested_mb": 768, "rc": 0, "killed": False, "started": True,
+                                "completed": True, "ended_by_the_ceiling": False,
+                                "stdout_tail": "ALLOCATED 768"}
+        r = {x.check_id: x for x in run_all(ctx)}["limit-memory"]
+        assert r.outcome is Outcome.FAIL
+        assert "NOT stopped" in r.evidence
+
+    def test_a_memory_ceiling_that_agrees_on_paper_is_not_enough(self):
+        """The narrow point of the one above, stated so it cannot be satisfied by the cgroup
+        comparison alone: the configured and declared values AGREE here, and it still fails."""
+        ctx = good_context()
+        assert ctx.readings["cgroup"]["memory_max"] == str(512 * 1024 ** 2)
+        ctx.stress["memory"] = {**ctx.stress["memory"], "killed": False, "completed": True,
+                                "rc": 0}
+        assert {x.check_id: x for x in run_all(ctx)}["limit-memory"].outcome is Outcome.FAIL
+
+    def test_a_timeout_the_backend_never_claimed_fails(self):
+        """`EM3C-E4-CLASSIFY-0001`: the marker in stderr is not the evidence -- the backend
+        SAYING it stopped the run at the ceiling is. An unrelated early exit can leave a marker
+        behind; it cannot produce a reason."""
+        ctx = good_context()
+        ctx.stress["wallclock"] = {**ctx.stress["wallclock"], "timeout_signal": False,
+                                   "reason": None, "timeout_marker_seen": True}
+        r = {x.check_id: x for x in run_all(ctx)}["limit-wallclock"]
+        assert r.outcome is Outcome.FAIL
+
+    def test_a_run_that_simply_ended_early_is_not_a_ceiling(self):
+        """The same property from the other side: no marker, no reason, and an elapsed time that
+        happens to look right. A duration is a diagnosis, never the evidence."""
+        ctx = good_context()
+        ctx.stress["wallclock"] = {**ctx.stress["wallclock"], "elapsed": 5.0, "rc": 0,
+                                   "timeout_signal": False, "timeout_marker_seen": False,
+                                   "reason": None}
+        assert {x.check_id: x for x in run_all(ctx)}["limit-wallclock"].outcome is Outcome.FAIL

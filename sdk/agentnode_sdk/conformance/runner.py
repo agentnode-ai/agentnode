@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass
 
 from agentnode_sdk.conformance import probe as probe_mod
-from agentnode_sdk.conformance.checks import Context, run_all
+from agentnode_sdk.conformance.checks import Context, _bytes, run_all
 from agentnode_sdk.conformance.report import ConformanceReport
 from agentnode_sdk.sandbox.types import ProcessSpec
 
@@ -54,6 +54,12 @@ class SuiteOptions:
     #: Deliberately above the container's declared memory ceiling, and bounded well below any
     #: host's, so the ceiling is what stops it rather than the machine running out.
     memory_stress_mb: int = 768
+    #: How far past each remaining ceiling to push. A multiplier rather than an absolute,
+    #: because the declaration is what the run says it gets and the point is to ask for MORE.
+    over_the_ceiling: int = 4
+    #: How long the processor run spins. Long enough for the kernel's throttling counters to
+    #: move over several periods (one period is 100ms), short enough not to dominate a lane.
+    cpu_stress_seconds: float = 3.0
 
 
 def _declared(argv: list, spec: ProcessSpec) -> dict:
@@ -161,7 +167,7 @@ def _inspect_live(backend, options, run_id):
                 proc.kill()
 
 
-def _stress(backend, options, run_id):
+def _stress(backend, options, run_id, declared):
     """Bounded runs whose OUTCOME is the measurement. Nothing here targets the host."""
     out = {}
     if not options.include_stress:
@@ -195,6 +201,21 @@ def _stress(backend, options, run_id):
             backend, megabytes=options.memory_stress_mb, run_id=run_id)
     except Exception as exc:                                        # noqa: BLE001
         out["memory"] = {"_error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+    # And the three that used only to be read. `declared` is what the run itself says it gets, so
+    # every one of these asks for MORE than the run declared rather than more than some constant.
+    for name, call in (
+        ("pids", lambda: pids_ceiling_proof(backend, declared=declared.get("pids"),
+                                            run_id=run_id, over=options.over_the_ceiling)),
+        ("disk", lambda: disk_ceiling_proof(backend, declared_bytes=_bytes(
+            declared.get("tmp_size", "")), run_id=run_id, over=options.over_the_ceiling)),
+        ("cpu", lambda: cpu_ceiling_proof(backend, declared=declared.get("cpus"), run_id=run_id,
+                                          seconds=options.cpu_stress_seconds,
+                                          over=options.over_the_ceiling)),
+    ):
+        try:
+            out[name] = call()
+        except Exception as exc:                                    # noqa: BLE001
+            out[name] = {"_error": f"{type(exc).__name__}: {str(exc)[:160]}"}
     return out
 
 
@@ -243,6 +264,204 @@ def memory_ceiling_proof(backend, *, megabytes: int, run_id: str, timeout: float
         "ended_by_the_ceiling": by_the_ceiling,
         "killed": started and not completed and by_the_ceiling,
         "stdout_tail": stdout[-80:].strip(), "stderr_tail": stderr[-160:].strip(),
+    }
+
+
+# The same three conditions as the memory proof, restated once so the three that follow do not
+# each carry their own idea of them: it BEGAN, it did NOT walk through, and the ending is
+# ATTRIBUTABLE to the ceiling rather than to anything else that ends a process.
+#
+# EM3B-SUITE-0004 was written about memory, but nothing in it is about memory. Reading a cgroup
+# file tells you what the runtime was ASKED for. `limit-pids`, `limit-cpu` and `limit-disk` did
+# exactly that and nothing more, and a review was right to call that configuration rather than
+# enforcement: a rootless runtime that accepts every flag and applies none passes all three.
+
+
+def _outcome(r, *, began, walked_through, attributable, **extra):
+    stdout, stderr = r["stdout"] or "", r["stderr"] or ""
+    started, completed = began in stdout, walked_through in stdout
+    out = {
+        "rc": r["rc"], "started": started, "completed": completed,
+        "ended_by_the_ceiling": bool(attributable),
+        "held": started and not completed and bool(attributable),
+        "stdout_tail": stdout[-160:].strip(), "stderr_tail": stderr[-160:].strip(),
+    }
+    out.update(extra)
+    return out
+
+
+PIDS_PAYLOAD = """import threading
+print('SPAWNING', flush=True)
+stop = threading.Event()
+alive = []
+try:
+    for _ in range(WANT):
+        t = threading.Thread(target=stop.wait, daemon=True)
+        t.start()
+        alive.append(t)
+    print('SPAWNED_ALL', len(alive), flush=True)
+except (RuntimeError, OSError) as exc:
+    print('REFUSED_AT', len(alive) + 1, type(exc).__name__, getattr(exc, 'errno', ''), flush=True)
+finally:
+    stop.set()
+"""
+
+
+def pids_ceiling_proof(backend, *, declared, run_id, over=4, timeout=60.0):
+    """Ask for more processes than the run declared, and report what refused.
+
+    The shape differs from the memory proof in one way that makes it BETTER evidence: the process
+    is not killed, it is told no. So the payload reports the refusal itself -- the count it
+    reached and the errno that stopped it -- from inside the ceiling that stopped it.
+    """
+    try:
+        want = max(2, int(str(declared).strip())) * max(2, int(over))
+    except (TypeError, ValueError):
+        return {"_error": "the run declared its process limit as %r, not a number" % (declared,)}
+    spec = ProcessSpec(command=["python", "-c", PIDS_PAYLOAD.replace("WANT", str(want))],
+                       network="none", clean_home=True,
+                       name="agentnode-conformance-%s-pids" % run_id)
+    r = _run(backend, spec, timeout)
+    line = next((x for x in (r["stdout"] or "").splitlines() if x.startswith("REFUSED_AT")), None)
+    parts = (line or "").split()
+    return _outcome(r, began="SPAWNING", walked_through="SPAWNED_ALL",
+                    attributable=line is not None,
+                    asked_for=want, declared=declared, refusal=line,
+                    refused_at=int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None)
+
+
+DISK_PAYLOAD = """import errno, os
+print('WRITING', flush=True)
+block = b'x' * (8 * 1024 * 1024)
+written = 0
+try:
+    with open('/tmp/agentnode-ceiling.bin', 'wb') as fh:
+        for _ in range(CHUNKS):
+            fh.write(block)
+            fh.flush()
+            os.fsync(fh.fileno())
+            written += len(block)
+    print('WROTE_ALL', written, flush=True)
+except OSError as exc:
+    print('REFUSED_AT', written, type(exc).__name__,
+          errno.errorcode.get(exc.errno, exc.errno), flush=True)
+finally:
+    try:
+        os.unlink('/tmp/agentnode-ceiling.bin')
+    except OSError:
+        pass
+"""
+
+
+def disk_ceiling_proof(backend, *, declared_bytes, run_id, over=4, timeout=120.0):
+    """Write past the writable ceiling and report the errno that stopped it.
+
+    ENOSPC, EDQUOT or EFBIG and nothing else. A write that fails for want of permission, or a
+    path that does not exist, is not this ceiling binding -- it is a different refusal wearing
+    the same non-zero exit.
+    """
+    try:
+        want = int(declared_bytes) * max(2, int(over))
+    except (TypeError, ValueError):
+        return {"_error": "the run declared its writable space as %r" % (declared_bytes,)}
+    chunks = max(2, want // (8 * 1024 * 1024))
+    spec = ProcessSpec(command=["python", "-c", DISK_PAYLOAD.replace("CHUNKS", str(chunks))],
+                       network="none", clean_home=True,
+                       name="agentnode-conformance-%s-disk" % run_id)
+    r = _run(backend, spec, timeout)
+    line = next((x for x in (r["stdout"] or "").splitlines() if x.startswith("REFUSED_AT")), None)
+    parts = (line or "").split()
+    return _outcome(r, began="WRITING", walked_through="WROTE_ALL",
+                    attributable=bool(parts) and parts[-1] in ("ENOSPC", "EDQUOT", "EFBIG"),
+                    asked_for=want, declared=declared_bytes, refusal=line,
+                    errno_name=parts[-1] if parts else None,
+                    refused_at=int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None)
+
+
+CPU_PAYLOAD = """import json, threading, time
+def stat():
+    for path, key in (('/sys/fs/cgroup/cpu.stat', 'throttled_usec'),
+                      ('/sys/fs/cgroup/cpu/cpu.stat', 'throttled_time')):
+        try:
+            with open(path) as fh:
+                for line in fh:
+                    if line.startswith(key):
+                        return key, int(line.split()[1])
+        except OSError:
+            continue
+    return None, None
+print('SPINNING', flush=True)
+key, before = stat()
+stop = threading.Event()
+def burn():
+    x = 0
+    while not stop.is_set():
+        x = (x * 31 + 7) % 1000003
+wall0, cpu0 = time.monotonic(), time.process_time()
+pool = [threading.Thread(target=burn, daemon=True) for _ in range(THREADS)]
+for t in pool:
+    t.start()
+time.sleep(SECONDS)
+stop.set()
+for t in pool:
+    t.join(5)
+wall, cpu = time.monotonic() - wall0, time.process_time() - cpu0
+key2, after = stat()
+print('SPUN', json.dumps({'wall': wall, 'cpu': cpu, 'threads': THREADS, 'counter': key,
+                          'throttled_before': before, 'throttled_after': after}), flush=True)
+"""
+
+
+def cpu_ceiling_proof(backend, *, declared, run_id, seconds=3.0, over=4, timeout=120.0):
+    """Spin more threads than the declared processors and report what the KERNEL did about it.
+
+    A processor ceiling is a rate, so nothing is refused the way a thread or a write is refused:
+    the run keeps going, slower. That makes "observed" harder to earn honestly here than
+    anywhere else in this file, and two independent things have to agree before it counts:
+
+    * the kernel's own throttling counter moved -- `cpu.stat` saying it held the run back. That
+      is the kernel stating it enforced, not the runtime stating it was configured;
+    * and the processor time actually consumed over the wall interval is near the declaration
+      rather than near the number of threads that asked for it. Four busy threads under a
+      one-processor ceiling must consume about one processor-second per second, not four.
+
+    The counter alone would pass a ceiling that throttled once and then let everything through.
+    The ratio alone would pass a machine that merely had no spare processors to give.
+    """
+    try:
+        cpus = float(declared)
+    except (TypeError, ValueError):
+        return {"_error": "the run declared its processor limit as %r, not a number" % (declared,)}
+    threads = max(2, int(cpus * max(2, int(over))))
+    payload = CPU_PAYLOAD.replace("THREADS", str(threads)).replace("SECONDS", repr(float(seconds)))
+    spec = ProcessSpec(command=["python", "-c", payload], network="none", clean_home=True,
+                       name="agentnode-conformance-%s-cpu" % run_id)
+    r = _run(backend, spec, timeout)
+    stdout = r["stdout"] or ""
+    line = next((x for x in stdout.splitlines() if x.startswith("SPUN ")), None)
+    said = {}
+    if line:
+        try:
+            said = json.loads(line[len("SPUN "):])
+        except ValueError:
+            said = {}
+    wall, used = said.get("wall") or 0.0, said.get("cpu") or 0.0
+    before, after = said.get("throttled_before"), said.get("throttled_after")
+    throttled = isinstance(before, int) and isinstance(after, int) and after > before
+    # Two-sided on purpose. Below the ceiling is the ceiling holding; ABOVE it is the run getting
+    # more processor than it declared, which is the failure this is here to catch.
+    ratio = (used / wall) if wall > 0 else None
+    within = ratio is not None and ratio <= cpus * 1.15
+    return {
+        "rc": r["rc"], "started": "SPINNING" in stdout, "completed": bool(line),
+        "threads": threads, "declared_cpus": cpus, "wall": wall, "cpu_seconds": used,
+        "processors_used": ratio, "counter": said.get("counter"),
+        "throttled_before": before, "throttled_after": after, "kernel_throttled": throttled,
+        "within_the_ceiling": within,
+        # Unlike the other three, the run is EXPECTED to complete -- a rate ceiling slows, it does
+        # not stop. So "held" is the agreement of the two independent observations, not an ending.
+        "held": bool(line) and throttled and within,
+        "stderr_tail": (r["stderr"] or "")[-160:].strip(),
     }
 
 
@@ -366,7 +585,7 @@ def run_conformance(backend, *, generated_at: str, options: SuiteOptions | None 
     name = f"agentnode-conformance-{run_id}-probe"
     readings, probe_failure, argv, declared = _gather_probe(backend, options, name)
     inspect = _inspect_live(backend, options, run_id) if not probe_failure else {}
-    stress = _stress(backend, options, run_id)
+    stress = _stress(backend, options, run_id, declared or {})
     host = _host_observations(backend, runtime, run_id)
     if egress_matrix is not None:
         host["egress_matrix"] = egress_matrix

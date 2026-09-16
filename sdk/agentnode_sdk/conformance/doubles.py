@@ -135,11 +135,20 @@ class _DoubleBase:
 class GoodBackendDouble(_DoubleBase):
     """Reports a container that does what the hardened flags intend. Tests the pass path."""
 
+    @staticmethod
+    def _processor_run():
+        """One processor's worth of time over three seconds, and the kernel says it throttled."""
+        return 0, "SPINNING\nSPUN " + json.dumps(
+            {"wall": 3.01, "cpu": 3.04, "threads": 4, "counter": "throttled_usec",
+             "throttled_before": 0, "throttled_after": 2_480_000}) + "\n", ""
+
     def __init__(self, runtime=None, readings=None, available=True):
         super().__init__(runtime, GOOD_READINGS if readings is None else readings, available)
 
     def run_process(self, spec, input_text=None, timeout=120.0):
         joined = " ".join(spec.command)
+        if "def burn" in joined:
+            return self._processor_run()
         if "time.sleep" in joined:
             # What the container backend really returns: no exit code, because nothing
             # exited, and the reason beside it (EM3C-E4-CLASSIFY-0001). A double
@@ -152,11 +161,25 @@ class GoodBackendDouble(_DoubleBase):
                            platform="linux-container")
         if "held.append" in joined:
             return 137, "ALLOCATING\n", "Killed"
+        # The three ceilings that are DRIVEN rather than read. A good backend refuses each one,
+        # and says so in the shape `_outcome` reads: it began, it did not walk through, and the
+        # ending names the ceiling.
+        if "alive.append" in joined:
+            return 0, "SPAWNING\nREFUSED_AT 251 RuntimeError 11\n", ""
+        if "agentnode-ceiling.bin" in joined:
+            return 0, "WRITING\nREFUSED_AT 58720256 OSError ENOSPC\n", ""
         return 0, MARKER + json.dumps(self._readings) + "\n", ""
 
 
 class BadBackendDouble(_DoubleBase):
     """Reports a container that is not isolating anything. Tests the fail path."""
+
+    @staticmethod
+    def _processor_run():
+        """Four threads got four processors, and nothing was ever throttled."""
+        return 0, "SPINNING\nSPUN " + json.dumps(
+            {"wall": 3.0, "cpu": 11.8, "threads": 4, "counter": "throttled_usec",
+             "throttled_before": 0, "throttled_after": 0}) + "\n", ""
 
     def __init__(self, runtime=None, readings=None, available=True):
         super().__init__(runtime, BAD_READINGS if readings is None else readings, available)
@@ -188,10 +211,18 @@ class BadBackendDouble(_DoubleBase):
 
     def run_process(self, spec, input_text=None, timeout=120.0):
         joined = " ".join(spec.command)
+        if "def burn" in joined:
+            return self._processor_run()
         if "time.sleep" in joined:
             return 0, "", ""            # not stopped: the ceiling did not hold
         if "held.append" in joined:
             return 0, "ALLOCATING\nALLOCATED 768\n", ""
+        # And a backend that applies none of them: every run walks through, and the kernel never
+        # throttled anything because nothing was ever asked of it.
+        if "alive.append" in joined:
+            return 0, "SPAWNING\nSPAWNED_ALL 1024\n", ""
+        if "agentnode-ceiling.bin" in joined:
+            return 0, "WRITING\nWROTE_ALL 268435456\n", ""
         return 0, MARKER + json.dumps(self._readings) + "\n", ""
 
 
