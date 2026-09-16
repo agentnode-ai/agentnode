@@ -409,9 +409,9 @@ class TestTheScriptActuallyUsesIt:
         assert "agentnode_sdk.gateway.backup write" in said, (
             "a backup that records nothing leaves a restore with nothing to be checked against")
         assert backup.MANIFEST_NAME in said
-        assert "sha256sum state.tar secret.tar %s" % backup.MANIFEST_NAME in said, (
-            "the manifest is not digested with the archive, so one edited afterwards to match "
-            "a damaged restore would pass")
+        assert "sha256sum state.tar.sealed secret.tar.sealed %s" % backup.MANIFEST_NAME in said, (
+            "the manifest is not digested with the SEALED archive, so one edited afterwards to "
+            "match a damaged restore would pass")
 
     def test_a_check_and_a_restore_both_compare_against_it(self):
         said = self._script()
@@ -434,3 +434,45 @@ class TestTheScriptActuallyUsesIt:
         assert "The archive was written. It is NOT fully checkable" in said, (
             "a store the drill does not know about has to be said out loud; refusing to WRITE "
             "the archive would be the wrong failure, and saying nothing is the other one")
+
+
+class TestTheScriptSealsWhatItWrites:
+    """`P1` failed on an unencrypted archive. The wiring is what makes the module matter."""
+
+    def _script(self) -> str:
+        import pathlib
+
+        import agentnode_sdk
+
+        return (pathlib.Path(agentnode_sdk.__file__).parent.parent / "deploy"
+                / "backup-and-restore.sh").read_text(encoding="utf-8")
+
+    def test_a_backup_seals_both_tars_and_removes_the_plaintext(self):
+        said = self._script()
+        assert "agentnode_sdk.gateway.archive seal" in said
+        assert "shred -u" in said or "rm -f \"$WHERE/$what.tar\"" in said, (
+            "the plaintext tar is left beside the sealed one, which makes sealing decorative")
+
+    def test_and_binds_the_gateway_and_the_manifest_into_the_header(self):
+        said = self._script()
+        assert "--gateway" in said and "--manifest-sha256" in said, (
+            "nothing binds this archive to the gateway it came from or to what it contained, so "
+            "a valid archive of something else would restore")
+
+    def test_check_and_restore_both_open_it_before_touching_anything(self):
+        said = self._script()
+        assert said.count("open_the_archive") >= 4, (
+            "one of the two paths still extracts a tar directly")
+        assert "Nothing has been restored and the existing state is" in said
+
+    def test_and_the_key_is_refused_if_it_sits_with_the_archive_or_in_the_state(self):
+        said = self._script()
+        assert "key_is_somewhere_else" in said
+        assert "unencrypted archive with extra steps" in said
+        assert said.count("key_is_somewhere_else") >= 3, (
+            "the check exists and is not called on every path that uses the key")
+
+    def test_and_there_is_a_way_to_make_a_key_that_says_what_losing_it_means(self):
+        said = self._script()
+        assert "newkey)" in said
+        assert "A backup whose key is" in said

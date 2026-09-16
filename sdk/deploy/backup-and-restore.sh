@@ -19,7 +19,7 @@
 # restoring a venv from a tarball is how a machine ends up running software nobody can name. If
 # the code needs putting back, re-run single-host-development.sh with the wheel you want.
 #
-# ## THIS ARCHIVE CONTAINS SECRETS. All of them.
+# ## THIS ARCHIVE CONTAINS SECRETS, AND IS THEREFORE SEALED
 #
 # Said here because it was nowhere stated and a review was right to refuse it on that. The state
 # directory holds the METER SIGNING KEY and the gateway's TLS PRIVATE KEY, and it has to: a
@@ -27,13 +27,21 @@
 # reached over the certificate its clients pinned. That is not a leak to be fixed; it is what a
 # backup of a gateway IS.
 #
-# Three things follow, and the first is enforced here rather than advised:
+# So it is ENCRYPTED, with AES-256-GCM from the `cryptography` library this project already
+# depends on for its certificates. `P1-NO-SECRET-REACHES-A-LOG-AN-AUDIT-OR-A-REFUSAL` failed on
+# the unencrypted version and was right to: the archive cannot stop containing those keys, so it
+# has to stop being readable without one more.
 #
+# Three things follow, and the first two are enforced here rather than advised:
+#
+#   * THE KEY LIVES WHERE THE ARCHIVE DOES NOT. This script refuses to write an archive into a
+#     directory that contains its key, and refuses a key inside the state directory it is about
+#     to back up. An archive and its key in one place is an unencrypted archive with extra steps;
 #   * the archive is written 0600 into a 0700 directory, and this script REFUSES if it cannot
 #     make that true;
 #   * anywhere you copy it to inherits that requirement and this script cannot enforce it there.
-#     An archive on a share, in object storage, or attached to a ticket is this gateway's keys
-#     in that place;
+#     An archive on a share, in object storage or attached to a ticket is still this gateway's
+#     state in that place -- sealed, and only as strong as where the key is;
 #   * a backup taken before a customer was deleted still contains that customer. Deletion cannot
 #     reach a file it does not have. The schedule on which you retire old backups IS your
 #     retention policy for backups, and nothing else is.
@@ -86,6 +94,8 @@ STATE_DIR="/var/lib/agentnode/state"
 # inside it, on purpose. A backup has to take both, and until a drill started the restored
 # gateway nothing noticed that this one did not.
 BACKUP_ROOT="/root/agentnode-backups"
+# Where the key is. NOT under BACKUP_ROOT, and this script checks rather than trusts.
+KEY="${AGENTNODE_BACKUP_KEY:-/root/.agentnode-backup.key}"
 FROM=""
 VERB="${1:-}"
 shift || true
@@ -95,6 +105,7 @@ while [ $# -gt 0 ]; do
     --dir)  STATE_DIR="$2"; shift 2 ;;
     --to)   BACKUP_ROOT="$2"; shift 2 ;;
     --from) FROM="$2"; shift 2 ;;
+    --key)  KEY="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -102,6 +113,24 @@ done
 SECRET_DIR="${STATE_DIR}.secret"
 
 say() { printf '  %s\n' "$*"; }
+
+# The key must not be inside anything this script is about to archive, and must not be inside the
+# directory the archive is written to. Both are the same mistake -- a key that travels with its
+# ciphertext -- and both are refused rather than warned about.
+key_is_somewhere_else() {
+  local key_dir
+  key_dir="$(cd "$(dirname "$KEY")" 2>/dev/null && pwd || echo "$(dirname "$KEY")")"
+  case "$key_dir/" in
+    "$(cd "$BACKUP_ROOT" 2>/dev/null && pwd || echo "$BACKUP_ROOT")"/*)
+      die "the backup key is inside $BACKUP_ROOT. An archive and its key in one place is an
+  unencrypted archive with extra steps. Move the key, or pass --key." ;;
+  esac
+  case "$key_dir/" in
+    "$(cd "$STATE_DIR" 2>/dev/null && pwd || echo "$STATE_DIR")"/*|"$(cd "$SECRET_DIR" 2>/dev/null && pwd || echo "$SECRET_DIR")"/*)
+      die "the backup key is inside the state this script is about to back up, so it would be
+  sealed inside the archive it unlocks. Move it, or pass --key." ;;
+  esac
+}
 die() { printf '\n  FAILED: %s\n\n' "$*" >&2; exit 1; }
 
 # Whichever python has the SDK. On the deployed host that is the gateway's own venv.
@@ -197,7 +226,28 @@ PYEOF
   return $failed
 }
 
+# Open a sealed archive, or STOP. Every reason it can fail -- no key, the wrong key, altered
+# bytes, a file cut short, an archive belonging to something else -- ends here, before a single
+# byte of it has been written anywhere a gateway would read.
+open_the_archive() {
+  "$PY" -m agentnode_sdk.gateway.archive open --in "$1" --out "$2" --key "$KEY" \
+    || die "that archive did not open. Nothing has been restored and the existing state is
+  untouched. Either the key at $KEY is not the one it was sealed with, or the archive has
+  been altered or cut short since it was written."
+  chmod 600 "$2"
+}
+
 case "$VERB" in
+  newkey)
+    key_is_somewhere_else
+    "$PY" -m agentnode_sdk.gateway.archive newkey --key "$KEY" || exit 1
+    echo
+    say "This key is the ONLY thing that opens the archives it seals. A backup whose key is"
+    say "lost is not a backup. Put it where your other credentials live -- NOT beside the"
+    say "archives, and NOT inside $STATE_DIR."
+    echo
+    ;;
+
   backup)
     [ -d "$STATE_DIR" ] || die "no state directory at $STATE_DIR"
     STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -214,6 +264,10 @@ case "$VERB" in
     say "backing up $STATE_DIR"
     say "NOTE: this archive contains the meter signing key, the TLS private key AND the key that"
     say "      authenticates the operator policy. Wherever you copy it, it is those keys there."
+    key_is_somewhere_else
+    [ -f "$KEY" ] || die "there is no backup key at $KEY. Make one first:
+  $0 newkey --key $KEY
+  and keep it somewhere this archive is not."
     tar -C "$(dirname "$STATE_DIR")" -cf "$WHERE/state.tar" "$(basename "$STATE_DIR")"
     # AND the key directory beside it. This was missing, and the first drill that actually
     # STARTED the restored gateway is what found it: the tag authenticating the operator policy
@@ -234,11 +288,28 @@ case "$VERB" in
     "$PY" -m agentnode_sdk.gateway.backup write "$STATE_DIR" "$WHERE/WHAT_IS_IN_IT.json"
     # Digested with the tarballs, so a manifest edited afterwards to match a damaged restore
     # fails the same digest check the archive does.
-    if [ -f "$WHERE/secret.tar" ]; then
-      ( cd "$WHERE" && sha256sum state.tar secret.tar WHAT_IS_IN_IT.json > SHA256SUMS )
+    if [ -f "$WHERE/secret.tar.sealed" ]; then
+      ( cd "$WHERE" && sha256sum state.tar.sealed secret.tar.sealed WHAT_IS_IN_IT.json \
+        > SHA256SUMS )
     else
-      ( cd "$WHERE" && sha256sum state.tar WHAT_IS_IN_IT.json > SHA256SUMS )
+      ( cd "$WHERE" && sha256sum state.tar.sealed WHAT_IS_IN_IT.json > SHA256SUMS )
     fi
+
+    # SEALED, and the plaintext tars removed. The manifest digest goes into the archive's
+    # authenticated header, so an archive cannot be re-pointed at another gateway's manifest and
+    # cannot have its own swapped: changing one byte of that header breaks the whole thing.
+    MANIFEST_SHA="$(sha256sum "$WHERE/WHAT_IS_IN_IT.json" | cut -d' ' -f1)"
+    GATEWAY_ID="$("$PY" -c "import json,sys;print(json.load(open(sys.argv[1]))['gateway_id'])" \
+                  "$STATE_DIR/identity.json" 2>/dev/null || echo "")"
+    for what in state secret; do
+      [ -f "$WHERE/$what.tar" ] || continue
+      "$PY" -m agentnode_sdk.gateway.archive seal \
+        --in "$WHERE/$what.tar" --out "$WHERE/$what.tar.sealed" --key "$KEY" \
+        --gateway "$GATEWAY_ID" --manifest-sha256 "$MANIFEST_SHA" \
+        || die "the archive could not be sealed, so nothing was left behind"
+      shred -u "$WHERE/$what.tar" 2>/dev/null || rm -f "$WHERE/$what.tar"
+    done
+    say "sealed with the key at $KEY -- WITHOUT IT THIS ARCHIVE IS NOTHING"
 
     # A store this gateway keeps that the drill does not know how to check is a store whose loss
     # a restore would report as nothing. The ARCHIVE IS STILL WRITTEN -- refusing to back a
@@ -247,7 +318,7 @@ case "$VERB" in
     UNCHECKED=0
     "$PY" -m agentnode_sdk.gateway.backup unaccounted "$STATE_DIR" || UNCHECKED=1
     chmod 600 "$WHERE"/*
-    say "wrote $WHERE/state.tar"
+    say "wrote $WHERE/state.tar.sealed"
     say "     $(cat "$WHERE/SHA256SUMS")"
     echo
     say "to put it back:  $0 restore --from $WHERE"
@@ -266,8 +337,13 @@ case "$VERB" in
     trap 'rm -rf "$TMP"' EXIT
     ( cd "$FROM" && sha256sum -c SHA256SUMS >/dev/null ) || die "the backup does not match its own SHA256SUMS"
     say "the archive matches its own digests"
-    tar -C "$TMP" -xf "$FROM/state.tar"
-    if [ -f "$FROM/secret.tar" ]; then tar -C "$TMP" -xf "$FROM/secret.tar"; fi
+    open_the_archive "$FROM/state.tar.sealed" "$TMP/state.tar"
+    tar -C "$TMP" -xf "$TMP/state.tar"
+    if [ -f "$FROM/secret.tar.sealed" ]; then
+      open_the_archive "$FROM/secret.tar.sealed" "$TMP/secret.tar"
+      tar -C "$TMP" -xf "$TMP/secret.tar"
+    fi
+    rm -f "$TMP"/*.tar
     INNER="$TMP/$(ls "$TMP" | head -1)"
     # The archive carries the gateway account's ownership. Checking a copy means reading it as
     # WHOEVER IS CHECKING, and the gateway refuses to touch a state directory owned by somebody
@@ -296,13 +372,18 @@ case "$VERB" in
       mv "$STATE_DIR" "$ASIDE"
       say "moved the existing state to $ASIDE (nothing was deleted)"
     fi
-    tar -C "$(dirname "$STATE_DIR")" -xf "$FROM/state.tar"
+    OPENED="$(mktemp -d)"
+    trap 'rm -rf "$OPENED"' EXIT
+    open_the_archive "$FROM/state.tar.sealed" "$OPENED/state.tar"
+    tar -C "$(dirname "$STATE_DIR")" -xf "$OPENED/state.tar"
     chmod 700 "$STATE_DIR"
-    if [ -f "$FROM/secret.tar" ]; then
+    if [ -f "$FROM/secret.tar.sealed" ]; then
+      open_the_archive "$FROM/secret.tar.sealed" "$OPENED/secret.tar"
       rm -rf "$SECRET_DIR"
-      tar -C "$(dirname "$SECRET_DIR")" -xf "$FROM/secret.tar"
+      tar -C "$(dirname "$SECRET_DIR")" -xf "$OPENED/secret.tar"
       chmod 700 "$SECRET_DIR"
     fi
+    rm -rf "$OPENED"
     if id agentnode-gateway >/dev/null 2>&1; then
       chown -R agentnode-gateway:agentnode-gateway "$STATE_DIR"
       [ -d "$SECRET_DIR" ] && chown -R agentnode-gateway:agentnode-gateway "$SECRET_DIR"
@@ -348,7 +429,8 @@ READYEOF
   *)
     cat <<'USAGE'
 
-  backup-and-restore.sh backup  [--dir <state>] [--to <backups>]
+  backup-and-restore.sh newkey  [--key <file>]
+  backup-and-restore.sh backup  [--dir <state>] [--to <backups>] [--key <file>]
   backup-and-restore.sh restore --from <backup directory>
   backup-and-restore.sh check   --from <backup directory>
 
