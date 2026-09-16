@@ -278,3 +278,143 @@ class TestWhatTheOperatorNarrowsIsDisclosedBeforeAnybodyAgrees:
             "the effective policy is not bound, so a submission under a different one would be "
             "narrowed again rather than refused: %s" % (bound,))
         assert OperatorPolicyEnvelope is not None and base64 and hashlib
+
+
+def _an_operator_that_narrows_everything(gateway, request):
+    """An operator ceiling strictly below whatever the job asked for, in every numeric dimension.
+
+    Derived from the request rather than written down, because the numbers a job does not name
+    are still numbers it asked for: `requested_policy` fills them from the contract's defaults,
+    and an operator below a default narrows just as really as one below an explicit request. A
+    table of literals here would go stale the day a default moves, and would go stale silently.
+    """
+    from agentnode_sdk.gateway.policy_paths import policy_shape
+
+    shape = policy_shape(gateway.requested_policy(request))
+    numbers = {}
+    for path, value in shape.items():
+        if path.startswith("limits.") and isinstance(value, (int, float)):
+            field = path.split(".", 1)[1]
+            numbers[field] = type(value)(max(1, value // 2) if isinstance(value, int)
+                                         else value / 2)
+    return SandboxPolicy(network=NetworkRules(enabled=True, allowed_destinations=None),
+                         limits=Limits(**numbers))
+
+
+def _admit_asking(gateway, *, mandatory=(), optional=(), operator=None, wall_clock_s=3600,
+                  network="unrestricted", domains=()):
+    """Drive a real admission and return the refusal, or None when the job was admitted.
+
+    Through `admit` rather than through `merge_policies`: what a customer needs is not that a
+    function narrows, but that this gateway refuses. Everything above this line tests the fold;
+    this tests the service.
+    """
+    import hashlib
+
+    code = b"print(1)\n"
+    request = _asking_for(mandatory=tuple(mandatory), optional=tuple(optional),
+                          wall_clock_s=wall_clock_s, network=network,
+                          allowed_domains=tuple(domains),
+                          artifact_sha256=hashlib.sha256(code).hexdigest())
+    gateway._operator_policy = (operator if operator is not None
+                                else _an_operator_that_narrows_everything(gateway, request))
+    # The digest of the policy the job DESCRIBES, computed the way the gateway computes it
+    # rather than pasted in. A wrong one is refused before the mandatory check is reached, and
+    # a test that tripped over that would report the wrong refusal as the right one.
+    from agentnode_sdk.gateway.policy_paths import policy_shape
+    from agentnode_sdk.gateway.protocol import canonical_bytes, digest
+
+    request = dataclasses.replace(
+        request, policy_sha256=digest(canonical_bytes(
+            policy_shape(gateway.requested_policy(request)))))
+    try:
+        gateway.admit(request, code)
+    except Exception as exc:                                    # noqa: BLE001
+        return exc
+    return None
+
+
+class TestAMandatoryRequirementIsRefusedRatherThanClamped:
+    """The other half of `POLICY-WIDENING-DECISION-0001`, one test per dimension.
+
+    Everything above this line shows the composition NARROWING a request, and a review read that
+    as the whole answer and was right to object: "the supplied tests explicitly expect clamping"
+    (`ALPHA-R2-ADMISSION-0008`, D5). Clamping is the correct behaviour for a requirement the job
+    can run without. It is the wrong behaviour for one it cannot, and the decision draws the line
+    exactly there:
+
+    * OPTIONAL -- narrowed during `prepare`, before any human agrees, and disclosed as a delta in
+      structured form and in words. That is every test above this class.
+    * MANDATORY -- refused, naming the field, with nothing started.
+
+    `admit()` has enforced this since it was written; what did not exist was a test per
+    dimension, which is what a criterion saying "each dimension" asks for. Each case below is
+    paired with the SAME request declared optional, so the difference is visibly the declaration
+    rather than the ceiling.
+    """
+
+    LIMITS = ["limits.cpu", "limits.memory_mb", "limits.processes", "limits.wall_clock_s"]
+
+    def test_every_path_in_the_vocabulary_has_a_case(self):
+        """The vocabulary is the list this class must cover, read from the vocabulary itself so
+        that a field added next year fails here until somebody gives it a case."""
+        from agentnode_sdk.gateway.policy_paths import POLICY_PATHS
+
+        covered = set(self.LIMITS) | {"network.enabled", "network.allowed_destinations"}
+        assert covered == set(POLICY_PATHS), sorted(set(POLICY_PATHS) ^ covered)
+
+    @pytest.mark.parametrize("path", LIMITS)
+    def test_a_limit_declared_mandatory_is_refused(self, gateway, path):
+        refused = _admit_asking(gateway, mandatory=(path,))
+        assert refused is not None, f"{path} was clamped where it should have been refused"
+        assert path in str(refused)
+        assert "Nothing was started" in str(refused)
+
+    @pytest.mark.parametrize("path", LIMITS)
+    def test_and_the_SAME_narrowing_declared_optional_is_not_refused(self, gateway, path):
+        """The pairing is the point. Same operator policy, same request, same field narrowed --
+        and the only difference is which list the job put it in. Were both refused, the refusal
+        would be about the ceiling and would say nothing about mandatory at all."""
+        assert _admit_asking(gateway, optional=(path,)) is None
+
+    def test_a_network_the_operator_turned_off_is_refused_when_mandatory(self, gateway):
+        off = SandboxPolicy(network=NetworkRules(enabled=False,
+                                                 allowed_destinations=frozenset()))
+        refused = _admit_asking(gateway, mandatory=("network.enabled",), operator=off)
+        assert refused is not None
+        assert "network.enabled" in str(refused)
+
+    def test_and_the_same_one_declared_optional_runs_without_a_network(self, gateway):
+        off = SandboxPolicy(network=NetworkRules(enabled=False,
+                                                 allowed_destinations=frozenset()))
+        assert _admit_asking(gateway, optional=("network.enabled",), operator=off) is None
+
+    def test_a_destination_the_operator_does_not_allow_is_refused_when_mandatory(self, gateway):
+        only = SandboxPolicy(network=NetworkRules(
+            enabled=True, allowed_destinations=frozenset({"api.example"})))
+        refused = _admit_asking(gateway, mandatory=("network.allowed_destinations",),
+                                operator=only)
+        assert refused is not None
+        assert "network.allowed_destinations" in str(refused)
+
+    def test_and_the_same_one_declared_optional_runs_on_the_shorter_list(self, gateway):
+        only = SandboxPolicy(network=NetworkRules(
+            enabled=True, allowed_destinations=frozenset({"api.example"})))
+        assert _admit_asking(gateway, optional=("network.allowed_destinations",),
+                             operator=only) is None
+
+    def test_an_unknown_field_is_refused_whichever_list_it_is_in(self, gateway):
+        """Fail closed on a name this build cannot decide -- in EITHER list, because a field the
+        gateway cannot enforce is not made safe by the job calling it optional."""
+        for where in ("mandatory", "optional"):
+            refused = _admit_asking(gateway, **{where: ("limits.gpus",)})
+            assert refused is not None, where
+            assert "cannot be enforced" in str(refused)
+
+    def test_a_field_in_both_lists_is_refused(self):
+        """Mandatory and optional at once has no defined behaviour, and choosing one silently
+        would settle a security question by accident."""
+        from agentnode_sdk.gateway.policy_paths import PolicyPathError, validate_paths
+
+        with pytest.raises(PolicyPathError):
+            validate_paths(("limits.cpu",), ("limits.cpu",))
