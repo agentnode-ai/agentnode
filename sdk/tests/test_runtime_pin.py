@@ -278,3 +278,54 @@ class TestThePublishedVersionIsNotSilentlyReplaced:
         assert "<3.13" in said, "the metadata no longer excludes 3.13+"
         assert rp.SUPPORTED == (3, 12), (
             "the pin supports %s while the metadata stops below 3.13" % (rp.SUPPORTED,))
+
+
+class TestOneInstallationSeenDownTwoPathsIsOne:
+    """The defect the runtime work uncovered, and it is not about a python version.
+
+    `post_verify` requires a distribution to be installed EXACTLY ONCE -- the right question,
+    answered with the wrong count. On a venv where `lib64` is a symlink to `lib`, which is the
+    Fedora/RHEL family and is what the DevelopServer runs, both directories are on `sys.path`.
+    An interpreter that walks both reports every distribution twice, and both entries resolve to
+    the same directory.
+
+    Measured rather than reasoned about: python 3.12.13 reported pip once and 3.12.14 reported it
+    twice, on the same machine, in venvs made minutes apart -- 47 distributions duplicated in one
+    environment. Every install transaction on such a machine refused with "Installed distribution
+    could not be verified", which was true of what it counted and false of what was there.
+
+    This is also the correction of an earlier conclusion of mine: the five failing tests were
+    first attributed to python 3.14. They fail on 3.12.14 too. The version was a coincidence of
+    which interpreters happened to be at hand.
+    """
+
+    def _probe(self, matches):
+        """Run the probe's dedupe over a given list of matches, as the probe does."""
+        import json
+
+        from agentnode_sdk import _agent_pip as ap
+
+        source = ap._POSTVERIFY_PROBE
+        start = source.index("seen = {}")
+        end = source.index("print(json.dumps(")
+        namespace = {"matches": list(matches), "json": json}
+        exec(compile(source[start:end], "<probe-dedupe>", "exec"), namespace)   # noqa: S102
+        return namespace["matches"]
+
+    def test_two_paths_to_one_place_count_once(self):
+        both = [{"version": "1.0", "where": "/v/lib/python3.12/site-packages/x-1.0.dist-info"},
+                {"version": "1.0", "where": "/v/lib/python3.12/site-packages/x-1.0.dist-info"}]
+        assert len(self._probe(both)) == 1
+
+    def test_but_two_real_installations_still_count_twice(self):
+        """The half that must not move. Two copies in different places is the thing the
+        uniqueness check exists to catch, and deduping must not swallow it."""
+        two = [{"version": "1.0", "where": "/v/lib/python3.12/site-packages/x-1.0.dist-info"},
+               {"version": "2.0", "where": "/other/site-packages/x-2.0.dist-info"}]
+        assert len(self._probe(two)) == 2
+
+    def test_and_an_unlocatable_match_is_kept_rather_than_folded_away(self):
+        """A match with no resolvable location is not a duplicate of anything. Folding those
+        together would hide exactly the case somebody should look at."""
+        odd = [{"version": "1.0", "where": ""}, {"version": "2.0", "where": ""}]
+        assert len(self._probe(odd)) == 2
