@@ -59,3 +59,42 @@ pins when it is introduced to a gateway and re-checks on every later answer, so 
 every paired device that something else is answering on that address — true of the code, false of
 the machine, and it is the machine a person paired with. `test_a_new_build_does_not_unpair_every_device`
 holds that property so a later change to it has to be a deliberate one.
+
+## The fingerprint: what it was, what it cost, and what it is now
+
+**This section was written after the change was forced by a real failure, not before it.**
+
+The original text below this document's earlier heading said the fingerprint stays
+`sha256(gateway_id + "\n" + version)` because it has to mean "the same gateway", and that folding
+the build id in would unpair every device on every deployment. That reasoning was right and the
+conclusion was half-applied: **the version was already in there**, and the version is a property
+of the code, not of the machine.
+
+It stayed invisible for as long as it did because two different builds both called themselves
+0.24.1 — the very defect this work exists to fix. The first deployment that genuinely changed the
+version made it visible immediately: a client that had paired with the alpha refused to talk to
+it, reporting that something else was answering on that address.
+
+Measured, on the running machine:
+
+```
+the client had saved : e84fbe455dbc5157325f8493079554cc1a5cf90f1075d0dfdd954c72490dcb7f
+the gateway then said: fe89106a23cbcda21a59a77679a7794b5f5c8859801ea9b8228a04e4bc75e254
+
+sha256("44fe109457de794572cdfdc03ef281a8" + "\n" + "0.24.1") = e84fbe45...
+sha256("44fe109457de794572cdfdc03ef281a8" + "\n" + "0.25.0") = fe89106a...
+```
+
+The client was right to refuse what it was told. It was told the wrong thing.
+
+**The fingerprint is now `sha256(gateway_id)`.** One question, one answer: is this still the
+gateway I paired with? Which BUILD is answering is a different question and has `build_id`.
+
+**What it costs:** the deployment that introduces this unpairs every currently paired device,
+once. Every device has to pair again. That is a real cost, it is paid deliberately, and it buys
+the property that no later upgrade ever costs it again.
+
+**And the reason it was hard to change:** the formula existed in FOUR places — the gateway, the
+client that re-checks it, the evidence reader that recomputes it, and a test helper whose
+docstring said it computed things "the way the gateway produces it". It is now one function,
+`agentnode_sdk.gateway.identity.fingerprint_of`, and the other three call it.
