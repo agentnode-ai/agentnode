@@ -109,6 +109,18 @@ jobs:
       - name: Set the gateway up as its own user
         run: python -m agentnode_sdk.cli gateway init --dir "${TWO_ROLE_GATEWAY_DIR}"
 
+      # A GATEWAY THAT STARTS UNPINNED IS A GATEWAY NOBODY IS CHECKING, so it refuses -- and this
+      # lane starts a real one. It has to look like a machine somebody deployed, which is what a
+      # deployment writes. Not AGENTNODE_ALLOW_UNPINNED: this lane is the closest thing in CI to
+      # the real two-machine arrangement, and running it with the check switched off would test
+      # the one arrangement the product does not have.
+      - name: Pin this runner, the way a deployment would
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/pin"
+          python -c "from agentnode_sdk.gateway import runtime_pin as r; import sys; print(r.write_pin(sys.argv[1], python_version=r.running_python(), artefact_sha256=(r.installed_artefact_digest() or 64*chr(97)), commit=40*chr(48)))" "$RUNNER_TEMP/pin"
+          echo "AGENTNODE_PIN_DIR=$RUNNER_TEMP/pin" >> "$GITHUB_ENV"
+
       - name: Run the two-role check
         run: |
           set -o pipefail
