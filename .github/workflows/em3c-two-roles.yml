@@ -118,7 +118,11 @@ jobs:
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/pin"
-          python -c "from agentnode_sdk.gateway import runtime_pin as r; import sys; print(r.write_pin(sys.argv[1], python_version=r.running_python(), artefact_sha256=(r.installed_artefact_digest() or 64*chr(97)), commit=40*chr(48)))" "$RUNNER_TEMP/pin"
+          # A DEPLOYMENT RECORDS THE DIGEST IT INSTALLED, inside the installed distribution, and
+          # the pin then names that same value. Writing a made-up digest into the pin produced
+          # exactly the refusal it should have: "the pin expects artefact aaaaaaaa and the
+          # installed distribution records none". The pin was right and the lane was lying.
+          python ../.github/pin-this-runner.py "$RUNNER_TEMP/pin"
           echo "AGENTNODE_PIN_DIR=$RUNNER_TEMP/pin" >> "$GITHUB_ENV"
 
       - name: Run the two-role check
