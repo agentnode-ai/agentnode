@@ -14,11 +14,17 @@ BUILDER="${AGENTNODE_BUILD_PYTHON:-/root/buildvenv/bin/python}"
 [ "${#COMMIT}" -ge 7 ] || { echo "'$COMMIT' is too short to name a commit"; exit 1; }
 cd "$TREE/sdk" || exit 1
 
-"$BUILDER" - "$COMMIT" <<'PYEOF'
-import sys
-sys.path.insert(0, ".")
-from agentnode_sdk import _provenance
-print("   recorded in the source tree:", _provenance.record(sys.argv[1]))
+# WRITTEN WITHOUT IMPORTING THE PACKAGE. The first version called `_provenance.record`, which
+# imports `agentnode_sdk`, which imports the whole SDK -- and the build interpreter has only
+# `build` and `hatchling` installed, so it stopped at `No module named httpx`. Recording where
+# a build came from must not depend on the build being installable first.
+"$BUILDER" - "$COMMIT" "agentnode_sdk/_provenance.json" <<'PYEOF'
+import json, pathlib, sys
+
+where = pathlib.Path(sys.argv[2])
+where.write_text(json.dumps({"commit": sys.argv[1]}, indent=1) + "
+", encoding="utf-8")
+print("   recorded in the source tree:", where)
 PYEOF
 [ $? -eq 0 ] || { echo "the commit could not be recorded"; exit 1; }
 
@@ -30,10 +36,11 @@ WHEEL="$(ls -1 dist/*.whl | head -1)"
 # READ BACK OUT OF THE WHEEL, not out of the tree. A build that recorded the commit and then did
 # not carry it into the artefact would otherwise look like a build that did.
 "$BUILDER" - "$WHEEL" "$COMMIT" <<'PYEOF'
-import sys
-sys.path.insert(0, ".")
-from agentnode_sdk import _provenance
-inside = _provenance.of_a_wheel(sys.argv[1])
+import json, sys, zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as z:
+    names = [n for n in z.namelist() if n.endswith("agentnode_sdk/_provenance.json")]
+    inside = json.loads(z.read(names[0]).decode("utf-8")).get("commit", "") if names else ""
 if inside != sys.argv[2]:
     print("   the wheel says %r and the build was for %r" % (inside, sys.argv[2]))
     raise SystemExit(1)
