@@ -846,7 +846,15 @@ class TestEverySecretShapeAgainstEverySink:
         # by remembering a value, which is why they belong in every sink's sweep and not only in
         # the archive's.
         for key_path in sorted(pathlib.Path(gateway.state.root).glob("*key*")):
-            if key_path.is_file() and not key_path.name.endswith(".pub"):
+            # `.pub` is the half anyone may have. `.lock` is not a file with contents at all --
+            # it is how two writers agree who goes first, it is empty by construction, and it is
+            # named after the file it guards, so `meter-key.pem.lock` matched this glob and was
+            # collected as key material. The guard below then said, correctly, that empty bytes
+            # prove nothing. Excluded here rather than there, because the question is what this
+            # collects, not what the guard tolerates.
+            if key_path.name.endswith((".pub", ".lock")):
+                continue
+            if key_path.is_file():
                 holding["the %s bytes" % key_path.name] = key_path.read_bytes().decode("latin-1")
 
         assert any(k.startswith("the ") and k.endswith(" bytes") for k in holding), (

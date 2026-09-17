@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import stat
 import sys
 import warnings
@@ -75,10 +74,24 @@ def save_signing_key(
     pem_bytes = private_key.private_bytes(
         Encoding.PEM, PrivateFormat.PKCS8, NoEncryption(),
     )
-    path.write_bytes(pem_bytes)
+    # WRITTEN BESIDE AND RENAMED OVER, never in place. `path.write_bytes` followed by a `chmod`
+    # got this wrong twice over, and both were observed rather than reasoned about:
+    #
+    #   a reader saw HALF A KEY. `meter.signing_key` does `if path.exists(): load`, so a second
+    #   caller arriving between the create and the last byte loaded a truncated PEM and got
+    #   "MalformedFraming" -- a torn read reported as a corrupt key. It surfaced as a test that
+    #   failed in a full suite and passed alone, which is what a race looks like from outside.
+    #
+    #   and the PRIVATE KEY WAS BRIEFLY WORLD-READABLE. `write_bytes` creates with the umask,
+    #   so the file existed at 0644 until the `chmod` ran. The suite printed a warning about it
+    #   on every run, which is the most polite way a defect can ask to be fixed.
+    #
+    # `atomically` writes into a `mkstemp` file -- 0600 from the moment it exists -- fsyncs it,
+    # and renames. There is no moment when the final path holds a partial key, and no moment
+    # when it holds a readable one.
+    from agentnode_sdk.gateway.filelock import atomically
 
-    if sys.platform != "win32":
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    atomically(path, pem_bytes.decode("ascii"), mode=stat.S_IRUSR | stat.S_IWUSR)
 
     return path
 
