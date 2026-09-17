@@ -353,3 +353,45 @@ class TestASweepThatCouldNotFinishIsNotRecordedAsDone:
                               **{"%s_days" % name: None for name in retention.CLASSES}})()
         assert gateway_commands.cmd_keeps(args) == 0
         assert "has not swept yet" in capsys.readouterr().out
+
+
+class TestTheDocumentedPromiseAndTheConfiguredPeriodCannotDrift:
+    """`ALPHA-R2-DECISION-DELETION-0002`, RISK-A-OPERATIONAL-DEPENDENCY:
+
+        "The 35-day claim depends on correct backup-directory configuration, a retention value no
+         greater than 35 days, and successful recurring sweeps."
+
+    The dependency is real and cannot be removed -- an operator can raise the period, and then the
+    promise is whatever they raised it to. What CAN be removed is the drift between the number in
+    the customer-facing document and the number this product ships with, because that one is not
+    an operator's choice, it is a mistake waiting to be made by whoever edits one and not the
+    other.
+    """
+
+    def test_the_number_in_the_promise_is_the_number_in_the_table(self):
+        import pathlib
+        import re
+
+        doc = (pathlib.Path(__file__).resolve().parent.parent / "docs" / "what-is-kept.md")
+        said = doc.read_text(encoding="utf-8")
+        promised = re.search(
+            r"gone from every backup this gateway made within\s+(\d+)\s+days", said)
+        assert promised, ("the deletion promise is not in docs/what-is-kept.md in the shape this "
+                          "test can read. If the wording changed, change this test on purpose.")
+        assert int(promised.group(1)) == retention.CLASSES["backups"]["days"], (
+            "the customer is promised %s days and this gateway ships %s"
+            % (promised.group(1), retention.CLASSES["backups"]["days"]))
+
+    def test_a_period_of_zero_for_backups_is_the_promise_being_switched_off(self):
+        """Zero means indefinitely everywhere in this table, and for backups that is the promise
+        gone. It stays possible -- an operator may have a reason -- and it is REPORTED, so a sweep
+        cannot read as "the backups were checked" when the answer is "they are kept for ever".
+        """
+        import pathlib
+        import tempfile
+
+        root = pathlib.Path(tempfile.mkdtemp())
+        retention.write_retention(root, retention.Retention(backups_days=0))
+        done = retention.sweep(root, now=JUST_NOW)
+        assert done["swept"]["backups"] == "kept indefinitely"
+        assert done["problems"] == []
