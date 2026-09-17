@@ -107,7 +107,7 @@ def serving_but_it_falls_over(monkeypatch, what_to_raise):
 
 class TestTheWaysAGatewayReallyEnds:
 
-    def test_ctrl_c_ends_it(self, tmp_path, monkeypatch):
+    def test_ctrl_c_ends_it(self, tmp_path, monkeypatch, a_pinned_machine):
         """The Ctrl-C branch, raised from inside the real loop.
 
         An earlier version sent a real SIGINT from a timer thread. It passed alone and HUNG in the
@@ -138,7 +138,7 @@ class TestTheWaysAGatewayReallyEnds:
         assert descriptors() <= before_fds, "Ctrl-C kept descriptors"
         assert left <= before_threads, "Ctrl-C left threads running"
 
-    def test_an_error_while_serving_still_gives_everything_back(self, tmp_path, monkeypatch):
+    def test_an_error_while_serving_still_gives_everything_back(self, tmp_path, monkeypatch, a_pinned_machine):
         """The unhappy path: something nobody expected is raised inside the loop.
 
         The command does not catch it -- only KeyboardInterrupt -- so it comes out. What must

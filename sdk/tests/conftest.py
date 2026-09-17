@@ -61,6 +61,38 @@ def browser():
 
 
 # SESSION-scoped, and that is the whole point -- see the docstring.
+@pytest.fixture()
+def a_pinned_machine(monkeypatch, tmp_path_factory):
+    """A pin that agrees with the interpreter running the tests, for tests that START a gateway.
+
+    A start with no pin is a refusal now, which is the point of it -- and it means a test that
+    drives `cmd_start` has to look like a deployed machine rather than an empty directory. Four
+    lifecycle tests were failing on exactly that: they are about whether serving gives
+    everything back, not about pinning, and they were being answered by the pin check before
+    they got to their own question.
+
+    A REAL PIN, not `AGENTNODE_ALLOW_UNPINNED`. Setting the escape here would run the whole
+    suite with the safety off and nothing would notice the day it stopped working.
+    """
+    from agentnode_sdk.gateway import runtime_pin
+
+    where = tmp_path_factory.mktemp("a-pinned-machine")
+    runtime_pin.write_pin(
+        where,
+        python_version=runtime_pin.running_python(),
+        artefact_sha256=runtime_pin.installed_artefact_digest() or "a" * 64,
+        commit="0" * 40,
+    )
+    monkeypatch.setenv("AGENTNODE_PIN_DIR", str(where))
+    # The interpreter this suite runs on may not be the tested family -- CI runs 3.10 and 3.11
+    # too -- and that check is not what these tests are about either.
+    monkeypatch.setattr(runtime_pin, "running_is_supported", lambda: True)
+    monkeypatch.setattr(runtime_pin, "is_supported", lambda version: True)
+    monkeypatch.setattr(runtime_pin, "installed_artefact_digest",
+                        lambda *a, **k: runtime_pin.read_pin(where)["artefact_sha256"])
+    return where
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _the_pin_is_not_the_one_on_this_machine(tmp_path_factory):
     """Tests must NEVER read the runtime pin belonging to the machine they run on.
