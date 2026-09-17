@@ -270,15 +270,34 @@ class TestThePublishedVersionIsNotSilentlyReplaced:
             encoding="utf-8")
 
     def test_the_narrowed_metadata_does_not_go_out_under_the_published_version(self):
+        import agentnode_sdk
+
         said = self._pyproject()
         narrowed = "<3.13" in said
-        version = next((x.split("=", 1)[1].strip().strip('"')
-                        for x in said.splitlines()
-                        if x.startswith("version =")), "")
+        # THE VERSION IS READ FROM WHERE IT IS NOW WRITTEN. An earlier version of this test
+        # scraped `version =` out of pyproject.toml. When the version moved into
+        # `agentnode_sdk/__init__.py` that line stopped existing, the scrape returned "", and the
+        # assertion below passed against the empty string -- a test that had stopped testing
+        # anything while still reporting a pass.
+        version = agentnode_sdk.__version__
+        assert version, "the package does not say what version it is"
         if narrowed:
             assert version != "0.24.1", (
                 "requires-python is narrowed and the version is still 0.24.1, which is already "
                 "published. Bump it, or widen the metadata back.")
+
+    def test_and_there_is_only_one_copy_of_the_version(self):
+        """0.24.1 in `__init__.py` and 0.25.0 in `pyproject.toml` is how this was found: the
+        gateway stamped 0.24.1 onto every answer it gave while running the 0.25.0 build. The
+        wheel's version is built from the module, so there is nothing left to disagree with."""
+        said = self._pyproject()
+        static = [x for x in said.splitlines() if x.strip().startswith("version =")
+                  and "hatch" not in x]
+        assert not static, (
+            "pyproject.toml carries its own version line again (%r); it is built from "
+            "agentnode_sdk.__version__ and a second copy will drift from it" % static)
+        assert 'dynamic = ["version"]' in said
+        assert 'path = "agentnode_sdk/__init__.py"' in said
 
     def test_and_the_bound_matches_what_the_pin_calls_supported(self):
         """Two places say which interpreter this supports, and they must not drift: the package
@@ -340,3 +359,62 @@ class TestOneInstallationSeenDownTwoPathsIsOne:
         together would hide exactly the case somebody should look at."""
         odd = [{"version": "1.0", "where": ""}, {"version": "2.0", "where": ""}]
         assert len(self._probe(odd)) == 2
+
+
+class TestWhichBuildIsAnswering:
+    """R5: the service has to identify itself by something a version number cannot be.
+
+    0.24.1 was installed before AND after the R2 deployment. Anything that read the version saw
+    one build where there were two, and the deployment that changed the code was invisible to it.
+    """
+
+    def _identity(self, **kw):
+        from agentnode_sdk.gateway.identity import GatewayIdentity
+
+        base = {"gateway_id": "a" * 32, "version": "0.25.0",
+                "build_id": "managed-af4e6d8f06b4+4fa7277b3ac3"}
+        base.update(kw)
+        return GatewayIdentity(**base)
+
+    def test_the_build_id_is_in_what_the_gateway_says_it_is(self):
+        said = self._identity().as_dict()
+        assert said["build_id"] == "managed-af4e6d8f06b4+4fa7277b3ac3"
+
+    def test_two_builds_of_one_version_are_told_apart(self):
+        """The failure this exists for, stated as a test: same version, different code."""
+        one = self._identity(version="0.24.1", build_id="managed-04a528edcafe+952e41bccbf6")
+        two = self._identity(version="0.24.1", build_id="managed-af4e6d8f06b4+4fa7277b3ac3")
+        assert one.as_dict()["version"] == two.as_dict()["version"]
+        assert one.as_dict()["build_id"] != two.as_dict()["build_id"]
+
+    def test_the_build_id_is_computed_from_the_commit_and_the_artefact(self):
+        """Not written down beside them. `build_id` takes both and derives the value, so it
+        cannot say one thing while the pin says another."""
+        assert rp.build_id(COMMIT, ARTEFACT) == "managed-%s+%s" % (COMMIT[:12], ARTEFACT[:12])
+
+    def test_a_gateway_that_cannot_tell_says_nothing_rather_than_guessing(self):
+        assert self._identity(build_id="").as_dict()["build_id"] == ""
+
+    def test_a_new_build_does_not_unpair_every_device(self):
+        """The fingerprint is a client's pinned answer to "is this the same gateway", and it is
+        re-checked on every later answer. If the build id were folded into it, every deployment
+        would tell every paired device that something else is now answering -- true of the code,
+        false of the machine, and it is the machine a person paired with."""
+        before = self._identity(build_id="managed-04a528edcafe+952e41bccbf6")
+        after = self._identity(build_id="managed-af4e6d8f06b4+4fa7277b3ac3")
+        assert before.fingerprint == after.fingerprint
+
+    def test_but_the_fingerprint_still_moves_when_the_gateway_does(self):
+        assert self._identity().fingerprint != self._identity(version="0.24.1").fingerprint
+        assert self._identity().fingerprint != self._identity(gateway_id="b" * 32).fingerprint
+
+    def test_the_stamp_a_client_recomputes_is_unchanged_by_the_new_field(self):
+        """A pairing client recomputes the fingerprint from the gateway id and the version it was
+        told. Adding a field to that object must not change the value it arrives at, or every
+        pairing breaks on the honest answer."""
+        import hashlib
+
+        identity = self._identity()
+        said = identity.as_dict()
+        named = str(said["gateway_id"]) + "\n" + str(said["version"])
+        assert hashlib.sha256(named.encode()).hexdigest() == identity.fingerprint

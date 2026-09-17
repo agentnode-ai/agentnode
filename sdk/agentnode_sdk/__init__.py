@@ -38,7 +38,12 @@ from agentnode_sdk.runtime import AgentNodeRuntime
 Client = AgentNodeClient
 ToolError = AgentNodeToolError
 
-__version__ = "0.24.1"
+#: THE ONE PLACE THE VERSION IS WRITTEN. `pyproject.toml` builds the wheel's version from this
+#: line rather than carrying its own copy, because it did carry one: the project said 0.25.0
+#: while this said 0.24.1, so the gateway announced 0.24.1 to every client it answered while
+#: running the 0.25.0 build. Two copies of one number drift, and the drift is invisible until
+#: something reports the wrong one.
+__version__ = "0.25.0"
 __all__ = [
     "AgentNode",
     "AsyncAgentNode",

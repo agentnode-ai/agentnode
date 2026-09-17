@@ -10,7 +10,9 @@ name = "agentnode-sdk"
 # suddenly refuses them. The bump makes that impossible rather than leaving it to whoever
 # publishes next to remember. A minor bump rather than a patch because a narrowed
 # requires-python is visible to every installer.
-version = "0.25.0"
+# Built from `agentnode_sdk/__init__.py` (see [tool.hatch.version] below) rather than
+# repeated here. It was repeated here, and the two copies disagreed.
+dynamic = ["version"]
 description = "Python SDK for AgentNode — the open upgrade and discovery infrastructure for AI agents."
 readme = "README.md"
 # The versions CI actually runs. It used to say ">=3.10" with no upper bound, which is a promise
@@ -66,6 +68,9 @@ Documentation = "https://agentnode.net/docs"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "respx"]
+
+[tool.hatch.version]
+path = "agentnode_sdk/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agentnode_sdk"]

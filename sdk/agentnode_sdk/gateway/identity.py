@@ -87,16 +87,33 @@ class GatewayIdentity:
 
     gateway_id: str
     version: str
+    #: WHICH BUILD IS ANSWERING -- `managed-<commit>+<artefact>`, computed by the deployment from
+    #: the commit and the artefact digest, not written down beside them. Empty on an installation
+    #: made before the pin existed, because inventing one would be worse than the gap.
+    #:
+    #: A version number could not do this job: 0.24.1 was installed before AND after a deployment
+    #: that changed the code, so anything reading the version saw one build where there were two.
+    #: This field is what a reader compares instead.
+    build_id: str = ""
 
     def as_dict(self) -> dict[str, str]:
-        return {"gateway_id": self.gateway_id, "version": self.version}
+        return {"gateway_id": self.gateway_id, "version": self.version,
+                "build_id": self.build_id}
 
     @property
     def fingerprint(self) -> str:
         """Identity and version together. A change to either produces a different value.
 
-        That is the point: a report describes a build, and a gateway that upgraded is a different
-        build even though it is the same machine.
+        THE BUILD ID IS DELIBERATELY NOT IN HERE, and that is not an oversight. This value is what
+        a paired client pins when it is introduced to a gateway and re-checks on every later
+        answer, so it has to mean "the same gateway" rather than "the same code". Folding the
+        build id in would make every deployment unpair every device -- the client would report
+        that something else is answering on that address, which would be true of the code and
+        false of the machine, and the second is what a person paired with.
+
+        What the build id is checked against instead is the report binding, which carries it, the
+        commit and the artefact digest, and is SIGNED. The copy in the stamp says which build
+        answered; the signed report is what proves it.
         """
         return hashlib.sha256(
             f"{self.gateway_id}\n{self.version}".encode()
@@ -119,9 +136,13 @@ class GatewayState:
     permissions, and is never meant to be edited by hand.
     """
 
-    def __init__(self, root: str | os.PathLike[str], version: str) -> None:
+    def __init__(self, root: str | os.PathLike[str], version: str,
+                 build_id: str = "") -> None:
         self.root = Path(root)
         self.version = version
+        # Handed in by whoever built this service rather than read from disk here, so a test
+        # constructing a state does not pick up whatever the host machine happens to be pinned to.
+        self.build_id = build_id
         self.root.mkdir(parents=True, exist_ok=True)
         self._harden(self.root)
         self._identity_path = self.root / "identity.json"
@@ -214,7 +235,8 @@ class GatewayState:
             # somebody removed it rather than that nothing has been recorded yet.
             self._throttle.ensure_initialised()
             self._admission.ensure_initialised()
-        return GatewayIdentity(gateway_id=gid, version=self.version)
+        return GatewayIdentity(gateway_id=gid, version=self.version,
+                               build_id=self.build_id)
 
     # ---------------------------------------------------------------- pairing
 

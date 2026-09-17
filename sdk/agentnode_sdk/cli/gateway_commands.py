@@ -86,6 +86,21 @@ def _operator_policy(root: Path):
                                               allowed_destinations=frozenset(hosts)))
 
 
+def _build_id() -> str:
+    """Which build this process is, from the pin the deployment wrote.
+
+    Empty when there is no pin -- an installation made before pinning existed genuinely cannot
+    say which build it is, and a made-up answer would be read as a real one. `_refuse_unless_pinned`
+    is what decides whether running without a pin is allowed; this only reports.
+    """
+    from agentnode_sdk.gateway import runtime_pin
+
+    try:
+        return str(runtime_pin.read_pin(runtime_pin.pin_dir()).get("build_id") or "")
+    except Exception:                                         # noqa: BLE001
+        return ""
+
+
 def _service(root: Path):
     from agentnode_sdk.gateway.identity import GatewayState
     from agentnode_sdk.gateway.server import GatewayService
@@ -93,7 +108,7 @@ def _service(root: Path):
 
     from agentnode_sdk import __version__ as version
 
-    state = GatewayState(root, version=str(version))
+    state = GatewayState(root, version=str(version), build_id=_build_id())
     return state, GatewayService(state, backend=ContainerBackend(),
                                  operator_policy=_operator_policy(root))
 
