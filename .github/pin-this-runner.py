@@ -22,25 +22,34 @@ def main() -> int:
     where = pathlib.Path(sys.argv[1])
     where.mkdir(parents=True, exist_ok=True)
 
-    import agentnode_sdk
+    # FOUND THE WAY THE PIN LATER READS IT -- through importlib.metadata, not by looking next
+    # to the package. A lane that installs editable keeps its dist-info somewhere else
+    # entirely, and the first version of this went looking beside the source tree, found
+    # nothing, and said so.
+    import importlib.metadata as md
 
-    package = pathlib.Path(agentnode_sdk.__file__).resolve().parent
-    dist = next((d for d in package.parent.glob("agentnode_sdk-*.dist-info")), None)
-    if dist is None:
-        print("no dist-info beside", package, "-- nothing to record a digest in")
+    try:
+        dist = md.distribution("agentnode-sdk")
+    except md.PackageNotFoundError:
+        print("agentnode-sdk is not installed here, so there is nothing to record a digest in")
         return 1
+    meta = getattr(dist, "_path", None)
+    if meta is None or not pathlib.Path(meta).is_dir():
+        print("the distribution has no directory to record a digest in:", meta)
+        return 1
+    meta = pathlib.Path(meta)
 
-    # A digest OF SOMETHING, rather than a constant: what matters for the lane is that the value
-    # the pin names is the value the installation records, which is the relationship a deployment
-    # establishes. The bytes digested here are the installed package's own RECORD file.
-    record = dist / "RECORD"
+    # A digest OF SOMETHING rather than a constant: what matters is that the value the pin
+    # names is the value the installation records, which is the relationship a deployment
+    # establishes. The bytes digested are the installed distribution's own RECORD.
+    record = meta / "RECORD"
     digest = hashlib.sha256(record.read_bytes() if record.is_file()
-                            else package.as_posix().encode()).hexdigest()
-    (dist / "AGENTNODE_ARTEFACT").write_text(digest + "\n", encoding="utf-8")
+                            else meta.as_posix().encode()).hexdigest()
+    (meta / "AGENTNODE_ARTEFACT").write_text(digest + "\n", encoding="utf-8")
 
     said = runtime_pin.write_pin(where, python_version=runtime_pin.running_python(),
                                  artefact_sha256=digest, commit="0" * 40)
-    print("recorded", digest[:16], "in", dist.name)
+    print("recorded", digest[:16], "in", meta.name)
     print("pinned  ", said)
 
     # PROVE IT AGREES, here, rather than finding out when the gateway refuses to start.
