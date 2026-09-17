@@ -463,6 +463,13 @@ class TestTheWholeJourneyThroughThePublishedCommands:
         # Not AGENTNODE_ALLOW_UNPINNED. This is the lane that runs the published commands the way
         # a person runs them, and a person runs them on a machine that was deployed.
         pin_dir = _pin_like_a_deployment(root / "pin")
+        # IN THIS PROCESS TOO, not only in the subprocess's environment. `doctor --measure` runs
+        # in-process and binds what it measured to the build it is running as; the gateway then
+        # runs in a subprocess and re-derives that. Setting the pin only for the child made the
+        # two disagree, and the gateway refused work -- correctly, saying "the stored measurement
+        # describes something else". The measurement and the service have to be the same build.
+        was = os.environ.get("AGENTNODE_PIN_DIR")
+        os.environ["AGENTNODE_PIN_DIR"] = str(pin_dir)
         env = dict(os.environ, AGENTNODE_HOME=str(home), AGENTNODE_PIN_DIR=str(pin_dir))
 
         assert main(["gateway", "init", "--dir", str(gw_dir)]) == 0
@@ -486,6 +493,12 @@ class TestTheWholeJourneyThroughThePublishedCommands:
                 process.wait(timeout=30)
             except Exception:                                 # noqa: BLE001
                 process.kill()
+            # Put the environment back. A fixture that leaves AGENTNODE_PIN_DIR pointing at its
+            # own temporary directory has changed what every later test in the session reads.
+            if was is None:
+                os.environ.pop("AGENTNODE_PIN_DIR", None)
+            else:
+                os.environ["AGENTNODE_PIN_DIR"] = was
 
     def _pair_and_connect(self, url, gw_dir, home, capsys, name="e2e"):
         import re
