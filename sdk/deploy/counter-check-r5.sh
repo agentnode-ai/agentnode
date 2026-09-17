@@ -51,11 +51,10 @@ one "R5-a the build id is actually in what the gateway says it is" \
     tests/test_runtime_pin.py::TestWhichBuildIsAnswering::test_two_builds_of_one_version_are_told_apart \
     sed -i 's/"build_id": self.build_id}/"build_id": ""}/' agentnode_sdk/gateway/identity.py
 
-one "R5-b the fingerprint does not move with the build" \
+one "R5-b an upgrade does not unpair every device" \
     agentnode_sdk/gateway/identity.py \
-    tests/test_runtime_pin.py::TestWhichBuildIsAnswering::test_a_new_build_does_not_unpair_every_device \
-    sed -i 's|{self.version}".encode()|{self.version}{self.build_id}".encode()|' \
-      agentnode_sdk/gateway/identity.py
+    tests/test_runtime_pin.py::TestWhichBuildIsAnswering::test_and_an_upgrade_does_not_unpair_every_device \
+    sed -i 's#^        return fingerprint_of(self.gateway_id)$#        return fingerprint_of(self.gateway_id + self.version)#' agentnode_sdk/gateway/identity.py
 
 one "R5-c there is only one copy of the version" \
     pyproject.toml \
