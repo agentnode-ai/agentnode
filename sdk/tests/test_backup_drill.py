@@ -188,7 +188,12 @@ class TestLosingAnyOneStoreIsNoticedAndNamed:
             "nothing in this fixture produces %s, so losing it in a restore is checked by "
             "nothing" % absent)
 
-    @pytest.mark.parametrize("name", sorted(backup.everything_a_gateway_keeps()))
+    # EVERY store the manifest knows, EXCEPT the ones that deliberately do not come back.
+    # Derived from `backup.NOT_RESTORED` rather than written as a list here: a name written in
+    # two places drifts, and this is the place where the drift would read as "the restore is
+    # fine" rather than as an error.
+    @pytest.mark.parametrize("name", sorted(set(backup.everything_a_gateway_keeps())
+                                            - backup.NOT_RESTORED))
     def test_a_class_that_did_not_come_back_is_reported_by_name(self, a_busy_gateway, tmp_path,
                                                                 name):
         taken = _taken(a_busy_gateway)
@@ -521,3 +526,21 @@ class TestTheOneThatIsHereAndMustNotComeBack:
             assert "--exclude" in script and name in script, (
                 "%s is declared as not-restored and the restore script does not exclude it"
                 % name)
+
+    def test_and_the_comparison_does_not_call_it_a_loss(self):
+        """Wiring the exclusion into the restore alone was half a job.
+
+        The comparison then reported the deliberate absence as a lost store, on every restore --
+        a standing false alarm, which is how people learn to ignore a real one.
+        """
+        before = {"kept": {"runtime-pin.json": {"present": True, "bytes": 200},
+                           "audit.jsonl": {"present": True, "lines": 3}}}
+        after = {"kept": {"runtime-pin.json": {"present": False},
+                          "audit.jsonl": {"present": True, "lines": 3}}}
+        assert backup.differences(before, after) == []
+
+    def test_but_a_real_loss_is_still_a_loss(self):
+        """The half that must not move."""
+        before = {"kept": {"audit.jsonl": {"present": True, "lines": 3}}}
+        after = {"kept": {"audit.jsonl": {"present": False}}}
+        assert backup.differences(before, after) != []

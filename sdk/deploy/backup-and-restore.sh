@@ -134,7 +134,10 @@ key_is_somewhere_else() {
 die() { printf '\n  FAILED: %s\n\n' "$*" >&2; exit 1; }
 
 # Whichever python has the SDK. On the deployed host that is the gateway's own venv.
-PY="${AGENTNODE_PYTHON:-/opt/agentnode/venv/bin/python}"
+# The pinned environment by default. It used to default to /opt/agentnode/venv, which on a
+# machine that has moved to a pinned interpreter is the PREVIOUS installation -- so a manifest
+# check ran against code that did not know about the files the current build writes.
+PY="${AGENTNODE_PYTHON:-${AGENTNODE_VENV:-/opt/agentnode/venv312}/bin/python}"
 [ -x "$PY" ] || PY="$(command -v python3 || true)"
 [ -n "$PY" ] || die "no python with the agentnode SDK on it (set AGENTNODE_PYTHON)"
 
