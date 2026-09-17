@@ -217,11 +217,50 @@ def cmd_init(args) -> int:
     return 0
 
 
+def _refuse_unless_pinned(root, what: str) -> int:
+    """0 when this service is what its pin says, 1 after saying why not.
+
+    Called before anything is opened or served. The alpha ran its gateway on python 3.14 while
+    CI tested 3.10-3.12, and nothing noticed, because nothing was looking. This is the thing
+    that looks -- and it looks BEFORE a port exists, so a refusal leaves nothing half-started.
+
+    A machine with no pin is allowed to start and is TOLD. That is deliberate: refusing there
+    would break every installation that predates this check, which would be a new kind of
+    outage in the name of preventing one. A pin that exists and disagrees is refused.
+    """
+    from agentnode_sdk.gateway import runtime_pin
+
+    try:
+        said = runtime_pin.check(root)
+    except runtime_pin.NoPinAtAll:
+        print()
+        print(f"  {bold('No runtime pin.')}")
+        print(f"  This {what} cannot say which interpreter and artefact it was meant to run")
+        print("  from, so it cannot notice if it is running from the wrong one. It is starting")
+        print("  anyway, because refusing here would stop installations made before this check")
+        print("  existed. Write one with the deployment script to close that.")
+        print(f"  Running on python {runtime_pin.running_python()}.")
+        return 0
+    except runtime_pin.NotWhatWasPinned as no:
+        print()
+        print(f"  {bold('Not started.')}")
+        print(f"  This {what} is not what it was pinned to be, and the difference is the")
+        print(f"  {no.which}.")
+        print(f"  {no.said}")
+        print(f"  {no.what_to_do}")
+        return 1
+    print(f"  Running as {said.get('build_id', '(no build id)')} "
+          f"on python {runtime_pin.running_python()}.")
+    return 0
+
+
 def cmd_start(args) -> int:
     from agentnode_sdk.gateway.server import make_server
     from agentnode_sdk.gateway.transport import InsecureTransportError, public_url_for
 
     root = _root(args)
+    if _refuse_unless_pinned(root, "gateway"):
+        return 1
     config = _load_config(root)
     state, service = _service(root)
     host = getattr(args, "host", None) or config.get("host") or "127.0.0.1"
