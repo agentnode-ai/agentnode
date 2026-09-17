@@ -597,7 +597,7 @@ class GatewayService:
                 "artefact_sha256": runtime_pin.installed_artefact_digest(),
                 "commit": "", "build_id": ""}
         try:
-            pinned = runtime_pin.read_pin(self.state.root)
+            pinned = runtime_pin.read_pin(runtime_pin.pin_dir())
         except Exception:                                     # noqa: BLE001
             return said
         said["commit"] = str(pinned.get("commit") or "")

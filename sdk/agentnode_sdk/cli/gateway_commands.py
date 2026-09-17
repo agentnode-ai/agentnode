@@ -259,7 +259,11 @@ def cmd_start(args) -> int:
     from agentnode_sdk.gateway.transport import InsecureTransportError, public_url_for
 
     root = _root(args)
-    if _refuse_unless_pinned(root, "gateway"):
+    # The PIN directory, not the state directory. A restore replaces the state; it must not be
+    # able to replace what this installation is allowed to run as.
+    from agentnode_sdk.gateway import runtime_pin as _rp
+
+    if _refuse_unless_pinned(_rp.pin_dir(), "gateway"):
         return 1
     config = _load_config(root)
     state, service = _service(root)

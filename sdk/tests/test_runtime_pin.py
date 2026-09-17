@@ -169,6 +169,17 @@ class TestStartingRefuses:
     protected by. These drive the CLI's own entry points.
     """
 
+    @pytest.fixture(autouse=True)
+    def _pin_lives_here(self, tmp_path, monkeypatch):
+        """The pin is read from the PIN directory, not the state directory.
+
+        It used to be read from the state, and a restore drill -- which destroys the state and
+        rebuilds it -- brought back a pin describing the previous build. The worker's, one
+        directory away, was untouched and right. Both live outside the state now, and these
+        tests point the lookup at a temporary one.
+        """
+        monkeypatch.setenv("AGENTNODE_PIN_DIR", str(tmp_path))
+
     def _args(self, root, **extra):
         class Args:
             pass

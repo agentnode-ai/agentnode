@@ -52,7 +52,28 @@ import sys
 
 #: Beside the state, not inside it: the pin is about the INSTALLATION, and a state directory
 #: restored from a backup taken on another machine must not carry that machine's pin with it.
+#:
+#: This was written before the pin was put in the state directory anyway, and the drill found it
+#: within the hour: the drill destroys the state directory and rebuilds it from an archive, so
+#: the gateway's pin went with it and came back describing the previous build, while the worker's
+#: -- one directory away -- was untouched and right. Both live outside the state now.
 PIN_NAME = "runtime-pin.json"
+
+#: Where a service looks for its pin when nobody tells it otherwise. Beside the worker's key,
+#: which is a directory both service accounts can read and no backup rewrites.
+DEFAULT_PIN_DIR = "/etc/agentnode"
+
+
+def pin_dir(explicit: str = "") -> str:
+    """The directory holding this installation's pin.
+
+    Explicit wins, then the environment, then the default. Deliberately NOT derived from the
+    state directory: that is the thing a restore replaces, and a pin that a restore can replace
+    is a pin that can tell a machine it is something it is not.
+    """
+    import os as _os
+
+    return str(explicit or _os.environ.get("AGENTNODE_PIN_DIR") or DEFAULT_PIN_DIR)
 
 #: The interpreter this service is tested on and pinned to. A tuple rather than a string so
 #: "3.12.7 is 3.12" is a comparison rather than a substring match -- `"3.1"` is a prefix of

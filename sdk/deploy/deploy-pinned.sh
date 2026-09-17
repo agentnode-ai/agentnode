@@ -79,25 +79,27 @@ DIST="$(cd "$(ls -d "$VENV"/lib/python3*/site-packages | head -1)" && ls -d agen
 printf '%s\n' "$DIGEST" > "$(ls -d "$VENV"/lib/python3*/site-packages | head -1)/$DIST/AGENTNODE_ARTEFACT"
 echo "   installed, and the artefact digest recorded in $DIST"
 
-step "5. write the pin, for the gateway and for the worker"
-"$VENV/bin/python" - "$STATE" "$RUNNING" "$DIGEST" "$COMMIT" <<'PYEOF'
+step "5. write the pin -- ONE of them, and outside the state"
+# ONE pin, in a directory both service accounts can read and no restore rewrites. There used to
+# be two: one in the state directory for the gateway, one beside the worker's key. A restore
+# drill destroys the state and rebuilds it, so the gateway's came back describing the PREVIOUS
+# build while the worker's stayed right -- worker at 3cf3cb9, gateway at b672384, installed
+# artefact f039d767. The start refused, correctly, which is how it was found. Two pins are two
+# chances to disagree, and the state directory is the one place a restore can overwrite.
+mkdir -p "$WORKER_PIN_DIR"
+"$VENV/bin/python" - "$WORKER_PIN_DIR" "$RUNNING" "$DIGEST" "$COMMIT" <<'PINEOF'
 import sys
 from agentnode_sdk.gateway import runtime_pin
 where = runtime_pin.write_pin(sys.argv[1], python_version=sys.argv[2],
                               artefact_sha256=sys.argv[3], commit=sys.argv[4])
-print("   gateway pin:", where)
+print("   pin        :", where)
 print("   build id   :", runtime_pin.build_id(sys.argv[4], sys.argv[3]))
-PYEOF
+PINEOF
 [ $? -eq 0 ] || died "pin" "the pin could not be written"
-mkdir -p "$WORKER_PIN_DIR"
-"$VENV/bin/python" - "$WORKER_PIN_DIR" "$RUNNING" "$DIGEST" "$COMMIT" <<'PYEOF'
-import sys
-from agentnode_sdk.gateway import runtime_pin
-print("   worker pin :", runtime_pin.write_pin(sys.argv[1], python_version=sys.argv[2],
-                                               artefact_sha256=sys.argv[3], commit=sys.argv[4]))
-PYEOF
-chown agentnode-gateway "$STATE/runtime-pin.json" 2>/dev/null || true
-chown agentnode-worker "$WORKER_PIN_DIR/runtime-pin.json" 2>/dev/null || true
+# Readable by both service accounts, written by an operator. A service reads its pin; it does
+# not get to decide what it says.
+chmod 644 "$WORKER_PIN_DIR/runtime-pin.json"
+rm -f "$STATE/runtime-pin.json"
 
 step "6. start, which checks the pin for itself"
 systemctl start agentnode-worker && sleep 3

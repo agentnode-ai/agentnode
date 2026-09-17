@@ -502,45 +502,24 @@ class TestTheScriptSealsWhatItWrites:
         assert "A backup whose key is" in said
 
 
-class TestTheOneThatIsHereAndMustNotComeBack:
-    """The third category, asserted rather than left as a skip.
+class TestTheCategoryForFilesThatMustNotComeBack:
+    """`NOT_RESTORED` is EMPTY, and that is the finished state rather than an oversight.
 
-    `runtime-pin.json` is in the manifest so the drill knows it exists, and is excluded from a
-    restore so a backup cannot tell the receiving machine which interpreter and artefact it is
-    allowed to run as. Both halves matter: dropping it from the manifest would make it an
-    unaccounted file, and restoring it would make a machine claim somebody else's identity.
+    It was created for one file, the runtime pin, which has since moved out of the state
+    directory -- where it should never have been, as the module that writes it had already said.
+    Moving it removed the whole class: no exclusion pattern in the restore, no manifest entry, no
+    comparison exemption, nothing to drift.
+
+    The machinery stays because it is right, and because the next file that genuinely is "in a
+    backup and must not come back" should land here rather than being handled where somebody
+    happens to notice it.
     """
 
-    def test_it_is_known_and_excluded(self):
-        assert backup.NOT_RESTORED == {"runtime-pin.json"}
-        assert backup.NOT_RESTORED <= set(backup.everything_a_gateway_keeps()), (
-            "something is excluded from a restore that the manifest does not even know about")
-
-    def test_and_the_restore_script_actually_excludes_it(self):
-        """The list is a claim about a shell script, so the shell script is read."""
-        import pathlib as _p
-
-        script = (_p.Path(__file__).resolve().parent.parent / "deploy"
-                  / "backup-and-restore.sh").read_text(encoding="utf-8")
-        for name in backup.NOT_RESTORED:
-            assert "--exclude" in script and name in script, (
-                "%s is declared as not-restored and the restore script does not exclude it"
-                % name)
-
-    def test_and_the_comparison_does_not_call_it_a_loss(self):
-        """Wiring the exclusion into the restore alone was half a job.
-
-        The comparison then reported the deliberate absence as a lost store, on every restore --
-        a standing false alarm, which is how people learn to ignore a real one.
-        """
-        before = {"kept": {"runtime-pin.json": {"present": True, "bytes": 200},
-                           "audit.jsonl": {"present": True, "lines": 3}}}
-        after = {"kept": {"runtime-pin.json": {"present": False},
-                          "audit.jsonl": {"present": True, "lines": 3}}}
-        assert backup.differences(before, after) == []
-
-    def test_but_a_real_loss_is_still_a_loss(self):
-        """The half that must not move."""
+    def test_it_is_empty_and_the_comparison_still_honours_it(self):
+        assert backup.NOT_RESTORED == set()
         before = {"kept": {"audit.jsonl": {"present": True, "lines": 3}}}
         after = {"kept": {"audit.jsonl": {"present": False}}}
-        assert backup.differences(before, after) != []
+        assert backup.differences(before, after) != [], "a real loss must still be a loss"
+
+    def test_and_the_pin_is_not_in_the_manifest_because_it_is_not_in_the_state(self):
+        assert "runtime-pin.json" not in backup.everything_a_gateway_keeps()
