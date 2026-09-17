@@ -149,7 +149,44 @@ Two kinds of copy live outside it, and a review was right that deletion was not 
 (`ALPHA-R2-DATAOPS-0009`, P4). They are not the same problem and they do not have the same
 answer.
 
-### Backups: crypto-shredding, and what it costs
+### The promise, in one sentence
+
+**Deleted in the live service at once, and gone from every backup this gateway made within 35
+days.** That is the whole of it, and the second half is why the first half means anything: a
+deletion that leaves a restorable copy behind is a deletion of the index, not of the data.
+
+The 35 days are a retention class like every other, visible in `retention.json` and the
+operator's to lower. They are an operational choice -- a month with a margin, so a monthly restore
+rehearsal always has something to rehearse with -- and are written down as a choice rather than
+presented as if derived from something. A sweep that actually runs removes archives past it; a
+gateway that has not been told where its backups live reports that it looked at nothing, rather
+than reporting a confident zero.
+
+**Between the deletion and that date, the copy still exists.** There is no wording that makes
+this untrue, so it is said here in the same breath as the promise rather than further down.
+
+### What this is not yet, and what it will be
+
+Thirty-five days is a bound, not account-scoped deletion. The copy that goes is every customer's
+copy, and it goes because it aged out — not because one customer asked.
+
+The shape that *is* account-scoped already exists in this product, one layer down: the signed
+tombstone in the metering chain. It keeps the digest the next line points back at, so the chain
+still verifies end to end; it is itself signed, so an unauthorised removal is still caught; and it
+does not preserve what the line said. Deletion that reaches every copy, without breaking the
+record that proves nothing else was touched.
+
+Applying that same shape to archives — per-account content under a per-account key, structural
+fields in the clear, a tombstone where the content was — is the named next arc. It is a rebuild of
+the backup format and is not claimed to be done.
+
+The alternative that was considered and rejected: encrypting each account's slice of the archive
+under its own key, with nothing kept in the clear. `use-log.jsonl` is ONE hash-chained file across
+all accounts, so destroying one account's key would break chain verification for everybody. That
+trades the tamper-evidence one criterion requires for the erasability another requires, which is
+not a trade worth making silently.
+
+### Crypto-shredding, and what it costs
 
 Every backup this gateway writes is sealed with AES-256-GCM under a key that is kept somewhere
 else and is never inside the archive. That is there so a stolen archive is not a stolen gateway --

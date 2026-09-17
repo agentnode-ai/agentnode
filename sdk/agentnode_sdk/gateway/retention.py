@@ -65,6 +65,14 @@ DAY = 24 * 60 * 60.0
 #: over that rather than a replacement for it: a session that ends after twelve hours never
 #: reaches a seven-day retention period, and the period is still the operator's to lower.
 CLASSES = {
+    "backups": {
+        "file": "(sealed archives, outside the state directory)",
+        "days": 35,
+        "is": "the sealed copies a restore is made from",
+        "expiring_means": "a customer deleted before this is gone from every copy this gateway "
+                          "made, which is what the deletion promise rests on",
+        "also_expires_on_its_own": False,
+    },
     "audit": {
         "file": "audit.jsonl",
         "days": 90,
@@ -160,6 +168,7 @@ class Retention:
     grows without the other.
     """
 
+    backups_days: int = CLASSES["backups"]["days"]
     audit_days: int = CLASSES["audit"]["days"]
     metering_days: int = CLASSES["metering"]["days"]
     sessions_days: int = CLASSES["sessions"]["days"]
@@ -461,9 +470,64 @@ def _sweep_metering(root: Path, cutoff: float) -> int:
                        lambda line: float(line.get("finished_at") or 0.0) < cutoff)
 
 
+def _sweep_backups(root: Path, cutoff: float) -> int:
+    """Delete sealed archives older than the cutoff. Returns how many went.
+
+    THE PERIOD IS AN OPERATIONAL CHOICE AND IS WRITTEN DOWN AS ONE. 35 days is a month with a
+    margin, chosen so a monthly restore rehearsal always has something to rehearse with; it is
+    not derived from anything and is not presented as if it were. Like every other period in this
+    table it is the operator's to change, and lowering it shortens the deletion promise rather
+    than breaking it.
+
+    Backups do not live in the state directory -- keeping them there would put the copy and the
+    thing it is a copy of on the same disk -- so the place to sweep is read from
+    `backups.json` beside the retention table. A gateway that has not been told where its backups
+    are sweeps nothing and SAYS so, rather than reporting a confident zero: "nowhere to look" and
+    "nothing was old enough" are different answers and only one of them means the promise holds.
+    """
+    where = _where_the_backups_are(root)
+    if where is None:
+        # ABSENT IS NOT UNREADABLE, and neither is an error. A gateway that was never told where
+        # its backups are is not broken -- most are not the machine that holds them. It reports a
+        # NON-ANSWER, the same shape as "kept indefinitely", so a sweep cannot read as "the
+        # backups were checked and none were old" when nothing was looked at. `backups.json`
+        # beside `retention.json` is what turns this into a real sweep.
+        return "no backup directory is configured, so none were checked"
+    if not where.is_dir():
+        # Told where, and it is not there: that IS a problem, because somebody wrote down an
+        # answer this gateway cannot honour and the deletion promise rests on it.
+        raise RuntimeError("the backup directory %s is not there" % where)
+    gone = 0
+    for archive in sorted(where.glob("*.sealed")):
+        try:
+            if archive.stat().st_mtime < cutoff:
+                archive.unlink()
+                gone += 1
+        except OSError as exc:
+            raise RuntimeError("%s could not be removed: %s" % (archive.name, exc)) from exc
+    return gone
+
+
+def _where_the_backups_are(root: Path):
+    """The directory this gateway writes its sealed archives to, or None if it was never told."""
+    import json as _json
+
+    try:
+        said = _json.loads((Path(root) / "backups.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        # Unreadable is not absent. A gateway that cannot read where its backups are must not
+        # report that it swept them.
+        raise RuntimeError("backups.json could not be read: %s" % exc) from exc
+    where = str(said.get("directory") or "").strip() if isinstance(said, dict) else ""
+    return Path(where) if where else None
+
+
 #: One sweeper per class. A class in `CLASSES` with no sweeper here is a KeyError at sweep time
 #: rather than a class quietly kept for ever, and a test asserts the two sets match.
 _SWEEPERS = {
+    "backups": _sweep_backups,
     "audit": lambda root, cutoff: _sweep_jsonl(
         root / CLASSES["audit"]["file"], cutoff, lambda line: line.get("at")),
     "metering": _sweep_metering,

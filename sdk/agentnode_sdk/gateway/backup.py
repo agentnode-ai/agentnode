@@ -94,7 +94,12 @@ BESIDES = {
 
 #: The shape of each retention class's file. Separate from `retention.CLASSES` because how a
 #: class is SUMMARISED is this module's business and not the sweep's.
+FILES = "files"
+
 HOW_THE_AGED_ONES_LOOK = {
+    # Files rather than lines or keys -- the only class shaped that way, and the reason
+    # it is excluded from the manifest below rather than summarised into it.
+    "backups": FILES,
     "audit": LINES,
     "metering": LINES,
     "sessions": KEYS,
@@ -108,10 +113,20 @@ HOW_THE_AGED_ONES_LOOK = {
 }
 
 
+#: The one retention class that is NOT inside a backup, named here rather than skipped quietly.
+#: `backups` is a period over the sealed archives themselves -- how long a copy is kept before it
+#: is removed. Putting it in this table would ask a backup to contain the backups, which is
+#: circular, and a `KeyError` here is how that was found rather than by reasoning about it. Every
+#: other class in the table IS in a backup, and the test that compares the two still holds.
+NOT_IN_A_BACKUP = {"backups"}
+
+
 def everything_a_gateway_keeps() -> dict:
     """Every file, with how to summarise it and why it is kept. One place, two sources."""
     known = {}
     for name, what in retention.CLASSES.items():
+        if name in NOT_IN_A_BACKUP:
+            continue
         known[what["file"]] = (HOW_THE_AGED_ONES_LOOK[name], what["is"])
     known.update(BESIDES)
     return known

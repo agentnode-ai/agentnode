@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import time
 
 import pytest
@@ -117,6 +118,21 @@ class TestEveryClassIsActuallySwept:
 
     def _plant(self, root, name):
         """One old record and one fresh one, in whatever shape that class stores."""
+        if name == "backups":
+            # The one class that is not a file in the state directory: sealed archives live
+            # somewhere else on purpose, because a copy on the same disk as the thing it copies
+            # is not a backup. So the plant is a directory beside it plus the note that tells
+            # this gateway where to look -- and the sweep is over FILES, not over lines.
+            where = root / "sealed-elsewhere"
+            where.mkdir(exist_ok=True)
+            (root / "backups.json").write_text(
+                json.dumps({"directory": str(where)}), encoding="utf-8")
+            for at, which in ((LONG_AGO, "old"), (JUST_NOW, "new")):
+                archive = where / ("state-%s.tar.sealed" % which)
+                archive.write_bytes(b"AGENTNODE-SEALED-1 not a real archive")
+                os.utime(archive, (at, at))
+            return where
+
         path = root / retention.CLASSES[name]["file"]
         if name == "audit":
             path.write_text(
@@ -171,7 +187,7 @@ class TestEveryClassIsActuallySwept:
     def test_every_class_can_be_planted(self):
         """So a class added to the table without a planter fails here rather than silently."""
         planted = {"audit", "metering", "sessions", "enrolments", "ledger", "counters", "rate",
-                   "events", "exports", "invitations"}
+                   "events", "exports", "invitations", "backups"}
         assert planted == set(retention.CLASSES), (
             "this file does not plant a record for %s" % (planted ^ set(retention.CLASSES)))
 
@@ -187,7 +203,14 @@ class TestEveryClassIsActuallySwept:
         assert done["problems"] == [], done["problems"]
         assert done["swept"][name], "%s swept nothing at all" % name
 
-        written = path.read_text(encoding="utf-8")
+        if path.is_dir():
+            # `backups` is the one class whose records are FILES rather than lines in a file, so
+            # what is read is the directory listing. The property asserted is identical: the old
+            # one is gone and the fresh one is still there.
+            written = " ".join(sorted(x.name for x in path.iterdir()))
+            assert "new" in written, "%s swept the fresh one too: %s" % (name, written)
+        else:
+            written = path.read_text(encoding="utf-8")
         assert "old" not in written or name == "metering", (
             "%s kept a record older than its period: %s" % (name, written[:200]))
         if name == "metering":

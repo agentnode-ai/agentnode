@@ -92,12 +92,31 @@ class TestTheDrillKnowsEveryStore:
 
         known = backup.everything_a_gateway_keeps()
         for name, what in retention.CLASSES.items():
+            if name in backup.NOT_IN_A_BACKUP:
+                continue
             assert what["file"] in known, (
                 "%s is swept and would not be missed by a restore" % name)
         assert set(backup.BESIDES) <= set(known)
         assert set(backup.HOW_THE_AGED_ONES_LOOK) == set(retention.CLASSES), (
             "a retention class with no shape here is one the manifest cannot summarise: %s"
             % (set(backup.HOW_THE_AGED_ONES_LOOK) ^ set(retention.CLASSES)))
+
+    def test_and_the_one_class_that_is_not_in_a_backup_is_named_rather_than_missing(self):
+        """The exclusion is a list, not a silence.
+
+        `backups` is a period over the sealed archives themselves, so putting it in the manifest
+        would ask a backup to contain the backups. That is the ONLY reason a class may be absent
+        from the manifest, and the reason has to be written down: a skip nobody declared is
+        indistinguishable from a store somebody forgot, and a restore that quietly omits a store
+        is the failure this whole class exists to catch.
+        """
+        from agentnode_sdk.gateway import retention
+
+        assert backup.NOT_IN_A_BACKUP == {"backups"}
+        assert backup.NOT_IN_A_BACKUP <= set(retention.CLASSES), (
+            "something is excluded from the manifest that is not even a retention class")
+        known = backup.everything_a_gateway_keeps()
+        assert retention.CLASSES["backups"]["file"] not in known
 
     def test_and_every_entry_says_what_it_is(self):
         for name, (how, why) in sorted(backup.everything_a_gateway_keeps().items()):
