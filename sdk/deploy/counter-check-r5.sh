@@ -40,7 +40,9 @@ one() {
 }
 
 for f in agentnode_sdk/gateway/identity.py pyproject.toml agentnode_sdk/_agent_pip.py \
-         agentnode_sdk/cli/gateway_commands.py agentnode_sdk/gateway/runtime_pin.py; do
+         agentnode_sdk/cli/gateway_commands.py agentnode_sdk/gateway/runtime_pin.py \
+         agentnode_sdk/signing_key.py agentnode_sdk/gateway/meter.py \
+         tests/test_what_is_kept.py; do
   cp "$f" "/tmp/$(basename "$f").keep"
 done
 
@@ -85,6 +87,21 @@ one "R2-h and neither is one that names no commit" \
     agentnode_sdk/gateway/runtime_pin.py \
     tests/test_runtime_pin.py::TestAPinThatNamesNothingPinsNothing \
     sed -i 's|    if not pinned_commit:|    if False:|' agentnode_sdk/gateway/runtime_pin.py
+
+one "KEY-i the private key is written whole, not in place" \
+    agentnode_sdk/signing_key.py \
+    tests/test_the_meter_key_is_written_whole.py::TestThePrivateKeyIsNeverReadableByAnybodyElse \
+    sed -i 's#^    atomically(path.*#    path.write_bytes(pem_bytes)#' agentnode_sdk/signing_key.py
+
+one "KEY-j and only one key is ever made" \
+    agentnode_sdk/gateway/meter.py \
+    tests/test_the_meter_key_is_written_whole.py::TestOneKeyEvenWhenEverybodyAsksAtOnce \
+    sed -i 's|^    with ProcessLock(path):$|    if True:|' agentnode_sdk/gateway/meter.py
+
+one "KEY-k the collector still collects real key material" \
+    tests/test_what_is_kept.py \
+    tests/test_what_is_kept.py::TestEverySecretShapeAgainstEverySink \
+    sed -i 's|^            if key_path.is_file():$|            if key_path.is_file() and False:|' tests/test_what_is_kept.py
 
 printf '\n=== '
 [ "$FAILED" -eq 0 ] && echo "every counter-check removed a mechanism and the evidence failed without it." \
