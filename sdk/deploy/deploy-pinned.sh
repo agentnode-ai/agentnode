@@ -104,7 +104,17 @@ systemctl start agentnode-worker && sleep 3
 systemctl start agentnode-gateway && sleep 6
 systemctl is-active agentnode-worker agentnode-gateway | tr '\n' ' '; echo
 
-step "7. and it says what it is"
+step "7. measure again, because the old measurement is about the old build"
+# NOT OPTIONAL, and found by leaving it out. The report binding names the interpreter, the
+# artefact and the commit, so a measurement taken before this deployment describes something
+# that is no longer running -- and the gateway correctly refuses to pair anybody to a service
+# whose enforcement it cannot vouch for. Without this step every pinned deployment ends with a
+# service that is up, healthy, and refusing work until somebody reads the error and runs it by
+# hand. A deployment that leaves that behind is not finished.
+runuser -u agentnode-gateway -- env HOME=/var/lib/agentnode   "$VENV/bin/agentnode" gateway doctor --measure --dir "$STATE" > /tmp/measure.log 2>&1   || { tail -6 /tmp/measure.log; died "measure" "the gateway could not measure itself after the deployment"; }
+grep -E "measured|PASS|conformant" /tmp/measure.log | tail -3 | sed 's/^/   /'
+
+step "8. and it says what it is"
 "$VENV/bin/python" - <<'PYEOF'
 import json, ssl, sys, urllib.request
 ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE

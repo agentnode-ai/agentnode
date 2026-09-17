@@ -376,7 +376,23 @@ case "$VERB" in
     OPENED="$(mktemp -d)"
     trap 'rm -rf "$OPENED"' EXIT
     open_the_archive "$FROM/state.tar.sealed" "$OPENED/state.tar"
-    tar -C "$(dirname "$STATE_DIR")" -xf "$OPENED/state.tar"
+    # THE RECEIVING MACHINE KEEPS ITS OWN PIN. A backup carries the sending machine's idea of
+    # which interpreter, artefact and commit it is allowed to run as, and restoring that here
+    # would tell this machine it is something it is not -- after which its own start would
+    # refuse, correctly, for a reason nobody introduced on purpose. The customer data is
+    # restored; the installation's identity is not.
+    KEEP_PIN=""
+    if [ -f "$STATE_DIR/runtime-pin.json" ]; then
+      KEEP_PIN="$(mktemp)"
+      cp "$STATE_DIR/runtime-pin.json" "$KEEP_PIN"
+    fi
+    tar -C "$(dirname "$STATE_DIR")" -xf "$OPENED/state.tar"         --exclude='*/runtime-pin.json' --exclude='runtime-pin.json'
+    if [ -n "$KEEP_PIN" ]; then
+      cp "$KEEP_PIN" "$STATE_DIR/runtime-pin.json"
+      chown agentnode-gateway "$STATE_DIR/runtime-pin.json" 2>/dev/null || true
+      rm -f "$KEEP_PIN"
+      echo "   this machine kept its own runtime pin; the archive's was not restored"
+    fi
     chmod 700 "$STATE_DIR"
     if [ -f "$FROM/secret.tar.sealed" ]; then
       open_the_archive "$FROM/secret.tar.sealed" "$OPENED/secret.tar"

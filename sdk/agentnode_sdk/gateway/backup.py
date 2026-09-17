@@ -83,6 +83,14 @@ BESIDES = {
     # is unaccounted for" -- which is the manifest check doing exactly its job, on a file
     # this product had started writing without saying so.
     "backups.json": (WHOLE, "where the sealed archives are kept; configuration"),
+    # A fact about THIS INSTALLATION -- which interpreter, which artefact, which commit.
+    # It is in the manifest because the drill must know every file that is here, and it is
+    # excluded from a RESTORE because a backup taken on one machine must not hand the
+    # receiving machine the sending machine's idea of what it is allowed to run as. The
+    # module that writes it says "beside the state, not inside it"; it is inside it, so
+    # that the gateway can read it as its own user, and the exclusion is what makes that
+    # safe rather than a contradiction left lying about.
+    "runtime-pin.json": (WHOLE, "what this installation is allowed to run as; NOT restored"),
     "retention-last-swept.json": (WHOLE, "when the last sweep ran"),
     "operator-policy-versions.json": (WHOLE,
                                       "the ordering of this gateway's own policies"),
@@ -125,6 +133,17 @@ HOW_THE_AGED_ONES_LOOK = {
 #: circular, and a `KeyError` here is how that was found rather than by reasoning about it. Every
 #: other class in the table IS in a backup, and the test that compares the two still holds.
 NOT_IN_A_BACKUP = {"backups"}
+
+#: IN a backup, and deliberately NOT restored. A third category, and it needs to be one: the two
+#: that existed said "is here and comes back" and "is not here at all", and the runtime pin is
+#: neither. It is here, so the drill has to know about it or it reads as an unaccounted file. It
+#: must not come back, because a backup carries the SENDING machine's idea of which interpreter
+#: and artefact it may run as, and handing that to the receiving machine tells it it is something
+#: it is not -- after which its own start refuses, correctly, for a reason nobody chose.
+#:
+#: Naming the category is the point. A file quietly skipped by a restore and quietly expected by
+#: a drill is how a store goes missing without anybody noticing.
+NOT_RESTORED = {"runtime-pin.json"}
 
 
 def everything_a_gateway_keeps() -> dict:

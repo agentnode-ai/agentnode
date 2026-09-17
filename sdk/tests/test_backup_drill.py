@@ -495,3 +495,29 @@ class TestTheScriptSealsWhatItWrites:
         said = self._script()
         assert "newkey)" in said
         assert "A backup whose key is" in said
+
+
+class TestTheOneThatIsHereAndMustNotComeBack:
+    """The third category, asserted rather than left as a skip.
+
+    `runtime-pin.json` is in the manifest so the drill knows it exists, and is excluded from a
+    restore so a backup cannot tell the receiving machine which interpreter and artefact it is
+    allowed to run as. Both halves matter: dropping it from the manifest would make it an
+    unaccounted file, and restoring it would make a machine claim somebody else's identity.
+    """
+
+    def test_it_is_known_and_excluded(self):
+        assert backup.NOT_RESTORED == {"runtime-pin.json"}
+        assert backup.NOT_RESTORED <= set(backup.everything_a_gateway_keeps()), (
+            "something is excluded from a restore that the manifest does not even know about")
+
+    def test_and_the_restore_script_actually_excludes_it(self):
+        """The list is a claim about a shell script, so the shell script is read."""
+        import pathlib as _p
+
+        script = (_p.Path(__file__).resolve().parent.parent / "deploy"
+                  / "backup-and-restore.sh").read_text(encoding="utf-8")
+        for name in backup.NOT_RESTORED:
+            assert "--exclude" in script and name in script, (
+                "%s is declared as not-restored and the restore script does not exclude it"
+                % name)
