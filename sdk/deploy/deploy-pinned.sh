@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Install a managed-service build, and refuse before touching anything if it is not the one.
+#
+# ## Why the refusals come first
+#
+# The R2 deployment installed a wheel whose version -- 0.24.1 -- was the same before and after,
+# onto a machine whose interpreter nobody had tested. Both were noticed afterwards, by looking.
+# This script is what makes both a refusal rather than an observation, and every check happens
+# BEFORE the running service is stopped, so a deployment that is going to fail leaves the
+# previous one serving.
+#
+# ## The three, separately
+#
+#   the interpreter  -- must be the tested family, and must be the one the venv actually is
+#   the artefact     -- by digest. A version number cannot identify a build
+#   the commit       -- which source the artefact came from
+#
+# Each names itself when it fails. "Something does not match" is not an answer anybody can act on.
+#
+# ## What this does not do
+#
+# It does not make the pinned interpreter correct, and it cannot stop an operator with root from
+# editing the pin afterwards. What it stops is a service arriving on an untested interpreter, or
+# an unidentifiable artefact, without anybody choosing it.
+set -uo pipefail
+
+WHEEL="${1:?usage: deploy-pinned.sh <wheel> <commit> [venv]}"
+COMMIT="${2:?usage: deploy-pinned.sh <wheel> <commit> [venv]}"
+VENV="${3:-/opt/agentnode/venv}"
+STATE="${AGENTNODE_STATE:-/var/lib/agentnode/state}"
+WORKER_PIN_DIR="${AGENTNODE_WORKER_PIN_DIR:-/etc/agentnode}"
+WANT_PY="3.12"
+
+step() { printf '\n=== %s\n' "$*"; }
+died() { printf '\n!!! REFUSED (%s): %s\n' "$1" "$2"; exit 1; }
+
+step "0. what is being asked for"
+[ -f "$WHEEL" ] || died "artefact" "there is no wheel at $WHEEL"
+DIGEST="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+printf '   wheel  : %s\n   digest : %s\n   commit : %s\n   venv   : %s\n' \
+  "$(basename "$WHEEL")" "$DIGEST" "$COMMIT" "$VENV"
+
+step "1. the interpreter, BEFORE anything is touched"
+[ -x "$VENV/bin/python" ] || died "interpreter" "$VENV has no python; make it with python$WANT_PY -m venv"
+RUNNING="$("$VENV/bin/python" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
+FAMILY="${RUNNING%.*}"
+[ "$FAMILY" = "$WANT_PY" ] || died "interpreter" \
+  "$VENV is python $RUNNING and this service is tested on $WANT_PY. Build the environment with python$WANT_PY -m venv, or change what is tested."
+echo "   $VENV is python $RUNNING"
+
+REAL="$(readlink -f "$VENV/bin/python")"
+case "$REAL" in
+  *"$WANT_PY"*) echo "   and it resolves to $REAL" ;;
+  *) died "interpreter" "$VENV/bin/python resolves to $REAL, which is not a $WANT_PY interpreter. A venv whose base interpreter moved is a venv that is no longer what it says." ;;
+esac
+
+step "2. the commit, checked against the artefact rather than assumed"
+[ "${#COMMIT}" -ge 7 ] || died "commit" "'$COMMIT' is too short to name a commit"
+if [ -n "${AGENTNODE_EXPECT_COMMIT:-}" ] && [ "$AGENTNODE_EXPECT_COMMIT" != "$COMMIT" ]; then
+  died "commit" "this deployment was told to expect $AGENTNODE_EXPECT_COMMIT and was handed $COMMIT"
+fi
+if [ -n "${AGENTNODE_EXPECT_DIGEST:-}" ] && [ "$AGENTNODE_EXPECT_DIGEST" != "$DIGEST" ]; then
+  died "artefact" "this deployment was told to expect $AGENTNODE_EXPECT_DIGEST and the wheel is $DIGEST. The version number is the same either way, which is exactly why the digest is what is compared."
+fi
+echo "   commit and digest are what this deployment was told to install"
+
+step "3. the previous installation stays up until the checks are done"
+systemctl is-active agentnode-gateway agentnode-worker 2>/dev/null | tr '\n' ' '; echo
+
+step "4. install"
+systemctl stop agentnode-gateway agentnode-worker 2>/dev/null
+"$VENV/bin/pip" install -q --force-reinstall --no-deps "$WHEEL" || died "artefact" "pip refused the wheel"
+
+# The digest is recorded INSIDE the installed distribution, so a later start can read what it was
+# installed from. Recomputing it from unpacked files would be inventing a number; this is the one
+# that was actually installed.
+DIST="$(cd "$(ls -d "$VENV"/lib/python3*/site-packages | head -1)" && ls -d agentnode_sdk-*.dist-info | head -1)"
+[ -n "$DIST" ] || died "artefact" "the installed distribution has no dist-info"
+printf '%s\n' "$DIGEST" > "$(ls -d "$VENV"/lib/python3*/site-packages | head -1)/$DIST/AGENTNODE_ARTEFACT"
+echo "   installed, and the artefact digest recorded in $DIST"
+
+step "5. write the pin, for the gateway and for the worker"
+"$VENV/bin/python" - "$STATE" "$RUNNING" "$DIGEST" "$COMMIT" <<'PYEOF'
+import sys
+from agentnode_sdk.gateway import runtime_pin
+where = runtime_pin.write_pin(sys.argv[1], python_version=sys.argv[2],
+                              artefact_sha256=sys.argv[3], commit=sys.argv[4])
+print("   gateway pin:", where)
+print("   build id   :", runtime_pin.build_id(sys.argv[4], sys.argv[3]))
+PYEOF
+[ $? -eq 0 ] || died "pin" "the pin could not be written"
+mkdir -p "$WORKER_PIN_DIR"
+"$VENV/bin/python" - "$WORKER_PIN_DIR" "$RUNNING" "$DIGEST" "$COMMIT" <<'PYEOF'
+import sys
+from agentnode_sdk.gateway import runtime_pin
+print("   worker pin :", runtime_pin.write_pin(sys.argv[1], python_version=sys.argv[2],
+                                               artefact_sha256=sys.argv[3], commit=sys.argv[4]))
+PYEOF
+chown agentnode-gateway "$STATE/runtime-pin.json" 2>/dev/null || true
+chown agentnode-worker "$WORKER_PIN_DIR/runtime-pin.json" 2>/dev/null || true
+
+step "6. start, which checks the pin for itself"
+systemctl start agentnode-worker && sleep 3
+systemctl start agentnode-gateway && sleep 6
+systemctl is-active agentnode-worker agentnode-gateway | tr '\n' ' '; echo
+
+step "7. and it says what it is"
+"$VENV/bin/python" - <<'PYEOF'
+import json, ssl, sys, urllib.request
+ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+try:
+    with urllib.request.urlopen("https://127.0.0.1:8099/v1/health", context=ctx, timeout=25) as a:
+        said = json.loads(a.read())
+    print("   serving=%s taking_work=%s" % (said.get("serving"), said.get("taking_work")))
+except Exception as exc:                                              # noqa: BLE001
+    print("   the gateway did not answer: %s" % exc); sys.exit(1)
+PYEOF
+[ $? -eq 0 ] || died "start" "the gateway did not come back up"
+
+printf '\n=== deployed. The pin is what a start checks itself against from here on.\n'

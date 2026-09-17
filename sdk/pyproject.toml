@@ -4,10 +4,28 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentnode-sdk"
-version = "0.24.1"
+# 0.25.0, NOT 0.24.1. The line below this one narrows requires-python, and publishing narrowed
+# metadata under a version already on PyPI is precisely the silent replacement that was
+# forbidden -- somebody who installed 0.24.1 on 3.13 would find that the same version number
+# suddenly refuses them. The bump makes that impossible rather than leaving it to whoever
+# publishes next to remember. A minor bump rather than a patch because a narrowed
+# requires-python is visible to every installer.
+version = "0.25.0"
 description = "Python SDK for AgentNode — the open upgrade and discovery infrastructure for AI agents."
 readme = "README.md"
-requires-python = ">=3.10"
+# The versions CI actually runs. It used to say ">=3.10" with no upper bound, which formally
+# permitted Python 3.14 -- and the alpha ran on 3.14, where five installation-transaction tests
+# fail and pass again on 3.12, controlled both ways on the same machine. An unbounded floor is a
+# promise about software that does not exist yet.
+#
+# ALPHA-RUNTIME-DECISION-PY314-0001 returned PASS on Option C: make this honest now, and treat
+# supporting 3.14 as separate work with its own evidence rather than as a side effect of a
+# runtime fix. The three limitations it recorded are real and are not talked away: this shuts out
+# 3.13 and 3.14 users in the next release, it does not prove the retained versions are correct,
+# and it does not find the 3.14 cause.
+#
+# 0.24.1 IS ALREADY ON PyPI AND IS NOT REPLACED. This applies to what is published next.
+requires-python = ">=3.10,<3.13"
 license = "MIT"
 keywords = ["ai", "agent", "capabilities", "agentnode", "mcp", "langchain"]
 classifiers = [

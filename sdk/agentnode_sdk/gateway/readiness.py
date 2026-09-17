@@ -126,6 +126,37 @@ class ReportBinding:
     #: report about something else, and `mismatches` says so.
     operator_policy_version: str = ""
 
+    #: WHICH INTERPRETER the measurement was taken on. Added after the R2 deployment ran its
+    #: gateway on python 3.14 while the tests that cover it run on 3.10-3.12: five
+    #: install-transaction tests fail there, and nothing about the report said which interpreter
+    #: it had been taken under. A report taken on an untested interpreter describes software
+    #: nobody has evidence about, and without this field it looked exactly like one that had not.
+    python_version: str = ""
+
+    #: WHICH ARTEFACT is installed, by digest. `0.24.1` was installed before and after a
+    #: deployment that changed the code, so a version string cannot bind anything -- two
+    #: different builds wore it at once. The digest is what tells them apart.
+    artefact_sha256: str = ""
+
+    #: WHICH SOURCE that artefact was built from. A wheel with the right digest built from a tree
+    #: nobody can name is a wheel nobody can review.
+    commit: str = ""
+
+    #: The managed service's own identity, derived from the two above. Carried in the binding
+    #: rather than computed by each reader, so a record and the thing it describes cannot drift
+    #: into disagreeing about what they are.
+    build_id: str = ""
+
+    #: THE CONFORMANCE REPORT IS BOUND, AND NOT FROM HERE. A field holding the report's digest
+    #: was tried and removed the same hour: the report CONTAINS this binding and is signed over
+    #: it, so a digest of the report inside the binding inside the report is a circle. Every
+    #: stored measurement mismatched itself the moment it was written, and the gateway correctly
+    #: refused to run anything -- which is how the circle was found rather than shipped.
+    #:
+    #: The direction that works is the one already there: the report carries the binding and a
+    #: signature over it, so a report cannot be moved to another gateway, another policy, another
+    #: image, another boot, or -- since the fields above -- another interpreter or artefact.
+
     def as_dict(self) -> dict[str, str]:
         return {
             "gateway_id": self.gateway_id,
@@ -137,6 +168,10 @@ class ReportBinding:
             "conformance_schema": self.conformance_schema,
             "operator_policy_digest": self.operator_policy_digest,
             "operator_policy_version": self.operator_policy_version,
+            "python_version": self.python_version,
+            "artefact_sha256": self.artefact_sha256,
+            "commit": self.commit,
+            "build_id": self.build_id,
             "worker_topology": self.worker_topology,
             "worker_configuration_sha256": self.worker_configuration_sha256,
         }

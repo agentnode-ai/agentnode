@@ -242,3 +242,39 @@ class TestStartingRefuses:
         said = capsys.readouterr().out
         assert rp.build_id(COMMIT, ARTEFACT) in said
         assert "0.24" not in said.split("Running as")[1].split("on python")[0]
+
+
+class TestThePublishedVersionIsNotSilentlyReplaced:
+    """0.24.1 is on PyPI. Narrowing `requires-python` under that same number would mean somebody
+    who installed it on 3.13 finds the same version suddenly refusing them.
+
+    This is a guard rather than a reminder: a comment in `pyproject.toml` asking the next person
+    to remember is the kind of protection that works until the day it matters.
+    """
+
+    def _pyproject(self):
+        import pathlib
+
+        return (pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(
+            encoding="utf-8")
+
+    def test_the_narrowed_metadata_does_not_go_out_under_the_published_version(self):
+        said = self._pyproject()
+        narrowed = "<3.13" in said
+        version = next((x.split("=", 1)[1].strip().strip('"')
+                        for x in said.splitlines()
+                        if x.startswith("version =")), "")
+        if narrowed:
+            assert version != "0.24.1", (
+                "requires-python is narrowed and the version is still 0.24.1, which is already "
+                "published. Bump it, or widen the metadata back.")
+
+    def test_and_the_bound_matches_what_the_pin_calls_supported(self):
+        """Two places say which interpreter this supports, and they must not drift: the package
+        metadata tells an installer, and the pin tells a running service. A package that installs
+        on an interpreter the service then refuses to start on is a worse experience than either
+        limit alone."""
+        said = self._pyproject()
+        assert "<3.13" in said, "the metadata no longer excludes 3.13+"
+        assert rp.SUPPORTED == (3, 12), (
+            "the pin supports %s while the metadata stops below 3.13" % (rp.SUPPORTED,))
