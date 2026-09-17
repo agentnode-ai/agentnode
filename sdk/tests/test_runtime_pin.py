@@ -224,6 +224,29 @@ class TestStartingRefuses:
         assert gc.cmd_start(self._args(tmp_path)) == 1
         assert "artefact" in capsys.readouterr().out
 
+    def test_a_pinned_312_running_on_something_else_is_refused(
+            self, tmp_path, monkeypatch, capsys):
+        """The SECOND interpreter comparison, which is a different one from "is the pinned family
+        the tested family". This pin names the tested family and the interpreter running is not
+        it -- which is the case a venv whose base interpreter moved produces, and the case the
+        first comparison cannot see.
+
+        It is separate because R9 asks each mechanism to be removable on its own: a counter-check
+        that takes out this comparison must make a test go red, and the test that pins 3.99 does
+        not depend on it at all.
+        """
+        from agentnode_sdk.cli import gateway_commands as gc
+
+        rp.write_pin(tmp_path, python_version="%d.%d.13" % rp.SUPPORTED,
+                     artefact_sha256=ARTEFACT, commit=COMMIT)
+        monkeypatch.setattr(rp, "running_python", lambda: "%d.%d.4" % (rp.SUPPORTED[0],
+                                                                      rp.SUPPORTED[1] + 1))
+        monkeypatch.setattr(gc, "_service", lambda root: (None, None))
+        assert gc.cmd_start(self._args(tmp_path)) == 1
+        said = capsys.readouterr().out
+        assert "interpreter" in said
+        assert "Start it from the pinned environment" in said
+
     def test_an_unreadable_pin_refuses_rather_than_assuming_the_best(
             self, tmp_path, monkeypatch, capsys):
         from agentnode_sdk.cli import gateway_commands as gc
@@ -233,15 +256,42 @@ class TestStartingRefuses:
         assert gc.cmd_start(self._args(tmp_path)) == 1
         assert "Not started" in capsys.readouterr().out
 
-    def test_no_pin_at_all_starts_and_says_so(self, tmp_path, monkeypatch, capsys):
-        """Deliberate, and the reason is written in the code: refusing here would stop every
-        installation made before this check existed, which is a new outage in the name of
-        preventing one. It is LOUD instead."""
+    def test_no_pin_at_all_refuses(self, tmp_path, monkeypatch, capsys):
+        """CORRECTED, and the correction is a finding rather than a tidy-up. This asserted that a
+        start with no pin PROCEEDS, on the reasoning that refusing would break installations made
+        before the check existed. True, and not the same as safe: a service that starts unpinned
+        is not constrained to a pinned environment at all, which is the thing R1 asks for."""
         from agentnode_sdk.cli import gateway_commands as gc
 
+        monkeypatch.delenv("AGENTNODE_ALLOW_UNPINNED", raising=False)
+        assert gc._refuse_unless_pinned(tmp_path, "gateway") == 1
+        said = capsys.readouterr().out
+        assert "Not started" in said
+        assert "AGENTNODE_ALLOW_UNPINNED" in said, (
+            "a refusal that does not say what an operator with a genuinely unpinned installation "
+            "should do leaves them guessing")
+
+    def test_and_an_operator_can_say_they_mean_it(self, tmp_path, monkeypatch, capsys):
+        """The escape exists, is explicit, and says what it is doing. An installation from before
+        pinning can still be started -- by somebody choosing it, in the log."""
+        from agentnode_sdk.cli import gateway_commands as gc
+
+        monkeypatch.setenv("AGENTNODE_ALLOW_UNPINNED", "1")
         assert gc._refuse_unless_pinned(tmp_path, "gateway") == 0
         said = capsys.readouterr().out
-        assert "No runtime pin" in said
+        assert "because somebody said so" in said
+        assert "not a default" in said
+
+    def test_and_a_value_that_is_not_yes_is_not_yes(self, tmp_path, monkeypatch, capsys):
+        """`AGENTNODE_ALLOW_UNPINNED=0` is somebody saying no. So is an empty string, and so is
+        anything else: only an affirmative opens the door."""
+        from agentnode_sdk.cli import gateway_commands as gc
+
+        for said_value in ("0", "", "no", "maybe", "TRUE ish"):
+            monkeypatch.setenv("AGENTNODE_ALLOW_UNPINNED", said_value)
+            assert gc._refuse_unless_pinned(tmp_path, "gateway") == 1, (
+                "%r opened the door" % said_value)
+            capsys.readouterr()
 
     def test_the_worker_refuses_too(self, tmp_path, monkeypatch, capsys):
         from agentnode_sdk.cli import worker_commands as wc
@@ -513,3 +563,103 @@ class TestAPinThatNamesNothingPinsNothing:
         self._pin(tmp_path)
         said = rp.check(tmp_path, artefact_sha256=ARTEFACT, commit=COMMIT)
         assert said["commit"] == COMMIT
+
+
+class TestTheRuleIsWrittenOnce:
+    """The gateway CLI and the worker CLI each carried the whole refusal, written out twice.
+
+    They had already begun to disagree when this was noticed: one had been changed to refuse a
+    start with no pin and the other still allowed one, which would have left a machine whose
+    gateway refuses and whose worker shrugs -- and a worker that runs unpinned is the half that
+    actually executes somebody's code.
+    """
+
+    def test_both_command_surfaces_call_the_same_function(self):
+        import inspect
+
+        from agentnode_sdk.cli import gateway_commands as gc
+        from agentnode_sdk.cli import worker_commands as wc
+
+        for surface in (gc, wc):
+            body = inspect.getsource(surface._refuse_unless_pinned)
+            assert "runtime_pin.refuse_unless_pinned" in body, (
+                "%s carries its own copy of the rule again" % surface.__name__)
+
+    def test_and_they_answer_the_same_way_to_the_same_machine(self, tmp_path, monkeypatch,
+                                                              capsys):
+        from agentnode_sdk.cli import gateway_commands as gc
+        from agentnode_sdk.cli import worker_commands as wc
+
+        monkeypatch.delenv("AGENTNODE_ALLOW_UNPINNED", raising=False)
+        assert gc._refuse_unless_pinned(tmp_path, "gateway") == 1
+        assert wc._refuse_unless_pinned(tmp_path, "worker") == 1
+        capsys.readouterr()
+
+        rp.write_pin(tmp_path, python_version="3.99.0", artefact_sha256=ARTEFACT, commit=COMMIT)
+        assert gc._refuse_unless_pinned(tmp_path, "gateway") == 1
+        assert wc._refuse_unless_pinned(tmp_path, "worker") == 1
+        capsys.readouterr()
+
+    def test_and_the_worker_takes_the_same_explicit_permission(self, tmp_path, monkeypatch,
+                                                               capsys):
+        """The control for the test above: without this, "both refuse" would also be true of a
+        pair that refuses everything."""
+        from agentnode_sdk.cli import worker_commands as wc
+
+        monkeypatch.setenv("AGENTNODE_ALLOW_UNPINNED", "1")
+        assert wc._refuse_unless_pinned(tmp_path, "worker") == 0
+        assert "because somebody said so" in capsys.readouterr().out
+
+
+class TestTheArtefactSaysWhereItCameFrom:
+    """R3, and the finding that produced it: a deployment was handed a commit and believed it.
+
+    `ALPHA-RUNTIME-PIN-0002`: "it accepts the supplied COMMIT as the artefact commit unless an
+    optional environment value disagrees". The wheel now carries the commit it was built from,
+    inside the package and therefore inside the digest.
+    """
+
+    def _a_wheel(self, tmp_path, commit, name="agentnode_sdk/_provenance.json"):
+        import json as _json
+        import zipfile
+
+        wheel = tmp_path / "agentnode_sdk-0.0.0-py3-none-any.whl"
+        with zipfile.ZipFile(wheel, "w") as z:
+            z.writestr("agentnode_sdk/__init__.py", "")
+            if commit is not None:
+                z.writestr(name, _json.dumps({"commit": commit}))
+        return wheel
+
+    def test_the_commit_is_read_out_of_the_wheel(self, tmp_path):
+        from agentnode_sdk import _provenance
+
+        assert _provenance.of_a_wheel(self._a_wheel(tmp_path, COMMIT)) == COMMIT
+
+    def test_a_wheel_that_does_not_say_answers_empty_rather_than_guessing(self, tmp_path):
+        from agentnode_sdk import _provenance
+
+        assert _provenance.of_a_wheel(self._a_wheel(tmp_path, None)) == ""
+
+    def test_and_a_file_that_is_not_a_wheel_is_not_a_commit(self, tmp_path):
+        from agentnode_sdk import _provenance
+
+        not_a_wheel = tmp_path / "x.whl"
+        not_a_wheel.write_bytes(b"this is not a zip")
+        assert _provenance.of_a_wheel(not_a_wheel) == ""
+
+    def test_recording_it_and_reading_it_back_agree(self, tmp_path):
+        from agentnode_sdk import _provenance
+
+        where = tmp_path / _provenance.PROVENANCE_NAME
+        _provenance.record(COMMIT, where=where)
+        import json as _json
+
+        assert _json.loads(where.read_text(encoding="utf-8"))["commit"] == COMMIT
+
+    def test_the_deployment_script_reads_it_before_it_installs(self):
+        """The ORDER is the property: a deployment that discovers the wrong artefact after
+        replacing the running code has discovered it too late."""
+        said = pathlib.Path("deploy/deploy-pinned.sh").read_text(encoding="utf-8")
+        reads = said.index("_provenance.json")
+        installs = said.index("pip\" install -q --force-reinstall")
+        assert reads < installs, "the provenance is checked after the install"

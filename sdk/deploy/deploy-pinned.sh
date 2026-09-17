@@ -54,15 +54,41 @@ case "$REAL" in
   *) died "interpreter" "$VENV/bin/python resolves to $REAL, which is not a $WANT_PY interpreter. A venv whose base interpreter moved is a venv that is no longer what it says." ;;
 esac
 
-step "2. the commit, checked against the artefact rather than assumed"
+step "2. the commit, READ OUT OF THE ARTEFACT rather than taken from the caller"
 [ "${#COMMIT}" -ge 7 ] || died "commit" "'$COMMIT' is too short to name a commit"
+
+# UNCONDITIONAL, AND BEFORE ANYTHING IS INSTALLED. This used to compare the commit only when an
+# optional environment variable said what to expect, so a deployment handed any commit at all
+# proceeded -- the artefact and the commit were two independent claims by the same caller.
+# `ALPHA-RUNTIME-PIN-0002` named it. The wheel now carries the commit it was built from, inside
+# the package and therefore inside the digest, and this reads it back out of the ZIP.
+INSIDE="$("$VENV/bin/python" - "$WHEEL" <<'PYEOF'
+import json, sys, zipfile
+try:
+    with zipfile.ZipFile(sys.argv[1]) as z:
+        names = [n for n in z.namelist() if n.endswith("agentnode_sdk/_provenance.json")]
+        print(json.loads(z.read(names[0]).decode("utf-8")).get("commit", "") if names else "")
+except Exception:
+    print("")
+PYEOF
+)"
+if [ -z "$INSIDE" ]; then
+  died "commit" "this wheel does not say which source it was built from, so nothing here can check that it is the one named. Build it with deploy/build-from-commit.sh, which records the commit inside the artefact."
+fi
+if [ "$INSIDE" != "$COMMIT" ]; then
+  died "commit" "the wheel says it was built from $INSIDE and this deployment was told $COMMIT"
+fi
+echo "   the wheel itself says it came from $INSIDE"
+
+# The expectations stay, and stay optional: they are a SECOND, out-of-band statement of what was
+# meant, useful when an operator wants the deployment to refuse a wheel that is internally
+# consistent but not the one they intended. They are no longer the only thing that checks.
 if [ -n "${AGENTNODE_EXPECT_COMMIT:-}" ] && [ "$AGENTNODE_EXPECT_COMMIT" != "$COMMIT" ]; then
   died "commit" "this deployment was told to expect $AGENTNODE_EXPECT_COMMIT and was handed $COMMIT"
 fi
 if [ -n "${AGENTNODE_EXPECT_DIGEST:-}" ] && [ "$AGENTNODE_EXPECT_DIGEST" != "$DIGEST" ]; then
   died "artefact" "this deployment was told to expect $AGENTNODE_EXPECT_DIGEST and the wheel is $DIGEST. The version number is the same either way, which is exactly why the digest is what is compared."
 fi
-echo "   commit and digest are what this deployment was told to install"
 
 step "3. the previous installation stays up until the checks are done"
 systemctl is-active agentnode-gateway agentnode-worker 2>/dev/null | tr '\n' ' '; echo

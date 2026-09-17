@@ -284,3 +284,55 @@ def check(root, *, artefact_sha256: str = "", commit: str = "") -> dict:
             % (here[:12], pinned_commit[:12]),
             "Build the artefact from the commit named in the pin, or deploy that commit.")
     return said
+
+
+def refuse_unless_pinned(root, what: str, say=print, bold=str) -> int:
+    """0 when this service is what its pin says, 1 after saying why not. THE ONE COPY.
+
+    Called before anything is opened or served. The alpha ran its gateway on python 3.14 while CI
+    tested 3.10-3.12, and nothing noticed, because nothing was looking. This is the thing that
+    looks, and it looks BEFORE a port exists, so a refusal leaves nothing half-started.
+
+    It lived twice -- once in the gateway CLI and once in the worker's, the same function written
+    out in two files. They had already begun to disagree: the gateway's was changed to refuse an
+    unpinned start and the worker's still allowed one, which would have left a machine whose
+    gateway refuses and whose worker shrugs. Two copies of one rule are two rules.
+
+    NO PIN IS A REFUSAL. The argument for letting it through was that refusing would break
+    installations made before the check existed. That is true and is not the same as safe:
+    `ALPHA-RUNTIME-PIN-0002` observed that a service which starts unpinned is not constrained to a
+    pinned environment at all. The old behaviour is still reachable and is now a CHOICE --
+    `AGENTNODE_ALLOW_UNPINNED=1` -- said out loud in the log by whoever chose it.
+    """
+    try:
+        said = check(root)
+    except NoPinAtAll:
+        allowed = str(os.environ.get("AGENTNODE_ALLOW_UNPINNED", "")).strip()
+        if allowed not in ("1", "yes", "true"):
+            say("")
+            say(f"  {bold('Not started.')}")
+            say(f"  This {what} has no runtime pin, so it cannot say which interpreter and")
+            say("  artefact it was meant to run from, and nothing here can notice if it is")
+            say("  running from the wrong one.")
+            say("  Write one by deploying with deploy/deploy-pinned.sh, which records the")
+            say("  interpreter, the artefact digest and the commit it installed.")
+            say("  If this is an installation made before pinning existed and you mean to run it")
+            say("  unpinned, say so: AGENTNODE_ALLOW_UNPINNED=1.")
+            say(f"  Running on python {running_python()}.")
+            return 1
+        say("")
+        say(f"  {bold('No runtime pin, and starting anyway because somebody said so.')}")
+        say(f"  AGENTNODE_ALLOW_UNPINNED is set, so this {what} is starting without anything")
+        say("  checking which interpreter or artefact it is. That is a choice, not a default.")
+        say(f"  Running on python {running_python()}.")
+        return 0
+    except NotWhatWasPinned as no:
+        say("")
+        say(f"  {bold('Not started.')}")
+        say(f"  This {what} is not what it was pinned to be, and the difference is the")
+        say(f"  {no.which}.")
+        say(f"  {no.said}")
+        say(f"  {no.what_to_do}")
+        return 1
+    say(f"  Running as {said.get('build_id', '(no build id)')} on python {running_python()}.")
+    return 0

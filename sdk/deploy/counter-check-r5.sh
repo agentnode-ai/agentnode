@@ -42,7 +42,7 @@ one() {
 for f in agentnode_sdk/gateway/identity.py pyproject.toml agentnode_sdk/_agent_pip.py \
          agentnode_sdk/cli/gateway_commands.py agentnode_sdk/gateway/runtime_pin.py \
          agentnode_sdk/signing_key.py agentnode_sdk/gateway/meter.py \
-         tests/test_what_is_kept.py; do
+         tests/test_what_is_kept.py deploy/deploy-pinned.sh; do
   cp "$f" "/tmp/$(basename "$f").keep"
 done
 
@@ -101,6 +101,41 @@ one "KEY-k the collector still collects real key material" \
     tests/test_what_is_kept.py \
     tests/test_what_is_kept.py::TestEverySecretShapeAgainstEverySink \
     sed -i 's|^            if key_path.is_file():$|            if key_path.is_file() and False:|' tests/test_what_is_kept.py
+
+# THE SIX R9 ASKS FOR, one per mechanism per moment: interpreter, digest and commit,
+# at START and at DEPLOY. One broad mutation that takes out the whole start path
+# cannot show that the three are checked separately, which is what the criterion is
+# about. Each of these removes exactly one comparison.
+
+one "START-interpreter: the running interpreter is compared with the pinned one" \
+    agentnode_sdk/gateway/runtime_pin.py \
+    tests/test_runtime_pin.py::TestStartingRefuses::test_a_pinned_312_running_on_something_else_is_refused \
+    sed -i 's|^    if running.rsplit(".", 1)\[0\] != wanted.rsplit(".", 1)\[0\]:$|    if False:|' agentnode_sdk/gateway/runtime_pin.py
+
+one "START-digest: the installed artefact is compared with the pinned digest" \
+    agentnode_sdk/gateway/runtime_pin.py \
+    tests/test_runtime_pin.py::TestStartingRefuses::test_and_names_the_artefact_when_that_is_what_differs \
+    sed -i 's|^    if expected and on_disk and on_disk != expected:$|    if False:|' agentnode_sdk/gateway/runtime_pin.py
+
+one "START-commit: the commit handed in is compared with the pinned one" \
+    agentnode_sdk/gateway/runtime_pin.py \
+    tests/test_runtime_pin.py::TestEachMistakeNamesItself \
+    sed -i 's|^    if here != pinned_commit:$|    if False:|' agentnode_sdk/gateway/runtime_pin.py
+
+one "DEPLOY-interpreter: the venv is the tested family, checked before anything is touched" \
+    deploy/deploy-pinned.sh \
+    tests/test_deploying_refuses.py::TestTheInterpreterIsCheckedFirstAndBeforeAnything::test_a_venv_that_is_a_different_python_family_is_refused \
+    sed -i 's#^\[ "$FAMILY" = "$WANT_PY" \] || died#[ 1 = 1 ] || died#' deploy/deploy-pinned.sh
+
+one "DEPLOY-digest: the wheel's digest is compared with what was expected" \
+    deploy/deploy-pinned.sh \
+    tests/test_deploying_refuses.py::TestTheArtefactIsCheckedByItsDigest::test_a_digest_that_is_not_the_expected_one_is_refused \
+    sed -i 's|^if \[ -n "${AGENTNODE_EXPECT_DIGEST:-}" \] .*|if false; then|' deploy/deploy-pinned.sh
+
+one "DEPLOY-commit: the commit is read out of the wheel, not taken from the caller" \
+    deploy/deploy-pinned.sh \
+    tests/test_deploying_refuses.py::TestTheCommitComesOutOfTheArtefact \
+    sed -i 's|^if \[ "$INSIDE" != "$COMMIT" \]; then$|if false; then|' deploy/deploy-pinned.sh
 
 printf '\n=== '
 [ "$FAILED" -eq 0 ] && echo "every counter-check removed a mechanism and the evidence failed without it." \
