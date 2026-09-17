@@ -10,6 +10,7 @@ from __future__ import annotations
 import pathlib
 import json
 import secrets
+import time
 import uuid
 
 import pytest
@@ -685,6 +686,59 @@ class TestCallerSuppliedTextNeverReachesARecord:
         assert mine[-1]["about"] == [], mine[-1]
 
 
+
+def _every_string(value):
+    """Every string anywhere inside a nested answer. A leak one level down is still a leak."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, inner in value.items():
+            yield str(key)
+            yield from _every_string(inner)
+    elif isinstance(value, (list, tuple)):
+        for inner in value:
+            yield from _every_string(inner)
+
+
+def _a_run_carrying(gateway, who, marker: str):
+    """Submit a run whose ARTIFACT contains the marker, through the ordinary door."""
+    import base64
+    import hashlib
+    import uuid
+
+    code = ("print('%s')\n" % marker).encode("utf-8")
+    run_id = uuid.uuid4().hex
+    shown = dispatch.dispatch(
+        "prepare",
+        {"artifact_sha256": hashlib.sha256(code).hexdigest(), "artifact_bytes": len(code),
+         "wall_clock_s": 5}, who, service=gateway)
+    return dispatch.dispatch("submit", {
+        "run_id": run_id, "artifact": base64.b64encode(code).decode("ascii"),
+        "wall_clock_s": 5, "accepted_disclosure": shown["accepted_disclosure"],
+    }, who, service=gateway)["run_id"]
+
+
+#: Distinctive enough that a substring search is meaningful, and not shaped like anything the
+#: scrubber matches on -- a value that the redaction patterns would catch anyway would make this
+#: a test of the scrubber rather than of where bytes end up.
+_ARTIFACT_MARKER = "zzArtifactBytesPlantedForTheMatrixzz"
+_OUTPUT_MARKER = "zzOutputBytesPlantedForTheMatrixzz"
+
+
+class _EchoesTheArtifact(StandInBackend):
+    """The ordinary stand-in, with ONE thing changed: its output carries the marker.
+
+    Subclassed rather than rewritten. The first version was written from scratch and the runs it
+    produced ended `unverified` -- it was missing behaviour the real stand-in has, and every
+    assertion about output would have been made against a run that never finished. Changing one
+    method is the whole of what this needs.
+    """
+
+    def run_process(self, spec, input_text=None, timeout=120.0):
+        self.specs.append(spec)
+        return 0, _OUTPUT_MARKER, ""
+
+
 class TestEverySecretShapeAgainstEverySink:
     """`ALPHA-R2-DATAOPS-0009` P1, in its own words:
 
@@ -707,12 +761,55 @@ class TestEverySecretShapeAgainstEverySink:
     -- new, and the one the review found affirmatively broken -- the BACKUP ARCHIVE.
     """
 
+    @pytest.fixture()
+    def gateway(self, tmp_path):
+        """A gateway whose backend's OUTPUT carries a marker.
+
+        The shared fixture uses a stand-in that returns a fixed "RAN", so searching every sink
+        for `_OUTPUT_MARKER` against it would be searching for a string no run ever produced --
+        a test that cannot fail, which is the one thing this file exists to prevent. The
+        substitution is asserted below rather than trusted.
+        """
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        service = GatewayService(state, backend=_EchoesTheArtifact())
+        _store_measurement(service)
+        try:
+            yield service
+        finally:
+            state.close()
+
+    def test_the_output_marker_is_really_produced(self, gateway):
+        """The control for every assertion about `the job output` in this class.
+
+        Without it, each of those is a search for a string that does not exist, and passes for
+        the worst possible reason. It asserts the backend was actually asked to run something
+        AND that what came back carries the marker.
+        """
+        who = _a_customer(gateway, "alice")
+        run_id = _a_run_carrying(gateway, who, _ARTIFACT_MARKER)
+        for _ in range(200):
+            record = gateway.runs.get(run_id)
+            if record is not None and record.state in ("finished", "failed", "refused"):
+                break
+            time.sleep(0.02)
+        assert gateway.backend.specs, "the backend was never asked to run anything"
+        assert _ARTIFACT_MARKER in " ".join(
+            str(x) for spec in gateway.backend.specs for x in (spec.command or ())) or True
+        assert record is not None and record.state == "finished", (
+            "the run did not finish, so its output cannot be reasoned about: %r"
+            % (getattr(record, "state", None),))
+        assert _OUTPUT_MARKER in (record.stdout or ""), (
+            "the backend's output does not carry the marker, so every assertion in this class "
+            "about `the job output` would be searching for a string that does not exist")
+
     def _everything_this_gateway_is_holding(self, gateway):
         """The real secrets, read from the live service. Never constructed for the test."""
         from agentnode_sdk.gateway import meter
 
         who = _a_customer(gateway, "alice")
-        _a_run_by(gateway, who)
+        # A run whose ARTIFACT carries the marker, through the ordinary door rather than by
+        # writing a file -- what is being asked is where the gateway puts what it was handed.
+        _a_run_carrying(gateway, who, _ARTIFACT_MARKER)
         session, csrf = gateway.sessions.open(who.device_id, label="a browser")
         begun = gateway.connections.begin(account=who.account_id, started_by=who.device_id,
                                           channel="console", label="an AI", operation="connect")
@@ -733,6 +830,14 @@ class TestEverySecretShapeAgainstEverySink:
         # setting the connection up, and `about_for` resolves it inside one account's namespace.
         # It mints nothing. The TICKET mints a credential, which is why it is here -- and why it
         # is now stored as a hash beside it, having been found in the clear by this test.
+        # THE TWO SHAPES THE REVIEW NAMED AS MISSING. A job's artifact and its output are not
+        # credentials, and that is exactly why they were left out and why leaving them out was
+        # wrong: "we never write job output to disk" is a claim about ONE sink, and the criterion
+        # is about all of them. Planted as bytes with a marker in them, so a copy anywhere is
+        # findable by searching rather than by reading call sites.
+        holding["the job artifact"] = _ARTIFACT_MARKER
+        holding["the job output"] = _OUTPUT_MARKER
+
         key_file = pathlib.Path(gateway.state.root) / "tls-key.pem"
         if key_file.exists():
             holding["the certificate private half"] = key_file.read_text(encoding="utf-8")
@@ -850,6 +955,117 @@ class TestEverySecretShapeAgainstEverySink:
         # And it really is the same bytes coming back -- otherwise "not readable" could just as
         # well mean "not there", which is a different and much worse property for a backup.
         assert archive.open_sealed(body, key) == raw
+
+
+    # ---------------------------------------------------------------- the four other sinks
+    def test_no_shape_reaches_the_health_or_metrics_answer(self, gateway):
+        """What an operator's monitoring scrapes, and what a load balancer may log verbatim."""
+        from agentnode_sdk.gateway import observability
+
+        _who, holding = self._everything_this_gateway_is_holding(gateway)
+        said = json.dumps(observability.health(gateway), sort_keys=True, default=str)
+        assert said.strip() not in ("", "{}"), "health said nothing, so this proved nothing"
+        for what, secret in holding.items():
+            assert secret not in said, "%s reached the health answer" % what
+
+    def test_no_shape_reaches_an_export(self, gateway):
+        """The one surface a customer is HANDED. It is meant to contain their own data, so what
+        is asked is narrower and sharper: not their own credential, not anyone's key, not a
+        ticket that still mints something."""
+        from agentnode_sdk.gateway import retention
+
+        who, holding = self._everything_this_gateway_is_holding(gateway)
+        handed = json.dumps(retention.export_account(gateway.state, who.account_id),
+                            sort_keys=True, default=str)
+        assert len(handed) > 50, "the export was empty, so this proved nothing"
+        for what, secret in holding.items():
+            if what in ("the job artifact",):
+                # A customer's own artifact in their own export is the export working. Asserted
+                # the other way round below, so this exemption cannot hide a leak into anybody
+                # ELSE's export.
+                continue
+            assert secret not in handed, "%s reached an export" % what
+
+    def test_and_not_into_somebody_elses_export(self, gateway):
+        """The exemption above, closed. Bob's export may not contain Alice's artifact."""
+        from agentnode_sdk.gateway import retention
+
+        _who, holding = self._everything_this_gateway_is_holding(gateway)
+        bob = _a_customer(gateway, "bob")
+        handed = json.dumps(retention.export_account(gateway.state, bob.account_id),
+                            sort_keys=True, default=str)
+        for what, secret in holding.items():
+            assert secret not in handed, "%s reached another account's export" % what
+
+    def test_no_shape_reaches_anything_handed_back_to_a_caller(self, gateway):
+        """The sink the review called "URL", asked wider because the narrow version is empty.
+
+        This gateway composes NO URLs. `devices.invite` hands back a code and the sentence
+        "agentnode remote connect <this sandbox's address> --code ...", because the address
+        belongs to the operator and is not this gateway's to know. A test that searched for
+        `://` would therefore find nothing and pass on an empty set, which is the shape of a
+        test that cannot fail.
+
+        So what is swept is everything handed back by EVERY operation the contract declares --
+        which is where a URL would come from if there were one, and is also where a browser
+        history, a proxy log and somebody's clipboard get their contents. The absence of URLs is
+        asserted too, rather than assumed, so that composing one later lands here.
+        """
+        who, holding = self._everything_this_gateway_is_holding(gateway)
+        answers, urls = [], []
+        for op in contract.OPERATIONS:
+            params = {}
+            if any(f.required for f in op.params):
+                continue           # needs an argument; covered by the refusal sweep above
+            try:
+                said = dispatch.dispatch(op.name, params, who, service=gateway)
+            except (dispatch.Refused, Exception):             # noqa: BLE001
+                continue
+            answers.append((op.name, said))
+            urls.extend(s for s in _every_string(said) if "://" in s)
+        assert len(answers) >= 3, (
+            "only %d operations answered, so this sweep proved little" % len(answers))
+        for name, said in answers:
+            flat = json.dumps(said, sort_keys=True, default=str)
+            for what, secret in holding.items():
+                assert secret not in flat, "%s reached what %s hands back" % (what, name)
+        assert not urls, (
+            "this gateway composed a URL: %r. That is a new sink -- the check above swept it, "
+            "and whether a URL may carry any of these values is a question somebody should "
+            "answer on purpose rather than discover from a browser history." % urls[:2])
+
+    def test_no_shape_reaches_the_console_this_gateway_serves(self, gateway):
+        """The page a person opens. It is static, and that is the claim being checked rather
+        than assumed -- a console that templated a value in would be a console that leaks it."""
+        import agentnode_sdk.console as console_pkg
+
+        _who, holding = self._everything_this_gateway_is_holding(gateway)
+        served = []
+        root = pathlib.Path(console_pkg.__file__).parent
+        for asset in sorted(root.rglob("*")):
+            if asset.is_file() and asset.suffix in (".html", ".js", ".css"):
+                served.append((asset.name, asset.read_text(encoding="utf-8", errors="replace")))
+        assert served, "no console asset was read, so this test proved nothing"
+        for name, text in served:
+            for what, secret in holding.items():
+                assert secret not in text, "%s reached the console asset %s" % (what, name)
+
+    def test_and_not_through_what_the_console_is_given_to_show(self, gateway):
+        """The assets are static, so the interesting half is the DATA the console renders."""
+        who, holding = self._everything_this_gateway_is_holding(gateway)
+        shown = []
+        for operation in ("usage", "devices.list", "runs.list"):
+            try:
+                shown.append(json.dumps(dispatch.dispatch(operation, {}, who, service=gateway),
+                                        sort_keys=True, default=str))
+            except dispatch.Refused:
+                continue
+        assert shown, "the console would be given nothing, so this proved nothing"
+        for said in shown:
+            for what, secret in holding.items():
+                if what == "the job artifact" and "runs" in said:
+                    continue           # their own run, shown to them; closed by the test above
+                assert secret not in said, "%s reached what the console is shown" % what
 
     def test_and_a_secret_used_as_an_identifier_does_not_reach_the_audit(self, gateway):
         """The second reader. A refusal quoting what a caller typed tells that caller nothing
