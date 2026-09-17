@@ -60,8 +60,9 @@ def browser():
 
 
 
-@pytest.fixture(autouse=True)
-def _the_pin_is_not_the_one_on_this_machine(tmp_path_factory, monkeypatch):
+# SESSION-scoped, and that is the whole point -- see the docstring.
+@pytest.fixture(scope="session", autouse=True)
+def _the_pin_is_not_the_one_on_this_machine(tmp_path_factory):
     """Tests must NEVER read the runtime pin belonging to the machine they run on.
 
     The pin moved out of the state directory and into `/etc/agentnode`, because a restore drill
@@ -71,12 +72,32 @@ def _the_pin_is_not_the_one_on_this_machine(tmp_path_factory, monkeypatch):
     that records no artefact digest, and refused. Four tests failed on the DevelopServer and
     passed everywhere else, which is the signature of host state leaking into a suite.
 
-    Each test therefore gets an EMPTY pin directory of its own. The refusals themselves are
-    neither weakened nor skipped: `test_runtime_pin.py::TestStartingRefuses` points the same
-    lookup at a directory it writes real pins into, and drives the CLI entry points against them.
+    ONE empty pin directory for the WHOLE SESSION, set before anything else is built. The first
+    version of this was function-scoped, and that broke 39 tests on the DevelopServer in a way
+    worth writing down: the session-scoped test gateway is created BEFORE any function-scoped
+    fixture runs, so it measured itself against the machine's real pin -- and then this fixture
+    moved the pin out from under it. The gateway compared the stored measurement against what it
+    was now running as, found that artefact, commit and build id all differed, and refused to
+    admit work. That refusal was CORRECT. Machine-global state cannot be swapped per test
+    underneath a service that measured itself once.
+
+    `os.environ` rather than `monkeypatch`, because `monkeypatch` is function-scoped and cannot
+    be requested from a session fixture at all.
+
+    The refusals themselves are neither weakened nor skipped:
+    `test_runtime_pin.py::TestStartingRefuses` points the same lookup at a directory it writes
+    real pins into, and drives the CLI entry points against them.
     """
-    monkeypatch.setenv("AGENTNODE_PIN_DIR",
-                       str(tmp_path_factory.mktemp("pin-that-is-not-this-machines")))
+    before = os.environ.get("AGENTNODE_PIN_DIR")
+    os.environ["AGENTNODE_PIN_DIR"] = str(
+        tmp_path_factory.mktemp("pin-that-is-not-this-machines"))
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("AGENTNODE_PIN_DIR", None)
+        else:
+            os.environ["AGENTNODE_PIN_DIR"] = before
 
 
 @pytest.fixture(autouse=True)

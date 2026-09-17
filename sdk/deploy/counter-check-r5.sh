@@ -76,6 +76,16 @@ one "R1-f an empty version is UNKNOWN, not running" \
     tests/test_runtime_pin.py::TestWhatCountsAsTheTestedInterpreter \
     sed -i 's/^SUPPORTED = (3, 12)$/SUPPORTED = (3, 11)/' agentnode_sdk/gateway/runtime_pin.py
 
+one "R2-g a pin that names no artefact is refused, like one that names no interpreter" \
+    agentnode_sdk/gateway/runtime_pin.py \
+    tests/test_runtime_pin.py::TestAPinThatNamesNothingPinsNothing \
+    sed -i 's|    if not expected:|    if False:|' agentnode_sdk/gateway/runtime_pin.py
+
+one "R2-h and neither is one that names no commit" \
+    agentnode_sdk/gateway/runtime_pin.py \
+    tests/test_runtime_pin.py::TestAPinThatNamesNothingPinsNothing \
+    sed -i 's|    if not pinned_commit:|    if False:|' agentnode_sdk/gateway/runtime_pin.py
+
 printf '\n=== '
 [ "$FAILED" -eq 0 ] && echo "every counter-check removed a mechanism and the evidence failed without it." \
                     || { echo "AT LEAST ONE COUNTER-CHECK DID NOT ESTABLISH WHAT IT CLAIMS."; exit 1; }

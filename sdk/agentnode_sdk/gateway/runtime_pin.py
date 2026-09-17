@@ -245,6 +245,17 @@ def check(root, *, artefact_sha256: str = "", commit: str = "") -> dict:
 
     on_disk = artefact_sha256 or installed_artefact_digest()
     expected = str(said.get("artefact_sha256") or "")
+    # A PIN THAT NAMES NO ARTEFACT PINS NOTHING, and is refused for the same reason a pin that
+    # names no interpreter is. The two used to be treated differently: an empty interpreter
+    # refused and an empty digest quietly passed every comparison below, so a pin with the field
+    # missing looked like a pin that agreed. The only writer is `write_pin`, which always records
+    # all three -- so an absent one means the file was edited by hand or written by something
+    # else, and neither is a thing to start on.
+    if not expected:
+        raise NotWhatWasPinned(
+            "artefact", "the pin names no artefact digest",
+            "Re-run the deployment; a pin without a digest cannot tell this installation from "
+            "any other build carrying the same version number.")
     if expected and on_disk and on_disk != expected:
         raise NotWhatWasPinned(
             "artefact",
@@ -260,10 +271,16 @@ def check(root, *, artefact_sha256: str = "", commit: str = "") -> dict:
             "Reinstall from a wheel deployed by this project's deployment script, which records "
             "the digest it installed.")
 
-    here = commit or str(said.get("commit") or "")
-    if str(said.get("commit") or "") and here != str(said.get("commit")):
+    pinned_commit = str(said.get("commit") or "")
+    if not pinned_commit:
+        raise NotWhatWasPinned(
+            "commit", "the pin names no commit",
+            "Re-run the deployment; a pin without a commit cannot say which source the installed "
+            "artefact was built from.")
+    here = commit or pinned_commit
+    if here != pinned_commit:
         raise NotWhatWasPinned(
             "commit", "this deployment says commit %s and the pin says %s"
-            % (here[:12], str(said.get("commit"))[:12]),
+            % (here[:12], pinned_commit[:12]),
             "Build the artefact from the commit named in the pin, or deploy that commit.")
     return said

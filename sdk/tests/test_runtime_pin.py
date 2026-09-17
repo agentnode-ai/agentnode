@@ -209,6 +209,14 @@ class TestStartingRefuses:
             self, tmp_path, monkeypatch, capsys):
         from agentnode_sdk.cli import gateway_commands as gc
 
+        # THE INTERPRETER CHECK IS FIRST, AND THIS TEST IS NOT ABOUT IT. On 3.10 or 3.11 the
+        # service refuses at the interpreter before anything else is compared -- correctly -- and
+        # this test would then be asserting the wrong refusal. CI runs all three. Rather than
+        # skip on two of them and cover this on one, the interpreter is made to agree so the
+        # branch under test is the one that decides. The interpreter branch has its own tests,
+        # which do NOT do this.
+        monkeypatch.setattr(rp, "running_python", lambda: "%d.%d.99" % rp.SUPPORTED)
+
         rp.write_pin(tmp_path, python_version=rp.running_python(),
                      artefact_sha256=ARTEFACT, commit=COMMIT)
         monkeypatch.setattr(rp, "installed_artefact_digest", lambda *a, **k: "b" * 64)
@@ -245,6 +253,14 @@ class TestStartingRefuses:
     def test_and_a_matching_pin_lets_it_through_and_says_the_build_id(
             self, tmp_path, monkeypatch, capsys):
         from agentnode_sdk.cli import gateway_commands as gc
+
+        # THE INTERPRETER CHECK IS FIRST, AND THIS TEST IS NOT ABOUT IT. On 3.10 or 3.11 the
+        # service refuses at the interpreter before anything else is compared -- correctly -- and
+        # this test would then be asserting the wrong refusal. CI runs all three. Rather than
+        # skip on two of them and cover this on one, the interpreter is made to agree so the
+        # branch under test is the one that decides. The interpreter branch has its own tests,
+        # which do NOT do this.
+        monkeypatch.setattr(rp, "running_python", lambda: "%d.%d.99" % rp.SUPPORTED)
 
         rp.write_pin(tmp_path, python_version=rp.running_python(),
                      artefact_sha256=ARTEFACT, commit=COMMIT)
@@ -418,3 +434,54 @@ class TestWhichBuildIsAnswering:
         said = identity.as_dict()
         named = str(said["gateway_id"]) + "\n" + str(said["version"])
         assert hashlib.sha256(named.encode()).hexdigest() == identity.fingerprint
+
+
+class TestAPinThatNamesNothingPinsNothing:
+    """The three fields were not treated alike, and the odd one out was fail-OPEN.
+
+    An empty `python_version` refused. An empty `artefact_sha256` and an empty `commit` fell
+    through every comparison below them and the pin looked like a pin that agreed -- so a file
+    with the field missing was indistinguishable from a file that matched. The only writer,
+    `write_pin`, always records all three, which is exactly why an absent one means somebody
+    edited the file or something else wrote it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _the_interpreter_is_not_what_these_are_about(self, monkeypatch):
+        """Same reason as `TestStartingRefuses`: the interpreter is checked first, so on 3.10 or
+        3.11 it would be the branch that answered and these would be testing it instead."""
+        monkeypatch.setattr(rp, "running_python", lambda: "%d.%d.99" % rp.SUPPORTED)
+
+    def _pin(self, root, **fields):
+        said = {"python_version": "%d.%d.99" % rp.SUPPORTED, "artefact_sha256": ARTEFACT,
+                "commit": COMMIT}
+        said.update(fields)
+        (pathlib.Path(root) / rp.PIN_NAME).write_text(json.dumps(said), encoding="utf-8")
+        return root
+
+    def test_a_pin_with_no_artefact_digest_is_refused(self, tmp_path):
+        self._pin(tmp_path, artefact_sha256="")
+        with pytest.raises(rp.NotWhatWasPinned) as no:
+            rp.check(tmp_path, commit=COMMIT)
+        assert no.value.which == "artefact"
+
+    def test_a_pin_with_no_commit_is_refused(self, tmp_path):
+        self._pin(tmp_path, commit="")
+        with pytest.raises(rp.NotWhatWasPinned) as no:
+            rp.check(tmp_path, artefact_sha256=ARTEFACT)
+        assert no.value.which == "commit"
+
+    def test_and_each_says_which_of_the_three_it_was(self, tmp_path):
+        """An operator told only "mismatch" has to guess between three different fixes."""
+        self._pin(tmp_path, artefact_sha256="")
+        with pytest.raises(rp.NotWhatWasPinned) as no:
+            rp.check(tmp_path, commit=COMMIT)
+        assert "artefact" in str(no.value.said)
+        assert no.value.what_to_do, "a refusal with nothing to do about it is half a refusal"
+
+    def test_a_complete_pin_still_passes(self, tmp_path):
+        """The control: without this, the two tests above would pass on a check that refuses
+        everything."""
+        self._pin(tmp_path)
+        said = rp.check(tmp_path, artefact_sha256=ARTEFACT, commit=COMMIT)
+        assert said["commit"] == COMMIT
