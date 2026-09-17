@@ -8,6 +8,7 @@ OUTPUT catches that one.
 from __future__ import annotations
 
 import pathlib
+import re
 import json
 import secrets
 import time
@@ -838,6 +839,21 @@ class TestEverySecretShapeAgainstEverySink:
         holding["the job artifact"] = _ARTIFACT_MARKER
         holding["the job output"] = _OUTPUT_MARKER
 
+        # THE KEY MATERIAL, as the bytes that are really on disk. Every other shape here exists
+        # only as something the gateway HANDED OUT -- `tokens.json` and `pairing.json` keep
+        # hashes, and the enrolment ticket does too since this suite found it in the clear. That
+        # makes the key files the one shape a surface could leak by reading a store rather than
+        # by remembering a value, which is why they belong in every sink's sweep and not only in
+        # the archive's.
+        for key_path in sorted(pathlib.Path(gateway.state.root).glob("*key*")):
+            if key_path.is_file() and not key_path.name.endswith(".pub"):
+                holding["the %s bytes" % key_path.name] = key_path.read_bytes().decode("latin-1")
+
+        assert any(k.startswith("the ") and k.endswith(" bytes") for k in holding), (
+            "no key file was found in %s, so every assertion about key material in this class "
+            "would be a search for a string that does not exist"
+            % pathlib.Path(gateway.state.root))
+
         key_file = pathlib.Path(gateway.state.root) / "tls-key.pem"
         if key_file.exists():
             holding["the certificate private half"] = key_file.read_text(encoding="utf-8")
@@ -963,8 +979,13 @@ class TestEverySecretShapeAgainstEverySink:
         from agentnode_sdk.gateway import observability
 
         _who, holding = self._everything_this_gateway_is_holding(gateway)
-        said = json.dumps(observability.health(gateway), sort_keys=True, default=str)
-        assert said.strip() not in ("", "{}"), "health said nothing, so this proved nothing"
+        # Searched as STRINGS rather than as a JSON dump. `json.dumps` escapes anything
+        # above ASCII into a backslash-u sequence, so a key's raw bytes can sit in an
+        # answer and no substring search over the dump will ever find them. A counter-check
+        # that made this surface read the key files caught it: the surface was leaking and
+        # the test stayed green, which is the exact failure this file exists to prevent.
+        said = "\u0000".join(_every_string(observability.health(gateway)))
+        assert said.strip(), "health said nothing, so this proved nothing"
         for what, secret in holding.items():
             assert secret not in said, "%s reached the health answer" % what
 
@@ -975,8 +996,8 @@ class TestEverySecretShapeAgainstEverySink:
         from agentnode_sdk.gateway import retention
 
         who, holding = self._everything_this_gateway_is_holding(gateway)
-        handed = json.dumps(retention.export_account(gateway.state, who.account_id),
-                            sort_keys=True, default=str)
+        handed = "\u0000".join(
+            _every_string(retention.export_account(gateway.state, who.account_id)))
         assert len(handed) > 50, "the export was empty, so this proved nothing"
         for what, secret in holding.items():
             if what in ("the job artifact",):
@@ -992,8 +1013,8 @@ class TestEverySecretShapeAgainstEverySink:
 
         _who, holding = self._everything_this_gateway_is_holding(gateway)
         bob = _a_customer(gateway, "bob")
-        handed = json.dumps(retention.export_account(gateway.state, bob.account_id),
-                            sort_keys=True, default=str)
+        handed = "\u0000".join(
+            _every_string(retention.export_account(gateway.state, bob.account_id)))
         for what, secret in holding.items():
             assert secret not in handed, "%s reached another account's export" % what
 
@@ -1026,7 +1047,7 @@ class TestEverySecretShapeAgainstEverySink:
         assert len(answers) >= 3, (
             "only %d operations answered, so this sweep proved little" % len(answers))
         for name, said in answers:
-            flat = json.dumps(said, sort_keys=True, default=str)
+            flat = "\u0000".join(_every_string(said))
             for what, secret in holding.items():
                 assert secret not in flat, "%s reached what %s hands back" % (what, name)
         assert not urls, (
@@ -1049,6 +1070,14 @@ class TestEverySecretShapeAgainstEverySink:
         for name, text in served:
             for what, secret in holding.items():
                 assert secret not in text, "%s reached the console asset %s" % (what, name)
+            # AND NOTHING KEY-SHAPED AT ALL. The values above are per-gateway and this file is
+            # shipped, so a key baked into an asset at build time would belong to some OTHER
+            # gateway and none of the comparisons above would find it. An asset carrying a PEM
+            # header or a long run of hex is wrong whoever it belongs to.
+            assert "PRIVATE KEY" not in text.upper(), (
+                "%s contains something shaped like a private key" % name)
+            assert not re.search(r"(?<![0-9a-fA-F])[0-9a-fA-F]{64,}(?![0-9a-fA-F])", text), (
+                "%s contains a long run of hex, which is the shape key material has" % name)
 
     def test_and_not_through_what_the_console_is_given_to_show(self, gateway):
         """The assets are static, so the interesting half is the DATA the console renders."""
@@ -1056,8 +1085,8 @@ class TestEverySecretShapeAgainstEverySink:
         shown = []
         for operation in ("usage", "devices.list", "runs.list"):
             try:
-                shown.append(json.dumps(dispatch.dispatch(operation, {}, who, service=gateway),
-                                        sort_keys=True, default=str))
+                shown.append("\u0000".join(_every_string(
+                    dispatch.dispatch(operation, {}, who, service=gateway))))
             except dispatch.Refused:
                 continue
         assert shown, "the console would be given nothing, so this proved nothing"
