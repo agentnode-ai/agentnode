@@ -233,3 +233,91 @@ class TestChangingAnAccountHoldsTheFile:
             write=lambda name, text: kept.__setitem__(name, text))
         made = loose.create(name="somebody")
         assert loose.get(made.account_id).name == "somebody"
+
+
+class TestAFileThatLostItsNameWhileItWasBeingRead:
+    """Zero names is not a second door, and the message that said so was false whenever it fired.
+
+    Found on Linux CI under the concurrent-deletion drill: `tokens.json has 0 names. A second hard
+    link is a second door into the same bytes` — for a file with NO names, which cannot have a
+    second one. What had actually happened is the ordinary shape of an atomic write seen from the
+    reading side: the writer renamed a new file over this one between our `open` and our `fstat`.
+
+    Nothing is loosened by separating the two. A file with no names cannot be opened afresh by
+    anybody, so "no second door" holds MORE strongly there than in the one-name case. What is
+    left is the risk of reading superseded bytes, and the answer to that is to read again.
+    """
+
+    def _only_on_posix(self):
+        import pytest
+
+        from agentnode_sdk.gateway import securedir
+
+        try:
+            securedir._require_supported()
+        except Exception as exc:                                  # noqa: BLE001
+            pytest.skip("the secure-directory checks are POSIX-only here: %s" % exc)
+
+    def test_zero_names_is_reported_as_a_replacement_not_as_an_intrusion(self):
+        import os
+
+        from agentnode_sdk.gateway import securedir
+
+        self._only_on_posix()
+
+        class NoNames:
+            st_mode = 0o100600
+            st_uid = os.getuid() if hasattr(os, "getuid") else 0
+            st_nlink = 0
+
+        with __import__("pytest").raises(securedir.BeingReplaced) as told:
+            securedir._judge(NoNames(), "tokens.json", expect_dir=False)
+        assert "replaced" in str(told.value)
+        assert "hard link" not in str(told.value), (
+            "the explanation is false whenever it fires: a file with no names has no second one")
+
+    def test_and_two_names_is_still_refused(self):
+        """The half that must NOT move. A second hard link is the thing this check exists for."""
+        import os
+
+        from agentnode_sdk.gateway import securedir
+
+        self._only_on_posix()
+
+        class TwoNames:
+            st_mode = 0o100600
+            st_uid = os.getuid() if hasattr(os, "getuid") else 0
+            st_nlink = 2
+
+        with __import__("pytest").raises(securedir.InsecureState):
+            securedir._judge(TwoNames(), "tokens.json", expect_dir=False)
+
+    def test_a_read_that_keeps_being_replaced_fails_closed_rather_than_spinning(self):
+        """Retrying is the answer to a replacement; retrying for ever is not an answer at all."""
+        import os
+
+        from agentnode_sdk.gateway import securedir
+
+        self._only_on_posix()
+
+        def always_replaced(info, what, expect_dir=False):
+            raise securedir.BeingReplaced("%s was replaced while it was being read" % what)
+
+        was, securedir._judge = securedir._judge, always_replaced
+        try:
+            import tempfile
+
+            root = tempfile.mkdtemp()
+            os.chmod(root, 0o700)
+            with open(os.path.join(root, "tokens.json"), "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            os.chmod(os.path.join(root, "tokens.json"), 0o600)
+            fd = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                with __import__("pytest").raises(securedir.UnverifiableState) as told:
+                    securedir.read_secret(fd, "tokens.json")
+                assert "every attempt" in str(told.value)
+            finally:
+                os.close(fd)
+        finally:
+            securedir._judge = was

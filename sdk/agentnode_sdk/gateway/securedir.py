@@ -72,6 +72,15 @@ class InsecureState(Exception):
     """The state was verified and is not private. Nothing was read or written."""
 
 
+class BeingReplaced(Exception):
+    """The file lost its last name while it was open. Read it again; do not refuse on it.
+
+    Its own type because the caller must tell it from `InsecureState`: one says somebody else can
+    reach these bytes, the other says these bytes were superseded a moment ago. Answering the
+    second with the first is how a routine atomic write reads as an attack.
+    """
+
+
 def _require_supported() -> None:
     if not SUPPORTED:
         raise UnverifiableState(
@@ -98,6 +107,22 @@ def _judge(info, what: str, *, expect_dir: bool) -> None:
             f"{what} can be read by other accounts on this machine "
             f"(mode {oct(stat.S_IMODE(info.st_mode))})"
         )
+    if not expect_dir and info.st_nlink == 0:
+        # NOT a second door -- arithmetically it cannot be one. Zero names means the last name
+        # was removed while this descriptor was open, which is exactly what an atomic replace
+        # looks like from the reading side: the writer renamed a new file over this one between
+        # our `open` and our `fstat`.
+        #
+        # It was raised as `InsecureState` with the second-door wording, which is a message that
+        # is FALSE whenever it fires, and it fired under the concurrent-deletion drill on Linux.
+        # A check whose explanation cannot be true is worse than no check, because somebody will
+        # eventually act on the explanation.
+        #
+        # Nothing is loosened by separating the two. A file with no names cannot be opened afresh
+        # by anybody, so "no second door" holds more strongly here than in the one-name case. The
+        # real risk is reading bytes that have just been superseded, which is a correctness
+        # problem and is answered by reading again rather than by refusing.
+        raise BeingReplaced(f"{what} was replaced while it was being read")
     if not expect_dir and info.st_nlink != 1:
         raise InsecureState(
             f"{what} has {info.st_nlink} names. A second hard link is a second door into the same "
@@ -144,7 +169,7 @@ def same_object(fd: int, root) -> bool:
     return (by_name.st_dev, by_name.st_ino) == (held.st_dev, held.st_ino)
 
 
-def read_secret(fd: int, name: str) -> str | None:
+def read_secret(fd: int, name: str, attempts_left: int = 5) -> str | None:
     """Read a file inside the verified directory. None when it is not there."""
     _require_supported()
     try:
@@ -158,6 +183,15 @@ def read_secret(fd: int, name: str) -> str | None:
         _judge(os.fstat(handle), name, expect_dir=False)
         with os.fdopen(os.dup(handle), "r", encoding="utf-8") as reader:
             return reader.read()
+    except BeingReplaced:
+        if attempts_left <= 0:
+            # Bounded, and fail-closed at the end. A name that is replaced every single time
+            # this is attempted is not a normal write pattern, and continuing to retry would
+            # turn a broken gateway into a hanging one.
+            raise UnverifiableState(
+                f"{name} was replaced on every attempt to read it, so this gateway cannot say "
+                f"what it contains") from None
+        return read_secret(fd, name, attempts_left=attempts_left - 1)
     finally:
         os.close(handle)
 
