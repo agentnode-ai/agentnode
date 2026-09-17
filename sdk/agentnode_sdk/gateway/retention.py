@@ -497,14 +497,37 @@ def _sweep_backups(root: Path, cutoff: float) -> int:
         # Told where, and it is not there: that IS a problem, because somebody wrote down an
         # answer this gateway cannot honour and the deletion promise rests on it.
         raise RuntimeError("the backup directory %s is not there" % where)
+    # A BACKUP IS A DIRECTORY, not a file, and this used to look for files. The script writes
+    # one timestamped directory per run holding the sealed state, the sealed secrets, the sums
+    # and the manifest -- so a sweep over `*.sealed` found nothing on a real gateway while
+    # passing its unit test, which had invented a flatter layout. Found by looking at the alpha
+    # rather than by reasoning, which is what `RISK-A-NO-RUNTIME-PROOF` asked for.
+    #
+    # The whole set goes together. Removing only the sealed files would leave the sums and the
+    # manifest behind, and a directory that still looks like a backup and cannot restore one is
+    # worse than no directory at all.
+    import shutil
+
     gone = 0
-    for archive in sorted(where.glob("*.sealed")):
+    for run in sorted(where.iterdir()):
         try:
-            if archive.stat().st_mtime < cutoff:
-                archive.unlink()
+            if run.is_file():
+                # A flat layout is still swept, so a gateway that writes archives directly into
+                # this directory is not silently kept for ever.
+                if run.name.endswith(".sealed") and run.stat().st_mtime < cutoff:
+                    run.unlink()
+                    gone += 1
+                continue
+            if not any(run.glob("*.sealed")):
+                # Not a backup. Left alone rather than guessed about: this directory belongs to
+                # an operator and may hold things this gateway did not put there.
+                continue
+            newest = max(f.stat().st_mtime for f in run.iterdir() if f.is_file())
+            if newest < cutoff:
+                shutil.rmtree(run)
                 gone += 1
         except OSError as exc:
-            raise RuntimeError("%s could not be removed: %s" % (archive.name, exc)) from exc
+            raise RuntimeError("%s could not be removed: %s" % (run.name, exc)) from exc
     return gone
 
 

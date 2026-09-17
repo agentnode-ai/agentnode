@@ -127,10 +127,21 @@ class TestEveryClassIsActuallySwept:
             where.mkdir(exist_ok=True)
             (root / "backups.json").write_text(
                 json.dumps({"directory": str(where)}), encoding="utf-8")
+            # THE LAYOUT THE SCRIPT ACTUALLY WRITES: one timestamped directory per run, holding
+            # the sealed state, the sealed secrets, the sums and the manifest. The first version
+            # of this planter invented a flatter one -- archives sitting directly in the
+            # directory -- and the sweep passed against it while finding nothing on the real
+            # alpha. A fixture that is easier to write than the thing it stands for will agree
+            # with whatever the code does.
             for at, which in ((LONG_AGO, "old"), (JUST_NOW, "new")):
-                archive = where / ("state-%s.tar.sealed" % which)
-                archive.write_bytes(b"AGENTNODE-SEALED-1 not a real archive")
-                os.utime(archive, (at, at))
+                run = where / ("2026%s" % which)
+                run.mkdir(exist_ok=True)
+                for leaf in ("state.tar.sealed", "secret.tar.sealed", "SHA256SUMS",
+                             "WHAT_IS_IN_IT.json"):
+                    made = run / leaf
+                    made.write_bytes(b"AGENTNODE-SEALED-1 not a real archive")
+                    os.utime(made, (at, at))
+                os.utime(run, (at, at))
             return where
 
         path = root / retention.CLASSES[name]["file"]
