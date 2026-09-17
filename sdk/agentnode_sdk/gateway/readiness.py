@@ -115,6 +115,17 @@ class ReportBinding:
     #: something else even on the same machine.
     worker_configuration_sha256: str = ""
 
+    #: WHICH of this gateway's policies, as an ordinal. The digest above already makes a report
+    #: stop being evidence when the policy changes, so this adds no enforcement -- it adds
+    #: legibility, which is a different thing and is why it is separate. A person holding two
+    #: reports can see "measured under policy 3" and "measured under policy 4" and go and look
+    #: at what changed; two digests tell them only that something did.
+    #:
+    #: It is part of the binding rather than a note beside it, so it cannot drift away from the
+    #: digest it belongs to: a report claiming a version that does not match the digest is a
+    #: report about something else, and `mismatches` says so.
+    operator_policy_version: str = ""
+
     def as_dict(self) -> dict[str, str]:
         return {
             "gateway_id": self.gateway_id,
@@ -125,6 +136,7 @@ class ReportBinding:
             "backend_version": self.backend_version,
             "conformance_schema": self.conformance_schema,
             "operator_policy_digest": self.operator_policy_digest,
+            "operator_policy_version": self.operator_policy_version,
             "worker_topology": self.worker_topology,
             "worker_configuration_sha256": self.worker_configuration_sha256,
         }

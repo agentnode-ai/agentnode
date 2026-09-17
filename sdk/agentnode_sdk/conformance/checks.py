@@ -371,18 +371,80 @@ def check_limit_memory(ctx: Context) -> CheckResult:
                                 detail={"cgroup": actual, "declared": expected, "stress": stress})
 
 
+def _was_driven(ctx, name, key, title, cgroup_says):
+    """Whether a ceiling was actually HIT, or a reason it cannot be said that it was.
+
+    Returns None when the run held, or a CheckResult when it did not -- so a caller reads it as
+    "a problem, or nothing". Every branch here has been wrong somewhere in this file before:
+
+    * no run at all, which used to leave the cgroup reading standing on its own as if a number in
+      a file were a refusal (EM3B-SUITE-0004, written about memory and true of all four);
+    * a run that never BEGAN, where a missing interpreter produces the same non-zero exit as a
+      ceiling (EM3B-SUITE-0005);
+    * a run that WALKED THROUGH, which is a runtime that accepted the flag and applied nothing --
+      exactly what a rootless runtime does with no cgroup manager under it;
+    * and an ending nobody can attribute, which is not evidence about this ceiling or any other.
+    """
+    stress = ctx.stress.get(key)
+    if not isinstance(stress, dict):
+        return CheckResult.not_checked(
+            name, title, "limits",
+            f"{cgroup_says}, but nothing was ever run against it")
+    if "_error" in stress:
+        return CheckResult.probe_error(
+            name, title, "limits",
+            f"{cgroup_says}, but the run against it did not happen: {stress['_error']}")
+    if not stress.get("started"):
+        return CheckResult.probe_error(
+            name, title, "limits",
+            f"{cgroup_says}, but the run never began (rc={stress.get('rc')}, stderr "
+            f"{str(stress.get('stderr_tail'))[:120]!r}), so nothing was measured about it")
+    if stress.get("completed"):
+        return CheckResult.measured(
+            name, title, "limits", False, Vantage.INSIDE,
+            f"inside: {cgroup_says}, and a run asking for "
+            f"{stress.get('asked_for')} WALKED STRAIGHT THROUGH it -- the runtime accepted the "
+            f"setting and did not apply it", detail={"stress": stress})
+    if not stress.get("ended_by_the_ceiling"):
+        return CheckResult.probe_error(
+            name, title, "limits",
+            f"{cgroup_says}, and the run neither finished nor was stopped by the ceiling "
+            f"(rc={stress.get('rc')}, {str(stress.get('stderr_tail'))[:120]!r}), so that ending "
+            f"is not attributable to the limit")
+    return None
+
 def check_limit_pids(ctx: Context) -> CheckResult:
+    """The declared number of processes has to be the number that actually refuses the next one.
+
+    A thread that cannot start says so, so this ceiling can be reported from inside itself: the
+    count it reached and the errno that stopped it, rather than a number read out of a file.
+    """
     got = _cgroup_limit(ctx, "limit-pids", "The process limit is enforced", "limits",
                         ("pids_max", "pids_max_v1"), ctx.declared.get("pids"), "processes")
     if isinstance(got, CheckResult):
         return got
     raw, _cg = got
     expected = ctx.declared.get("pids")
-    ok = str(raw).strip() == str(expected).strip()
+    says = (f"the cgroup process ceiling is {str(raw).strip()!r} against the declared "
+            f"{expected!r}")
+    # Settled without any run: what the runtime was asked for already disagrees with what the run
+    # declared. Driving a ceiling that is wrong on paper would only measure the wrong ceiling.
+    if str(raw).strip() != str(expected).strip():
+        return CheckResult.measured(
+            "limit-pids", "The process limit is enforced", "limits", False, Vantage.INSIDE,
+            f"inside: {says} -- they do not agree",
+            detail={"cgroup": str(raw).strip(), "declared": expected})
+    problem = _was_driven(ctx, "limit-pids", "pids", "The process limit is enforced", says)
+    if problem is not None:
+        return problem
+    stress = ctx.stress["pids"]
+    ok = bool(stress.get("held"))
+    at = stress.get("refused_at")
     return CheckResult.measured(
         "limit-pids", "The process limit is enforced", "limits", ok, Vantage.INSIDE,
-        f"inside: the cgroup process ceiling is {str(raw).strip()!r} against the declared "
-        f"{expected!r}", detail={"cgroup": str(raw).strip(), "declared": expected})
+        f"inside: {says}; a run asking for {stress.get('asked_for')} was refused"
+        + (f" at {at}" if at else "") + f" -- {stress.get('refusal')}",
+        detail={"cgroup": str(raw).strip(), "declared": expected, "stress": stress})
 
 
 def _observed_cpus(cg: dict):
@@ -433,11 +495,39 @@ def check_limit_cpu(ctx: Context) -> CheckResult:
             "limit-cpu", "The processor limit is enforced", "limits", False, Vantage.INSIDE,
             f"inside: the cgroup processor setting reads {raw!r} -- unlimited -- while the run "
             f"declared {declared_raw!r}", detail={"cgroup": raw, "declared": declared_raw})
-    ok = abs(observed - declared) <= max(0.01, declared * 0.02)
+    agrees = abs(observed - declared) <= max(0.01, declared * 0.02)
+    if not agrees:
+        return CheckResult.measured(
+            "limit-cpu", "The processor limit is enforced", "limits", False, Vantage.INSIDE,
+            f"inside: the cgroup processor setting {raw!r} enforces {observed:g} processors "
+            f"against the declared {declared:g} -- they do not agree",
+            detail={"cgroup": raw, "declared": declared_raw})
+    # A rate ceiling refuses nothing, so `_was_driven` does not fit: the run is SUPPOSED to
+    # finish. What stands in for a refusal is the kernel's own throttling counter moving, and it
+    # has to agree with the processor time actually consumed -- see `cpu_ceiling_proof`.
+    stress = ctx.stress.get("cpu")
+    if not isinstance(stress, dict) or "_error" in stress:
+        reason = stress.get("_error") if isinstance(stress, dict) else "none was performed"
+        return CheckResult.not_checked(
+            "limit-cpu", "The processor limit is enforced", "limits",
+            f"the cgroup setting {raw!r} reads {observed:g} processors, but no processor load was "
+            f"run against it: {reason}")
+    if not stress.get("started") or not stress.get("completed"):
+        return CheckResult.probe_error(
+            "limit-cpu", "The processor limit is enforced", "limits",
+            f"the processor load did not report (rc={stress.get('rc')}, stderr "
+            f"{str(stress.get('stderr_tail'))[:120]!r}), so nothing was measured about the ceiling")
+    used, threads = stress.get("processors_used"), stress.get("threads")
+    ok = bool(stress.get("held"))
+    how = (f"{threads} busy threads consumed {used:.2f} processors" if used is not None
+           else f"{threads} busy threads consumed an unreadable amount")
+    why = ("the kernel's throttling counter moved" if stress.get("kernel_throttled")
+           else "THE KERNEL'S THROTTLING COUNTER DID NOT MOVE")
     return CheckResult.measured(
         "limit-cpu", "The processor limit is enforced", "limits", ok, Vantage.INSIDE,
         f"inside: the cgroup processor setting {raw!r} enforces {observed:g} processors against "
-        f"the declared {declared:g}" + ("" if ok else " -- they do not agree"),
+        f"the declared {declared:g}"
+        + f"; {how} over {stress.get('wall', 0):.1f}s and {why}",
         detail={"cgroup": raw, "observed_cpus": observed, "declared": declared})
 
 
@@ -451,11 +541,22 @@ def check_limit_disk(ctx: Context) -> CheckResult:
     if tmp is None:
         return CheckResult.probe_error("limit-disk", "The writable space is bounded", "limits",
                                        "the size of /tmp could not be read inside the sandbox")
-    ok = expected is not None and tmp <= expected * 1.05
+    says = f"/tmp holds {tmp} bytes against the declared {expected} bytes"
+    if expected is None or tmp > expected * 1.05:
+        return CheckResult.measured(
+            "limit-disk", "The writable space is bounded", "limits", False, Vantage.INSIDE,
+            f"inside: {says} -- more space than was declared",
+            detail={"tmp_bytes": tmp, "declared": expected, "filesystems": fs})
+    problem = _was_driven(ctx, "limit-disk", "disk", "The writable space is bounded", says)
+    if problem is not None:
+        return problem
+    stress = ctx.stress["disk"]
+    ok = bool(stress.get("held"))
     return CheckResult.measured(
         "limit-disk", "The writable space is bounded", "limits", ok, Vantage.INSIDE,
-        f"inside: /tmp holds {tmp} bytes against the declared {expected} bytes",
-        detail={"tmp_bytes": tmp, "declared": expected, "filesystems": fs})
+        f"inside: {says}; writing {stress.get('asked_for')} bytes into it was refused at "
+        f"{stress.get('refused_at')} with {stress.get('errno_name')}",
+        detail={"tmp_bytes": tmp, "declared": expected, "filesystems": fs, "stress": stress})
 
 
 def check_limit_wallclock(ctx: Context) -> CheckResult:

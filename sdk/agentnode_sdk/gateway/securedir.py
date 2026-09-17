@@ -50,6 +50,7 @@ nothing. What that means for a gateway is stated where it is decided, not here.
 from __future__ import annotations
 
 import os
+import secrets
 import stat
 
 #: Whether the descriptor-relative facilities this module needs exist at all.
@@ -69,6 +70,15 @@ class UnverifiableState(Exception):
 
 class InsecureState(Exception):
     """The state was verified and is not private. Nothing was read or written."""
+
+
+class BeingReplaced(Exception):
+    """The file lost its last name while it was open. Read it again; do not refuse on it.
+
+    Its own type because the caller must tell it from `InsecureState`: one says somebody else can
+    reach these bytes, the other says these bytes were superseded a moment ago. Answering the
+    second with the first is how a routine atomic write reads as an attack.
+    """
 
 
 def _require_supported() -> None:
@@ -97,6 +107,22 @@ def _judge(info, what: str, *, expect_dir: bool) -> None:
             f"{what} can be read by other accounts on this machine "
             f"(mode {oct(stat.S_IMODE(info.st_mode))})"
         )
+    if not expect_dir and info.st_nlink == 0:
+        # NOT a second door -- arithmetically it cannot be one. Zero names means the last name
+        # was removed while this descriptor was open, which is exactly what an atomic replace
+        # looks like from the reading side: the writer renamed a new file over this one between
+        # our `open` and our `fstat`.
+        #
+        # It was raised as `InsecureState` with the second-door wording, which is a message that
+        # is FALSE whenever it fires, and it fired under the concurrent-deletion drill on Linux.
+        # A check whose explanation cannot be true is worse than no check, because somebody will
+        # eventually act on the explanation.
+        #
+        # Nothing is loosened by separating the two. A file with no names cannot be opened afresh
+        # by anybody, so "no second door" holds more strongly here than in the one-name case. The
+        # real risk is reading bytes that have just been superseded, which is a correctness
+        # problem and is answered by reading again rather than by refusing.
+        raise BeingReplaced(f"{what} was replaced while it was being read")
     if not expect_dir and info.st_nlink != 1:
         raise InsecureState(
             f"{what} has {info.st_nlink} names. A second hard link is a second door into the same "
@@ -143,7 +169,7 @@ def same_object(fd: int, root) -> bool:
     return (by_name.st_dev, by_name.st_ino) == (held.st_dev, held.st_ino)
 
 
-def read_secret(fd: int, name: str) -> str | None:
+def read_secret(fd: int, name: str, attempts_left: int = 5) -> str | None:
     """Read a file inside the verified directory. None when it is not there."""
     _require_supported()
     try:
@@ -157,25 +183,49 @@ def read_secret(fd: int, name: str) -> str | None:
         _judge(os.fstat(handle), name, expect_dir=False)
         with os.fdopen(os.dup(handle), "r", encoding="utf-8") as reader:
             return reader.read()
+    except BeingReplaced:
+        if attempts_left <= 0:
+            # Bounded, and fail-closed at the end. A name that is replaced every single time
+            # this is attempted is not a normal write pattern, and continuing to retry would
+            # turn a broken gateway into a hanging one.
+            raise UnverifiableState(
+                f"{name} was replaced on every attempt to read it, so this gateway cannot say "
+                f"what it contains") from None
+        return read_secret(fd, name, attempts_left=attempts_left - 1)
     finally:
         os.close(handle)
 
 
 def write_secret(fd: int, name: str, text: str) -> None:
-    """Replace a file inside the verified directory, atomically and owner-only."""
+    """Replace a file inside the verified directory, atomically and owner-only.
+
+    The temp name is UNIQUE to this write. It used to be `.<name>.new` -- one name shared by
+    every writer of that file -- and two at once is not a near miss: the `O_EXCL` create fails
+    for one of them, or one renames a path the other has already renamed away, or, in the case
+    that does not raise at all, one writer's whole file silently replaces the other's. A
+    concurrent deletion drill found the first of those; the last is the one worth fixing it for.
+
+    The pre-unlink went with it. It existed to make room for the fixed name and was itself a
+    window: between the unlink and the create, the other writer's temp file was gone.
+    """
     _require_supported()
-    tmp = "." + name + ".new"
-    try:
-        os.unlink(tmp, dir_fd=fd)
-    except FileNotFoundError:
-        pass
+    tmp = ".%s.%s.new" % (name, secrets.token_hex(8))
     handle = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
     try:
         with os.fdopen(os.dup(handle), "w", encoding="utf-8") as writer:
             writer.write(text)
+            writer.flush()
+            os.fsync(writer.fileno())
     finally:
         os.close(handle)
-    os.rename(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
+    try:
+        os.rename(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=fd)
+        except OSError:
+            pass
+        raise
 
 
 def claim_secret(fd: int, name: str, into: str) -> bool:

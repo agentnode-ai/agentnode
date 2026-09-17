@@ -79,6 +79,13 @@ REGISTER = (
     Route("/console/app.css", SERVES_A_PAGE,
           "The page's styling, in a file for the same reason."),
 
+    Route("/v1/health", BEFORE_ANYONE_IS_ANYBODY,
+          "Three booleans: is it serving, has it been measured, is it taking work. Deliberately "
+          "unauthenticated and deliberately narrow -- a health address is the one thing most "
+          "likely to be left reachable by accident, so it is built to be safe when it is. It "
+          "carries no count, no account, no configuration and no identifier. METRICS are a "
+          "different question and are NOT here: they are an operator's view and reach the "
+          "operator through the command line, where no customer can hold a credential."),
     Route("/v1/hello", BEFORE_ANYONE_IS_ANYBODY,
           "What a client reads before it has paired, to learn which gateway it has reached and "
           "whether that gateway is ready. There is nobody to authenticate yet."),

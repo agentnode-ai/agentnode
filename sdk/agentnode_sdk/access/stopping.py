@@ -241,9 +241,17 @@ class Stopping:
     # ------------------------------------------------------------------ the journal
 
     def _read_journal(self) -> dict:
+        """What is being stopped, or the reason it cannot be said. Never a guess.
+
+        Read through the shared retry, because this journal is read while it is written and on
+        Windows a reader that arrives during the rename is refused with `PermissionError` --
+        which says nothing whatever about the contents. Retried briefly and then raised: a busy
+        file is not an absent one, and the paragraph below is why that distinction is kept.
+        """
+        from agentnode_sdk.gateway.filelock import read_text_with_retry
+
         try:
-            with open(self._journal, encoding="utf-8") as fh:
-                kept = json.load(fh)
+            kept = json.loads(read_text_with_retry(self._journal))
         except FileNotFoundError:
             return {}
         except (OSError, ValueError):
@@ -264,13 +272,22 @@ class Stopping:
         only ever had whole documents written to it.
 
         The replace was always atomic. The scratch file was the part that was not, and a unique
-        name is what makes it so -- os.replace then makes the swap indivisible for readers.
+        name is what makes it so -- the replace then makes the swap indivisible for readers.
+
+        What it was not was RELIABLE on Windows, where a rename over a file fails for as long as
+        any other handle has the target open. This journal is read while it is written -- that is
+        what the test beside this is about -- so the second writer got `PermissionError` and
+        reported the journal as corrupted when nothing was wrong with it. The same bounded retry
+        every other writer of a gateway file uses, from the same place, so there are not two
+        answers to one question.
         """
+        from agentnode_sdk.gateway.filelock import replace_with_retry
+
         near = "%s.%d.%d.new" % (self._journal, os.getpid(), threading.get_ident())
         try:
             with open(near, "w", encoding="utf-8") as fh:
                 json.dump(kept, fh, sort_keys=True)
-            os.replace(near, self._journal)
+            replace_with_retry(near, self._journal)
         except BaseException:
             # Leaving a scratch file behind would be a slow leak in a directory an operator
             # reads. Nothing is raised from here: the original failure is what matters.

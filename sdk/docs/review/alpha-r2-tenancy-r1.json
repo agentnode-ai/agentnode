@@ -1,0 +1,75 @@
+{
+  "_comment": [
+    "TRUSTED REVIEW PROFILE, FROZEN PROSPECTIVELY.",
+    "",
+    "Written and committed BEFORE the code it judges exists. The commit that adds this file",
+    "contains no implementation of anything it names. That ordering is checkable in git.",
+    "",
+    "This profile judges ONE sub-contract of Managed Alpha R2: whether this service can hold more",
+    "than one customer at a time without either of them being able to see, reach, exhaust or",
+    "withdraw anything belonging to the other. It does not judge admission, data retention,",
+    "billing or monitoring; those have their own frozen profiles.",
+    "",
+    "A pass concerns this sub-contract only. It is not a finding that the service is fit for the",
+    "public, and it is not authorisation to expose anything, release, deploy, take payment, buy a",
+    "domain or buy infrastructure. Port 8099 stays closed."
+  ],
+  "profile_id": "alpha-r2-tenancy-r1",
+  "kind": "review",
+  "mutable_task": false,
+  "stage": "pre-run",
+  "frozen_prospectively": true,
+  "review_object": "Multi-tenant accounts for the managed sandbox: the separation of account, person, device, AI connection, sandbox run and operator; how an account comes to exist; how a device, a browser session and an AI connection are attached to exactly one account; and every place where one account's data, credentials, capacity or control surface could become reachable from another account.",
+  "out_of_scope": [
+    "admission, quotas, rate limits and abuse handling, which are judged by alpha-r2-admission-r1",
+    "retention, deletion, redaction, export and backup, which are judged by alpha-r2-dataops-r1",
+    "public exposure, payment, release, deployment, domains, new infrastructure or new running costs",
+    "the kernel-level separation between two accounts' running jobs, which single-host-development does NOT provide and which this profile must not be read as establishing"
+  ],
+  "verdict_must_state": "A pass concerns this code, its tests and the measurements presented, and nothing else. On single-host-development two accounts' jobs still run on one kernel: this profile can establish that one account cannot READ, REACH or WITHDRAW another's data and credentials through the service, and cannot establish that one account's job cannot affect another's through the machine. This is not authorisation to expose anything, to deploy, or to charge for it.",
+  "roles_rule": "Any input this profile does not list defaults to the lowest authority, 'context'. A request may name this profile and may not extend it.",
+  "criteria": [
+    {
+      "id": "T1-EVERY-PRINCIPAL-BELONGS-TO-EXACTLY-ONE-ACCOUNT",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge whether every credential, device, browser session, AI connection and run this gateway can hold is attributed to exactly one account, established by the server. Determine whether an account attribution can be absent, empty, duplicated, or supplied by a caller; what the code does when it meets a record from before accounts existed; and whether that migration can place two previously unrelated devices into one account. State what an unattributed record is treated as, and whether that treatment is the permissive or the restrictive one."
+    },
+    {
+      "id": "T2-NO-CROSS-ACCOUNT-READ-ON-ANY-OPERATION-OR-DOOR",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge, operation by operation and door by door, whether a caller authenticated as account A can obtain anything belonging to account B: a device list, a session list, a run, its status, its result, its output, usage figures, an invitation, an enrolment, a meter line, an audit line, a policy, a ceiling, or the existence of any of those. Determine whether the check is performed in the one dispatcher or repeated per operation; whether an operation added later would be covered by construction or only if somebody remembered; and whether a caller can distinguish 'belongs to another account' from 'does not exist'."
+    },
+    {
+      "id": "T3-NO-CROSS-ACCOUNT-WRITE-OR-WITHDRAWAL",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge whether a caller in account A can change anything in account B: withdraw or rotate a device, end a session, cancel or submit a run, consume or invalidate an invitation or enrolment ticket, alter a ceiling, or cause a suspension. Determine specifically whether device revocation resolves its target by scanning every credential this gateway holds rather than only the caller's own account, and whether the evidence for each includes an attempt that is refused rather than only an attempt that succeeds for the rightful owner."
+    },
+    {
+      "id": "T4-THE-OPERATOR-IS-NOT-AN-ACCOUNT-AND-NO-ACCOUNT-IS-THE-OPERATOR",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge whether the operator's surfaces -- the kill switch, ceilings, policy, suspension, retention settings, the metrics and any administrative listing -- are reachable by any account holder over any door, including the browser console, and whether any account-scoped capability can be escalated into an operator one. Determine whether operator authority comes from something an account can never present, and whether an operator action is attributable to an operator rather than to an account."
+    },
+    {
+      "id": "T5-NOTHING-A-MODEL-CAN-CALL-MANAGES-ACCESS-OR-TENANCY",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge whether the tool surface offered to an AI can create, join, name, rename, suspend, enumerate or switch accounts, or manage devices, tokens, sessions, invitations or policy in any account including its own. Determine whether this is enforced where a name becomes an operation rather than only where the tool list is built, and whether a newly declared operation is refused by default until classified. State what happens when a model calls a management operation by its exact name."
+    },
+    {
+      "id": "T6-CAPACITY-AND-COUNTERS-ARE-PER-ACCOUNT-AND-NOT-SHARED-BY-ACCIDENT",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge whether one account's use can consume, reset, corrupt or reveal another's. Determine whether counters, locks, files and identifiers are keyed such that a caller-influenced value cannot collide with or impersonate another account's key; whether a shared counter file is locked across processes; and whether an unreadable counter is read as zero. State what a person in account A can learn about account B's activity from timing, refusals, counters or error text."
+    },
+    {
+      "id": "T7-THE-EVIDENCE-WOULD-FAIL-WITHOUT-THE-MECHANISM",
+      "blocking": true,
+      "stage": "pre-run",
+      "text": "Judge the presented tests and counter-checks rather than the claims. For each isolation property, determine whether a test exists that constructs two real accounts and asserts a refusal, rather than asserting a helper returns a filtered list; whether the presented counter-check removes the mechanism and shows a NAMED, DIFFERENT test failing with a non-zero exit; and whether the counter-check proves the revert landed and was restored. A property whose only evidence is a passing test that would also pass without the mechanism is NOT_EVIDENCED."
+    }
+  ]
+}

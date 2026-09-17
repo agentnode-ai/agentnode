@@ -26,9 +26,12 @@ from __future__ import annotations
 
 import json
 import os
+import hmac
 import secrets
 import threading
 import time
+from agentnode_sdk.gateway.filelock import ProcessLock, atomically
+
 
 #: How long somebody has to finish setting up their AI and make it do something. Long enough to
 #: paste a file into a config and restart a program; short enough that a challenge left lying
@@ -73,16 +76,30 @@ class Connections:
 
     # ------------------------------------------------------------------ starting one
 
-    def begin(self, account: str, channel: str, label: str, operation: str = "submit") -> dict:
+    def begin(self, account: str, channel: str, label: str, operation: str = "submit",
+              started_by: str = "") -> dict:
         """Start setting a connection up. Returns what to show and what to poll.
 
         No device yet: the credential is created when the setup file is actually downloaded, so
         a challenge somebody starts and abandons leaves no connection behind that could be used.
+
+        Two identities, because there are two questions and they have different answers:
+
+        * `account` decides who may SEE and finish this setup. A person who starts it on their
+          laptop and finishes on their desktop is one customer doing one thing.
+        * `started_by` is the device that began it, which is what a WITHDRAWAL reaches. These
+          were one field for a while, and the day `account` started holding an account id,
+          withdrawing a device silently stopped dropping the enrolments it had started -- and an
+          unspent download ticket mints a fresh credential when it is collected.
         """
+        from agentnode_sdk.gateway.identity import hash_token
+
         now = self._clock()
         challenge = secrets.token_urlsafe(24)
+        ticket = secrets.token_urlsafe(24)
         entry = {
             "account": str(account),
+            "started_by": str(started_by or ""),
             "channel": str(channel),
             "label": str(label or ""),
             "operation": str(operation),
@@ -90,15 +107,44 @@ class Connections:
             "began_at": now,
             "expires_at": now + GOOD_FOR_SECONDS,
             "device": "",
-            "ticket": secrets.token_urlsafe(24),
+            # THE HASH, not the ticket. `tokens.json` and `pairing.json` have held only hashes
+            # since they were written, and this file held the real thing -- a ticket that mints a
+            # credential when it is collected. Anyone who could read the state directory could
+            # spend it, and the window is short rather than closed, which is not the same thing.
+            # Found by planting every secret shape against every sink (`ALPHA-R2-DATAOPS-0009`).
+            "ticket_sha256": hash_token(ticket),
             "ticket_until": now + DOWNLOAD_SECONDS,
             "satisfied_at": 0.0,
         }
-        with self._lock:
+        with self._lock, ProcessLock(self._path):
             kept = self._read()
             kept[challenge] = entry
             self._write(self._tidied(kept, now))
-        return dict(entry, challenge=challenge)
+        # The ticket itself goes back to the caller ONCE, here, and is never stored. What is on
+        # disk is its hash, so a copy of the state directory does not carry a spendable ticket.
+        return dict(entry, challenge=challenge, ticket=ticket)
+
+    def about_for(self, account: str, challenge: str) -> dict:
+        """One of THIS account's enrolments, by name. The caller's namespace, or nothing.
+
+        `about` below looks a challenge up among every enrolment on the gateway, which is right
+        for the gateway's own paths and wrong for a customer's: a challenge belonging to somebody
+        else was found and then refused, while one that never existed was not found at all. Same
+        answer, different work. `EXISTENCE-ISOLATION-DECISION-0001` removed that shape.
+        """
+        now = self._clock()
+        with self._lock:
+            kept = self._read()
+        # Selected by ACCOUNT first, so a name that is not in here is a name this account does
+        # not have -- whoever else may or may not have it.
+        mine = {name: found for name, found in kept.items()
+                if found.get("account") == str(account)}
+        entry = mine.get(str(challenge))
+        if entry is None or now >= float(entry.get("expires_at", 0)):
+            raise NoSuchChallenge(
+                "this sandbox is not setting up a connection under that name, or the window for "
+                "it has closed")
+        return dict(entry, challenge=str(challenge))
 
     def about(self, challenge: str) -> dict:
         with self._lock:
@@ -118,17 +164,24 @@ class Connections:
         One download. A setup file carries a working credential, so handing the same one out
         twice would mean the thing under test is no longer the only holder of it.
         """
+        from agentnode_sdk.gateway.identity import hash_token
+
         now = self._clock()
-        with self._lock:
+        with self._lock, ProcessLock(self._path):
             kept = self._read()
             entry = kept.get(str(challenge))
             if entry is None or now >= float(entry.get("expires_at", 0)):
                 raise NoSuchChallenge("that setup is no longer being offered")
-            if not ticket or ticket != entry.get("ticket"):
+            # Constant-time against the hash. An unspent ticket leaves a hash behind; a spent
+            # one leaves an empty string, which no hash equals, so spending it once is what
+            # closes it rather than a flag somebody has to remember to check.
+            expected = str(entry.get("ticket_sha256", ""))
+            if not ticket or not expected or not hmac.compare_digest(hash_token(ticket),
+                                                                     expected):
                 raise NoSuchChallenge("that is not this setup's download")
             if now >= float(entry.get("ticket_until", 0)):
                 raise NoSuchChallenge("that download has expired; start the setup again")
-            entry["ticket"] = ""
+            entry["ticket_sha256"] = ""
             entry["device"] = str(device)
             kept[str(challenge)] = entry
             self._write(kept)
@@ -161,7 +214,7 @@ class Connections:
             if float(line.get("at", 0)) < float(entry["began_at"]):
                 # Cannot be evidence for a challenge that did not exist when it happened.
                 continue
-            with self._lock:
+            with self._lock, ProcessLock(self._path):
                 kept = self._read()
                 if str(challenge) in kept:
                     kept[str(challenge)]["satisfied_at"] = float(line["at"])
@@ -181,10 +234,14 @@ class Connections:
         would be a withdrawal somebody could walk straight back through.
         """
         device = str(device)
-        with self._lock:
+        with self._lock, ProcessLock(self._path):
             kept = self._read()
             going = [k for k, v in kept.items()
-                     if v.get("account") == device or v.get("device") == device]
+                     if v.get("started_by") == device or v.get("device") == device
+                     # An entry written before `started_by` existed put the starting device in
+                     # `account`. Matching it here keeps a withdrawal complete across an upgrade;
+                     # an account id can never equal a device id, so this cannot over-match.
+                     or v.get("account") == device]
             for k in going:
                 del kept[k]
             if going:
@@ -207,11 +264,15 @@ class Connections:
         return kept if isinstance(kept, dict) else {}
 
     def _write(self, kept: dict) -> None:
-        near = self._path + ".new"
-        with open(near, "w", encoding="utf-8") as fh:
-            json.dump(kept, fh, sort_keys=True)
-        try:
-            os.chmod(near, 0o600)
-        except OSError:                                       # pragma: no cover - platform
-            pass
-        os.replace(near, self._path)
+        """Beside and renamed over, with a temp name NOBODY ELSE IS USING.
+
+        What stood here wrote `<file>.new` -- one fixed name, shared by every writer of this
+        file. Two of them at once is not a near-miss: the second one renames a path the first
+        has already renamed away and fails with `FileNotFoundError`, and in the version where it
+        does not fail, one writer's whole file silently replaces the other's. A concurrent
+        deletion drill on Linux found the first; the second is the one worth fixing it for.
+
+        `filelock.atomically` takes a unique temp name from `mkstemp` and carries the bounded
+        retry Windows needs on the rename. One implementation, for the same reason.
+        """
+        atomically(self._path, json.dumps(kept, sort_keys=True))

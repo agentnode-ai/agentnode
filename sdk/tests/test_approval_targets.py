@@ -128,8 +128,13 @@ class TestWhoMayApproveForWhom:
         "for" a connection of its own choosing."""
         service, who = sandbox
         _token, the_ai = a_second_connection(service)
+        # Built by hand to hold RUN and READ and NOT manage_devices, which is the whole point
+        # of the test. The account is copied from the real principal because every principal the
+        # product builds has one -- a device with no account is not a narrower caller, it is a
+        # caller this gateway refuses before it looks at capabilities at all.
         just_a_job = dispatch.Principal(token=who.token, device_id=who.device_id,
                                         client_id=who.client_id, via="browser",
+                                        account_id=who.account_id,
                                         capabilities=(contract.RUN, contract.READ))
         with pytest.raises(dispatch.Refused) as refused:
             approve_for(service, just_a_job, the_ai)

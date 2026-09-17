@@ -70,7 +70,15 @@ class TestThereAreExactlyTwo:
     def test_the_register_names_the_same_two(self):
         anonymous = {r.path for r in routes.REGISTER
                      if r.kind == routes.BEFORE_ANYONE_IS_ANYBODY}
-        assert anonymous == {"/v1/hello", "/v1/pair", "/v1/session",
+        # Exhaustive rather than a floor. Adding an address a stranger can reach is a decision,
+        # and this is the line that makes somebody make it on purpose.
+        #
+        # `/v1/health` is the newest: three booleans -- serving, measured, taking work -- and
+        # nothing that identifies a customer, a device, a run or what the operator configured.
+        # It is here because a health address is the one thing most likely to be left reachable
+        # by accident, so it was built to be safe when it is. Metrics are deliberately NOT an
+        # address; they name accounts and reach the operator through the command line.
+        assert anonymous == {"/v1/health", "/v1/hello", "/v1/pair", "/v1/session",
                              "/console/setup", "/console/confirm"}
 
     def test_and_every_route_is_one_of_the_four_kinds(self):
