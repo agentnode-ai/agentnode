@@ -402,6 +402,33 @@ def _wait_until_listening(url: str, timeout: float = 90.0) -> None:
 
 @pytest.mark.skipif(not os.environ.get("AGENTNODE_SANDBOX_E2E"),
                     reason="needs a container runtime")
+def _pin_like_a_deployment(where):
+    """Record the installed artefact's digest and pin it, the way `deploy-pinned.sh` does.
+
+    Two steps in that order: the digest goes INSIDE the installed distribution, and the pin names
+    that same value. Writing a digest into the pin that the installation does not record produces
+    a refusal -- correctly -- and the refusal says so.
+    """
+    import hashlib
+    import importlib.metadata as md
+    import pathlib
+
+    from agentnode_sdk.gateway import runtime_pin
+
+    where = pathlib.Path(where)
+    where.mkdir(parents=True, exist_ok=True)
+    digest = runtime_pin.installed_artefact_digest()
+    if not digest:
+        meta = pathlib.Path(md.distribution("agentnode-sdk")._path)
+        record = meta / "RECORD"
+        digest = hashlib.sha256(record.read_bytes() if record.is_file()
+                                else meta.as_posix().encode()).hexdigest()
+        (meta / "AGENTNODE_ARTEFACT").write_text(digest + chr(10), encoding="utf-8")
+    runtime_pin.write_pin(where, python_version=runtime_pin.running_python(),
+                          artefact_sha256=digest, commit="0" * 40)
+    return where
+
+
 class TestTheWholeJourneyThroughThePublishedCommands:
     """Set one up, connect to it, run something, stop something, and be shut out again.
 
@@ -426,7 +453,17 @@ class TestTheWholeJourneyThroughThePublishedCommands:
         gw_dir = root / "gw"
         home = root / "home"
         home.mkdir()
-        env = dict(os.environ, AGENTNODE_HOME=str(home))
+
+        # PINNED, BECAUSE THE GATEWAY HERE IS A SEPARATE PROCESS. A start with no pin is a
+        # refusal, and this fixture starts the real command in a subprocess, so the pin has to be
+        # on disk and named in the environment -- an in-process monkeypatch does not cross that
+        # boundary, which is exactly how this was found: the subprocess read the real (absent)
+        # pin and refused, correctly, and the journey never got a listening gateway.
+        #
+        # Not AGENTNODE_ALLOW_UNPINNED. This is the lane that runs the published commands the way
+        # a person runs them, and a person runs them on a machine that was deployed.
+        pin_dir = _pin_like_a_deployment(root / "pin")
+        env = dict(os.environ, AGENTNODE_HOME=str(home), AGENTNODE_PIN_DIR=str(pin_dir))
 
         assert main(["gateway", "init", "--dir", str(gw_dir)]) == 0
         # The real suite against the real runtime. This is the slow part, and it is the part

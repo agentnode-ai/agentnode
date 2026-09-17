@@ -74,23 +74,57 @@ def a_pinned_machine(monkeypatch, tmp_path_factory):
     A REAL PIN, not `AGENTNODE_ALLOW_UNPINNED`. Setting the escape here would run the whole
     suite with the safety off and nothing would notice the day it stopped working.
     """
+    import hashlib
+    import importlib.metadata as _md
+    import pathlib as _pathlib
+
     from agentnode_sdk.gateway import runtime_pin
+
+    # A REAL DIGEST, RECORDED WHERE THE SERVICE LOOKS FOR IT. Monkeypatching
+    # `installed_artefact_digest` was enough while everything stayed in this process and stopped
+    # being enough the moment a test started a gateway as a SUBPROCESS -- the patch does not
+    # cross a process boundary, the subprocess read the real (absent) digest, and the pin
+    # correctly refused. So this does what a deployment does: write the digest into the installed
+    # distribution, then pin that same value.
+    digest = runtime_pin.installed_artefact_digest()
+    wrote_marker = None
+    if not digest:
+        try:
+            meta = _pathlib.Path(_md.distribution("agentnode-sdk")._path)
+            record = meta / "RECORD"
+            digest = hashlib.sha256(record.read_bytes() if record.is_file()
+                                    else meta.as_posix().encode()).hexdigest()
+            wrote_marker = meta / "AGENTNODE_ARTEFACT"
+            if wrote_marker.exists():
+                wrote_marker = None
+            else:
+                wrote_marker.write_text(digest + chr(10), encoding="utf-8")
+        except Exception:                                     # noqa: BLE001
+            digest, wrote_marker = "a" * 64, None
 
     where = tmp_path_factory.mktemp("a-pinned-machine")
     runtime_pin.write_pin(
         where,
         python_version=runtime_pin.running_python(),
-        artefact_sha256=runtime_pin.installed_artefact_digest() or "a" * 64,
+        artefact_sha256=digest,
         commit="0" * 40,
     )
     monkeypatch.setenv("AGENTNODE_PIN_DIR", str(where))
     # The interpreter this suite runs on may not be the tested family -- CI runs 3.10 and 3.11
-    # too -- and that check is not what these tests are about either.
+    # too -- and that check is not what these tests are about either. In-process only; a
+    # subprocess gets the real check, which is why the pin above names the real interpreter.
     monkeypatch.setattr(runtime_pin, "running_is_supported", lambda: True)
     monkeypatch.setattr(runtime_pin, "is_supported", lambda version: True)
-    monkeypatch.setattr(runtime_pin, "installed_artefact_digest",
-                        lambda *a, **k: runtime_pin.read_pin(where)["artefact_sha256"])
-    return where
+    try:
+        yield where
+    finally:
+        # Put site-packages back. A fixture that leaves a file in the installed distribution has
+        # changed the machine it ran on.
+        if wrote_marker is not None:
+            try:
+                wrote_marker.unlink()
+            except OSError:
+                pass
 
 
 @pytest.fixture(scope="session", autouse=True)
