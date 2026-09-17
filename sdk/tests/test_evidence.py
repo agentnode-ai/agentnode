@@ -1587,7 +1587,7 @@ class TestTheOutsideOfAnAnswerIsTiedToItsInside:
 
     def test_a_fingerprint_that_is_not_this_identity_s_is_refused(self, tmp_path, real_answer):
         found = self._found(tmp_path, {**real_answer, "fingerprint": "0" * 64})
-        assert "not the one this gateway identity and version produce" in messages(found)
+        assert "not the one this gateway identity produces" in messages(found)
 
     def test_a_stamp_naming_another_gateway_than_the_binding_is_refused(self, tmp_path,
                                                                         real_answer):

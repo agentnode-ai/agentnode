@@ -242,6 +242,7 @@ def _production() -> dict:
     would make that worse for no gain.
     """
     if not _PRODUCTION:
+        from agentnode_sdk.gateway.identity import fingerprint_of
         from agentnode_sdk.gateway.policy_paths import policy_shape
         from agentnode_sdk.gateway.protocol import (
             ERROR_FIELDS, EXITED, PROTOCOL_VERSION, SIGNATURE_FIELDS, STAMP_FIELDS,
@@ -288,6 +289,7 @@ def _production() -> dict:
             "response_binding": response_binding,
             "types": types,
             "seal": lambda answer: digest(canonical_bytes(answer)),
+            "fingerprint_of": fingerprint_of,
         })
     return _PRODUCTION
 
@@ -1445,13 +1447,15 @@ def verify_answers(steps) -> list[Finding]:
 
         said = record.get("gateway")
         if isinstance(said, dict):
-            expected_print = hashlib.sha256(
-                f"{said.get('gateway_id', '')}\n{said.get('version', '')}".encode()).hexdigest()
+            # From the gateway's own function, not a fourth spelling of it. This module carried
+            # its own copy, folding the version in; when the rule changed it went on rejecting
+            # every honest answer, which is what a duplicated definition does.
+            expected_print = production["fingerprint_of"](said.get("gateway_id", ""))
             if str(record.get("fingerprint") or "") != expected_print:
                 problems.append(Finding(
                     where, FAIL,
-                    "the fingerprint is not the one this gateway identity and version produce, "
-                    "so the stamp and what it stamps disagree"))
+                    "the fingerprint is not the one this gateway identity produces, so the "
+                    "stamp and what it stamps disagree"))
             if said.get("gateway_id"):
                 gateways.add(str(said["gateway_id"]))
 

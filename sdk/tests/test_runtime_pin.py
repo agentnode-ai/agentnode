@@ -421,19 +421,47 @@ class TestWhichBuildIsAnswering:
         assert before.fingerprint == after.fingerprint
 
     def test_but_the_fingerprint_still_moves_when_the_gateway_does(self):
-        assert self._identity().fingerprint != self._identity(version="0.24.1").fingerprint
         assert self._identity().fingerprint != self._identity(gateway_id="b" * 32).fingerprint
 
-    def test_the_stamp_a_client_recomputes_is_unchanged_by_the_new_field(self):
-        """A pairing client recomputes the fingerprint from the gateway id and the version it was
-        told. Adding a field to that object must not change the value it arrives at, or every
-        pairing breaks on the honest answer."""
+    def test_and_an_upgrade_does_not_unpair_every_device(self):
+        """Measured, not argued. A client paired at 0.24.1 recomputed a different value the moment
+        the gateway ran 0.25.0 and refused the same machine -- true of the code, false of the
+        machine, and it is the machine a person paired with."""
+        assert self._identity(version="0.24.1").fingerprint == (
+            self._identity(version="0.25.0").fingerprint)
+
+    def test_and_the_fingerprint_is_the_id_and_only_the_id(self):
+        """Pinned deliberately: a later change to this formula unpairs every device on the day it
+        deploys, so it has to be a choice somebody made, not one somebody made by editing."""
         import hashlib
 
         identity = self._identity()
-        said = identity.as_dict()
-        named = str(said["gateway_id"]) + "\n" + str(said["version"])
-        assert hashlib.sha256(named.encode()).hexdigest() == identity.fingerprint
+        assert identity.fingerprint == hashlib.sha256(
+            identity.gateway_id.encode()).hexdigest()
+
+    def test_the_client_and_the_gateway_compute_the_same_thing(self):
+        """Two implementations of one formula, in two files. A pairing client recomputes the
+        fingerprint out of what it was told, and if the two ever disagree every pairing fails on
+        an honest answer. This drives the CLIENT's copy against the GATEWAY's."""
+        from agentnode_sdk.gateway import client as gc
+
+        identity = self._identity()
+        body = {"gateway": identity.as_dict(), "fingerprint": identity.fingerprint,
+                "token": "a-token"}
+        asked = []
+
+        def fake_post(url, payload, pin=""):
+            asked.append(url)
+            return 200, body
+
+        old_post = gc._post
+        gc._post = fake_post
+        try:
+            connection = gc.pair("https://example", "code", client_name="x")
+        finally:
+            gc._post = old_post
+        assert asked, "the client never asked, so this proved nothing"
+        assert connection.fingerprint == identity.fingerprint
 
 
 class TestAPinThatNamesNothingPinsNothing:

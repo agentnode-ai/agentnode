@@ -81,6 +81,15 @@ def normalise_code(raw: str) -> str:
     )
 
 
+def fingerprint_of(gateway_id: str) -> str:
+    """THE ONE PLACE THIS IS COMPUTED. Four copies of it existed -- here, in the client that
+    re-checks it, in the evidence reader that recomputes it, and in a test helper that spelled
+    out "the way the gateway produces it" while being a fourth spelling of it. Changing the rule
+    meant finding all four, and the way that was discovered was three of them disagreeing.
+    """
+    return hashlib.sha256(str(gateway_id or "").encode()).hexdigest()
+
+
 @dataclass(frozen=True)
 class GatewayIdentity:
     """What a client is talking to. T-C binds every measurement to exactly this."""
@@ -102,22 +111,32 @@ class GatewayIdentity:
 
     @property
     def fingerprint(self) -> str:
-        """Identity and version together. A change to either produces a different value.
+        """WHICH MACHINE, and nothing else. A paired client pins this when it is introduced to
+        a gateway and re-checks it on every later answer, so it answers exactly one question:
+        is this still the gateway I paired with?
 
-        THE BUILD ID IS DELIBERATELY NOT IN HERE, and that is not an oversight. This value is what
-        a paired client pins when it is introduced to a gateway and re-checks on every later
-        answer, so it has to mean "the same gateway" rather than "the same code". Folding the
-        build id in would make every deployment unpair every device -- the client would report
-        that something else is answering on that address, which would be true of the code and
-        false of the machine, and the second is what a person paired with.
+        IT USED TO INCLUDE THE VERSION, and that was wrong in a way nothing could notice while
+        the version never moved. The moment a deployment actually changed it -- 0.24.1 to
+        0.25.0, the first real change after two builds had shared one number -- every paired
+        client recomputed a different value and refused to talk to the machine, reporting that
+        something else was answering on that address. True of the code. False of the machine.
+        And it is the machine a person paired with; a managed service whose every upgrade
+        unpairs every device is not a managed service.
 
-        What the build id is checked against instead is the report binding, which carries it, the
-        commit and the artefact digest, and is SIGNED. The copy in the stamp says which build
-        answered; the signed report is what proves it.
+        Measured rather than argued: sha256(id + \\n + "0.24.1") is e84fbe45..., which is what
+        a client had saved, and the same over "0.25.0" is fe89106a..., which is what the gateway
+        then said. The client was right to refuse what it was told; it was told the wrong thing.
+
+        WHICH BUILD is a different question and now has its own answer: `build_id`, computed
+        from the commit and the artefact digest, carried in every stamp and SIGNED in the report
+        binding. Splitting the two is the point -- one value cannot mean "same machine" to a
+        pairing and "same code" to a report without failing one of them.
+
+        Changing this unpairs every device ONCE, at the deployment that introduces it, and never
+        again. That cost is paid deliberately and is written down in
+        `docs/review/BUILD-IDENTITY-AND-WHAT-SIGNS-IT.md`.
         """
-        return hashlib.sha256(
-            f"{self.gateway_id}\n{self.version}".encode()
-        ).hexdigest()
+        return fingerprint_of(self.gateway_id)
 
 
 def _give_back_the_descriptor(fd: int, where: str) -> None:

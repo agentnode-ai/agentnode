@@ -183,8 +183,8 @@ def pair(base_url: str, code: str, client_name: str = "",
     This is the one exchange with nothing to compare against: pairing is where a client learns
     which gateway it is talking to, so there is no pinned identity yet and cannot be. What can be
     checked is that the answer is consistent with itself -- the fingerprint is a function of the
-    gateway id and version, so a response reporting one identity and the fingerprint of another is
-    not a gateway answering honestly, whatever else it is. `EM3C-EXTERNAL-0013` asked for that, and
+    gateway id, so a response reporting one identity and the fingerprint of another is not a
+    gateway answering honestly, whatever else it is. `EM3C-EXTERNAL-0013` asked for that, and
     it happens before the token is adopted rather than after.
 
     What this does not do is authenticate the peer. Nothing at this point can: that is what the
@@ -204,8 +204,12 @@ def pair(base_url: str, code: str, client_name: str = "",
     # nothing yet to compare against.
     gateway = body.get("gateway") or {}
     told = str(body.get("fingerprint", ""))
-    named = str(gateway.get("gateway_id", "")) + "\n" + str(gateway.get("version", ""))
-    computed = hashlib.sha256(named.encode()).hexdigest()
+    # THE SAME FUNCTION THE GATEWAY USES, imported rather than spelled again. Both sides used to
+    # spell it, and both folded the version in, which agreed with itself and disagreed with
+    # reality: a client that had paired with 0.24.1 refused the same machine running 0.25.0.
+    from agentnode_sdk.gateway.identity import fingerprint_of
+
+    computed = fingerprint_of(gateway.get("gateway_id", ""))
     if not told or told != computed:
         raise GatewayClientError(
             "the sandbox at " + base_url.rstrip("/") + " gave an answer that does not describe "
