@@ -77,6 +77,12 @@ BESIDES = {
     "pairing-admission.json": (WHOLE, "the pairing attempt budget, with its own window"),
     "allowance.json": (WHOLE, "the operator's ceilings; configuration, not a record"),
     "retention.json": (WHOLE, "the retention periods themselves"),
+    # Configuration, not a record: WHERE this gateway writes its sealed archives. It has
+    # no age of its own, and the period that governs what it points at is a retention
+    # class. Undeclared, it made the drill refuse on a real machine with "something else
+    # is unaccounted for" -- which is the manifest check doing exactly its job, on a file
+    # this product had started writing without saying so.
+    "backups.json": (WHOLE, "where the sealed archives are kept; configuration"),
     "retention-last-swept.json": (WHOLE, "when the last sweep ran"),
     "operator-policy-versions.json": (WHOLE,
                                       "the ordering of this gateway's own policies"),

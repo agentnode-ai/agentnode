@@ -65,6 +65,12 @@ def a_gateway_that_has_done_everything(gateway):
     retention.note_an_export(gateway.state.root, who.account_id, by="operator",
                              how_many_bytes=1)
     write_allowance(gateway.state.root, Allowance(requests_per_minute=50))
+    # WHERE its backups are. Written here because this helper is the definition of "a gateway
+    # that has done everything", and a file no test gateway writes is a file the manifest check
+    # cannot notice -- which is how `backups.json` reached a real machine undeclared.
+    (gateway.state.root / "backups.json").write_text(
+        json.dumps({"directory": str(gateway.state.root / "sealed-elsewhere")}),
+        encoding="utf-8")
     RateLimit(gateway.state.root / "rate.json").spend(who.device_id, 50)
     for _ in range(100):
         if (gateway.state.root / "use-log.jsonl").exists():
