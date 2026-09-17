@@ -22,8 +22,7 @@ cd "$TREE/sdk" || exit 1
 import json, pathlib, sys
 
 where = pathlib.Path(sys.argv[2])
-where.write_text(json.dumps({"commit": sys.argv[1]}, indent=1) + "
-", encoding="utf-8")
+where.write_text(json.dumps({"commit": sys.argv[1]}, indent=1) + "\n", encoding="utf-8")
 print("   recorded in the source tree:", where)
 PYEOF
 [ $? -eq 0 ] || { echo "the commit could not be recorded"; exit 1; }
