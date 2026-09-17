@@ -30,6 +30,13 @@ VENV="${3:-/opt/agentnode/venv}"
 STATE="${AGENTNODE_STATE:-/var/lib/agentnode/state}"
 WORKER_PIN_DIR="${AGENTNODE_WORKER_PIN_DIR:-/etc/agentnode}"
 WANT_PY="3.12"
+# WHAT OPERATES THE MACHINE, named once so it can be replaced by something that does not.
+# `test_deploying_refuses.py` drives this script for real, and the moment a counter-check removed
+# one of the refusals the script ran on past the checks into step 4 and stopped the gateway and
+# the worker -- on the DevelopServer, while the closed alpha was serving. A test that can operate
+# the machine it runs on is a test that will, and this one did. The suite sets AGENTNODE_SYSTEMCTL
+# to something inert; nothing else does.
+SYSTEMCTL="${AGENTNODE_SYSTEMCTL:-systemctl}"
 
 step() { printf '\n=== %s\n' "$*"; }
 died() { printf '\n!!! REFUSED (%s): %s\n' "$1" "$2"; exit 1; }
@@ -91,10 +98,10 @@ if [ -n "${AGENTNODE_EXPECT_DIGEST:-}" ] && [ "$AGENTNODE_EXPECT_DIGEST" != "$DI
 fi
 
 step "3. the previous installation stays up until the checks are done"
-systemctl is-active agentnode-gateway agentnode-worker 2>/dev/null | tr '\n' ' '; echo
+"$SYSTEMCTL" is-active agentnode-gateway agentnode-worker 2>/dev/null | tr '\n' ' '; echo
 
 step "4. install"
-systemctl stop agentnode-gateway agentnode-worker 2>/dev/null
+"$SYSTEMCTL" stop agentnode-gateway agentnode-worker 2>/dev/null
 "$VENV/bin/pip" install -q --force-reinstall --no-deps "$WHEEL" || died "artefact" "pip refused the wheel"
 
 # The digest is recorded INSIDE the installed distribution, so a later start can read what it was
@@ -128,9 +135,9 @@ chmod 644 "$WORKER_PIN_DIR/runtime-pin.json"
 rm -f "$STATE/runtime-pin.json"
 
 step "6. start, which checks the pin for itself"
-systemctl start agentnode-worker && sleep 3
-systemctl start agentnode-gateway && sleep 6
-systemctl is-active agentnode-worker agentnode-gateway | tr '\n' ' '; echo
+"$SYSTEMCTL" start agentnode-worker && sleep 3
+"$SYSTEMCTL" start agentnode-gateway && sleep 6
+"$SYSTEMCTL" is-active agentnode-worker agentnode-gateway | tr '\n' ' '; echo
 
 step "7. measure again, because the old measurement is about the old build"
 # NOT OPTIONAL, and found by leaving it out. The report binding names the interpreter, the

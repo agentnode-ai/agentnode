@@ -48,6 +48,11 @@ def _run(tmp_path, wheel, commit, venv=None, env=None):
     where.update(env or {})
     where["AGENTNODE_STATE"] = str(tmp_path / "state")
     where["AGENTNODE_WORKER_PIN_DIR"] = str(tmp_path / "pin")
+    # THIS TEST MUST NOT BE ABLE TO OPERATE THE MACHINE IT RUNS ON, and without this line it
+    # could and did: a counter-check removed one of the refusals, the script ran on past the
+    # checks into the step that stops the services, and the closed alpha went down while it was
+    # serving. The script calls whatever this names; the suite names something inert.
+    where.setdefault("AGENTNODE_SYSTEMCTL", "true" if shutil.which("true") else "/bin/true")
     return subprocess.run(
         [_bash(), str(SCRIPT), str(wheel), commit, venv or sys.prefix],
         capture_output=True, text=True, env=where, timeout=120)
@@ -135,6 +140,28 @@ class TestTheCommitComesOutOfTheArtefact:
                     env={"AGENTNODE_EXPECT_COMMIT": COMMIT})
         assert said.returncode != 0
         assert "REFUSED (commit)" in said.stdout
+
+
+class TestTheSuiteCannotOperateTheMachine:
+
+    def test_the_script_calls_what_it_is_told_to_call(self):
+        """The guard itself. `deploy-pinned.sh` must never name `systemctl` at a call site --
+        only in the default of the one variable -- or a test that forgets to override it operates
+        the host."""
+        said = SCRIPT.read_text(encoding="utf-8")
+        for number, line in enumerate(said.splitlines(), 1):
+            bare = line.strip()
+            if bare.startswith("#") or bare.startswith("SYSTEMCTL="):
+                continue
+            assert not bare.startswith("systemctl "), (
+                "deploy-pinned.sh line %d calls systemctl directly: %r" % (number, bare))
+
+    def test_and_a_run_that_gets_past_the_checks_still_touches_nothing(self, tmp_path):
+        """Deliberately not a refusal: a wheel whose provenance agrees. It gets as far as the
+        install, which fails on a wheel this test made -- and the point is what came BEFORE that:
+        the service-stopping step ran `true`."""
+        said = _run(tmp_path, _a_wheel(tmp_path), COMMIT)
+        assert "3. the previous installation stays up" in said.stdout, said.stdout[-400:]
 
 
 class TestNothingRunningIsTouchedByARefusal:
