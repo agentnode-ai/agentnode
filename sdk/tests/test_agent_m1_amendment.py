@@ -229,6 +229,14 @@ def test_install_scheme_allows_writable_venv(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
 def test_install_scheme_refuses_non_writable_site(tmp_path):
+    # ROOT IS NOT REFUSED BY PERMISSIONS. This measures what happens when the target directory
+    # cannot be written to, and for root 0o500 is still writable -- so as root the test measures
+    # nothing and reports that it measured something. It is skipped with the reason said out
+    # loud rather than left to fail on whichever machine happens to run the suite as root; CI
+    # runs as a normal user, where it does exercise the refusal.
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("running as root: a directory mode cannot refuse root, so this property "
+                    "cannot be measured here. Run the suite as a non-root user to exercise it.")
     py = pip_python()
     tp = make_target_venv(py, tmp_path / "v")
     purelib = subprocess.run(

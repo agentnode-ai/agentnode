@@ -61,6 +61,25 @@ def browser():
 
 
 @pytest.fixture(autouse=True)
+def _the_pin_is_not_the_one_on_this_machine(tmp_path_factory, monkeypatch):
+    """Tests must NEVER read the runtime pin belonging to the machine they run on.
+
+    The pin moved out of the state directory and into `/etc/agentnode`, because a restore drill
+    destroys the state and rebuilt a pin describing the previous build. That was the right move
+    for the service, and it made the DEFAULT a machine-global path -- so on any machine that has
+    actually been deployed, `cmd_start` read the HOST's pin, compared it against a source tree
+    that records no artefact digest, and refused. Four tests failed on the DevelopServer and
+    passed everywhere else, which is the signature of host state leaking into a suite.
+
+    Each test therefore gets an EMPTY pin directory of its own. The refusals themselves are
+    neither weakened nor skipped: `test_runtime_pin.py::TestStartingRefuses` points the same
+    lookup at a directory it writes real pins into, and drives the CLI entry points against them.
+    """
+    monkeypatch.setenv("AGENTNODE_PIN_DIR",
+                       str(tmp_path_factory.mktemp("pin-that-is-not-this-machines")))
+
+
+@pytest.fixture(autouse=True)
 def _no_real_os_keychain():
     """Tests must NEVER touch the real OS keychain (UX-2 vault).
 
