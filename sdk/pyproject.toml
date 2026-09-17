@@ -13,10 +13,16 @@ name = "agentnode-sdk"
 version = "0.25.0"
 description = "Python SDK for AgentNode — the open upgrade and discovery infrastructure for AI agents."
 readme = "README.md"
-# The versions CI actually runs. It used to say ">=3.10" with no upper bound, which formally
-# permitted Python 3.14 -- and the alpha ran on 3.14, where five installation-transaction tests
-# fail and pass again on 3.12, controlled both ways on the same machine. An unbounded floor is a
-# promise about software that does not exist yet.
+# The versions CI actually runs. It used to say ">=3.10" with no upper bound, which is a promise
+# about software that does not exist yet.
+#
+# AN EARLIER VERSION OF THIS COMMENT BLAMED PYTHON 3.14, and that was wrong. Five
+# installation-transaction tests did fail on 3.14 -- and also on 3.12.14, while passing on
+# 3.12.13. The cause was a venv with lib64 symlinked to lib, where both directories sit on
+# sys.path and every distribution is discovered twice; `post_verify` counted paths where it meant
+# installations. Fixed in 9b1968a, after which the same tests pass on 3.12.13, 3.12.14 and 3.14.6.
+# The correction is written here rather than quietly dropped, because a false explanation left in
+# the source is worse than none: somebody will act on it.
 #
 # ALPHA-RUNTIME-DECISION-PY314-0001 returned PASS on Option C: make this honest now, and treat
 # supporting 3.14 as separate work with its own evidence rather than as a side effect of a
