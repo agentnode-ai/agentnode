@@ -658,10 +658,19 @@ class TestTheArtefactSaysWhereItCameFrom:
 
     def test_the_deployment_script_reads_it_before_it_installs(self):
         """The ORDER is the property: a deployment that discovers the wrong artefact after
-        replacing the running code has discovered it too late."""
-        said = pathlib.Path("deploy/deploy-pinned.sh").read_text(encoding="utf-8")
+        replacing the running code has discovered it too late.
+
+        Found by breaking it: this looked for the literal `pip" install`, which stopped existing
+        when the install moved behind `$PIP` -- and it read the script through a path relative to
+        the working directory, so it was only ever right when pytest was started from `sdk/`. It
+        failed with `ValueError: substring not found`, which says nothing about the order. Both
+        are fixed: the path comes from this file, and what is located is the install STEP rather
+        than one spelling of the command in it.
+        """
+        where = pathlib.Path(__file__).resolve().parent.parent / "deploy" / "deploy-pinned.sh"
+        said = where.read_text(encoding="utf-8")
         reads = said.index("_provenance.json")
-        installs = said.index("pip\" install -q --force-reinstall")
+        installs = said.index("install -q --force-reinstall")
         assert reads < installs, "the provenance is checked after the install"
 
 
