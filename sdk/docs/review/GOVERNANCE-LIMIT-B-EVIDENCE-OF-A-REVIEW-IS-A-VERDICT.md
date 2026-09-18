@@ -69,3 +69,24 @@ deliberate decision rather than made in passing while chasing a green result.
 
 **Substantively: nine of nine criteria PASS. The qualifier is about the paperwork of prior
 reviews, not about the runtime pin.**
+
+---
+
+## Entschieden am 2026-09-18 (Founder)
+
+Der Runtime-Abschnitt gilt **technisch als abgeschlossen**:
+
+* 9 von 9 Kriterien PASS (`ALPHA-RUNTIME-PIN-0004`)
+* 21 CI-Bahnen grün
+* 6 160 Tests ohne Fehlschlag auf der gepinnten 3.12.14
+* echte Läufe über Claude Code und Codex bestätigt
+* Rollback, Verweigerungen und Aufräumen geprüft
+
+Das Gesamt-WARN betrifft **ausschließlich die Form früherer Review-Verdicts**, nicht die Sandbox.
+Es wird hier dokumentiert und **blockiert die weitere Produktentwicklung nicht**. Ausdrücklich
+angeordnet: **keine weitere Runtime-Reparaturrunde deswegen.**
+
+Damit ist dieser Text kein offener Punkt mehr, sondern der Abschluss. Was offen bleibt, ist
+allein die Frage aus dem vorherigen Abschnitt — ob die gemeinsame `reviewer-instructions.md`
+klarstellen soll, dass eine gemeldete Beobachtung für sich genommen nicht abstuft. Diese Frage
+gehört zu einem eigenen, späteren Vorgang am Prüfinstrument und nicht zu diesem Bogen.
