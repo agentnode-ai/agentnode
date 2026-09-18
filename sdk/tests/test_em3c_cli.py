@@ -400,8 +400,6 @@ def _wait_until_listening(url: str, timeout: float = 90.0) -> None:
     raise AssertionError("the gateway never started listening: " + last)
 
 
-@pytest.mark.skipif(not os.environ.get("AGENTNODE_SANDBOX_E2E"),
-                    reason="needs a container runtime")
 def _pin_like_a_deployment(where):
     """Record the installed artefact's digest and pin it, the way `deploy-pinned.sh` does.
 
@@ -429,6 +427,13 @@ def _pin_like_a_deployment(where):
     return where
 
 
+@pytest.mark.skipif(not os.environ.get("AGENTNODE_SANDBOX_E2E"),
+                    reason="needs a container runtime")
+# THE MARKER BELONGS TO THIS CLASS, and for a while it did not. A helper added later landed
+# BETWEEN the decorator and the class, so the skip attached to the helper -- a function, which
+# nothing skips -- and the journey started running in lanes with no container runtime. It
+# failed there for an honest reason (`doctor --measure` cannot measure what is not installed),
+# which is how it was noticed, but the lane was never meant to run it at all.
 class TestTheWholeJourneyThroughThePublishedCommands:
     """Set one up, connect to it, run something, stop something, and be shut out again.
 

@@ -663,3 +663,48 @@ class TestTheArtefactSaysWhereItCameFrom:
         reads = said.index("_provenance.json")
         installs = said.index("pip\" install -q --force-reinstall")
         assert reads < installs, "the provenance is checked after the install"
+
+
+class TestTheJourneyIsStillSkippedWhereItCannotRun:
+    """A guard for a mistake that is invisible by reading and loud only by accident.
+
+    A helper added to `test_em3c_cli.py` landed BETWEEN `@pytest.mark.skipif(...)` and the class
+    it was written for. Python attached the marker to the helper -- a plain function, which no
+    collector skips -- and five journey tests began running in lanes that have no container
+    runtime. They failed there for an honest reason, which is the only reason it was noticed.
+
+    Checked through the AST rather than by reading lines: a first attempt at this compared text
+    and managed both to fail on a file that was fine and to miss the file that was broken, which
+    is worse than no guard. What is asserted here is the specific property that was violated --
+    that CLASS carries that marker -- because a general rule about decorator placement is not
+    what went wrong and not what protects anything.
+    """
+
+    def test_the_journey_class_carries_the_container_runtime_skip(self):
+        import ast
+
+        where = pathlib.Path(__file__).resolve().parent / "test_em3c_cli.py"
+        tree = ast.parse(where.read_text(encoding="utf-8"))
+        wanted = "TestTheWholeJourneyThroughThePublishedCommands"
+        found = [n for n in tree.body
+                 if isinstance(n, ast.ClassDef) and n.name == wanted]
+        assert found, "%s is gone, so this guard is about nothing" % wanted
+        said = [ast.unparse(d) for d in found[0].decorator_list]
+        assert any("skipif" in d and "AGENTNODE_SANDBOX_E2E" in d for d in said), (
+            "%s does not carry the container-runtime skip; its decorators are %r. Something was "
+            "inserted between the marker and the class, and the journey will now try to run in "
+            "lanes that have no container runtime." % (wanted, said))
+
+    def test_and_the_helper_does_not_carry_it_instead(self):
+        """The other half, and the control: a marker on a plain function skips nothing, so
+        finding it there is finding the defect rather than the fix."""
+        import ast
+
+        where = pathlib.Path(__file__).resolve().parent / "test_em3c_cli.py"
+        tree = ast.parse(where.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef):
+                said = [ast.unparse(d) for d in node.decorator_list]
+                assert not any("AGENTNODE_SANDBOX_E2E" in d for d in said), (
+                    "the container-runtime skip is attached to the function %r, where it does "
+                    "nothing" % node.name)
