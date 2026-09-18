@@ -156,6 +156,9 @@ class TestTheSuiteCannotOperateTheMachine:
             assert not bare.startswith("systemctl "), (
                 "deploy-pinned.sh line %d calls systemctl directly: %r" % (number, bare))
 
+    @pytest.mark.skipif(not _running_is_312(),
+                        reason="the interpreter check answers first on 3.10 and 3.11, so nothing "
+                               "here gets as far as the step this is about")
     def test_and_a_run_that_gets_past_the_checks_still_touches_nothing(self, tmp_path):
         """Deliberately not a refusal: a wheel whose provenance agrees. It gets as far as the
         install, which fails on a wheel this test made -- and the point is what came BEFORE that:

@@ -446,6 +446,17 @@ class TestTheWholeJourneyThroughThePublishedCommands:
     @staticmethod
     @pytest.fixture(scope="class")
     def gateway_process(tmp_path_factory):
+        # PINNED MEANS PINNED TO THE TESTED FAMILY. On 3.10 and 3.11 a pin naming the running
+        # interpreter is a pin naming an untested one, and `doctor --measure` refuses it -- which
+        # is the mechanism working, not a problem with the journey. The journey needs a machine
+        # the service will run on at all, and that is 3.12.
+        import sys as _sys
+
+        if _sys.version_info[:2] != (3, 12):
+            pytest.skip("the managed service is tested on 3.12; a pin naming %d.%d is a pin "
+                        "naming an untested interpreter, and the service refuses it"
+                        % _sys.version_info[:2])
+
         import subprocess
         import sys
 
