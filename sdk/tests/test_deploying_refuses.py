@@ -31,8 +31,13 @@ def _bash():
     return found
 
 
-def _a_wheel(tmp_path, commit=COMMIT, name="w"):
-    wheel = tmp_path / ("agentnode_sdk-0.0.0-py3-none-any-%s.whl" % name)
+def _a_wheel(tmp_path, commit=COMMIT, version="0.0.0"):
+    # A VALID WHEEL FILENAME. These used to end "-any-w.whl", which pip rejects outright --
+    # so every counter-check that removed a refusal still ended non-zero, at pip, for a reason
+    # that had nothing to do with the mechanism removed. `ALPHA-RUNTIME-PIN-0003` caught that.
+    # The name is valid now and the install is inert (see `_run`), so what a counter-check
+    # changes is the refusal and nothing else.
+    wheel = tmp_path / ("agentnode_sdk-%s-py3-none-any.whl" % version)
     with zipfile.ZipFile(wheel, "w") as z:
         z.writestr("agentnode_sdk/__init__.py", "")
         if commit is not None:
@@ -53,6 +58,13 @@ def _run(tmp_path, wheel, commit, venv=None, env=None):
     # checks into the step that stops the services, and the closed alpha went down while it was
     # serving. The script calls whatever this names; the suite names something inert.
     where.setdefault("AGENTNODE_SYSTEMCTL", "true" if shutil.which("true") else "/bin/true")
+    # AND THE SUITE MUST NOT BE ABLE TO INSTALL ANYTHING EITHER. With a refusal removed the
+    # script runs on into the install, and that install would put a stand-in wheel over the real
+    # agentnode_sdk in the environment running these tests. Until now it could not, only because
+    # the stand-in filenames were invalid -- protection by accident, and it also made the
+    # counter-check evidence unreadable. Inert here, real in a deployment.
+    where.setdefault("AGENTNODE_PIP", "true" if shutil.which("true") else "/bin/true")
+    where.setdefault("AGENTNODE_RUNUSER", "true" if shutil.which("true") else "/bin/true")
     return subprocess.run(
         [_bash(), str(SCRIPT), str(wheel), commit, venv or sys.prefix],
         capture_output=True, text=True, env=where, timeout=120)
@@ -144,27 +156,52 @@ class TestTheCommitComesOutOfTheArtefact:
 
 class TestTheSuiteCannotOperateTheMachine:
 
-    def test_the_script_calls_what_it_is_told_to_call(self):
-        """The guard itself. `deploy-pinned.sh` must never name `systemctl` at a call site --
-        only in the default of the one variable -- or a test that forgets to override it operates
-        the host."""
+    @pytest.mark.parametrize("command,variable",
+                             [("systemctl", "SYSTEMCTL="),
+                              ("runuser", "RUNUSER=")])
+    def test_the_script_calls_what_it_is_told_to_call(self, command, variable):
+        """The guard itself. `deploy-pinned.sh` must never name these at a call site -- only in
+        the default of their one variable -- or a test that forgets to override one operates the
+        host. `pip` is the third of the same kind and is checked below, separately, because it is
+        reached through a path rather than by name."""
         said = SCRIPT.read_text(encoding="utf-8")
         for number, line in enumerate(said.splitlines(), 1):
             bare = line.strip()
-            if bare.startswith("#") or bare.startswith("SYSTEMCTL="):
+            if bare.startswith("#") or bare.startswith(variable):
                 continue
-            assert not bare.startswith("systemctl "), (
-                "deploy-pinned.sh line %d calls systemctl directly: %r" % (number, bare))
+            assert not bare.startswith(command + " "), (
+                "deploy-pinned.sh line %d calls %s directly: %r" % (number, command, bare))
+
+    def test_and_it_installs_only_through_the_one_variable(self):
+        """`pip` is invoked as `$VENV/bin/pip`, so the guard above cannot see it. What is checked
+        instead is that exactly one line builds that path, and that the install uses the variable.
+
+        This exists because the suite could install: with a refusal removed the script runs on
+        into the install, and until `AGENTNODE_PIP` there was nothing to stop a stand-in wheel
+        going over the real package. It never did, only because those stand-ins had filenames pip
+        rejects -- which also made the counter-check evidence unreadable."""
+        said = SCRIPT.read_text(encoding="utf-8")
+        builds = [ln for ln in said.splitlines()
+                  if "bin/pip" in ln and not ln.strip().startswith("#")]
+        assert builds == ['PIP="${AGENTNODE_PIP:-$VENV/bin/pip}"'], (
+            "more than one line reaches for pip, or the one that does changed: %r" % builds)
+        installs = [ln.strip() for ln in said.splitlines()
+                    if " install " in ln and not ln.strip().startswith("#")]
+        assert installs and all(ln.startswith('"$PIP"') for ln in installs), (
+            "something installs without going through $PIP: %r" % installs)
 
     @pytest.mark.skipif(not _running_is_312(),
                         reason="the interpreter check answers first on 3.10 and 3.11, so nothing "
                                "here gets as far as the step this is about")
     def test_and_a_run_that_gets_past_the_checks_still_touches_nothing(self, tmp_path):
-        """Deliberately not a refusal: a wheel whose provenance agrees. It gets as far as the
-        install, which fails on a wheel this test made -- and the point is what came BEFORE that:
-        the service-stopping step ran `true`."""
+        """Deliberately NOT a refusal: a wheel whose provenance agrees, so the script runs on
+        past every check. The point is that it then operates nothing -- the step that stops the
+        services ran `true`, and so did the install."""
         said = _run(tmp_path, _a_wheel(tmp_path), COMMIT)
         assert "3. the previous installation stays up" in said.stdout, said.stdout[-400:]
+        assert "the installer refused the wheel" not in said.stdout, (
+            "the inert installer refused, so this run did not actually get past the install and "
+            "the counter-checks below would be measuring pip rather than the pin")
 
 
 class TestNothingRunningIsTouchedByARefusal:

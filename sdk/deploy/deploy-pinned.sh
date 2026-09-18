@@ -37,6 +37,20 @@ WANT_PY="3.12"
 # the machine it runs on is a test that will, and this one did. The suite sets AGENTNODE_SYSTEMCTL
 # to something inert; nothing else does.
 SYSTEMCTL="${AGENTNODE_SYSTEMCTL:-systemctl}"
+# WHAT INSTALLS, named once for the same reason. `test_deploying_refuses.py` drives this script
+# for real: with every refusal in place it stops in the checking steps, but a counter-check that
+# removes one lets it run on INTO the install -- and an install here would put a test's stand-in
+# wheel over the real agentnode_sdk in the environment running the suite. It never happened only
+# because those stand-in wheels had filenames pip rejects, which is protection by accident.
+# It also muddied the evidence: `ALPHA-RUNTIME-PIN-0003` read "REFUSED (artefact): pip refused
+# the wheel" in a counter-check meant to be about the DIGEST, and rightly said a failure with an
+# independent cause proves nothing about the mechanism removed.
+PIP="${AGENTNODE_PIP:-$VENV/bin/pip}"
+# AND WHAT RUNS A COMMAND AS ANOTHER USER. Third of the same kind: a suite driving this script
+# must not stop services, must not install, and must not run anything as the gateway account.
+# Naming all three in one place is what lets the tests replace them and what keeps a counter-check
+# measuring the refusal it removed rather than whatever broke next.
+RUNUSER="${AGENTNODE_RUNUSER:-runuser}"
 
 step() { printf '\n=== %s\n' "$*"; }
 died() { printf '\n!!! REFUSED (%s): %s\n' "$1" "$2"; exit 1; }
@@ -102,7 +116,7 @@ step "3. the previous installation stays up until the checks are done"
 
 step "4. install"
 "$SYSTEMCTL" stop agentnode-gateway agentnode-worker 2>/dev/null
-"$VENV/bin/pip" install -q --force-reinstall --no-deps "$WHEEL" || died "artefact" "pip refused the wheel"
+"$PIP" install -q --force-reinstall --no-deps "$WHEEL" || died "artefact" "the installer refused the wheel"
 
 # The digest is recorded INSIDE the installed distribution, so a later start can read what it was
 # installed from. Recomputing it from unpacked files would be inventing a number; this is the one
@@ -146,7 +160,7 @@ step "7. measure again, because the old measurement is about the old build"
 # whose enforcement it cannot vouch for. Without this step every pinned deployment ends with a
 # service that is up, healthy, and refusing work until somebody reads the error and runs it by
 # hand. A deployment that leaves that behind is not finished.
-runuser -u agentnode-gateway -- env HOME=/var/lib/agentnode   "$VENV/bin/agentnode" gateway doctor --measure --dir "$STATE" > /tmp/measure.log 2>&1   || { tail -6 /tmp/measure.log; died "measure" "the gateway could not measure itself after the deployment"; }
+"$RUNUSER" -u agentnode-gateway -- env HOME=/var/lib/agentnode   "$VENV/bin/agentnode" gateway doctor --measure --dir "$STATE" > /tmp/measure.log 2>&1   || { tail -6 /tmp/measure.log; died "measure" "the gateway could not measure itself after the deployment"; }
 grep -E "measured|PASS|conformant" /tmp/measure.log | tail -3 | sed 's/^/   /'
 
 step "8. and it says what it is"

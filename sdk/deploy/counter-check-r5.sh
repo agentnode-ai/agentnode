@@ -103,9 +103,22 @@ one "KEY-k the collector still collects real key material" \
     sed -i 's|^            if key_path.is_file():$|            if key_path.is_file() and False:|' tests/test_what_is_kept.py
 
 # THE SIX R9 ASKS FOR, one per mechanism per moment: interpreter, digest and commit,
-# at START and at DEPLOY. One broad mutation that takes out the whole start path
-# cannot show that the three are checked separately, which is what the criterion is
-# about. Each of these removes exactly one comparison.
+# at START and at DEPLOY. One broad mutation that takes out the whole start path cannot show
+# that the three are checked separately, which is what the criterion is about. Each of these
+# removes exactly one comparison.
+#
+# WHAT THE DEPLOY THREE LOOK LIKE WHEN THEY WORK, because the first version of them did not.
+# `ALPHA-RUNTIME-PIN-0003`: with the mechanism removed, the script ran on into the install and
+# pip rejected a stand-in wheel whose FILENAME was invalid -- a non-zero exit with an independent
+# cause, which proves nothing about the mechanism. The stand-ins have valid names now and the
+# install, the service control and the run-as-another-user step are all inert in the suite, so a
+# mutated run goes all the way through and the test fails on `returncode != 0` being false: a
+# wrong digest, or a wrong commit, reached deployment. That is the isolation.
+#
+# One coupling worth naming: the script's last step asks a gateway on 127.0.0.1:8099 whether it
+# is serving. On the machine the closed alpha runs on, that is the live alpha, read-only. On a
+# machine with nothing listening the script fails there instead -- the test still fails, and
+# still on the missing refusal, but the transcript is noisier.
 
 one "START-interpreter: the running interpreter is compared with the pinned one" \
     agentnode_sdk/gateway/runtime_pin.py \
