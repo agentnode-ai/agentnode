@@ -1,0 +1,127 @@
+{
+ "_comment": [
+  "PROSPECTIVELY FROZEN. Written and hashed BEFORE the implementation it judges exists, so the",
+  "criteria cannot be shaped around what was built. Frozen 2026-09-18.",
+  "",
+  "This profile carries a `roles` map. `alpha-runtime-pin-r1` did not, every input therefore",
+  "defaulted to `context`, and nine criteria asking for evidence could not be met by any evidence",
+  "set at all -- ALPHA-RUNTIME-PIN-0002 returned BLOCK for that reason alone. The map is here",
+  "from the start."
+ ],
+ "profile_id": "alpha-capacity-queue-r1",
+ "kind": "implementation-review",
+ "mutable_task": true,
+ "stage": "pre-run",
+ "frozen_prospectively": true,
+ "review_object": "A global execution ceiling across all customers and a bounded, fair queue in front of it, on the closed alpha. Judge whether the ceiling is configured rather than compiled; whether time spent waiting is excluded from what is billed; whether waiting and execution are both recorded in the signed, chained usage log; whether one account can starve another; what a full queue says; whether a waiting job can be cancelled, suspended, revoked or lost across a restart; and whether the overbooking that inflated identical jobs has actually stopped, measured against a before-state.",
+ "out_of_scope": "The transport to a worker on another machine, tenant-to-tenant isolation, egress, identity, payment, domain and TLS. Pricing itself: whether the numbers in any price list are right is not a question this profile asks. The runtime pin arc is closed and is not reopened here.",
+ "verdict_must_state": "A pass concerns the ceiling, the queue and the separation of waited time from billed time as presented. It does not establish that the closed alpha is multi-tenant, that the worker is isolated from the control plane, or that any price is correct. Say which properties were EXERCISED against a running gateway and which were only read in source.",
+ "roles_rule": "Any input this profile does not list defaults to the lowest authority, 'context'. A request may name this profile and may not extend it.",
+ "roles": {
+  "brief.md": "context",
+  "what-answers-what.md": "context",
+  "about-the-prior-verdicts.txt": "context",
+  "allowance.py": "normative_spec",
+  "capacity.py": "normative_spec",
+  "meter.py": "normative_spec",
+  "server-reserve-and-slots.py.txt": "normative_spec",
+  "server-billed-clock.py.txt": "normative_spec",
+  "dispatch-standing.py.txt": "normative_spec",
+  "operator-policy-on-the-alpha.json": "normative_spec",
+  "test_capacity_queue.py": "supporting_evidence",
+  "test_capacity_billing.py": "supporting_evidence",
+  "counter-checks.txt": "frozen_evidence",
+  "counter-check-queue.sh": "normative_spec",
+  "overbooking-before-and-after.txt": "frozen_evidence",
+  "queue-fairness-measured.txt": "frozen_evidence",
+  "a-waiting-job-was-cancelled.txt": "frozen_evidence",
+  "suspension-reaches-waiting-jobs.txt": "frozen_evidence",
+  "restart-loses-nothing.txt": "frozen_evidence",
+  "what-a-waiting-customer-is-told.txt": "frozen_evidence",
+  "the-cap-is-not-in-the-code.txt": "frozen_evidence",
+  "billed-seconds-exclude-waiting.txt": "frozen_evidence",
+  "suite-on-the-pinned-environment.txt": "frozen_evidence",
+  "ci-checks.txt": "frozen_evidence",
+  "signed-usage-lines.txt": "frozen_evidence"
+ },
+ "criteria": [
+  {
+   "id": "Q1-THE-CEILING-IS-CONFIGURED-NOT-COMPILED",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether the number of runs this gateway will execute at once is a configuration value an operator sets, and not a constant in the product. Determine that the value in force on the closed alpha appears in an operator-owned file and in no product source file. Determine what the code does when the value is absent, zero, or larger than the machine can serve, and whether each of those is a deliberate answer rather than an accident of how the check was written. A ceiling that can only be changed by editing and redeploying the product is not a configured ceiling."
+  },
+  {
+   "id": "Q2-WAITING-IS-NEVER-BILLED",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether time a job spends waiting for a slot is excluded from the figure the customer is charged for. Determine this from the code that computes the figure, not from a comment claiming it. Determine the sharpest case: a job cancelled while it is still waiting must produce a billed figure of exactly zero, and a job that never received a slot must not be able to produce a non-zero one by any path. State whether the exclusion is a property of the number or a note written beside it."
+  },
+  {
+   "id": "Q3-THE-BILLED-CLOCK-STARTS-AT-THE-SLOT-AND-STOPS-AFTER-CLEANUP",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge exactly when the billed clock starts and stops. It must start when a worker slot is actually allocated -- not at submission, not at admission -- and stop after the run has finished AND its container has been cleaned up. Determine what the clock did BEFORE this change, and whether the change is visible as a change rather than asserted. Determine whether any other consumer of that timestamp (quotas, windows, what the client is shown) was left reading the old meaning."
+  },
+  {
+   "id": "Q4-WAIT-AND-EXECUTION-ARE-BOTH-RECORDED-SIGNED-AND-CHAINED",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether the time waited and the time billed both appear in the usage record as separate values, and whether that record is signed and chained to the one before it. Determine that adding the fields did not break the chain or the signature over earlier lines, and that a reader can tell the two values apart without knowing the implementation. A record that carries only the billed figure cannot show that waiting was excluded."
+  },
+  {
+   "id": "Q5-NO-ACCOUNT-CAN-STARVE-ANOTHER",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge the rule by which a freed slot is given to one waiting job rather than another, and determine whether an account that submits many jobs can delay another account indefinitely. Determine this from the rule as written AND from a measurement in which two accounts compete. State the rule in one sentence. If the rule is arrival order alone, say plainly that arrival order is not fairness between accounts."
+  },
+  {
+   "id": "Q6-A-FULL-QUEUE-REFUSES-AND-SAYS-WHAT-TO-DO",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge what happens when the queue is full. The answer must be a refusal that names the condition and carries a next step somebody can act on, not a silent wait, not an unbounded queue, and not a generic error. Determine that the queue has a bound at all and where that bound comes from. Determine whether the refusal is distinguishable by a caller from the other ceilings this gateway enforces."
+  },
+  {
+   "id": "Q7-A-WAITING-JOB-CAN-BE-CANCELLED",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether a job that has not started can be cancelled, whether it is then certain never to run, and whether it bills nothing. Determine what the caller is told, and whether the state it ends in is distinguishable from a job that ran and was cancelled mid-flight. Determine whether this was exercised or only implemented."
+  },
+  {
+   "id": "Q8-SUSPENSION-KILL-SWITCH-AND-REVOCATION-REACH-WHAT-IS-WAITING",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether a job already waiting is prevented from running when its account is suspended, when the gateway is told to stop taking work, or when the device that submitted it is revoked. Determine WHERE that is checked: a check made only at admission cannot see a suspension that happens while the job waits. Determine whether each of the three was exercised against a waiting job."
+  },
+  {
+   "id": "Q9-THE-CEILINGS-THAT-EXISTED-STILL-BIND",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether the per-device, per-account, per-window and per-minute ceilings continue to apply alongside the new global one, and that the new ceiling did not replace, weaken or bypass any of them. State explicitly whether a waiting job counts towards those ceilings, and say why that answer is the right one -- both answers have a cost and the choice must be a choice."
+  },
+  {
+   "id": "Q10-NOTHING-RUNS-TWICE-AND-NOTHING-VANISHES-QUIETLY",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge what happens to waiting and running jobs when the gateway restarts. No job may execute twice, and none may disappear without the submitter being able to learn that it did not run. Determine which existing mechanism carries this and whether the queue was added inside that mechanism or beside it. A queue held only in memory is not automatically wrong -- but if it is, the consequence for a waiting job must be stated and must be something the caller can observe."
+  },
+  {
+   "id": "Q11-WHAT-A-WAITING-CUSTOMER-IS-TOLD-SAYS-NOTHING-ABOUT-ANOTHER",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge everything a waiting customer can observe -- status fields, refusal text, timings, counts -- and determine whether any of it reveals the existence, identity, number or activity of other customers. A queue position inherently counts other people's jobs; determine whether one is disclosed. Determine whether the aggregate load of the machine is disclosed and whether that is acceptable or merely unnoticed."
+  },
+  {
+   "id": "Q12-THE-OVERBOOKING-IS-MEASURABLY-GONE",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge the measurement on the running closed alpha. Before this work, four identical jobs on two cores each took roughly twice as long as one alone while doing identical CPU work, so a customer billed by elapsed time paid about 2.25x for the same job. Determine whether that is now gone: identical jobs must not be lengthened, and must not be billed more, because others were admitted alongside them. Determine that the comparison is against a measured before-state rather than a remembered one, that the same work was used, and that the numbers were read from the signed usage log rather than computed by hand."
+  },
+  {
+   "id": "Q13-THE-EVIDENCE-WOULD-FAIL-WITHOUT-THE-MECHANISM",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge the counter-checks rather than the claims. For the global ceiling, the exclusion of waited time from the billed figure, the fairness rule, the queue bound, and the re-check of standing at slot allocation: determine whether a counter-check removes that one mechanism, names a DIFFERENT test from the one that defines it, shows that test failing with a non-zero exit, proves the mutation landed, and proves the file was restored byte for byte. Determine whether any counter-check fails for a reason unrelated to the mechanism it removed -- a failure with an independent cause establishes nothing. Determine whether any count was reconciled by hand rather than read from a machine-produced file, and whether any duration is offered as proof rather than as diagnosis."
+  }
+ ]
+}
