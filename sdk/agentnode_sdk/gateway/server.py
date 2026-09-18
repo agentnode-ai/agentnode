@@ -155,9 +155,24 @@ class RunRecord:
     refusal_remedy: str = ""
     container_name: str = ""
     cleanup_verified: bool | None = None
-    started_at: float = field(default_factory=time.time)
+    #: WHEN THIS JOB ARRIVED. Not when it started: a job may wait for a slot, and the wait is
+    #: this gateway's doing rather than the customer's, so it is kept apart from anything that
+    #: is charged for.
+    queued_at: float = field(default_factory=time.time)
+    #: WHEN THE BILLED CLOCK STARTED, which is the moment a worker slot was actually held.
+    #:
+    #: **0.0 means it never started**, and that is load-bearing rather than a default: a job
+    #: cancelled while it waited must be billed nothing, and the way that is guaranteed is that
+    #: there is no start time to subtract from. This used to be `default_factory=time.time`,
+    #: set when the record was CONSTRUCTED -- so the moment a queue existed in front of the
+    #: worker, every second of waiting would have been billed as execution.
+    started_at: float = 0.0
     finished_at: float | None = None
     cancel_requested: threading.Event = field(default_factory=threading.Event)
+    #: The place in the queue, while this run has one. None once it holds a slot, and None for
+    #: every run on a gateway with no machine ceiling. Not in `public`: it is an object, and what
+    #: a caller may know about waiting is `waiting_for_a_slot` and their own `queued_at`.
+    slot_ticket: object | None = None
     #: The value this gateway issued for this run, while the run is alive. It is NOT in `public`,
     #: it is not in the ledger, and it is dropped when the run reaches a terminal state -- what
     #: survives is its digest, in the binding the ledger holds.
@@ -212,6 +227,10 @@ class RunRecord:
             "policy_deltas": self.deltas,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            # What the caller may know about its OWN wait. Not a position and not a count:
+            # a position is by construction a tally of other people's jobs.
+            "queued_at": self.queued_at,
+            "waiting_for_a_slot": bool(self.state == "accepted" and not self.started_at),
         }
 
 
@@ -346,6 +365,13 @@ class GatewayService:
         # What must survive this process. In-memory replay protection has a documented way
         # around it: restart the gateway, which on a server happens on its own.
         self.ledger = Ledger(self.state.root / "ledger.json")
+        #: WHAT THIS MACHINE RUNS AT ONCE, and who waits for it. Built from the operator's own
+        #: ceilings, so the number is theirs and appears in no source file here. Rebuilt on
+        #: demand by `slots` below when those ceilings change, because an operator who lowers the
+        #: ceiling should not have to restart the gateway to be obeyed.
+        self._slots = None
+        self._slots_for = None
+        self._slots_lock = threading.Lock()
         #: Which gateway process, and which sandbox behind it. A restart is a different instance,
         #: and a challenge says which one issued it.
         self.instance = "%s:%s" % (self.worker.instance_label(), secrets.token_hex(8))
@@ -1602,13 +1628,127 @@ class GatewayService:
         try:
             self._run(request, artifact, granted, record)
         finally:
+            # THE SLOT GOES BACK HERE, whatever happened -- finished, failed, cancelled, or an
+            # exception nobody expected. It belongs in this frame for the same reason the thread
+            # bookkeeping does: it is owned by the attempt, not by the work. A slot given back
+            # only on the happy path is a machine that runs one fewer job after every failure
+            # until it runs none.
+            #
+            # Safe for a run that never held one: `give_back` for an unknown id does nothing,
+            # and it hands any freed slot to whoever is waiting.
+            self.slots.give_back(record.run_id)
             # Taken out of the set on the way past, whatever happened, so what the service holds
             # is what is actually running rather than everything it ever started.
             with self._running_lock:
                 self._running.discard(threading.current_thread())
 
+    def _wait_for_a_slot(self, record: RunRecord, granted) -> bool:
+        """Hold a slot before running, or end the run without ever having started it.
+
+        True means the slot is held and the billed clock has started. False means this run is
+        over -- cancelled, suspended, revoked or stopped while it waited -- and it was billed
+        nothing, because `started_at` was never set.
+
+        ## What is re-checked here and why it cannot be checked only at admission
+
+        A job may wait. While it waits its account can be suspended, its device withdrawn, or the
+        whole gateway told to stop taking work. Admission happened before any of that. So the
+        standing is asked again at the moment the slot is granted, which is the last moment
+        before foreign code runs and therefore the only one that counts.
+        """
+        ticket = record.slot_ticket
+        if ticket is not None:
+            if record.cancel_requested.is_set():
+                self.slots.drop(record.run_id, "cancelled")
+                self._end_without_running(record, granted, "cancelled",
+                                          "cancelled while it was waiting for a slot")
+                return False
+            if not self.slots.wait_for_slot(ticket):
+                why = getattr(ticket, "dropped", "") or "dropped"
+                self._end_without_running(
+                    record, granted,
+                    "cancelled" if why == "cancelled" else "refused",
+                    {"cancelled": "cancelled while it was waiting for a slot",
+                     "stopped": "this sandbox stopped taking work while this job was waiting",
+                     "suspended": "this account was suspended while this job was waiting",
+                     "revoked": "the device that submitted this job was withdrawn while it "
+                                "was waiting"}.get(why, why))
+                return False
+            record.slot_ticket = None
+
+        # STANDING, asked again now rather than trusted from admission -- and asked through the
+        # SAME call the dispatcher uses, so there is no second opinion here about what a stop or
+        # a suspension means. `may_this_caller_proceed` is the one implementation of the
+        # operator's stop, this account's standing and the request rate.
+        #
+        # The rate ceiling is deliberately not re-applied to a job that is already inside: it
+        # bounds how fast work ARRIVES, and a job that has been waiting did not just arrive. So
+        # this asks with `would_run_work=True` and treats only a refusal that is about standing
+        # as a reason not to run. A job refused here consumed a slot for the length of this check
+        # and nothing more, because the billed clock has not started.
+        try:
+            self.may_this_caller_proceed(record.owner_account_id, record.owner_client_id,
+                                         True)
+        except Exception as refused:                          # noqa: BLE001
+            because = getattr(refused, "because", "") or str(refused)
+            what = getattr(refused, "what_to_do", "")
+            self.slots.give_back(record.run_id)
+            self._end_without_running(
+                record, granted, "refused",
+                because + ((" " + what) if what else ""))
+            return False
+        if record.cancel_requested.is_set():
+            self.slots.give_back(record.run_id)
+            self._end_without_running(record, granted, "cancelled",
+                                      "cancelled before it started")
+            return False
+
+        # THE BILLED CLOCK STARTS HERE, and nowhere earlier.
+        record.started_at = time.time()
+        return True
+
+    def _end_without_running(self, record: RunRecord, granted, state: str,
+                             why: str) -> None:
+        """Finish a run that never ran. Billed nothing, and said so.
+
+        It goes through the same publication as any other ending, so a job that waited and was
+        cancelled appears in the signed log like everything else -- with `seconds` at zero and
+        the wait recorded beside it. A run that quietly vanished would be the one kind of run
+        nobody could check.
+        """
+        record.finished_at = time.time()
+        record.refusal = why
+        # NOTHING WAS LEFT BEHIND, because nothing was ever created. `container_name` is set in
+        # `_run` AFTER the slot is held, so an empty one here is not an assumption -- it is the
+        # record saying this job never reached the point of having a sandbox. Guarded on that
+        # rather than on the state, so this can never claim cleanup for a run that did create
+        # one.
+        if not record.container_name:
+            record.cleanup_verified = True
+        if state == "refused":
+            record.refused_as = "over_a_ceiling"
+            record.refusal_remedy = "Send it again when this sandbox is taking work."
+        try:
+            record.move_to(state)
+        except Exception:                                     # noqa: BLE001 - already terminal
+            return
+        # The same publication as any other ending: one line in the signed log, with `seconds`
+        # at zero and the wait recorded beside it. A run that vanished silently would be the one
+        # kind of run nobody could check afterwards.
+        try:
+            self.write_down_what_it_used(record, granted, state)
+        except Exception as exc:                              # noqa: BLE001
+            self.could_not_record(record, exc)
+
     def _run(self, request: JobRequest, artifact: bytes, granted, record: RunRecord) -> None:
         from agentnode_sdk.sandbox.composition import network_mode
+
+        # WAIT FOR A SLOT, before anything about a container exists and before the billed clock
+        # starts. A job that waits here has a record, an owner and a claim; what it does not have
+        # is a start time, so nothing about this wait can be charged for.
+        if not self._wait_for_a_slot(record, granted):
+            return
+
         mode, domains = network_mode(granted)
         record.container_name = container_name_for(record.run_id)
         record.move_to("running")
@@ -1815,14 +1955,33 @@ class GatewayService:
         from agentnode_sdk.gateway import meter
         from agentnode_sdk.gateway.protocol import outcome_of
 
+        # WHAT IS BILLED, and what is not.
+        #
+        # `started_at` is zero until a worker slot was actually held, so a job that waited and
+        # was then cancelled, suspended or revoked has nothing to subtract from and is billed
+        # nothing. That is the whole mechanism: not a rule applied to the number afterwards, but
+        # the absence of a number to bill.
+        #
+        # `queued_at` is when it arrived. The wait is recorded because a customer is entitled to
+        # see it, and it is recorded SEPARATELY because it is this gateway's doing and not
+        # theirs.
         started = float(record.started_at or 0.0)
-        finished = float(record.finished_at or started)
+        finished = float(record.finished_at or started or time.time())
+        billed = max(0.0, finished - started) if started else 0.0
+        queued = float(record.queued_at or started or finished)
+        # Up to the slot if it ever got one, otherwise up to the end. A job that never started
+        # waited until whatever ended it.
+        waited = max(0.0, (started or finished) - queued)
         if record.owner_client_id:
             # Every scope that counted it, or an account ceiling would be charged for the run
             # starting and never for it ending.
+            # The window quota is charged the BILLED seconds too. A customer whose job sat in
+            # this gateway's queue must not have that count against the seconds they are allowed
+            # to consume -- that would be charging them twice for our ceiling, once in money and
+            # once in quota.
             self.use.finished_every(
                 [k for k in (record.owner_client_id, record.owner_account_id) if k],
-                record.run_id, max(0.0, finished - started))
+                record.run_id, billed)
         try:
             # Which policy this run was admitted under, by digest and by ordinal. Read from
             # the record's own effective policy rather than from whatever is configured now: a
@@ -1851,6 +2010,7 @@ class GatewayService:
                 operator_policy_sha256=operator_digest or meter.UNATTRIBUTED,
                 operator_policy_version=operator_version,
                 started_at=started, finished_at=finished,
+                queued_at=queued,
                 cpu=float(granted.limits.cpu), memory_mb=int(granted.limits.memory_mb),
                 wall_clock_s=int(granted.limits.wall_clock_s),
                 # The state it is ENDING in, which the record does not carry yet: publishing
@@ -1866,6 +2026,29 @@ class GatewayService:
             # A run that happened is not un-happened by a meter that could not be written, and
             # refusing to publish the terminal state over it would lose the run instead.
             pass
+
+    @property
+    def slots(self):
+        """The machine ceiling and its queue, from whatever the operator currently allows.
+
+        Rebuilt when the ceilings change and reused when they have not: a new object would drop
+        every waiting job on the floor, and an operator raising a limit must not be a way to lose
+        work that is already queued.
+        """
+        from agentnode_sdk.gateway.capacity import Slots
+
+        allowed = self.allowance()
+        shape = (int(allowed.machine_concurrent_runs or 0), int(allowed.queue_depth or 0))
+        with self._slots_lock:
+            if self._slots is None or self._slots_for != shape:
+                if self._slots is None:
+                    self._slots = Slots(ceiling=shape[0], queue_depth=shape[1])
+                else:
+                    # Changed in place, so tickets already waiting keep waiting on the same
+                    # object rather than on one nobody will ever promote from.
+                    self._slots.ceiling, self._slots.queue_depth = shape
+                self._slots_for = shape
+            return self._slots
 
     def reserve(self, client_id: str, run_id: str, record, asking_for: int,
                 account_id: str = "") -> None:
@@ -1923,6 +2106,31 @@ class GatewayService:
             # Taken in the same breath as it was checked.
             self.runs[run_id] = record
 
+        # THE MACHINE CEILING, after the customer's own and outside the lock above.
+        #
+        # After, because the customer's ceilings are the customer's own doing and should be the
+        # answer they get: telling somebody "this machine is busy" when what is actually true is
+        # "you already have two going" sends them to complain to the wrong person.
+        #
+        # Outside, because this one may put the job in a queue and a queue that is entered while
+        # holding the lock every other run needs would stop the machine rather than pace it. The
+        # two locks are never held together: `Slots` has its own and takes nothing else.
+        #
+        # A refusal here happens AFTER the window allowance was claimed above, so it gives it
+        # back -- otherwise a job that never ran would still have spent the customer's quota.
+        try:
+            record.slot_ticket = self.slots.take_or_queue(run_id, account_id or client_id)
+        except Exception:
+            with self._lock:
+                self.runs.pop(run_id, None)
+            if allowed.runs_per_window or allowed.seconds_per_window or                     allowed.account_runs_per_window or allowed.account_seconds_per_window:
+                try:
+                    self.use.finished_every(
+                        [k for k in (client_id, account_id) if k], run_id, 0.0)
+                except Exception:                             # noqa: BLE001
+                    pass
+            raise
+
     def stop_what_is_running(self, why: str, settle: float | None = None) -> list:
         """End every run that has not ended, because the operator stopped this gateway.
 
@@ -1937,6 +2145,13 @@ class GatewayService:
         thing and claiming more than happened would defeat it.
         """
         from agentnode_sdk.gateway.protocol import is_terminal
+
+        # THE QUEUE EMPTIES FIRST, in one pass. A kill switch that stopped the running jobs and
+        # left the waiting ones to be promoted into the slots just freed would start new work
+        # while shutting down -- the exact opposite of what somebody reaching for it wants.
+        # Dropping them all under one lock is what stops a job slipping from waiting to running
+        # between two of these decisions.
+        self.slots.drop_every(lambda ticket: True, "stopped")
 
         done = []
         for record in list(self.runs.values()):
@@ -2045,6 +2260,12 @@ class GatewayService:
             return record, True
         deadline = time.monotonic() + (self.CANCEL_SETTLE_SECONDS if settle is None else settle)
         record.cancel_requested.set()
+        # A JOB THAT IS STILL WAITING HAS NO CONTAINER TO STOP, and asking the worker to stop one
+        # that was never created would be asking about nothing. Taken out of the queue instead --
+        # which wakes the thread holding it, and that thread ends the run without ever starting
+        # it. `drop` answers whether this was the case, so nothing has to be inferred from the
+        # absence of a container name.
+        self.slots.drop(record.run_id, "cancelled")
         self.worker.stop(record.run_id, record.container_name, self.CONTAINER_APPEAR_SECONDS)
         while time.monotonic() < deadline:
             if is_terminal(record.state):

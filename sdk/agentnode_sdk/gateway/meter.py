@@ -61,10 +61,23 @@ METER_NAME = "use-log.jsonl"
 
 #: Exactly the fields a line has. Named here so that adding one is a decision somebody makes on
 #: purpose, in a place a reviewer reads, rather than a keyword appearing at a call site.
-FIELDS = ("run_id", "client_id", "account_id", "started_at", "finished_at", "seconds",
+FIELDS = ("run_id", "client_id", "account_id", "queued_at", "started_at", "finished_at",
+          "seconds", "waited_s",
           "cpu", "memory_mb", "wall_clock_s", "state", "outcome", "bytes_out",
           "worker_topology", "worker_topology_means", "worker_id", "allowance_sha256",
           "allowance_admitted_under", "operator_policy_sha256", "operator_policy_version")
+
+#: The three times a line carries, and what each one is for. Written out because a reader who
+#: mistakes one for another mis-reads a bill.
+#:
+#:   queued_at    when the job arrived and began waiting for a slot
+#:   started_at   when a slot was actually held and the billed clock started.
+#:                **0.0 means it never started** -- cancelled, suspended or revoked while waiting
+#:   seconds      WHAT IS CHARGED FOR: started_at to finished_at, and zero when there is no
+#:                started_at. DERIVED here from the three times above, never accepted from a
+#:                caller -- the same rule every other computed field in this line follows
+#:   waited_s     how long it waited. Recorded because the customer is entitled to see it, kept
+#:                apart from `seconds` because the wait is this gateway's doing and not theirs
 
 #: What binds one line to the one before it. Not in FIELDS: those are what a line SAYS, these are
 #: what makes it hard to change, and keeping them apart stops a reader mistaking one for the
@@ -148,7 +161,8 @@ def public_key(root: str | os.PathLike[str]) -> bytes:
 
 
 def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started_at: float,
-           finished_at: float, cpu: float, memory_mb: int, wall_clock_s: int, state: str,
+           finished_at: float, queued_at: float = 0.0,
+           cpu: float, memory_mb: int, wall_clock_s: int, state: str,
            outcome: str, bytes_out: int, worker_topology: str,
            allowance_sha256: str,
            allowance_admitted_under: dict | None = None,
@@ -190,9 +204,22 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
         "run_id": str(run_id),
         "client_id": str(client_id),
         "account_id": str(account_id),
+        "queued_at": float(queued_at or started_at),
         "started_at": float(started_at),
         "finished_at": float(finished_at),
-        "seconds": round(max(0.0, float(finished_at) - float(started_at)), 3),
+        # BOTH DERIVED, neither accepted from a caller -- a meter with somewhere to put a
+        # number of somebody's choosing is a meter whose bills cannot be checked.
+        #
+        # What makes deriving possible is the convention on `started_at`: zero means no slot was
+        # ever held. So a job cancelled while waiting has nothing to subtract from and bills
+        # zero, and a job that waited bills only from the slot. This used to be
+        # `finished_at - started_at` outright, which with a queue in front of the worker would
+        # have charged the wait as execution -- and for a job that never started, the whole of
+        # the unix epoch.
+        "seconds": round(max(0.0, float(finished_at) - float(started_at)), 3)
+                   if float(started_at) else 0.0,
+        "waited_s": round(max(0.0, (float(started_at) or float(finished_at))
+                              - float(queued_at or started_at or finished_at)), 3),
         "cpu": float(cpu),
         "memory_mb": int(memory_mb),
         "wall_clock_s": int(wall_clock_s),

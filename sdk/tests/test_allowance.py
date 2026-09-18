@@ -557,7 +557,7 @@ class TestARecordOfUseCarriesNoSecret:
         # `seconds` and `worker_topology_means` are DERIVED -- computed from what was passed,
         # never accepted from a caller. That is the point: a caller cannot put anything of its
         # own into either, and naming them here keeps that a decision rather than a gap.
-        derived = {"seconds", "worker_topology_means"}
+        derived = {"seconds", "waited_s", "worker_topology_means"}
         assert set(taken) - {"root"} == set(meter.FIELDS) - derived
         for name, parameter in taken.items():
             assert parameter.kind is not parameter.VAR_KEYWORD, name

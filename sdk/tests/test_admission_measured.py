@@ -54,6 +54,10 @@ ENFORCED_BY_THE_GATEWAY = (
     "seconds_per_window", "account_seconds_per_window",
     "requests_per_minute", "account_requests_per_minute",
     "max_artifact_bytes",
+    # The machine's own ceiling and the queue in front of it. They are here rather than in the
+    # runtime list because the gateway decides them: the container runtime has no idea how many
+    # OTHER customers this machine is already serving.
+    "machine_concurrent_runs", "queue_depth",
 )
 
 ENFORCED_BY_THE_RUNTIME = ("cpu", "memory_mb", "processes", "disk_mb", "wall_clock_s")
@@ -515,3 +519,51 @@ class TestEveryRefusalThisProductCanProduce:
         for one in seen:
             assert alice.account_id not in one.because
             assert alice.device_id not in one.because
+
+
+class TestTheMachineCeilingAndItsQueueRefuse:
+    """`machine_concurrent_runs` and `queue_depth`, hit here like every other ceiling.
+
+    They are a pair and are tested as one: a ceiling with no queue refuses at the ceiling, and a
+    queue only means anything behind a ceiling. Testing either alone would leave the other as a
+    number nobody exercised.
+    """
+
+    def _slots(self, ceiling, depth):
+        from agentnode_sdk.gateway.capacity import QueueIsFull, Slots
+
+        return Slots(ceiling=ceiling, queue_depth=depth), QueueIsFull
+
+    def test_the_machine_ceiling_stops_the_run_after_it(self):
+        slots, _full = self._slots(2, 2)
+        assert slots.take_or_queue("a", "A") is None
+        assert slots.take_or_queue("b", "B") is None
+        # The third does not run. It waits -- which is the difference between this ceiling and
+        # every other one in this file.
+        assert slots.take_or_queue("c", "C") is not None
+        assert slots.in_use() == 2
+
+    def test_queue_depth_refuses_once_the_queue_is_full(self):
+        slots, QueueIsFull = self._slots(1, 1)
+        assert slots.take_or_queue("a", "A") is None
+        assert slots.take_or_queue("b", "B") is not None
+        with pytest.raises(QueueIsFull) as refused:
+            slots.take_or_queue("c", "C")
+        assert refused.value.remedy, "a refusal nobody can act on is half a refusal"
+        assert "at once" in str(refused.value)
+
+    def test_a_depth_of_zero_means_nobody_waits(self):
+        """The one place in `allowance.py` where zero is not "no ceiling". A machine ceiling with
+        no queue refuses immediately rather than accepting work it cannot start."""
+        slots, QueueIsFull = self._slots(1, 0)
+        assert slots.take_or_queue("a", "A") is None
+        with pytest.raises(QueueIsFull):
+            slots.take_or_queue("b", "B")
+
+    def test_and_a_ceiling_of_zero_lets_everything_through(self):
+        """The control. Without it, "the ceiling refuses" would also be true of a ceiling that
+        refuses everything, including when an operator set none."""
+        slots, _full = self._slots(0, 0)
+        for i in range(8):
+            assert slots.take_or_queue("r%d" % i, "A") is None
+        assert slots.in_use() == 8
