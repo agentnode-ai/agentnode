@@ -188,7 +188,12 @@ class TestLosingAnyOneStoreIsNoticedAndNamed:
             "nothing in this fixture produces %s, so losing it in a restore is checked by "
             "nothing" % absent)
 
-    @pytest.mark.parametrize("name", sorted(backup.everything_a_gateway_keeps()))
+    # EVERY store the manifest knows, EXCEPT the ones that deliberately do not come back.
+    # Derived from `backup.NOT_RESTORED` rather than written as a list here: a name written in
+    # two places drifts, and this is the place where the drift would read as "the restore is
+    # fine" rather than as an error.
+    @pytest.mark.parametrize("name", sorted(set(backup.everything_a_gateway_keeps())
+                                            - backup.NOT_RESTORED))
     def test_a_class_that_did_not_come_back_is_reported_by_name(self, a_busy_gateway, tmp_path,
                                                                 name):
         taken = _taken(a_busy_gateway)
@@ -495,3 +500,26 @@ class TestTheScriptSealsWhatItWrites:
         said = self._script()
         assert "newkey)" in said
         assert "A backup whose key is" in said
+
+
+class TestTheCategoryForFilesThatMustNotComeBack:
+    """`NOT_RESTORED` is EMPTY, and that is the finished state rather than an oversight.
+
+    It was created for one file, the runtime pin, which has since moved out of the state
+    directory -- where it should never have been, as the module that writes it had already said.
+    Moving it removed the whole class: no exclusion pattern in the restore, no manifest entry, no
+    comparison exemption, nothing to drift.
+
+    The machinery stays because it is right, and because the next file that genuinely is "in a
+    backup and must not come back" should land here rather than being handled where somebody
+    happens to notice it.
+    """
+
+    def test_it_is_empty_and_the_comparison_still_honours_it(self):
+        assert backup.NOT_RESTORED == set()
+        before = {"kept": {"audit.jsonl": {"present": True, "lines": 3}}}
+        after = {"kept": {"audit.jsonl": {"present": False}}}
+        assert backup.differences(before, after) != [], "a real loss must still be a loss"
+
+    def test_and_the_pin_is_not_in_the_manifest_because_it_is_not_in_the_state(self):
+        assert "runtime-pin.json" not in backup.everything_a_gateway_keeps()

@@ -60,6 +60,112 @@ def browser():
 
 
 
+# SESSION-scoped, and that is the whole point -- see the docstring.
+@pytest.fixture()
+def a_pinned_machine(monkeypatch, tmp_path_factory):
+    """A pin that agrees with the interpreter running the tests, for tests that START a gateway.
+
+    A start with no pin is a refusal now, which is the point of it -- and it means a test that
+    drives `cmd_start` has to look like a deployed machine rather than an empty directory. Four
+    lifecycle tests were failing on exactly that: they are about whether serving gives
+    everything back, not about pinning, and they were being answered by the pin check before
+    they got to their own question.
+
+    A REAL PIN, not `AGENTNODE_ALLOW_UNPINNED`. Setting the escape here would run the whole
+    suite with the safety off and nothing would notice the day it stopped working.
+    """
+    import hashlib
+    import importlib.metadata as _md
+    import pathlib as _pathlib
+
+    from agentnode_sdk.gateway import runtime_pin
+
+    # A REAL DIGEST, RECORDED WHERE THE SERVICE LOOKS FOR IT. Monkeypatching
+    # `installed_artefact_digest` was enough while everything stayed in this process and stopped
+    # being enough the moment a test started a gateway as a SUBPROCESS -- the patch does not
+    # cross a process boundary, the subprocess read the real (absent) digest, and the pin
+    # correctly refused. So this does what a deployment does: write the digest into the installed
+    # distribution, then pin that same value.
+    digest = runtime_pin.installed_artefact_digest()
+    wrote_marker = None
+    if not digest:
+        try:
+            meta = _pathlib.Path(_md.distribution("agentnode-sdk")._path)
+            record = meta / "RECORD"
+            digest = hashlib.sha256(record.read_bytes() if record.is_file()
+                                    else meta.as_posix().encode()).hexdigest()
+            wrote_marker = meta / "AGENTNODE_ARTEFACT"
+            if wrote_marker.exists():
+                wrote_marker = None
+            else:
+                wrote_marker.write_text(digest + chr(10), encoding="utf-8")
+        except Exception:                                     # noqa: BLE001
+            digest, wrote_marker = "a" * 64, None
+
+    where = tmp_path_factory.mktemp("a-pinned-machine")
+    runtime_pin.write_pin(
+        where,
+        python_version=runtime_pin.running_python(),
+        artefact_sha256=digest,
+        commit="0" * 40,
+    )
+    monkeypatch.setenv("AGENTNODE_PIN_DIR", str(where))
+    # The interpreter this suite runs on may not be the tested family -- CI runs 3.10 and 3.11
+    # too -- and that check is not what these tests are about either. In-process only; a
+    # subprocess gets the real check, which is why the pin above names the real interpreter.
+    monkeypatch.setattr(runtime_pin, "running_is_supported", lambda: True)
+    monkeypatch.setattr(runtime_pin, "is_supported", lambda version: True)
+    try:
+        yield where
+    finally:
+        # Put site-packages back. A fixture that leaves a file in the installed distribution has
+        # changed the machine it ran on.
+        if wrote_marker is not None:
+            try:
+                wrote_marker.unlink()
+            except OSError:
+                pass
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _the_pin_is_not_the_one_on_this_machine(tmp_path_factory):
+    """Tests must NEVER read the runtime pin belonging to the machine they run on.
+
+    The pin moved out of the state directory and into `/etc/agentnode`, because a restore drill
+    destroys the state and rebuilt a pin describing the previous build. That was the right move
+    for the service, and it made the DEFAULT a machine-global path -- so on any machine that has
+    actually been deployed, `cmd_start` read the HOST's pin, compared it against a source tree
+    that records no artefact digest, and refused. Four tests failed on the DevelopServer and
+    passed everywhere else, which is the signature of host state leaking into a suite.
+
+    ONE empty pin directory for the WHOLE SESSION, set before anything else is built. The first
+    version of this was function-scoped, and that broke 39 tests on the DevelopServer in a way
+    worth writing down: the session-scoped test gateway is created BEFORE any function-scoped
+    fixture runs, so it measured itself against the machine's real pin -- and then this fixture
+    moved the pin out from under it. The gateway compared the stored measurement against what it
+    was now running as, found that artefact, commit and build id all differed, and refused to
+    admit work. That refusal was CORRECT. Machine-global state cannot be swapped per test
+    underneath a service that measured itself once.
+
+    `os.environ` rather than `monkeypatch`, because `monkeypatch` is function-scoped and cannot
+    be requested from a session fixture at all.
+
+    The refusals themselves are neither weakened nor skipped:
+    `test_runtime_pin.py::TestStartingRefuses` points the same lookup at a directory it writes
+    real pins into, and drives the CLI entry points against them.
+    """
+    before = os.environ.get("AGENTNODE_PIN_DIR")
+    os.environ["AGENTNODE_PIN_DIR"] = str(
+        tmp_path_factory.mktemp("pin-that-is-not-this-machines"))
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("AGENTNODE_PIN_DIR", None)
+        else:
+            os.environ["AGENTNODE_PIN_DIR"] = before
+
+
 @pytest.fixture(autouse=True)
 def _no_real_os_keychain():
     """Tests must NEVER touch the real OS keychain (UX-2 vault).

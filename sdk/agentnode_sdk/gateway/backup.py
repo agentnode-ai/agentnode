@@ -126,6 +126,12 @@ HOW_THE_AGED_ONES_LOOK = {
 #: other class in the table IS in a backup, and the test that compares the two still holds.
 NOT_IN_A_BACKUP = {"backups"}
 
+#: Nothing. The category existed for one file -- the runtime pin -- which has since moved OUT of
+#: the state directory, where it should never have been. It is kept as an empty set rather than
+#: deleted: the machinery that honours it is right, and the next file that is genuinely "here and
+#: must not come back" should go here rather than being handled ad hoc.
+NOT_RESTORED: set = set()
+
 
 def everything_a_gateway_keeps() -> dict:
     """Every file, with how to summarise it and why it is kept. One place, two sources."""
@@ -222,6 +228,14 @@ def differences(before: dict, after: dict) -> list:
     now = (after or {}).get("kept") or {}
     said = []
     for name in sorted(set(was) | set(now)):
+        # THE THIRD CATEGORY, honoured here as well as in the restore. `NOT_RESTORED` names files
+        # that are in a backup and deliberately do not come back -- the runtime pin, which
+        # describes the SENDING installation and would tell the receiving machine it is something
+        # it is not. Wiring that into the restore alone was half a job: the comparison then
+        # reported the deliberate absence as a lost store, on every single restore, which is the
+        # kind of standing false alarm that teaches people to ignore a real one.
+        if name in NOT_RESTORED:
+            continue
         mine, theirs = was.get(name), now.get(name)
         if mine is None:
             said.append("%s: not in the manifest this backup was taken with, but present now"

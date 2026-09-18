@@ -67,18 +67,28 @@ jobs:
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_em3c_gateway.py \
             -k "not TestTheVerticalFlowForReal" 2>&1 | tee em3c-admission.txt
-          grep -qE "^241 passed" em3c-admission.txt || {
-            echo "the admission tests did not all pass"; exit 1; }
+          grep -qE "^242 passed" em3c-admission.txt || {
+            echo "the admission tests did not all pass, or a different NUMBER of them ran"
+            echo "(the count is exact on purpose: a test that stops being collected passes silently)"; exit 1; }
 
       - name: The commands a person actually types
+        env:
+          # THIS LANE HAS A CONTAINER RUNTIME AND HAS TO SAY SO. Without this the five journey
+          # tests skip, and they were skipping everywhere: on machines with no runtime by this
+          # marker, and here because an unpinned gateway could not start at all. Five tests,
+          # green, exercising nothing. `-rs` prints what is skipped rather than hiding it in a
+          # count.
+          AGENTNODE_SANDBOX_E2E: "1"
         run: |
           set -o pipefail
-          python -m pytest -q -p no:randomly tests/test_em3c_cli.py 2>&1 | tee em3c-cli.txt
-          # 44, not 43: one test was added for a defect the alpha found -- rotating your access
-          # must keep the certificate it was pinned to. The count stays exact rather than
-          # becoming a floor, so a test quietly disappearing still fails this lane.
-          grep -qE "^44 passed" em3c-cli.txt || {
-            echo "the CLI tests did not all pass"; exit 1; }
+          python -m pytest -q -rs -p no:randomly tests/test_em3c_cli.py 2>&1 | tee em3c-cli.txt
+          # 49, not 44: five journey tests that were SKIPPED on machines without a container
+          # runtime now run here, because this lane has one and because the gateway they start
+          # is pinned the way a deployed machine is. Before that they could not start at all --
+          # a start with no pin is a refusal. The count stays exact rather than becoming a floor,
+          # so a test quietly disappearing still fails this lane.
+          grep -qE "^49 passed" em3c-cli.txt || {
+            echo "the CLI tests did not all pass, or a different NUMBER of them ran"; exit 1; }
 
       # The evidence runner has to be shown to CATCH things before any external run leans on
       # it. EM3C-EXTERNAL-0017 blocked on evidence rather than on code, and a checker of

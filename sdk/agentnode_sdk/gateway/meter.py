@@ -116,13 +116,27 @@ def signing_key(root: str | os.PathLike[str]):
         save_signing_key,
     )
 
+    from agentnode_sdk.gateway.filelock import ProcessLock
+
     path = Path(root) / METER_KEY_NAME
     if path.exists():
         return load_signing_key(path)
-    private, public = generate_ed25519_keypair()
-    save_signing_key(private, path)
-    (Path(root) / METER_PUBLIC_NAME).write_text(public.hex() + "\n", encoding="utf-8")
-    return private
+    # UNDER A LOCK, AND CHECKED AGAIN INSIDE IT. "if it is not there, make one" is two steps,
+    # and twelve callers arriving on an empty directory took them in twelve interleavings: each
+    # generated a key, each wrote it, the last rename won, and the other eleven went on holding
+    # keys that were no longer the gateway's. A metering line signed with one of those cannot
+    # be verified afterwards -- the signature is right and the key it belongs to is gone.
+    #
+    # The cheap read above stays. After the first call this is only ever a read, and taking a
+    # lock every time would be a cost paid forever for a window that closes once.
+    with ProcessLock(path):
+        if path.exists():
+            return load_signing_key(path)
+        private, public = generate_ed25519_keypair()
+        save_signing_key(private, path)
+        (Path(root) / METER_PUBLIC_NAME).write_text(public.hex() + "\n",
+                                                    encoding="utf-8")
+        return private
 
 
 def public_key(root: str | os.PathLike[str]) -> bytes:

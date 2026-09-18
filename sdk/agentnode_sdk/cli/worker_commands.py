@@ -15,6 +15,8 @@ arrangement until it gets there.
 """
 from __future__ import annotations
 
+import pathlib
+
 import os
 import sys
 from pathlib import Path
@@ -70,10 +72,29 @@ def _this_account() -> str:
         return str(getattr(os, "getuid", lambda: "?")())
 
 
+def _refuse_unless_pinned(root, what: str) -> int:
+    """A thin call into the one implementation, in `runtime_pin`.
+
+    This file and the gateway's one each held their own copy of the whole rule. They had already
+    started to disagree -- one was changed to refuse an unpinned start and the other was
+    not -- which would have left a machine whose gateway refuses and whose worker shrugs.
+    `bold` is handed in so each surface keeps its own emphasis without the rule moving.
+    """
+    from agentnode_sdk.gateway import runtime_pin
+
+    return runtime_pin.refuse_unless_pinned(root, what, say=print, bold=bold)
+
 def cmd_serve(args) -> int:
     """Serve one socket, for one account, until something stops this process."""
     from agentnode_sdk.worker.service import CannotHoldItsLimits, serve
 
+    # The worker is where foreign code actually runs, so it is the LAST place that should be
+    # allowed to run on an interpreter nobody tested. Its pin lives beside its key rather than
+    # in the gateway's state, because the two are separate accounts and a worker must not need
+    # to read the gateway's directory to know what it is.
+    _pin_root = pathlib.Path(str(getattr(args, "key", "") or "/etc/agentnode")).parent
+    if _refuse_unless_pinned(_pin_root, "worker"):
+        return 1
     address = str(getattr(args, "socket", "") or "")
     key = str(getattr(args, "key", "") or "")
     for_whom = getattr(args, "for_user", None)

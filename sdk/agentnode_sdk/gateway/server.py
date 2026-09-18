@@ -29,6 +29,7 @@ import hmac
 import urllib.parse
 import json
 import os
+import pathlib
 import secrets
 import sys
 import threading
@@ -577,7 +578,33 @@ class GatewayService:
             # a report somebody will read as describing the other.
             worker_topology=self.worker.topology,
             worker_configuration_sha256=self.worker.configuration_sha256(),
+            # WHAT THIS GATEWAY IS RUNNING AS. Read from the running process and from the pin
+            # written by the deployment, never from a constant in the source: a field that says
+            # what somebody intended rather than what is true is a field that keeps saying it
+            # after the intention stops matching.
+            **self._what_this_is_running_as(),
         )
+
+    def _what_this_is_running_as(self) -> dict:
+        """The interpreter, artefact, commit and build identity, as facts about this process.
+
+        Empty strings where this gateway genuinely cannot tell -- an installation made before
+        the pin existed has no commit to report, and inventing one would be worse than the gap.
+        """
+        from agentnode_sdk.gateway import runtime_pin
+
+        said = {"python_version": runtime_pin.running_python(),
+                "artefact_sha256": runtime_pin.installed_artefact_digest(),
+                "commit": "", "build_id": ""}
+        try:
+            pinned = runtime_pin.read_pin(runtime_pin.pin_dir())
+        except Exception:                                     # noqa: BLE001
+            return said
+        said["commit"] = str(pinned.get("commit") or "")
+        said["artefact_sha256"] = said["artefact_sha256"] or str(
+            pinned.get("artefact_sha256") or "")
+        said["build_id"] = str(pinned.get("build_id") or "")
+        return said
 
     def runtime_version(self) -> str:
         """The container runtime's own version, asked once per process.

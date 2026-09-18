@@ -1,0 +1,134 @@
+{
+ "_comment": [
+  "FROZEN PROSPECTIVELY. Written before the work it judges, and not edited afterwards.",
+  "",
+  "WHY THIS EXISTS. The R2 deployment was accepted, and the acceptance named one thing that",
+  "stopped the operating state from being called finished: the alpha runs its gateway and",
+  "worker on the system Python 3.14, while CI tests 3.10-3.12 and `requires-python` carries no",
+  "upper bound. Five install-transaction tests fail on 3.14 and pass on 3.12, controlled both",
+  "ways on the same machine. A working serving path is not an answer to that -- it is a",
+  "narrower claim than the one being made.",
+  "",
+  "WHAT IS BEING JUDGED is therefore not 'does it work', which is already known, but whether",
+  "the service can still be run on an interpreter nobody tested, and whether what is deployed",
+  "can still be mistaken for something else. Both are refusals that have to exist in code.",
+  "",
+  "ON THE PUBLISHED VERSION. 0.24.1 is on PyPI. It is not to be silently replaced, and a",
+  "criterion below says so. Whatever is decided about 3.14 applies to what is published NEXT.",
+  "",
+  "A pass here concerns this code, these tests and the measurements presented. It does not",
+  "establish that Python 3.12 is the right pin for ever, nor that a pinned interpreter makes an",
+  "unreviewed dependency safe."
+ ],
+ "profile_id": "alpha-runtime-pin-r2",
+ "kind": "review",
+ "mutable_task": false,
+ "stage": "pre-run",
+ "frozen_prospectively": true,
+ "review_object": "The interpreter and artefact the managed service actually runs from on the DevelopServer: that gateway and worker start only from an explicitly pinned, tested Python 3.12 environment; that systemd points at exactly that environment; that starting and deploying REFUSE when the interpreter, the wheel digest or the expected commit do not match; that the deployment record binds interpreter, artefact, commit, operator policy, worker image and runtime, topology and conformance; and that the managed service carries a build identity that cannot be confused with a version number.",
+ "out_of_scope": [
+  "tenancy, admission and data operations, which are judged by alpha-r2-tenancy-r1, alpha-r2-admission-r4 and alpha-r2-dataops-r5 and are already PASS at 04a528e",
+  "whether a separate worker host should be bought, and every other question about paid infrastructure",
+  "the governance limit that a profile cannot review itself, which is a separate branch and blocks nothing here",
+  "republishing 0.24.1, which is explicitly forbidden rather than out of scope"
+ ],
+ "verdict_must_state": "A pass concerns the pin, the refusals and the binding as presented. It does not establish that the pinned interpreter is free of defects, that the tests which pass on it are sufficient, or that an operator cannot deliberately defeat a check on a machine they control. Say which of the refusals below were EXERCISED against a real mismatch and which were only read.",
+ "roles_rule": "Any input this profile does not list defaults to the lowest authority, 'context'. A request may name this profile and may not extend it.",
+ "criteria": [
+  {
+   "id": "R1-THE-SERVICE-RUNS-FROM-A-PINNED-TESTED-INTERPRETER",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether the gateway and the worker on the DevelopServer run from an explicitly pinned Python 3.12 environment rather than from whatever the system python happens to be. Determine where the pin is written down, whether it is a fact about the machine or a claim in a document, and what happens if the system python changes underneath it. Determine whether the systemd units point at that environment by an absolute path that cannot resolve to another interpreter, and whether a unit that pointed elsewhere would be noticed by something other than a person reading it. State whether the two services share one environment or have their own, and why."
+  },
+  {
+   "id": "R2-STARTING-REFUSES-ON-A-MISMATCH",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether the service REFUSES TO START when the interpreter it is running on, the digest of the artefact it was installed from, or the commit that artefact was built from do not match what was pinned. Determine that each of the three is checked separately and that each produces a refusal naming which one failed -- a single check that conflates them cannot tell an operator what to fix. Determine whether the refusal is fail-closed: an unreadable pin record must refuse, not proceed. Determine whether this was EXERCISED -- a mismatch deliberately introduced and the refusal observed -- or merely implemented; passing on an implementation nobody triggered is not this criterion."
+  },
+  {
+   "id": "R3-DEPLOYING-REFUSES-ON-A-MISMATCH",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge the same three checks at deployment time, before anything is installed or restarted. Determine whether a deployment carrying the wrong interpreter, an artefact whose digest does not match, or an artefact not built from the expected commit is refused BEFORE the running service is touched, so that a failed deployment leaves the previous one serving. Determine what the deployment does when it cannot tell -- a missing digest, an unreachable commit -- and whether that is a refusal or a shrug."
+  },
+  {
+   "id": "R4-THE-DEPLOYMENT-RECORD-BINDS-WHAT-IT-IS-ABOUT",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether the deployment record binds all of: the Python version, the artefact digest, the commit, the operator policy digest AND its version, the worker image and the container runtime, the topology, and the conformance report. Determine whether each is bound rather than noted beside -- a field that can drift away from what it describes is documentation, not a binding. Determine what happens to a record when one of them changes: it must stop being evidence for the new state rather than continue to look current. State any of the eight that is present in name only."
+  },
+  {
+   "id": "R5-THE-MANAGED-SERVICE-HAS-AN-IDENTITY-THAT-IS-NOT-A-VERSION",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether the managed service carries a build identity derived from the commit and the artefact digest, and whether that identity appears wherever the service identifies itself. Determine specifically that the version number alone can no longer stand as identity: 0.24.1 was installed before and after a deployment that changed the code, and two different builds carrying one version is the failure this addresses. Determine whether the build identity is computed from the artefact rather than written down beside it."
+  },
+  {
+   "id": "R6-THE-DECISION-ABOUT-3.14-IS-MADE-AND-NOT-DEFERRED",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether a decision has been recorded, and reviewed, between supporting Python 3.14 fully -- including in CI -- and narrowing the published package metadata to the versions actually supported. Determine that the decision names what each option costs and what it does not establish. Determine that the ALREADY PUBLISHED 0.24.1 is not silently replaced: judge whether the metadata change is described as applying to what is published next, and whether anything in the change would alter an artefact already on PyPI."
+  },
+  {
+   "id": "R7-THE-PREVIOUSLY-FAILING-TESTS-PASS-AND-ARE-RUN",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether the five install-transaction tests that failed on 3.14 now pass on the pinned interpreter, and whether the whole suite passes there. Determine that this was measured on the pinned environment rather than inferred from a green run elsewhere. Determine whether anything about those tests was changed to make them pass -- a test adjusted to fit a broken interpreter is not a fix, and if any was touched, state which and why."
+  },
+  {
+   "id": "R8-THE-ALPHA-STILL-DOES-EVERYTHING-IT-DID",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether, after the change of interpreter, the closed alpha still: runs gateway and worker under separate accounts; holds every account and device it held before; runs a real container job, cancels one, and verifies cleanup; answers Claude Code and Codex over MCP; takes an encrypted backup and restores from it with a credential issued beforehand; and rolls back to the previous state and forward again. Determine which of these were executed against the running machine and which were asserted."
+  },
+  {
+   "id": "R9-THE-EVIDENCE-WOULD-FAIL-WITHOUT-THE-MECHANISM",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge the presented tests and counter-checks rather than the claims. For each refusal this profile requires -- the interpreter, the digest, the commit, at start and at deploy -- determine whether a counter-check removes that one mechanism, names a DIFFERENT test, shows it failing with a non-zero exit, proves the mutation landed, and proves the file was restored byte for byte. Determine whether any presented count was reconciled by hand rather than read from a machine-produced report, and whether any duration is offered as proof rather than as diagnosis."
+  }
+ ],
+ "corrects": "alpha-runtime-pin-r1",
+ "why_corrected": "r1 declares no `roles` map. The runner assigns any input a profile does not list the lowest authority, `context`, and the reviewer instructions say context is background that cannot substitute for reviewed evidence. r1 therefore asks nine criteria for evidence and makes it impossible for any input to BE evidence: no evidence set can satisfy it, exactly as completion-gate v1's G1 and G4 were jointly unsatisfiable. ALPHA-RUNTIME-PIN-0002 returned BLOCK with all nine NOT_EVIDENCED and named this as the reason first. The criteria below are byte-identical to r1's; only the roles map is added. r1 and the verdict produced under it stay exactly as they are.",
+ "roles": {
+  "brief.md": "context",
+  "what-answers-what.md": "context",
+  "BUILD-IDENTITY-AND-WHAT-SIGNS-IT.md": "context",
+  "decision-python-314.md": "frozen_evidence",
+  "py314-decision-verdict.json": "frozen_evidence",
+  "runtime_pin.py": "normative_spec",
+  "identity.py": "normative_spec",
+  "meter-signing-key.py.txt": "normative_spec",
+  "report-binding.py.txt": "normative_spec",
+  "gateway-start-refusals.py.txt": "normative_spec",
+  "conftest-pin-fixture.py.txt": "normative_spec",
+  "provenance.py.txt": "normative_spec",
+  "deploy-pinned.sh": "normative_spec",
+  "build-from-commit.sh": "normative_spec",
+  "rollback-artefact.sh": "normative_spec",
+  "rollback-drill.sh": "normative_spec",
+  "counter-check-r5.sh": "normative_spec",
+  "pyproject.toml": "normative_spec",
+  "test_runtime_pin.py": "supporting_evidence",
+  "test_deploying_refuses.py": "supporting_evidence",
+  "test_the_meter_key_is_written_whole.py": "supporting_evidence",
+  "counter-checks.txt": "frozen_evidence",
+  "exercised-refusals.txt": "frozen_evidence",
+  "reverified-on-the-alpha.txt": "frozen_evidence",
+  "suite-on-the-pinned-environment.txt": "frozen_evidence",
+  "control-run-af4e6d8.txt": "frozen_evidence",
+  "the-3-11-failure-before-and-after.txt": "frozen_evidence",
+  "the-five-tests-named.txt": "frozen_evidence",
+  "one-version-one-wheel.txt": "frozen_evidence",
+  "ci-checks.txt": "frozen_evidence",
+  "rollback-drill-output.txt": "frozen_evidence",
+  "deployed-to-the-alpha.txt": "frozen_evidence",
+  "what-the-machine-is.txt": "frozen_evidence",
+  "two-models-drove-it.txt": "frozen_evidence",
+  "a-run-was-cancelled.txt": "frozen_evidence",
+  "profile-r2-what-differs.txt": "context",
+  "profile-r2-verdict.json": "context"
+ }
+}

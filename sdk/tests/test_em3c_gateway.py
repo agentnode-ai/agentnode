@@ -546,12 +546,26 @@ class TestEveryAnswerNamesTheGatewayThatGaveIt:
             assert answer.get("gateway", {}).get("version") == expected.version, name
             assert answer.get("fingerprint") == expected.fingerprint, name
 
-    def test_the_fingerprint_changes_when_the_version_does(self, gateway):
-        base, state, _, _ = gateway
+    def test_the_fingerprint_does_not_change_when_the_version_does(self, gateway):
+        """CORRECTED, and the correction is the finding. This asserted the opposite, and the
+        opposite was wrong: the fingerprint is what a paired client pins and re-checks, so tying
+        it to the version meant every upgrade told every device that something else was answering
+        on that address. It stayed invisible while two builds shared the number 0.24.1, and the
+        first deployment that really changed the version broke a real pairing.
+
+        Which BUILD is answering is a different question with its own answer now -- `build_id`,
+        from the commit and the artefact digest, in every stamp and signed in the report."""
+        _base, state, _, _ = gateway
         before = state.identity.fingerprint
         state.version = "a-different-build"
-        assert state.identity.fingerprint != before
+        assert state.identity.fingerprint == before
         assert state.identity.gateway_id == GatewayState(state.root, "x").identity.gateway_id
+
+    def test_but_a_different_gateway_is_a_different_fingerprint(self, gateway, tmp_path):
+        """The control. Without it the test above would pass on a fingerprint that never moves."""
+        _base, state, _, _ = gateway
+        somewhere_else = GatewayState(str(tmp_path / "another"), version=state.version)
+        assert somewhere_else.identity.fingerprint != state.identity.fingerprint
 
 
 # ---------------------------------------------- mandatory vs optional, and the two digests

@@ -86,6 +86,21 @@ def _operator_policy(root: Path):
                                               allowed_destinations=frozenset(hosts)))
 
 
+def _build_id() -> str:
+    """Which build this process is, from the pin the deployment wrote.
+
+    Empty when there is no pin -- an installation made before pinning existed genuinely cannot
+    say which build it is, and a made-up answer would be read as a real one. `_refuse_unless_pinned`
+    is what decides whether running without a pin is allowed; this only reports.
+    """
+    from agentnode_sdk.gateway import runtime_pin
+
+    try:
+        return str(runtime_pin.read_pin(runtime_pin.pin_dir()).get("build_id") or "")
+    except Exception:                                         # noqa: BLE001
+        return ""
+
+
 def _service(root: Path):
     from agentnode_sdk.gateway.identity import GatewayState
     from agentnode_sdk.gateway.server import GatewayService
@@ -93,7 +108,7 @@ def _service(root: Path):
 
     from agentnode_sdk import __version__ as version
 
-    state = GatewayState(root, version=str(version))
+    state = GatewayState(root, version=str(version), build_id=_build_id())
     return state, GatewayService(state, backend=ContainerBackend(),
                                  operator_policy=_operator_policy(root))
 
@@ -217,11 +232,29 @@ def cmd_init(args) -> int:
     return 0
 
 
+def _refuse_unless_pinned(root, what: str) -> int:
+    """A thin call into the one implementation, in `runtime_pin`.
+
+    This file and the worker's one each held their own copy of the whole rule. They had already
+    started to disagree -- one was changed to refuse an unpinned start and the other was
+    not -- which would have left a machine whose gateway refuses and whose worker shrugs.
+    `bold` is handed in so each surface keeps its own emphasis without the rule moving.
+    """
+    from agentnode_sdk.gateway import runtime_pin
+
+    return runtime_pin.refuse_unless_pinned(root, what, say=print, bold=bold)
+
 def cmd_start(args) -> int:
     from agentnode_sdk.gateway.server import make_server
     from agentnode_sdk.gateway.transport import InsecureTransportError, public_url_for
 
     root = _root(args)
+    # The PIN directory, not the state directory. A restore replaces the state; it must not be
+    # able to replace what this installation is allowed to run as.
+    from agentnode_sdk.gateway import runtime_pin as _rp
+
+    if _refuse_unless_pinned(_rp.pin_dir(), "gateway"):
+        return 1
     config = _load_config(root)
     state, service = _service(root)
     host = getattr(args, "host", None) or config.get("host") or "127.0.0.1"

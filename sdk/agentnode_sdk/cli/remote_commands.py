@@ -240,6 +240,11 @@ def cmd_status(args) -> int:
     if getattr(args, "verbose", False):
         print()
         print(dim(f"    gateway id      {hello.get('gateway', {}).get('gateway_id', '')}"))
+        # WHICH BUILD, not which version. Two builds carried 0.24.1, so a person comparing
+        # versions would have seen one where there were two. Shown as "not stated" rather than
+        # blank when the gateway cannot tell, because a blank line reads as a value of nothing.
+        told = str(hello.get("gateway", {}).get("build_id", "") or "")
+        print(dim(f"    build           {told or 'not stated by this gateway'}"))
         print(dim(f"    fingerprint     {hello.get('fingerprint', '')}"))
         print(dim(f"    protocol        {hello.get('protocol', '')}"))
         for name, held in sorted((hello.get("properties") or {}).items()):

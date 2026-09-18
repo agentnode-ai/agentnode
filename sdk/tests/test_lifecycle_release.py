@@ -228,7 +228,7 @@ class TestTheServingCommandItselfGivesEverythingBack:
     command's own objects are still referenced.
     """
 
-    def test_it_closes_its_state_and_its_socket_when_it_is_stopped(self, tmp_path, monkeypatch):
+    def test_it_closes_its_state_and_its_socket_when_it_is_stopped(self, tmp_path, monkeypatch, a_pinned_machine):
         """Serve for real, then stop it the way stopping it really happens.
 
         The first version of this replaced `serve_forever` outright, and that deadlocked:
