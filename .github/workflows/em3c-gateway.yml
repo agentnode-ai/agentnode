@@ -174,7 +174,10 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_stop_reason.py 2>&1 | tee em3c-stop.txt
-          grep -qE "^32 passed" em3c-stop.txt || {
+          # 32 -> 33: early-ending-success split the test that listed the reasons a
+          # stopped run may give into two -- the reasons somebody chose, and that each
+          # names exactly one ending. The count stays exact on purpose.
+          grep -qE "^33 passed" em3c-stop.txt || {
             echo "the stop-reason tests did not all pass"; exit 1; }
 
       # The value this gateway makes for one run: what it is bound to, where it travels, and
