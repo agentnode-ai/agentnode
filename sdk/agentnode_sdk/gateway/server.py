@@ -943,6 +943,36 @@ class GatewayService:
         }
 
     @staticmethod
+    def what_to_tell_them_about_an_interruption(reason: str, ever_ran: bool) -> str:
+        """The sentence that goes with the reason, saying the same thing the value says.
+
+        The value is what a machine branches on; this is what a person reads. They have to
+        agree, and they did not: every interrupted run was told "the gateway restarted", which
+        is a specific claim and was wrong for a job cut short by a planned stop -- nothing had
+        restarted at that point, and possibly nothing ever would.
+
+        Two things differ between the sentences and both matter to the reader:
+
+          WHAT HAPPENED TO THE GATEWAY   somebody stopped it, or it went without saying so
+          WHETHER THEIR JOB EVER RAN     because one of the two costs money and the other does
+                                         not, and because only one of them may have done work
+
+        "did not finish" appears in every one of them on purpose: it is the phrase an
+        interrupted run is required to carry, and a test reads for it.
+        """
+        from agentnode_sdk.gateway.protocol import GATEWAY_STOPPED
+
+        what = ("this gateway was stopped" if reason == GATEWAY_STOPPED
+                else "this gateway went away without stopping cleanly")
+        if ever_ran:
+            return (what + " while your job was running, so it did not finish. Whether it got "
+                    "anything done before that is not known. It has not been started again -- "
+                    "submit it as a new job if you still want it run.")
+        return (what + " while your job was still waiting for its turn, so it did not finish "
+                "and never started -- nothing was charged for it. It has not been started "
+                "again: submit it as a new job if you still want it run.")
+
+    @staticmethod
     def what_became_of_the_sandbox(*, ever_started: bool, cleanup_verified,
                                    the_worker_answered: bool = True) -> str:
         """Which of the four things a closing line may say about the run's sandbox.
@@ -987,7 +1017,7 @@ class GatewayService:
             return SANDBOX_STILL_THERE
         return SANDBOX_CONFIRMED_GONE if ever_started else SANDBOX_NEVER_CREATED
 
-    def _close_an_interrupted_run(self, record, entry: dict, *, reason: str = "") -> None:
+    def _close_an_interrupted_run(self, record, entry: dict, *, reason: str = "") -> bool:
         """Write the one signed, chained usage line an interrupted run is owed.
 
         ## Why this exists
@@ -1062,12 +1092,25 @@ class GatewayService:
             # move the ledger entry before it went, and it would be reached by a second gateway
             # sharing this directory. Either way the run has its one line, the caller goes on to
             # move the state, and nothing is written twice.
-            pass
+            return True
         except Exception as exc:                              # noqa: BLE001
             # A line that could not be written is not a reason to fail the recovery and leave
             # every other interrupted run unanswered. It is reported the way any other failure
             # to record is.
             self.could_not_record(record, exc)
+            # AND THE CALLER IS TOLD, because what it does next decides whether this run ever
+            # gets a line at all.
+            #
+            # It used to return nothing, and the caller moved the ledger entry to `interrupted`
+            # either way -- out of the set a later start selects from. So a line that could not
+            # be written was not written later; it was never written, and the run was gone from
+            # the only place anything would have looked. The run existed, it was accepted, and
+            # the signed log did not contain it.
+            #
+            # Found by driving it rather than by reading it: a check on the ORDER of the two
+            # calls passes on this code, because the order was never the problem.
+            return False
+        return True
 
     def _restore_interrupted(self) -> None:
         """Runs that were executing when the process died are interrupted, not running.
@@ -1105,17 +1148,8 @@ class GatewayService:
             # 0.0 on a rebuilt record either way -- but telling somebody their job was running
             # when it was queued is a false statement in the one place they go to find out.
             ever_ran = str(entry.get("state")) == "running"
-            record.refusal = (
-                "the gateway restarted while this job was running, so it did not finish. It has "
-                "not been started again -- submit it as a new job if you still want it run."
-                if ever_ran else
-                # "did not finish" is in BOTH sentences on purpose: it is the phrase every
-                # interrupted run is required to carry, and a test reads for it. What differs
-                # is what comes after it.
-                "the gateway restarted while this job was still waiting for its turn, so it "
-                "did not finish and never started -- nothing was charged for it. It has not "
-                "been started again: submit it as a new job if you still want it run."
-            )
+            record.refusal = self.what_to_tell_them_about_an_interruption(
+                self._how_it_was_interrupted(), ever_ran)
             record.finished_at = time.time()
             record.container_name = container_name_for(run_id)
             self.runs[run_id] = record
@@ -1154,8 +1188,12 @@ class GatewayService:
             # about. The two are not close.
             if time.monotonic() < budget:
                 self._clean_up_what_it_left(record)
-            self._close_an_interrupted_run(record, entry, reason=self._how_it_was_interrupted())
-            self.ledger.note_state(run_id, "interrupted")
+            # ONLY IF IT HAS ITS LINE. Moving the entry takes the run out of the set a later
+            # start selects from, and doing that for a run whose line could not be written is
+            # how a run leaves the signed log for good.
+            if self._close_an_interrupted_run(
+                    record, entry, reason=self._how_it_was_interrupted()):
+                self.ledger.note_state(run_id, "interrupted")
 
     def close_what_is_still_in_flight(self) -> list:
         """On the way out, close the runs this gateway is still holding. Returns their ids.
@@ -1194,7 +1232,9 @@ class GatewayService:
                     record.finished_at = time.time()
                 record.container_name = record.container_name or container_name_for(run_id)
                 self._clean_up_what_it_left(record)
-                self._close_an_interrupted_run(record, entry, reason=GATEWAY_STOPPED)
+                if not self._close_an_interrupted_run(record, entry, reason=GATEWAY_STOPPED):
+                    # Left where the next start will find it, for the same reason.
+                    continue
                 self.ledger.note_state(run_id, "interrupted")
                 closed.append(run_id)
             except Exception:                                  # noqa: BLE001
@@ -1258,10 +1298,8 @@ class GatewayService:
                 owner_account_id=str(entry.get("owner_account_id", "")),
                 state="interrupted",
             )
-            record.refusal = (
-                "the gateway restarted while this job was running, so it did not finish. It has "
-                "not been started again -- submit it as a new job if you still want it run."
-            )
+            record.refusal = self.what_to_tell_them_about_an_interruption(
+                self._how_it_was_interrupted(), True)
             record.finished_at = time.time()
             record.container_name = container_name_for(run_id)
             self.runs[run_id] = record

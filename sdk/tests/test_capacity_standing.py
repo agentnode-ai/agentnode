@@ -283,7 +283,7 @@ class TestARestartTellsAWaitingJobApartFromARunningOne:
             record = again.runs["only-ever-waited"]
             assert record.state == "interrupted"
             assert "waiting" in record.refusal, record.refusal
-            assert "while this job was running" not in record.refusal, (
+            assert "while your job was running" not in record.refusal, (
                 "a job that never left the queue was told it was running")
             assert "nothing was charged" in record.refusal
         finally:
@@ -319,7 +319,10 @@ class TestARestartTellsAWaitingJobApartFromARunningOne:
         try:
             record = again.runs["was-really-running"]
             assert record.state == "interrupted"
-            assert "while this job was running" in record.refusal, record.refusal
+            # The wording moved when the sentence had to start saying WHICH interruption it
+            # was -- "the gateway restarted" was a specific claim, and wrong for a planned
+            # stop. What this test is about is unchanged: a job that ran is told it ran.
+            assert "while your job was running" in record.refusal, record.refusal
             assert record.container_name, "the sandbox it may have left was not named"
         finally:
             again.close()
