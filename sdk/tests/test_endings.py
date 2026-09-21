@@ -402,3 +402,71 @@ class TestARunThatWasKilledHasNoExitCode:
         assert source.count("native_status=") >= 2
         assert "platform=CONTAINER_PLATFORM" in source, (
             "a status is kept without saying whose it is")
+
+
+class TestNothingIsLeftBehind:
+    """`--rm` is gone from the single-run path, so removal is this code's job in every case.
+
+    Measured on the closed alpha before the sweep below existed: the worker was stopped while a
+    job was in flight, to produce a `transport_lost`. The record was right, and the container was
+    still there afterwards. With `--rm` the runtime would have tidied it up once the payload
+    finished on its own; without it, nothing would have.
+    """
+
+    def test_the_single_run_path_removes_and_then_proves_it_is_gone(self):
+        from agentnode_sdk.sandbox.container_backend import ContainerBackend
+
+        source = inspect.getsource(ContainerBackend._end_an_ordinary_run)
+        assert '"rm", "-f"' in source, "the ordinary path no longer removes its container"
+        assert "SandboxContainmentError" in source, (
+            "a container that cannot be shown to be gone is tidied up quietly")
+
+    def test_and_rm_is_stripped_only_for_that_path(self):
+        """Every other caller of `wrap_command` -- the MCP path, the agent session -- has no
+        removal code, so taking the flag out of the shared list would leak there instead."""
+        from agentnode_sdk.sandbox import container_backend as cb
+
+        assert "--rm" in cb._HARDENED_FLAGS
+        assert '!= "--rm"' in inspect.getsource(cb.ContainerBackend._argv_with_cidfile)
+
+    def test_a_worker_taking_over_removes_what_the_last_one_left(self):
+        from agentnode_sdk.worker.local import LocalWorker
+
+        assert hasattr(LocalWorker, "remove_what_a_previous_worker_left")
+        source = inspect.getsource(LocalWorker.remove_what_a_previous_worker_left)
+        assert '"rm", "-f"' in source
+
+    def test_and_it_addresses_only_containers_this_sdk_named(self):
+        """A worker that removed by a broad pattern would remove somebody else's work on a
+        machine it happens to share."""
+        from agentnode_sdk.worker.local import LocalWorker
+
+        assert LocalWorker.ITS_OWN_PREFIXES
+        for prefix in LocalWorker.ITS_OWN_PREFIXES:
+            assert prefix.startswith("agentnode-"), prefix
+        source = inspect.getsource(LocalWorker.remove_what_a_previous_worker_left)
+        assert "ITS_OWN_PREFIXES" in source
+
+    def test_and_a_leftover_it_cannot_remove_does_not_stop_it_starting(self):
+        """A worker that will not start because of a leftover is a worse answer than one that
+        starts and says what it could not do."""
+        from agentnode_sdk.worker.local import LocalWorker
+
+        tree = ast.parse(textwrap.dedent(
+            inspect.getsource(LocalWorker.remove_what_a_previous_worker_left)))
+        # Read as code, not as text: the docstring says "it never raises", and a substring
+        # check cannot tell that sentence from a statement that does.
+        raises = [n for n in ast.walk(tree) if isinstance(n, ast.Raise)]
+        assert not raises, "the sweep can stop a worker from starting"
+        handlers = [n for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler)]
+        assert handlers, "nothing catches what the runtime might do"
+
+    def test_the_sweep_runs_before_the_socket_is_opened(self):
+        """After that, a job of its own could be in flight, and 'nobody is waiting for this'
+        would stop being true."""
+        from agentnode_sdk.worker import service
+
+        source = inspect.getsource(service)
+        swept = source.index("remove_what_a_previous_worker_left")
+        listening = source.index("remembers_at=remembers_at")
+        assert swept < listening, "the sweep happens after the worker is already taking work"

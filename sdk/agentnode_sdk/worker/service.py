@@ -362,6 +362,22 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None) -> Non
             "is not one to hand foreign code to: " + (proof.reason or "no reason given"),
             proof.evidence)
 
+    # WHAT THE PREVIOUS WORKER LEFT, before this one opens its socket. At this moment no job of
+    # its own can be in flight, so anything carrying this SDK's prefixes is a leftover from a
+    # worker that died mid-run -- which is now possible to leave behind, because the single-run
+    # path no longer passes `--rm` and a container that removes itself cannot be asked how it
+    # ended. Never fatal: it reports what it could not do rather than refusing to start.
+    left = getattr(the_worker, "remove_what_a_previous_worker_left", None)
+    if callable(left):
+        swept = left()
+        if swept.get("found"):
+            print("  Removed %d container(s) a previous worker left: %s"
+                  % (len(swept.get("removed") or []), ", ".join(swept.get("found") or [])))
+        if swept.get("failed") or swept.get("why"):
+            print("  Could not account for every leftover: %s%s"
+                  % (", ".join(swept.get("failed") or []) or "-",
+                     (" (" + swept["why"] + ")") if swept.get("why") else ""))
+
     # Next to the worker's own state, which is the only directory it may write. A worker that
     # could not write this would still refuse replays within its own life; it just could not
     # refuse one that spans a restart, so a failure here is a narrowing and not an opening.
