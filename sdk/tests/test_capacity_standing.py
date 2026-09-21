@@ -345,3 +345,63 @@ class TestARestartTellsAWaitingJobApartFromARunningOne:
         finally:
             again.close()
             state.close()
+
+
+class TestAnOperatorCanSetTheCeilingWithoutEditingAFile:
+    """Q1 asks for a configuration value an operator sets. It was one -- in a file nothing in
+    the product would write.
+
+    Every other ceiling this gateway has is a flag on `agentnode gateway limits`. The machine
+    ceiling and its queue were reachable only by hand-editing `allowance.json`, which is how an
+    operator ends up with a JSON file they are afraid to touch and a number nobody can explain.
+    """
+
+    def _root(self, tmp_path):
+        root = tmp_path / "state"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def test_the_command_line_sets_both(self, tmp_path):
+        from agentnode_sdk.cli.main import main
+        from agentnode_sdk.gateway.allowance import read_allowance
+
+        root = self._root(tmp_path)
+        assert main(["gateway", "limits", "--dir", str(root),
+                     "--machine-concurrent-runs", "2", "--queue-depth", "4"]) == 0
+        allowed = read_allowance(root)
+        assert allowed.machine_concurrent_runs == 2
+        assert allowed.queue_depth == 4
+
+    def test_setting_one_ceiling_does_not_clear_another(self, tmp_path):
+        """`limits` rebuilds the whole allowance from what it read plus what was asked. A new
+        field left out of that read would be silently reset to zero by any unrelated change --
+        and for `machine_concurrent_runs` zero is no ceiling at all."""
+        from agentnode_sdk.cli.main import main
+        from agentnode_sdk.gateway.allowance import read_allowance
+
+        root = self._root(tmp_path)
+        main(["gateway", "limits", "--dir", str(root),
+              "--machine-concurrent-runs", "2", "--queue-depth", "4"])
+        main(["gateway", "limits", "--dir", str(root), "--runs-per-window", "500"])
+
+        allowed = read_allowance(root)
+        assert allowed.runs_per_window == 500
+        assert allowed.machine_concurrent_runs == 2, (
+            "setting an unrelated ceiling removed the machine ceiling")
+        assert allowed.queue_depth == 4
+
+    def test_it_shows_them_and_says_what_a_zero_queue_means(self, tmp_path, capsys):
+        """The number alone reads backwards: everywhere else on that screen zero means no
+        limit, and here it means nobody waits."""
+        from agentnode_sdk.cli.main import main
+
+        root = self._root(tmp_path)
+        main(["gateway", "limits", "--dir", str(root), "--machine-concurrent-runs", "2"])
+        capsys.readouterr()
+        main(["gateway", "limits", "--dir", str(root)])
+        shown = capsys.readouterr().out
+
+        assert "machine_concurrent_runs" in shown
+        assert "nobody waits" in shown, shown
+        assert "no limit" not in shown.split("queue_depth")[1].splitlines()[0], (
+            "a queue depth of zero was shown as 'no limit', which is the opposite of true")

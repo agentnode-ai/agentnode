@@ -1227,7 +1227,8 @@ def cmd_limits(args) -> int:
     asked = {name: getattr(args, name, None) for name in
              ("concurrent_runs", "runs_per_window", "seconds_per_window",
               "account_concurrent_runs", "account_runs_per_window",
-              "account_seconds_per_window", "requests_per_minute",
+              "account_seconds_per_window", "machine_concurrent_runs", "queue_depth",
+              "requests_per_minute",
               "account_requests_per_minute", "max_artifact_bytes", "max_output_bytes")}
     if all(value is None for value in asked.values()):
         print()
@@ -1241,6 +1242,22 @@ def cmd_limits(args) -> int:
                      "account_seconds_per_window"):
             value = now.as_dict()[name]
             print(f"    {name:<28}: {value if value else 'no limit'}")
+        print()
+        print(f"  {bold('What THIS MACHINE will run at once, whoever asked')}")
+        machine = now.as_dict()["machine_concurrent_runs"]
+        print(f"    {'machine_concurrent_runs':<28}: {machine if machine else 'no limit'}")
+        # SAID IN WORDS, because the number alone reads backwards. Everywhere else on this
+        # screen a zero means "no limit"; here it means nobody waits at all, and an operator
+        # who reads it the other way believes they have an unbounded queue.
+        depth = now.as_dict()["queue_depth"]
+        print(f"    {'queue_depth':<28}: "
+              f"{depth if depth else 'nobody waits -- a full machine refuses at once'}")
+        if machine and not depth:
+            print("      With a ceiling set and nothing allowed to wait, a job arriving at a")
+            print("      full machine is refused rather than queued.")
+        if depth and not machine:
+            print("      This does nothing while there is no machine ceiling: with nothing to")
+            print("      wait for, no job ever queues.")
         print()
         print(f"  {bold('How fast, and how big')}")
         for name in ("requests_per_minute", "account_requests_per_minute",

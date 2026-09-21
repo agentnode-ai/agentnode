@@ -306,6 +306,20 @@ def main(argv: list[str] | None = None) -> int:
                            type=int, default=None,
                            help="How many seconds of sandbox time one customer may use. "
                                 "0 = no limit")
+    # AND THE ONE THAT BOUNDS THE MACHINE rather than anybody on it. Every ceiling above is
+    # per customer or per device; a hundred customers allowed two runs each are allowed two
+    # hundred, and the machine serves two hundred by making everybody slower -- which lands on
+    # the invoice of whoever is billed by elapsed time.
+    gw_limits.add_argument("--machine-concurrent-runs", dest="machine_concurrent_runs",
+                           type=int, default=None,
+                           help="How many runs THIS MACHINE will execute at once, whoever "
+                                "asked. Not a limit on what a customer may have. 0 = no limit")
+    gw_limits.add_argument("--queue-depth", dest="queue_depth", type=int, default=None,
+                           help="How many jobs may WAIT for a slot when the machine is at its "
+                                "ceiling. 0 means NOBODY WAITS and a job arriving at a full "
+                                "machine is refused at once -- the opposite reading to the "
+                                "ceilings above, because the other one would be an unbounded "
+                                "queue. Only means anything with --machine-concurrent-runs")
     gw_limits.add_argument("--requests-per-minute", dest="requests_per_minute", type=int,
                            default=None,
                            help="How many requests one device may make in a minute. A daily "
