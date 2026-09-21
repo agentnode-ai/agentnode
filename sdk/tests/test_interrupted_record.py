@@ -332,6 +332,37 @@ class TestExactlyOneClosingLinePerAcceptedRun:
         finally:
             state.close()
 
+    def test_a_gateway_that_could_not_write_a_line_stops_taking_work(self, gateway,
+                                                                     monkeypatch):
+        """The third thing standing between an accepted run and no line, and the loudest.
+
+        A gateway that keeps running jobs it cannot account for produces a usage record whose
+        gaps are invisible, and a record with invisible gaps is not a record. So a line that
+        could not be written stops the machine taking work, durably -- the halt is written into
+        the state directory, so it survives the process and an operator has to lift it.
+
+        Which makes the missing line a thing somebody finds out about, rather than a thing that
+        quietly is not there.
+        """
+        from agentnode_sdk.gateway import allowance
+
+        now = time.time()
+        claim(gateway, "halts-the-machine", when=now - 30.0, started=now - 20.0)
+
+        def refuse(*a, **kw):
+            raise OSError("the disk said no")
+
+        monkeypatch.setattr(meter, "record", refuse)
+        again, state = restart(gateway)
+        try:
+            assert not lines_for(state.root, "halts-the-machine")
+            stopped = allowance.why_it_is_stopped(state.root)
+            assert stopped, "the gateway kept taking work with a run it could not account for"
+            assert "could not write down what it used" in str(stopped)
+        finally:
+            again.close()
+            state.close()
+
     def test_the_retry_happens_in_this_process_and_not_at_a_later_start(self):
         """The bound the criterion asks for is one that does not need anybody to start
         anything."""
