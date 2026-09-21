@@ -1215,12 +1215,21 @@ class TestTheChainStillVerifies:
             "reads as tampered with: %r" % report)
 
     def test_and_so_does_a_correction_written_after_one(self, tmp_path):
-        a_line(tmp_path, "to-erase", started_at=1000.0, finished_at=1011.0)
-        a_line(tmp_path, "to-correct-later", started_at=2000.0, finished_at=2011.0)
+        """The tombstone has to be the LAST line, or the rule is not the one being exercised.
+
+        A first version of this erased the FIRST of two lines, so what the correction chained
+        to was an ordinary line and the mutation that removes the rule left it green. The rule
+        is about what the line AFTER a tombstone points at, so a tombstone has to be there.
+        """
+        a_line(tmp_path, "keeps-its-line", started_at=1000.0, finished_at=1011.0)
+        a_line(tmp_path, "gets-erased", started_at=2000.0, finished_at=2011.0)
         meter.erase(tmp_path, "past its retention period",
-                    lambda line: line.get("run_id") == "to-erase")
-        meter.correct(tmp_path, run_id="to-correct-later", seconds=1.0, why="a reason")
-        assert meter.verify(tmp_path)["ok"]
+                    lambda line: line.get("run_id") == "gets-erased")
+        assert meter.is_a_tombstone(lines_in(tmp_path)[-1]), "the last line is not a tombstone"
+        meter.correct(tmp_path, run_id="keeps-its-line", seconds=1.0, why="a reason")
+        report = meter.verify(tmp_path)
+        assert report["ok"], (
+            "a correction appended after a tombstone does not chain: %r" % report)
 
     def test_a_correction_is_not_aged_as_if_it_had_no_time(self, tmp_path):
         """The other half of the same afternoon.
