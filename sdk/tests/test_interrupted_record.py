@@ -1189,6 +1189,86 @@ class TestTheChainStillVerifies:
         assert not meter.verify(tmp_path)["ok"], (
             "a line whose `ever_started` was flipped still verifies, so the field is not signed")
 
+    def test_a_line_written_after_an_erasure_still_chains(self, tmp_path):
+        """Found on the closed alpha, and older than the work that found it.
+
+        A retention sweep replaces a line with a signed tombstone that carries `stood_for` --
+        the digest of what it stood for -- because that is what the chain was built on and what
+        `verify` walks with. `record` took the digest of whatever the last line WAS, so the
+        first line appended after a sweep pointed at the tombstone instead, and every line from
+        there on read as tampered with.
+
+        Nothing had noticed because no gateway had yet appended a line after a sweep on a log
+        anybody checked. The alpha did both within a minute, and the chain broke at the exact
+        line the rule predicts.
+        """
+        a_line(tmp_path, "old-enough", started_at=1000.0, finished_at=1011.0)
+        assert meter.verify(tmp_path)["ok"]
+        erased = meter.erase(tmp_path, "past its retention period", lambda line: True)
+        assert erased == 1
+        assert meter.verify(tmp_path)["ok"], "erasing on its own already broke the chain"
+
+        a_line(tmp_path, "written-after", started_at=2000.0, finished_at=2011.0)
+        report = meter.verify(tmp_path)
+        assert report["ok"], (
+            "a line appended after an erasure does not chain, so every line from there on "
+            "reads as tampered with: %r" % report)
+
+    def test_and_so_does_a_correction_written_after_one(self, tmp_path):
+        a_line(tmp_path, "to-erase", started_at=1000.0, finished_at=1011.0)
+        a_line(tmp_path, "to-correct-later", started_at=2000.0, finished_at=2011.0)
+        meter.erase(tmp_path, "past its retention period",
+                    lambda line: line.get("run_id") == "to-erase")
+        meter.correct(tmp_path, run_id="to-correct-later", seconds=1.0, why="a reason")
+        assert meter.verify(tmp_path)["ok"]
+
+    def test_a_correction_is_not_aged_as_if_it_had_no_time(self, tmp_path):
+        """The other half of the same afternoon.
+
+        The retention sweep selected lines by `finished_at`. A correction has none -- it is
+        about a run, not a run itself -- so it read as infinitely old and was erased by the
+        first sweep after it was written. The statement about what a customer actually owed
+        lasted until the next sweep.
+        """
+        import time as _time
+
+        a_line(tmp_path, "aged", started_at=1000.0, finished_at=1011.0)
+        meter.correct(tmp_path, run_id="aged", seconds=1.0, why="a reason")
+        assert meter.when_it_happened(lines_in(tmp_path)[-1]) > 0.0, (
+            "a correction carries no time anything can age it by")
+
+        from agentnode_sdk.gateway import retention
+
+        # A sweep with a cutoff in the past: the run line is old enough, the correction is not.
+        cutoff = _time.time() - 60.0
+        gone = retention._sweep_metering(pathlib.Path(tmp_path), cutoff)
+        after = lines_in(tmp_path)
+        assert gone == 1, "the sweep took %d lines; it should have taken the run line" % gone
+        assert meter.is_a_correction(after[-1]), (
+            "the sweep erased the correction, which is the only thing saying what was owed")
+        assert meter.verify(tmp_path)["ok"]
+
+    def test_what_a_customer_owes_survives_a_retention_sweep(self, tmp_path):
+        """Asked of the figure rather than of the ageing, and that is the point.
+
+        A correction is the only line saying what a run actually cost after it was metered
+        twice. A sweep that takes it leaves the two original lines standing, so the answer goes
+        back to being the sum of them -- which is the overstatement the correction existed to
+        settle.
+        """
+        import time as _time
+
+        a_line(tmp_path, "owed-after-a-sweep", started_at=1000.0, finished_at=1011.0)
+        meter.correct(tmp_path, run_id="owed-after-a-sweep", seconds=2.5,
+                      why="metered twice before a run could only be metered once")
+        assert meter.what_was_billed(tmp_path)["owed-after-a-sweep"] == 2.5
+
+        from agentnode_sdk.gateway import retention
+
+        retention._sweep_metering(pathlib.Path(tmp_path), _time.time() - 60.0)
+        assert meter.what_was_billed(tmp_path)["owed-after-a-sweep"] == 2.5, (
+            "after a sweep the figure went back to what the superseded lines said")
+
     def test_the_shape_was_changed_where_the_shape_is_declared(self):
         """A field added at a call site is a field the module does not know it has."""
         tree = ast.parse(textwrap.dedent(inspect.getsource(meter)))

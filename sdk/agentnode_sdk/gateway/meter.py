@@ -162,6 +162,42 @@ def is_a_correction(line: dict) -> bool:
     return bool(line.get("corrects"))
 
 
+def when_it_happened(line: dict) -> float:
+    """The moment a line is ABOUT, whatever shape it has. 0.0 when it is about no moment.
+
+    Every shape in this log carries its time in a field of its own, and a reader that knows
+    only one of them ages the others wrongly. That is not hypothetical: the retention sweep
+    selected by `finished_at`, a correction line has no `finished_at`, and so every correction
+    read as infinitely old and was erased on the next sweep -- taking with it the statement
+    about what a customer actually owed.
+    """
+    for named in ("finished_at", "at", "erased_at"):
+        value = line.get(named)
+        if value:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def what_the_next_line_points_at(line: dict) -> str:
+    """The digest the line AFTER this one has to carry.
+
+    For an ordinary line it is that line's own digest. For a TOMBSTONE it is `stood_for` -- the
+    digest of the line the tombstone replaced -- because that is what the chain was built on
+    and what `verify` walks with.
+
+    It existed in `erase`, which rewrites the head correctly, and nowhere else. `record` always
+    took the digest of whatever the last line was, so the FIRST line appended after a retention
+    sweep pointed at the tombstone instead of at what it stood for, and every line from there on
+    read as tampered with. Nothing had noticed because nothing had yet appended a line after a
+    sweep on a log anybody checked.
+    """
+    return (str(line.get("stood_for") or "") if is_a_tombstone(line)
+            else _digest_of(_without_signature(line)))
+
+
 def correct(root, *, run_id: str, seconds: float, why: str) -> Path:
     """Append a signed correction saying what a run was actually billed.
 
@@ -197,7 +233,7 @@ def correct(root, *, run_id: str, seconds: float, why: str) -> Path:
         assert set(line) == set(CORRECTION_FIELDS), "a correction has exactly its own fields"
         previous = so_far[-1] if so_far else None
         line["seq"] = (int(previous.get("seq", 0)) + 1) if previous else 1
-        line["prev"] = _digest_of(_without_signature(previous)) if previous else GENESIS
+        line["prev"] = what_the_next_line_points_at(previous) if previous else GENESIS
         line["signature"] = sign_payload(_canonical(line), signing_key(root)).hex()
         handle = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(handle, "a", encoding="utf-8") as fh:
@@ -489,7 +525,7 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
 
         previous = so_far[-1] if so_far else None
         line["seq"] = (int(previous.get("seq", 0)) + 1) if previous else 1
-        line["prev"] = _digest_of(_without_signature(previous)) if previous else GENESIS
+        line["prev"] = what_the_next_line_points_at(previous) if previous else GENESIS
         line["signature"] = sign_payload(_canonical(line), signing_key(root)).hex()
 
         # Opened with its permissions on creation rather than narrowed afterwards, and appended

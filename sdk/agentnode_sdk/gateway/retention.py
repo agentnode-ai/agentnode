@@ -466,8 +466,12 @@ def _sweep_metering(root: Path, cutoff: float) -> int:
     """Erased to signed tombstones rather than removed. See `meter.erase`."""
     from agentnode_sdk.gateway import meter
 
+    # AGED BY THE MOMENT THE LINE IS ABOUT, whatever shape it has, and not by one field that
+    # only one shape carries. Selecting on `finished_at` erased every correction line on the
+    # first sweep after one was written -- a correction has no `finished_at`, so it read as
+    # infinitely old -- and with it the statement about what a customer actually owed.
     return meter.erase(root, "past this gateway's metering retention period",
-                       lambda line: float(line.get("finished_at") or 0.0) < cutoff)
+                       lambda line: 0.0 < meter.when_it_happened(line) < cutoff)
 
 
 def _sweep_backups(root: Path, cutoff: float) -> int:
