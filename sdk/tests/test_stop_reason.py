@@ -465,8 +465,29 @@ class TestNothingElseMoved:
                                   "native_platform", "cleanup_verified", "refusal", "stdout",
                                   "stderr", "policy_deltas", "started_at", "finished_at")
 
-    def test_the_reasons_a_stopped_run_may_give_are_unchanged(self):
-        assert TERMINATION_REASONS == (EXITED, TIMED_OUT, CANCELLED)
+    def test_the_reasons_a_stopped_run_may_give_are_the_ones_somebody_chose(self):
+        """This guard is meant to fail when the set changes. It did, and the change was meant.
+
+        The three it used to pin were all there was, and everything that was not an exit, a
+        timeout or a cancellation therefore arrived wearing `exited` -- which with a finished
+        state meant `succeeded`. A container the kernel had killed for memory was signed into
+        the usage log as a success.
+
+        Three more, each naming ONE thing the runtime can actually report. There is deliberately
+        no "killed by a signal" among them: 137 is 128+9 for a container something killed and
+        for a program that chose to exit 137, and nothing here tells them apart.
+        """
+        from agentnode_sdk.gateway.protocol import (
+            OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST,
+        )
+
+        assert TERMINATION_REASONS == (EXITED, TIMED_OUT, CANCELLED,
+                                       OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST)
+
+    def test_and_each_one_names_exactly_one_ending(self):
+        """No two of them may be spellings of the same thing: a reader who cannot tell two
+        reasons apart is in the position the single `exited` left them in."""
+        assert len(set(TERMINATION_REASONS)) == len(TERMINATION_REASONS)
 
     def test_and_the_thing_that_says_nothing_is_not_one_of_them(self):
         assert NOT_STOPPED not in TERMINATION_REASONS

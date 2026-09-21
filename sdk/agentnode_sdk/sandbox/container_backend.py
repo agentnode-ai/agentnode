@@ -424,9 +424,58 @@ class ContainerBackend(SandboxBackend):
                 out, err = proc.communicate(input=input_text, timeout=timeout)
             except subprocess.TimeoutExpired:
                 return self._end_timed_out_run(proc, argv[0], name, cidfile, timeout)
-            return proc.returncode, out or "", err or ""
+            return self._end_an_ordinary_run(proc, argv[0], name, cidfile,
+                                             out or "", err or "")
         finally:
             _remove_quietly(cidfile, tmpdir)
+
+    def _end_an_ordinary_run(self, proc, runtime: str, name: str, cidfile: str,
+                             out: str, err: str):
+        """Ask the runtime how this container ended, then remove it and prove it is gone.
+
+        This used to be `return proc.returncode, out, err` -- three values and no reason, which
+        `why_it_stopped` reads as an ordinary exit. Every ending that was not an exit therefore
+        arrived at the meter wearing the same clothes as one that was.
+        """
+        from agentnode_sdk.gateway.protocol import EXITED, OUT_OF_MEMORY, RUNTIME_LOST
+        from agentnode_sdk.sandbox.backend import Outcome
+
+        ident, _how = self._resolve_identity(runtime, name, cidfile)
+        said = self._what_the_runtime_says(runtime, ident) if ident else None
+
+        if said is None:
+            # NOBODY ESTABLISHED WHAT HAPPENED. The container is not there to ask, or the
+            # runtime would not answer. The client's own status is kept beside the reason --
+            # it is a real number and may be useful -- but it is not offered as the ending.
+            reason, oom_status = RUNTIME_LOST, None
+        else:
+            oom, oom_status, _error = said
+            reason = OUT_OF_MEMORY if oom else EXITED
+
+        if ident:
+            # REMOVED HERE, because `--rm` is gone. Same rule as the timeout path: a container
+            # that cannot be shown to be gone is a containment failure, not a tidy-up that did
+            # not quite work. Left to itself it would hold its memory and its pid slots, and the
+            # next run would be measured against a machine that is quietly smaller.
+            removed = _run_runtime([runtime, "rm", "-f", ident], timeout=_KILL_TIMEOUT)
+            if (removed is None or removed.returncode != 0) and \
+                    self._presence(runtime, ident) is not ABSENT:
+                raise SandboxContainmentError(
+                    f"container {ident[:12]} finished but could not be shown to be gone, so "
+                    "what it was holding cannot be accounted for")
+
+        if reason == OUT_OF_MEMORY:
+            # No exit code: it did not choose a status, it was killed. The runtime's own number
+            # is kept beside the reason and says whose it is -- the same rule the timeout path
+            # already follows.
+            return Outcome(None, out, err + "\n[the sandbox ran out of memory]",
+                           reason=reason, native_status=oom_status,
+                           platform=CONTAINER_PLATFORM)
+        if reason == RUNTIME_LOST:
+            return Outcome(proc.returncode, out, err,
+                           reason=reason, native_status=proc.returncode,
+                           platform=CONTAINER_PLATFORM)
+        return Outcome(proc.returncode, out, err, reason=EXITED)
 
     # -- EM-3B-R1: identity, and ending a run that ignored its deadline -------
 
@@ -452,8 +501,50 @@ class ContainerBackend(SandboxBackend):
         return spec, name, cidfile, tmpdir
 
     def _argv_with_cidfile(self, spec: ProcessSpec, cidfile: str) -> list[str]:
-        argv = self.wrap_command(spec)
+        """The hardened argv, plus an exact identity, MINUS `--rm`.
+
+        `--rm` removes the container the moment it exits, which means the only entity that knows
+        why it stopped has destroyed the record before anybody can ask. That is how a container
+        the kernel killed for running out of memory was written into the signed usage log as a
+        success: the client saw status 137, nothing said what 137 meant, and a backend that says
+        nothing is read as an ordinary exit.
+
+        So this path takes the removal on itself, the way the timeout path already does: ask the
+        runtime what happened, then remove, then prove it is gone. The flag is stripped HERE and
+        not in `_HARDENED_FLAGS`, because every other caller of `wrap_command` -- the MCP path,
+        the agent session -- has no such code and would leak containers without it.
+        """
+        argv = [x for x in self.wrap_command(spec) if x != "--rm"]
         return argv[:2] + ["--cidfile", cidfile] + argv[2:]
+
+    def _what_the_runtime_says(self, runtime: str, ident: str):
+        """(out of memory?, the runtime's exit status, its error text) -- or None if it will not say.
+
+        Asked of the runtime, not deduced. `OOMKilled` is a separate boolean precisely because an
+        exit status cannot carry it: 137 is 128+9 for a container the kernel killed for memory
+        and for a program that chose to exit 137, and no amount of reading the number apart tells
+        them from each other.
+
+        None means the runtime could not be asked, or answered nothing usable. That is not
+        "it exited normally" -- it is that nobody established what happened, and the caller says
+        so rather than filling in the cheerful answer.
+        """
+        r = _run_runtime([runtime, "inspect", "--format",
+                          "{{.State.OOMKilled}}|{{.State.ExitCode}}|{{.State.Error}}", ident])
+        if r is None or r.returncode != 0:
+            return None
+        said = (r.stdout or "").strip()
+        if not said:
+            return None
+        parts = said.split("|", 2)
+        if len(parts) < 2:
+            return None
+        oom = parts[0].strip().lower() == "true"
+        try:
+            status = int(parts[1].strip())
+        except ValueError:
+            return None
+        return oom, status, (parts[2].strip() if len(parts) > 2 else "")
 
     def _resolve_identity(self, runtime: str, name: str, cidfile: str):
         """(container id, how it was resolved). Exact lookups only -- never a pattern or a prefix."""

@@ -63,7 +63,8 @@ METER_NAME = "use-log.jsonl"
 #: purpose, in a place a reviewer reads, rather than a keyword appearing at a call site.
 FIELDS = ("run_id", "client_id", "account_id", "queued_at", "started_at", "finished_at",
           "seconds", "waited_s",
-          "cpu", "memory_mb", "wall_clock_s", "state", "outcome", "bytes_out",
+          "cpu", "memory_mb", "wall_clock_s", "state", "outcome", "termination_reason",
+          "bytes_out",
           "worker_topology", "worker_topology_means", "worker_id", "allowance_sha256",
           "allowance_admitted_under", "operator_policy_sha256", "operator_policy_version")
 
@@ -78,6 +79,27 @@ FIELDS = ("run_id", "client_id", "account_id", "queued_at", "started_at", "finis
 #:                caller -- the same rule every other computed field in this line follows
 #:   waited_s     how long it waited. Recorded because the customer is entitled to see it, kept
 #:                apart from `seconds` because the wait is this gateway's doing and not theirs
+#:
+#: WHAT AN ENDING COSTS, decided rather than inherited: **the bill follows the slot, not the
+#: outcome.** A run that held a worker slot for eleven seconds is charged eleven seconds whether
+#: it completed, hit its wall clock, ran out of memory, or ended in a way nobody could establish.
+#: The machine was occupied either way, and it was occupied by that customer's work.
+#:
+#: The two alternatives were considered and are worse:
+#:
+#: * charging nothing for an ending that was not a success makes exceeding the memory ceiling
+#:   the cheapest way to use the machine, and a customer who discovers that is not doing anything
+#:   wrong by using it;
+#: * charging a different rate per ending means the invoice depends on a classification the
+#:   customer cannot check, which is the opposite of what this record is for.
+#:
+#: What changes with the ending is not the number but what the line SAYS: `outcome` and
+#: `termination_reason` are there so a customer looking at a charge can see that the run they
+#: paid for ran out of memory rather than finishing. A charge nobody can explain is the problem;
+#: a charge somebody can explain and dispute is a bill.
+#:
+#: The one ending that costs nothing is the one that never held a slot -- and that is not a rule
+#: applied here, it is the absence of a `started_at` to subtract from.
 
 #: What binds one line to the one before it. Not in FIELDS: those are what a line SAYS, these are
 #: what makes it hard to change, and keeping them apart stops a reader mistaking one for the
@@ -164,6 +186,7 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
            finished_at: float, queued_at: float = 0.0,
            cpu: float, memory_mb: int, wall_clock_s: int, state: str,
            outcome: str, bytes_out: int, worker_topology: str,
+           termination_reason: str = "",
            allowance_sha256: str,
            allowance_admitted_under: dict | None = None,
            account_id: str, worker_id: str,
@@ -225,6 +248,12 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
         "wall_clock_s": int(wall_clock_s),
         "state": str(state),
         "outcome": str(outcome),
+        # WHICH ENDING, beside what it amounted to. `outcome` is the coarse answer --
+        # succeeded, failed, cancelled, timed out, unverified -- and five different
+        # endings share `failed` between them. This says which one, so a reader of one
+        # line can tell a container the kernel killed for memory from one somebody
+        # destroyed, without asking anybody.
+        "termination_reason": str(termination_reason or ""),
         # How much the job wrote, not what it wrote.
         "bytes_out": int(bytes_out),
         "worker_topology": str(worker_topology),

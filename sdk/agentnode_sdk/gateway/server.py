@@ -953,6 +953,7 @@ class GatewayService:
         """
         from agentnode_sdk.gateway import meter
         from agentnode_sdk.gateway import policy_version as _versions
+        from agentnode_sdk.gateway.protocol import outcome_of as _outcome_of
 
         admitted = dict(entry.get("admitted") or {})
         queued = float(entry.get("first_seen") or 0.0)
@@ -970,7 +971,8 @@ class GatewayService:
                 memory_mb=int(admitted.get("memory_mb") or 0),
                 wall_clock_s=int(admitted.get("wall_clock_s") or 0),
                 state="interrupted",
-                outcome="interrupted",
+                outcome=_outcome_of("interrupted", ""),
+                termination_reason="",
                 bytes_out=0,
                 # UNATTRIBUTED rather than a guess, for anything the ledger did not carry. It is
                 # the word this gateway already uses for a policy it cannot name, and a reader
@@ -2224,6 +2226,9 @@ class GatewayService:
                 # The state it is ENDING in, which the record does not carry yet: publishing
                 # it is the last thing that happens, after this.
                 state=terminal, outcome=outcome_of(terminal, record.termination_reason),
+                # BESIDE the outcome, not instead of it: five different endings share `failed`,
+                # and a reader of one line has to be able to tell which one happened.
+                termination_reason=str(record.termination_reason or ""),
                 bytes_out=len(record.stdout or "") + len(record.stderr or ""),
                 worker_topology=self.worker.topology,
                 # What it was admitted under, not what is configured now.
