@@ -54,9 +54,59 @@ count of other people's jobs, so there is no way to report one that does not dis
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass, field
+
+
+def what_this_machine_can_serve() -> int:
+    """How many runs this machine has a core for, or 0 when that cannot be established.
+
+    Each sandbox is allotted `limits.cpu = 1.0` by default, so the number of runs this machine
+    can serve WITHOUT making them slower is the number of cores it has. That is the comparison,
+    and it is stated here rather than left implicit, because it is only true while the default
+    holds.
+
+    `sched_getaffinity` where it exists, because a process confined to two cores of a
+    thirty-two-core machine can serve two. `os.cpu_count()` otherwise. Zero when neither
+    answers -- and zero here means "not established", which is why the caller below treats it as
+    "say nothing" rather than as "nothing can run".
+    """
+    try:
+        return len(os.sched_getaffinity(0))                   # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        pass
+    try:
+        return int(os.cpu_count() or 0)
+    except Exception:                                         # noqa: BLE001
+        return 0
+
+
+def more_than_this_machine_can_serve(ceiling: int) -> int:
+    """How many runs the ceiling allows beyond what the machine has a core for. 0 when it does
+    not, or when the machine's capacity could not be established.
+
+    ## What is deliberately NOT done with this number
+
+    **It is not clamped.** Serving fewer runs than the operator asked for, while reporting the
+    number they asked for, is the gateway deciding for them and then hiding it. It would also
+    put back exactly what this file exists to remove: a machine quietly serving less than its
+    configuration claims, with the difference landing on somebody's invoice.
+
+    **It is not refused.** A core count is not the whole of what a machine can serve. Work that
+    waits on a network or a disk uses almost no CPU, and an operator who knows their jobs are
+    shaped like that is not wrong to allow more runs than cores. Turning that judgement into a
+    gateway that will not start would make a configuration choice into an outage.
+
+    So: it is SAID. At the moment the value is set, and every time the limits are shown, with
+    both numbers named. An operator who means it carries on; one who typed a zero too many finds
+    out immediately rather than from a customer's bill.
+    """
+    have = what_this_machine_can_serve()
+    if not have or not ceiling:
+        return 0
+    return max(0, int(ceiling) - have)
 
 
 class QueueIsFull(Exception):

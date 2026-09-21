@@ -1218,6 +1218,32 @@ def cmd_resume(args) -> int:
     return 0
 
 
+def _say_if_it_is_more_than_the_machine_has(ceiling: int) -> None:
+    """Name a machine ceiling that allows more runs than this machine has cores for.
+
+    Said rather than clamped and rather than refused -- `capacity.more_than_this_machine_can_serve`
+    carries the reasoning for both. Said in BOTH places an operator meets this number: when they
+    set it, and every time they look at it. A warning that appears once, at a moment nobody was
+    reading, is a warning that was not given.
+    """
+    from agentnode_sdk.gateway.capacity import (
+        more_than_this_machine_can_serve, what_this_machine_can_serve,
+    )
+
+    over = more_than_this_machine_can_serve(int(ceiling or 0))
+    if not over:
+        return
+    have = what_this_machine_can_serve()
+    print(f"      {bold('This is more than this machine has cores for.')} It has {have}, and "
+          f"each sandbox")
+    print(f"      is allotted one, so {ceiling} at once means {over} more than can run without")
+    print("      slowing each other down -- and time spent being slowed down is time the")
+    print("      customer is billed for.")
+    print("      It is allowed to stand: work that waits on a network or a disk uses almost no")
+    print("      CPU, and only you know whether yours does. Nothing has been changed or")
+    print("      reduced. If you did not mean it, set it to the number you did mean.")
+
+
 def cmd_limits(args) -> int:
     """Show or set what one client may use."""
     from agentnode_sdk.gateway.allowance import Allowance, read_allowance, write_allowance
@@ -1252,6 +1278,7 @@ def cmd_limits(args) -> int:
         depth = now.as_dict()["queue_depth"]
         print(f"    {'queue_depth':<28}: "
               f"{depth if depth else 'nobody waits -- a full machine refuses at once'}")
+        _say_if_it_is_more_than_the_machine_has(machine)
         if machine and not depth:
             print("      With a ceiling set and nothing allowed to wait, a job arriving at a")
             print("      full machine is refused rather than queued.")
@@ -1281,6 +1308,9 @@ def cmd_limits(args) -> int:
     for name, value in changed.as_dict().items():
         if name != "window_seconds":
             print(f"    {name:<28}: {value if value else 'no limit'}")
+    # AT THE MOMENT IT IS SET, not only when somebody later looks. This is where an operator
+    # who typed one digit too many is still looking at their own command.
+    _say_if_it_is_more_than_the_machine_has(changed.machine_concurrent_runs)
     return 0
 
 

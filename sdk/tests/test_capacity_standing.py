@@ -503,3 +503,134 @@ class TestFairnessThroughARealGateway:
             "arrived last and holds nothing is still waiting")
         assert not any(t.granted.is_set() for t in mine), (
             "one of the flooder's own queued jobs was promoted ahead of a customer holding none")
+
+
+class TestACeilingBiggerThanTheMachine:
+    """The third of the three values the ceiling can have, and the one that was unanswered.
+
+    Absent and zero mean no ceiling, and that was deliberate and written down. A ceiling LARGER
+    than the machine has cores for was simply accepted: an operator who typed 200 instead of 2
+    got 200, and the mechanism that exists to stop the machine being oversold was switched off
+    by the number meant to configure it.
+
+    `ALPHA-CAPACITY-QUEUE-0001`, finding F1: "no normative or frozen evidence establishes
+    deliberate validation, refusal, clamping, or warning when it exceeds what the machine can
+    serve. The profile expressly requires that case."
+
+    The answer is: allowed, and said. Neither of the other two is right --
+    `capacity.more_than_this_machine_can_serve` carries the reasoning, and these tests hold it
+    to it.
+    """
+
+    def _root(self, tmp_path):
+        root = tmp_path / "state"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def test_what_the_machine_can_serve_is_the_number_of_cores(self):
+        """Because each sandbox is allotted one. The comparison is only true while that is."""
+        from agentnode_sdk.gateway.capacity import what_this_machine_can_serve
+        from agentnode_sdk.sandbox.contract import Limits
+
+        assert Limits().cpu == 1.0, (
+            "a sandbox no longer gets one core by default, so comparing the ceiling against the "
+            "core count is no longer the right comparison")
+        assert what_this_machine_can_serve() >= 1
+
+    def test_a_ceiling_within_the_machine_says_nothing(self):
+        from agentnode_sdk.gateway.capacity import (
+            more_than_this_machine_can_serve, what_this_machine_can_serve,
+        )
+
+        assert more_than_this_machine_can_serve(what_this_machine_can_serve()) == 0
+        assert more_than_this_machine_can_serve(1) == 0
+
+    def test_no_ceiling_is_not_an_oversized_one(self):
+        """Zero means no machine ceiling. Reporting it as 'more than the machine has' would be
+        the inverted reading that `queue_depth` already has to warn about."""
+        from agentnode_sdk.gateway.capacity import more_than_this_machine_can_serve
+
+        assert more_than_this_machine_can_serve(0) == 0
+
+    def test_a_ceiling_beyond_the_machine_is_measured_not_guessed(self):
+        from agentnode_sdk.gateway.capacity import (
+            more_than_this_machine_can_serve, what_this_machine_can_serve,
+        )
+
+        have = what_this_machine_can_serve()
+        assert more_than_this_machine_can_serve(have + 7) == 7
+
+    def test_an_unknowable_capacity_says_nothing_rather_than_everything(self, monkeypatch):
+        """Zero cores means 'not established'. Treating it as 'nothing can run' would warn about
+        every ceiling on a machine that simply would not answer."""
+        from agentnode_sdk.gateway import capacity
+
+        monkeypatch.setattr(capacity, "what_this_machine_can_serve", lambda: 0)
+        assert capacity.more_than_this_machine_can_serve(500) == 0
+
+    def test_it_is_not_clamped(self, tmp_path):
+        """THE POINT. The operator asked for a number and gets that number.
+
+        Serving fewer than the figure reported would hide the overbooking behind a value that
+        looks obeyed -- which is the defect this whole arc exists to remove, reintroduced by the
+        fix for it.
+        """
+        from agentnode_sdk.cli.main import main
+        from agentnode_sdk.gateway.allowance import read_allowance
+        from agentnode_sdk.gateway.capacity import Slots, what_this_machine_can_serve
+
+        root = self._root(tmp_path)
+        asked = what_this_machine_can_serve() + 50
+        assert main(["gateway", "limits", "--dir", str(root),
+                     "--machine-concurrent-runs", str(asked), "--queue-depth", "4"]) == 0
+
+        allowed = read_allowance(root)
+        assert allowed.machine_concurrent_runs == asked, (
+            "the ceiling was changed to %s behind the operator's back" 
+            % allowed.machine_concurrent_runs)
+        assert Slots(ceiling=allowed.machine_concurrent_runs).ceiling == asked
+
+    def test_it_is_not_refused(self, tmp_path):
+        from agentnode_sdk.cli.main import main
+
+        root = self._root(tmp_path)
+        assert main(["gateway", "limits", "--dir", str(root),
+                     "--machine-concurrent-runs", "500"]) == 0, (
+            "a configuration choice was turned into a failure")
+
+    def test_but_it_is_said_when_it_is_set(self, tmp_path, capsys):
+        from agentnode_sdk.cli.main import main
+        from agentnode_sdk.gateway.capacity import what_this_machine_can_serve
+
+        root = self._root(tmp_path)
+        have = what_this_machine_can_serve()
+        main(["gateway", "limits", "--dir", str(root),
+              "--machine-concurrent-runs", str(have + 50)])
+        said = capsys.readouterr().out
+
+        assert "more than this machine has cores for" in said.lower(), said
+        assert str(have) in said, "it does not say what the machine actually has"
+        assert str(have + 50) in said, "it does not say what was asked for"
+
+    def test_and_said_again_every_time_it_is_shown(self, tmp_path, capsys):
+        """A warning that appeared once, at a moment nobody was reading, was not given."""
+        from agentnode_sdk.cli.main import main
+        from agentnode_sdk.gateway.capacity import what_this_machine_can_serve
+
+        root = self._root(tmp_path)
+        main(["gateway", "limits", "--dir", str(root),
+              "--machine-concurrent-runs", str(what_this_machine_can_serve() + 50)])
+        capsys.readouterr()
+
+        main(["gateway", "limits", "--dir", str(root)])
+        shown = capsys.readouterr().out
+        assert "more than this machine has cores for" in shown.lower(), shown
+
+    def test_and_a_sensible_ceiling_is_not_nagged_about(self, tmp_path, capsys):
+        from agentnode_sdk.cli.main import main
+
+        root = self._root(tmp_path)
+        main(["gateway", "limits", "--dir", str(root), "--machine-concurrent-runs", "1"])
+        capsys.readouterr()
+        main(["gateway", "limits", "--dir", str(root)])
+        assert "more than this machine" not in capsys.readouterr().out.lower()

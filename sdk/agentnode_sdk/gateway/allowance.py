@@ -133,6 +133,21 @@ class Allowance:
     #
     # This is the ceiling that stops that. It is not a limit on what a customer may have; it is
     # what this machine will run at once, whoever asked.
+    #
+    # THE THREE VALUES IT CAN HAVE, and each answer is on purpose:
+    #
+    #   absent or zero  -- no machine ceiling. The same reading as every other ceiling in this
+    #                      file, and then `Slots` is a pass-through that decides nothing.
+    #   at most what    -- the ordinary case: the machine runs that many at once and queues the
+    #   the machine has    rest, which is what the whole mechanism is for.
+    #   more than that  -- ALLOWED, AND SAID. Not clamped, because serving fewer than the number
+    #                      reported is the gateway deciding for the operator and hiding it. Not
+    #                      refused, because a core count is not the whole of what a machine can
+    #                      serve and a configuration should not become an outage. The reasoning
+    #                      in full, and what "what the machine has" means, is in
+    #                      `capacity.more_than_this_machine_can_serve`; the saying is done by
+    #                      `agentnode gateway limits`, both when the value is set and every time
+    #                      it is shown.
     machine_concurrent_runs: int = 0
 
     #: How many jobs may WAIT for a slot. Not a ceiling like the others and deliberately not read
