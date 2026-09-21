@@ -906,15 +906,36 @@ class GatewayService:
                 owner_account_id=str(entry.get("owner_account_id", "")),
                 state="interrupted",
             )
+            # WHICH OF THE TWO THIS WAS, from the last thing the ledger durably saw. `running`
+            # is written once, when a slot is held and before a container is asked for; a run
+            # still sitting at `accepted` therefore never left the queue.
+            #
+            # They are told apart because they are not the same event and the customer's next
+            # move differs: one had a sandbox that may have done work and left something behind,
+            # the other never started and owes nothing. Neither is billed -- `started_at` stays
+            # 0.0 on a rebuilt record either way -- but telling somebody their job was running
+            # when it was queued is a false statement in the one place they go to find out.
+            ever_ran = str(entry.get("state")) == "running"
             record.refusal = (
                 "the gateway restarted while this job was running, so it did not finish. It has "
                 "not been started again -- submit it as a new job if you still want it run."
+                if ever_ran else
+                "the gateway restarted while this job was still waiting for its turn, so it "
+                "never started and nothing was charged for it. It has not been started again "
+                "-- submit it as a new job if you still want it run."
             )
             record.finished_at = time.time()
-            record.container_name = container_name_for(run_id)
+            if ever_ran:
+                record.container_name = container_name_for(run_id)
+            else:
+                # Nothing to sweep, and nothing to ask the worker about: no container was ever
+                # created for this run. Saying so here is what stops the recovery below from
+                # asking after a sandbox that never existed -- and an unasked question cannot
+                # come back with an answer that gets recorded as a cleanup.
+                record.cleanup_verified = True
             self.runs[run_id] = record
             self.ledger.note_state(run_id, "interrupted")
-            if time.monotonic() < budget:
+            if ever_ran and time.monotonic() < budget:
                 self._clean_up_what_it_left(record)
 
     def _clean_up_what_it_left(self, record: RunRecord) -> None:
@@ -1658,19 +1679,30 @@ class GatewayService:
         """
         ticket = record.slot_ticket
         if ticket is not None:
-            if record.cancel_requested.is_set():
+            # WHATEVER ALREADY TOOK THIS TICKET OUT KNOWS WHY, and its reason wins.
+            #
+            # A withdrawal sets `cancel_requested` as well -- every way of ending a run does --
+            # so reading that flag first told a customer whose device had been withdrawn that
+            # they had cancelled their own job. The ticket carries the specific cause; the flag
+            # only says that something ended this. So the flag is consulted ONLY when nothing
+            # has dropped the ticket yet, and then it means what it says: the customer asked.
+            if not ticket.dropped and record.cancel_requested.is_set():
                 self.slots.drop(record.run_id, "cancelled")
-                self._end_without_running(record, granted, "cancelled",
-                                          "cancelled while it was waiting for a slot")
-                return False
             if not self.slots.wait_for_slot(ticket):
                 why = getattr(ticket, "dropped", "") or "dropped"
                 self._end_without_running(
                     record, granted,
                     "cancelled" if why == "cancelled" else "refused",
+                    # EVERY REASON SOMETHING ACTUALLY DROPS A TICKET WITH, and no others.
+                    #
+                    # A suspension is deliberately absent. It is applied by the operator's CLI,
+                    # which is a DIFFERENT PROCESS from the one holding this queue and cannot
+                    # reach these tickets at all. It is enforced instead a few lines below, by
+                    # asking the account's standing again at the moment the slot is granted --
+                    # the last moment before foreign code runs. A wording here for a case
+                    # nothing can produce would read like a mechanism that exists.
                     {"cancelled": "cancelled while it was waiting for a slot",
                      "stopped": "this sandbox stopped taking work while this job was waiting",
-                     "suspended": "this account was suspended while this job was waiting",
                      "revoked": "the device that submitted this job was withdrawn while it "
                                 "was waiting"}.get(why, why))
                 return False
@@ -1752,6 +1784,24 @@ class GatewayService:
         mode, domains = network_mode(granted)
         record.container_name = container_name_for(record.run_id)
         record.move_to("running")
+        # DURABLY, so that a restart can tell this job from one that only ever waited.
+        #
+        # The ledger held `accepted` from submission until a terminal state and nothing ever
+        # wrote anything between, so after a restart every unfinished run looked identical --
+        # and each was told "the gateway restarted while this job was running", including jobs
+        # that had never left the queue. That sentence was false for them, and the recovery
+        # went on to ask the worker to clean up a sandbox that had never been created.
+        #
+        # Written BEFORE the container is asked for, never after: a crash between these two
+        # lines then leaves a run marked as having run when it may not have, which costs one
+        # pointless question to the worker. The other order would leave a run marked as merely
+        # waiting while its sandbox was live, and that one loses a container.
+        try:
+            self.ledger.note_state(record.run_id, "running")
+        except Exception:                                     # noqa: BLE001
+            # A ledger that cannot be written is not a reason to refuse a job that has already
+            # been admitted and holds a slot. The cost is the old behaviour for this one run.
+            pass
         payload = base64.b64encode(artifact).decode("ascii")
         # The client's own command if it brought one, otherwise this gateway's bootstrap -- which
         # reads the challenge off the first line of standard input and puts it in its own process
@@ -2123,7 +2173,9 @@ class GatewayService:
         except Exception:
             with self._lock:
                 self.runs.pop(run_id, None)
-            if allowed.runs_per_window or allowed.seconds_per_window or                     allowed.account_runs_per_window or allowed.account_seconds_per_window:
+            if (allowed.runs_per_window or allowed.seconds_per_window
+                    or allowed.account_runs_per_window
+                    or allowed.account_seconds_per_window):
                 try:
                     self.use.finished_every(
                         [k for k in (client_id, account_id) if k], run_id, 0.0)

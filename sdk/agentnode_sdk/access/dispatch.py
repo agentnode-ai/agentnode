@@ -1842,6 +1842,18 @@ def _devices_revoke(service, principal, params):
         if getattr(record, "owner_client_id", "") != wanted or is_terminal(record.state):
             continue
         record.cancel_requested.set()
+        # A JOB STILL WAITING FOR A SLOT HAS NO SANDBOX TO STOP, and nothing wakes it: the
+        # thread holding it is blocked on its ticket, and setting `cancel_requested` above is
+        # not something that ticket is watching. Left alone it would sit in the queue --
+        # occupying a place somebody else could use -- until a slot happened to free up, and
+        # only then notice it was withdrawn.
+        #
+        # Taking it out of the queue wakes that thread at once, and it ends the run without
+        # ever starting it. `drop` answers whether this was such a job, so the loop below does
+        # not have to infer it from the absence of a container name.
+        if service.slots.drop(run_id, "revoked"):
+            stopped.append(run_id)
+            continue
         try:
             service.stopping.ask(run_id, by="(a withdrawal)")
             stopped.append(run_id)
