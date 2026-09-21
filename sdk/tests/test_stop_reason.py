@@ -476,13 +476,27 @@ class TestNothingElseMoved:
         Three more, each naming ONE thing the runtime can actually report. There is deliberately
         no "killed by a signal" among them: 137 is 128+9 for a container something killed and
         for a program that chose to exit 137, and nothing here tells them apart.
+
+        And then two more again, which are not about the run at all. The eight fall into two
+        groups and the guard pins both, in order:
+
+            the six  what happened to the RUN -- it exited, hit a ceiling, was cancelled, ran
+                     out of memory, lost its runtime, lost its transport
+            the two  what happened to the GATEWAY -- somebody stopped it, or it went without
+                     ever beginning to. A run caught by either was not ended by anything about
+                     itself
+
+        `gateway_lost` names the absence of a shutdown and not a cause. A kill, a crash and a
+        power cut leave the same evidence, which is none, and the same refusal applies as to
+        "killed by a signal": a reason this code cannot establish is not one it writes down.
         """
         from agentnode_sdk.gateway.protocol import (
-            OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST,
+            GATEWAY_LOST, GATEWAY_STOPPED, OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST,
         )
 
         assert TERMINATION_REASONS == (EXITED, TIMED_OUT, CANCELLED,
-                                       OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST)
+                                       OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST,
+                                       GATEWAY_STOPPED, GATEWAY_LOST)
 
     def test_and_each_one_names_exactly_one_ending(self):
         """No two of them may be spellings of the same thing: a reader who cannot tell two

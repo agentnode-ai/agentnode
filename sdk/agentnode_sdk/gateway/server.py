@@ -425,12 +425,28 @@ class GatewayService:
         # that quietly stopped recovering would lose interrupted runs instead of killing live
         # ones. Which of the two defaults is right in the long run belongs to
         # `early-ending-success-r1`; this is the part that must not wait for it.
+        # WHY the runs it is about to find were interrupted, read BEFORE anything is written.
+        #
+        # The answer is in a file the previous gateway left: it says whether a shutdown was ever
+        # begun. Read first and overwritten after, because overwriting it first would erase the
+        # only evidence of what happened to the process that wrote it.
+        from agentnode_sdk.gateway import lifecycle as _lifecycle
+
+        self._interrupted_by = _lifecycle.why_a_run_was_interrupted(self.state.root)
         if recover:
             self._restore_interrupted()
+            # And now this process is the one serving. After recovery, so that a gateway which
+            # dies during recovery is still read as having been lost rather than as having
+            # served and stopped.
+            _lifecycle.say_it_is_serving(self.state.root)
         # A container being torn down does not disappear because the process did. Anything the
         # journal still remembers is picked up here, on the way back up.
         self.stopping.pick_up_where_it_left_off()
         self._lock = threading.Lock()
+
+    def _how_it_was_interrupted(self) -> str:
+        """The reason for a run this gateway found mid-flight when it took the directory over."""
+        return getattr(self, "_interrupted_by", "") or ""
 
     # ------------------------------------------------------------------ backend
 
@@ -926,7 +942,52 @@ class GatewayService:
             "worker_topology": str(record.worker_topology or ""),
         }
 
-    def _close_an_interrupted_run(self, record, entry: dict) -> None:
+    @staticmethod
+    def what_became_of_the_sandbox(*, ever_started: bool, cleanup_verified,
+                                   the_worker_answered: bool = True) -> str:
+        """Which of the four things a closing line may say about the run's sandbox.
+
+        The one question an interrupted run actually raises is whether something of the
+        customer's is still running on somebody else's machine. A line that does not answer it
+        leaves them to ask, and there is nobody to ask.
+
+        The mapping, and what each answer is entitled to claim:
+
+          never_created     the ledger never saw this run hold a slot, and nothing by its name
+                            exists now. `running` is written when a slot is taken and BEFORE a
+                            container is asked for, so its absence is the best evidence there is
+                            that none was ever created
+          confirmed_gone    it did hold a slot, and the worker confirms nothing by its name is
+                            there now
+          still_there       the worker says one IS there
+          not_established   nobody could ask
+
+        The two tidy answers are kept apart on purpose. Operationally they say the same thing --
+        nothing of yours is running -- and they differ in whether anything ever was, which is a
+        different fact and not this code's to blur.
+
+        ## What this cannot establish, said plainly
+
+        `running` is written on a best effort: a ledger that will not take a write is not a
+        reason to refuse a job that already holds a slot. So a run that DID have a container and
+        whose note was lost reads as `never_created` rather than `confirmed_gone`. That is the
+        weaker of the two claims in the direction that matters least -- both say nothing is left,
+        and the worker confirmed that part either way.
+        """
+        from agentnode_sdk.gateway.protocol import (SANDBOX_CONFIRMED_GONE,
+                                                    SANDBOX_NEVER_CREATED,
+                                                    SANDBOX_NOT_ESTABLISHED,
+                                                    SANDBOX_STILL_THERE)
+
+        if not the_worker_answered:
+            return SANDBOX_NOT_ESTABLISHED
+        if cleanup_verified is None:
+            return SANDBOX_NOT_ESTABLISHED
+        if cleanup_verified is False:
+            return SANDBOX_STILL_THERE
+        return SANDBOX_CONFIRMED_GONE if ever_started else SANDBOX_NEVER_CREATED
+
+    def _close_an_interrupted_run(self, record, entry: dict, *, reason: str = "") -> None:
         """Write the one signed, chained usage line an interrupted run is owed.
 
         ## Why this exists
@@ -958,6 +1019,9 @@ class GatewayService:
         admitted = dict(entry.get("admitted") or {})
         queued = float(entry.get("first_seen") or 0.0)
         started = float(entry.get("started_at") or 0.0)
+        sandbox = self.what_became_of_the_sandbox(
+            ever_started=bool(started),
+            cleanup_verified=getattr(record, "cleanup_verified", None))
         try:
             meter.record(
                 self.state.root,
@@ -971,8 +1035,13 @@ class GatewayService:
                 memory_mb=int(admitted.get("memory_mb") or 0),
                 wall_clock_s=int(admitted.get("wall_clock_s") or 0),
                 state="interrupted",
-                outcome=_outcome_of("interrupted", "", None),
-                termination_reason="",
+                # WHICH INTERRUPTION, as a value a reader can branch on. It used to be the empty
+                # string -- the same field every other line fills in, left blank on the one kind
+                # of line whose whole subject is that something went wrong. A customer holding
+                # it could see that their job did not finish and not why.
+                outcome=_outcome_of("interrupted", reason, None),
+                termination_reason=str(reason or ""),
+                sandbox=sandbox,
                 bytes_out=0,
                 # UNATTRIBUTED rather than a guess, for anything the ledger did not carry. It is
                 # the word this gateway already uses for a policy it cannot name, and a reader
@@ -987,6 +1056,13 @@ class GatewayService:
                 operator_policy_version=int(
                     admitted.get("operator_policy_version") or _versions.UNKNOWN),
             )
+        except meter.AlreadyRecorded:
+            # SOMEBODY ALREADY CLOSED THIS RUN, and that is this path succeeding rather than
+            # failing. It is reached when a previous process wrote the line and did not get to
+            # move the ledger entry before it went, and it would be reached by a second gateway
+            # sharing this directory. Either way the run has its one line, the caller goes on to
+            # move the state, and nothing is written twice.
+            pass
         except Exception as exc:                              # noqa: BLE001
             # A line that could not be written is not a reason to fail the recovery and leave
             # every other interrupted run unanswered. It is reported the way any other failure
@@ -1043,17 +1119,28 @@ class GatewayService:
             record.finished_at = time.time()
             record.container_name = container_name_for(run_id)
             self.runs[run_id] = record
-            # THE LINE FIRST, THE STATE AFTER, and that order is what makes it exactly once.
+            # THE SANDBOX FIRST, THEN THE LINE, THEN THE STATE.
             #
-            # `unfinished_runs` selects `accepted` and `running`. Once this entry says
-            # `interrupted` a later restart will not see it again, so the line cannot be written
-            # twice. Writing the line before moving the state means a crash between the two
-            # leaves the run selectable again -- which risks a second line rather than none, and
-            # of the two that is the one a reader can notice.
-            self._close_an_interrupted_run(record, entry)
-            self.ledger.note_state(run_id, "interrupted")
+            # It used to be line, state, sandbox, and the reason given was that writing the line
+            # first risks a SECOND line rather than none if the process dies between the two,
+            # "and of the two that is the one a reader can notice". That trade is gone: the
+            # meter now refuses a second line for a run it already has, under the lock that
+            # serialises appends. Neither order can produce two.
+            #
+            # So the order is free to serve the line's contents instead, and it does: the line
+            # has to say what became of the sandbox, and nobody knows that until the sandbox has
+            # been asked about. Written first, the line could only have said "not established"
+            # about every run, including the ones this code had just tidied up.
+            #
+            # What each crash window now costs:
+            #
+            #   after the sweep, before the line   the run is still selectable, so the next
+            #                                      start closes it. The sweep runs again and
+            #                                      answers the same way
+            #   after the line, before the state   the next start selects it, the meter refuses
+            #                                      the second line, and the state moves on
+            #
             # SWEPT WHICHEVER IT WAS, and that is deliberate after a first version got it wrong.
-            #
             # Skipping the sweep for a run the ledger never saw reach `running` looks tidy: no
             # container existed, so there is nothing to remove. But `running` is written on a
             # best effort -- a ledger that cannot be written is not a reason to refuse a job
@@ -1067,6 +1154,52 @@ class GatewayService:
             # about. The two are not close.
             if time.monotonic() < budget:
                 self._clean_up_what_it_left(record)
+            self._close_an_interrupted_run(record, entry, reason=self._how_it_was_interrupted())
+            self.ledger.note_state(run_id, "interrupted")
+
+    def close_what_is_still_in_flight(self) -> list:
+        """On the way out, close the runs this gateway is still holding. Returns their ids.
+
+        ## Why a stop does not simply leave them
+
+        It could: the next gateway to take this directory over finds them and closes them, which
+        is what a killed gateway has to rely on. But "the next start" is not a bound on anything
+        -- a directory nobody starts again never gets its lines, and the customer of a job cut
+        short by a planned stop would wait on a record that arrives when somebody happens to
+        restart a service.
+
+        A stop is the one interruption where the gateway is still there to say what happened. So
+        it says it, immediately, and `later` is left to the cases that genuinely have no choice.
+
+        ## The race, and why it is safe
+
+        A run finishing normally at this moment writes its own line from its own thread. Both
+        paths reach the same meter, which refuses a second line for a run it already has, under
+        the lock that serialises appends. Whichever arrives first writes; the other is told the
+        run is already recorded and moves on. There is no window in which both succeed and none
+        in which neither does.
+
+        Never raises. A gateway that would not stop because it could not write a line is a
+        gateway that has to be killed, which is the worse ending of the two.
+        """
+        from agentnode_sdk.gateway.protocol import GATEWAY_STOPPED, is_terminal
+
+        closed = []
+        for run_id, record in list(self.runs.items()):
+            try:
+                if is_terminal(getattr(record, "state", "")):
+                    continue
+                entry = self.ledger.run_entry(run_id) or {}
+                if not record.finished_at:
+                    record.finished_at = time.time()
+                record.container_name = record.container_name or container_name_for(run_id)
+                self._clean_up_what_it_left(record)
+                self._close_an_interrupted_run(record, entry, reason=GATEWAY_STOPPED)
+                self.ledger.note_state(run_id, "interrupted")
+                closed.append(run_id)
+            except Exception:                                  # noqa: BLE001
+                continue
+        return closed
 
     def _clean_up_what_it_left(self, record: RunRecord) -> None:
         """Ask the worker to remove the sandbox an interrupted run left running.
@@ -2172,6 +2305,7 @@ class GatewayService:
         fields are declared and a test walks a real line looking for every secret there is.
         """
         from agentnode_sdk.gateway import meter
+        from agentnode_sdk.gateway.protocol import TRANSPORT_LOST as _TRANSPORT_LOST
         from agentnode_sdk.gateway.protocol import outcome_of
 
         # WHAT IS BILLED, and what is not.
@@ -2241,6 +2375,17 @@ class GatewayService:
                 # and a reader of one line has to be able to tell which one happened.
                 termination_reason=str(record.termination_reason or ""),
                 exit_code=record.exit_code,
+                # WHAT BECAME OF THE SANDBOX, on the ordinary line too and not only on the one a
+                # restart writes. A run that came back with an answer had its container removed
+                # by the worker, which proves the container is gone or raises rather than
+                # reporting a tidy-up it could not confirm -- so `the worker answered` is the
+                # whole condition. A transport that ended before an answer arrived is the case
+                # where nobody could establish it, and it says so.
+                sandbox=self.what_became_of_the_sandbox(
+                    ever_started=bool(started),
+                    cleanup_verified=True,
+                    the_worker_answered=(
+                        str(record.termination_reason or "") != _TRANSPORT_LOST)),
                 bytes_out=len(record.stdout or "") + len(record.stderr or ""),
                 worker_topology=self.worker.topology,
                 # What it was admitted under, not what is configured now.

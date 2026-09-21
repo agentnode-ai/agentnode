@@ -85,13 +85,56 @@ OUT_OF_MEMORY = "out_of_memory"
 RUNTIME_LOST = "runtime_lost"
 TRANSPORT_LOST = "transport_lost"
 
+#: AND THE TWO WHERE THE GATEWAY ITSELF WENT AWAY. The six above are all things that happened to
+#: the RUN: it exited, it hit a ceiling, somebody stopped it, its runtime or its transport went.
+#: These two are things that happened to the GATEWAY, and a run caught by one of them was not
+#: ended by anything about itself.
+#:
+#: They are told apart by whether a clean shutdown was ever begun, which the gateway records on
+#: its way out and a later start reads back:
+#:
+#:   gateway_stopped -- a shutdown was begun. Somebody stopped this gateway, and this run was
+#:                      in flight at that moment
+#:   gateway_lost    -- no shutdown was begun. The process did not get to say anything
+#:
+#: `gateway_lost` deliberately does NOT say "killed". A process that was killed, one that
+#: crashed, and a machine that lost power leave exactly the same trace -- which is no trace --
+#: and a record that named one of the three would be claiming something nobody established. What
+#: IS established is that it never began to stop, and that is what the word says.
+GATEWAY_STOPPED = "gateway_stopped"
+GATEWAY_LOST = "gateway_lost"
+
 TERMINATION_REASONS = (EXITED, TIMED_OUT, CANCELLED,
-                       OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST)
+                       OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST,
+                       GATEWAY_STOPPED, GATEWAY_LOST)
 
 #: The reasons under which nobody established what the payload did. They are NOT failures: a run
 #: reported as failed when nobody knows is a false statement about a customer's job in the same
 #: way a run reported as succeeded is.
-NOTHING_WAS_ESTABLISHED = (RUNTIME_LOST, TRANSPORT_LOST)
+#:
+#: The two gateway-side reasons belong here for the same reason the other two do, and it is worth
+#: saying why rather than leaving it to the tuple: a job the gateway lost may have run to
+#: completion, may have done half its work, may never have started. The gateway stopped being
+#: able to tell. Calling that `failed` would be a statement about the customer's code that
+#: nothing supports.
+NOTHING_WAS_ESTABLISHED = (RUNTIME_LOST, TRANSPORT_LOST, GATEWAY_STOPPED, GATEWAY_LOST)
+
+#: WHAT BECAME OF THE SANDBOX a run may have created, as a value a reader can branch on.
+#:
+#: Four answers, and the fourth is the one that is usually left out. "Confirmed gone" and "still
+#: there" are the obvious pair; "nobody could establish which" is the honest third, and it must
+#: not be written as a confirmed cleanup -- a gateway that came up before its worker cannot ask,
+#: and recording that silence as tidiness is how a container nobody knows about keeps running.
+#:
+#: The fourth, `never_created`, is separate from `confirmed_gone` on purpose. A job that never
+#: held a slot never asked for a container, so there was nothing to clean up; a job whose
+#: container was removed had one and it is gone. Both are tidy, and they are not the same fact.
+SANDBOX_NEVER_CREATED = "never_created"
+SANDBOX_CONFIRMED_GONE = "confirmed_gone"
+SANDBOX_STILL_THERE = "still_there"
+SANDBOX_NOT_ESTABLISHED = "not_established"
+SANDBOX_DISPOSITIONS = (SANDBOX_NEVER_CREATED, SANDBOX_CONFIRMED_GONE,
+                        SANDBOX_STILL_THERE, SANDBOX_NOT_ESTABLISHED)
 
 #: What a run that has not stopped says about why it stopped: nothing.
 #:

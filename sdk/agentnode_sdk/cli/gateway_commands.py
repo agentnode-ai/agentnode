@@ -269,6 +269,25 @@ def cmd_start(args) -> int:
     config = _load_config(root)
     # THE ONE COMMAND THAT IS A GATEWAY TAKING OVER THIS DIRECTORY, and therefore the one that
     # recovers what a previous process left mid-flight. Every other command is a visitor.
+    #
+    # Taking it over means holding it. Two gateways on one directory share one ledger and one
+    # signed log, and both would select the same interrupted run and answer for it; the meter
+    # refuses the second line, so the record survives that, but nothing else about the
+    # arrangement is intended. Found on the closed alpha, where one left over from an exercise
+    # had been serving the production directory on a second port for four days.
+    #
+    # Only this command takes the lock. Operator commands build a gateway object to read
+    # something and are visitors; locking them out would stop an operator looking at a running
+    # gateway, which is a defect this project has already fixed once from the other direction.
+    from agentnode_sdk.gateway import lifecycle as _lifecycle
+
+    try:
+        holding = _lifecycle.OnlyOneGateway(root).take()
+    except _lifecycle.AnotherGatewayHasIt as exc:
+        print()
+        print(f"  {bold('Not started.')}")
+        print(f"  {exc}")
+        return 1
     state, service = _service(root, recover=True)
     host = getattr(args, "host", None) or config.get("host") or "127.0.0.1"
     port = int(getattr(args, "port", None) or config.get("port") or 8099)
@@ -303,12 +322,31 @@ def cmd_start(args) -> int:
         print("    agentnode gateway pair")
     print()
     print(dim("  Press Ctrl-C to stop."))
+    # A SERVICE MANAGER STOPS THINGS WITH SIGTERM, and Python's default for SIGTERM is to end
+    # the process without running a single `finally`. So everything below -- the marker saying a
+    # shutdown was begun, and the closing line for every run still in flight -- did not happen
+    # on `systemctl stop`. Ctrl-C was handled and the way a service is actually stopped was not.
+    #
+    # Turned into the same event as Ctrl-C rather than given a handler of its own, so there is
+    # one shutdown path and not two that can drift.
+    import signal as _signal
+
+    def _stop_the_way_ctrl_c_does(_number, _frame):
+        raise KeyboardInterrupt
+    try:
+        _signal.signal(_signal.SIGTERM, _stop_the_way_ctrl_c_does)
+    except (ValueError, OSError, AttributeError):              # pragma: no cover - not main
+        pass
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print()
         print("  Stopped. Nothing is listening any more.")
     finally:
+        # SAID FIRST, so that a stop which is itself cut short still leaves the evidence that a
+        # stop had begun. A gateway killed halfway through stopping is nearer to having been
+        # stopped than to having vanished, and the next start reads it that way.
+        _lifecycle.say_it_is_stopping(root)
         # Everything this command owns, given back in order and by name. The state holds a
         # directory descriptor and the server holds a listening socket and two watcher threads;
         # a finalizer exists for the ones nobody remembers, but it is a net and not the way
@@ -316,10 +354,18 @@ def cmd_start(args) -> int:
         # tells the watchers to stop -- closing the socket does not.
         server.shutdown()
         server.server_close()
+        # NOTHING IS LISTENING NOW, so nothing new can arrive -- and the runs still in flight
+        # get their closing line from the gateway that is still here to write it, rather than
+        # from whoever restarts this directory next.
+        still_going = service.close_what_is_still_in_flight()
+        if still_going:
+            print("  %d job(s) that were still going were closed and recorded."
+                  % len(still_going))
         # The pool that carries out cancellations is owned by the service, so it is given back
         # here too. Production closes what it opens; the finalizer stays a net.
         service.close()
         state.close()
+        holding.close()
     return 0
 
 

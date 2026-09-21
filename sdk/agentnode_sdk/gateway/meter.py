@@ -62,9 +62,9 @@ METER_NAME = "use-log.jsonl"
 #: Exactly the fields a line has. Named here so that adding one is a decision somebody makes on
 #: purpose, in a place a reviewer reads, rather than a keyword appearing at a call site.
 FIELDS = ("run_id", "client_id", "account_id", "queued_at", "started_at", "finished_at",
-          "seconds", "waited_s",
+          "seconds", "waited_s", "ever_started",
           "cpu", "memory_mb", "wall_clock_s", "state", "outcome", "termination_reason",
-          "exit_code", "bytes_out",
+          "exit_code", "sandbox", "bytes_out",
           "worker_topology", "worker_topology_means", "worker_id", "allowance_sha256",
           "allowance_admitted_under", "operator_policy_sha256", "operator_policy_version")
 
@@ -74,6 +74,12 @@ FIELDS = ("run_id", "client_id", "account_id", "queued_at", "started_at", "finis
 #:   queued_at    when the job arrived and began waiting for a slot
 #:   started_at   when a slot was actually held and the billed clock started.
 #:                **0.0 means it never started** -- cancelled, suspended or revoked while waiting
+#:   ever_started WHETHER it started, said outright. `started_at == 0.0` already carried that,
+#:                and carrying it in a number is exactly the kind of convention a reader gets
+#:                wrong: zero is also what an unset field looks like, and the two mean opposite
+#:                things for a bill. This says it as a boolean so that "never started" cannot be
+#:                mistaken for "started at a time nobody recorded", and so that a reader does not
+#:                have to know the convention to read the line
 #:   seconds      WHAT IS CHARGED FOR: started_at to finished_at, and zero when there is no
 #:                started_at. DERIVED here from the three times above, never accepted from a
 #:                caller -- the same rule every other computed field in this line follows
@@ -134,6 +140,29 @@ UNATTRIBUTED = "(unattributed)"
 TOMBSTONE_FIELDS = ("seq", "erased_at", "erased_because", "stood_for", "signature")
 
 
+class AlreadyRecorded(Exception):
+    """This run already has a line in this log, so a second one was refused.
+
+    Raised rather than returned quietly, and it carries the sequence number of the line that is
+    already there, so a caller can say which one it is rather than only that there was one.
+
+    It is not an error in the ordinary sense. The paths that meet it are the ones that exist to
+    make sure a line gets written at all -- a restart closing what it interrupted, most of all --
+    and for them "somebody already did" is the successful outcome, not a failure. They catch it
+    and move on. It is an exception rather than a return value because every other way of
+    failing to write here is one too, and a caller that forgets to look at a returned flag would
+    write nothing and believe it had.
+    """
+
+    def __init__(self, run_id: str, seq: int) -> None:
+        super().__init__(
+            "run %s already has a metered line (seq %d), so a second was refused. A run is "
+            "metered once: the bill and the record of what happened are the same line."
+            % (run_id, seq))
+        self.run_id = str(run_id)
+        self.seq = int(seq)
+
+
 def _canonical(line: dict) -> bytes:
     """The bytes that are digested and signed. One spelling, so two readers cannot disagree."""
     return json.dumps(line, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -186,7 +215,7 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
            finished_at: float, queued_at: float = 0.0,
            cpu: float, memory_mb: int, wall_clock_s: int, state: str,
            outcome: str, bytes_out: int, worker_topology: str,
-           termination_reason: str = "", exit_code=None,
+           termination_reason: str = "", exit_code=None, sandbox: str = "",
            allowance_sha256: str,
            allowance_admitted_under: dict | None = None,
            account_id: str, worker_id: str,
@@ -243,6 +272,17 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
                    if float(started_at) else 0.0,
         "waited_s": round(max(0.0, (float(started_at) or float(finished_at))
                               - float(queued_at or started_at or finished_at)), 3),
+        # WHETHER IT EVER STARTED, said outright rather than left to be inferred from a zero.
+        #
+        # Derived here from the same value `seconds` is derived from, so the two cannot
+        # disagree: a line that bills nothing and claims to have started, or bills something and
+        # claims not to have, is not a line this meter can produce. A caller cannot supply it
+        # for the same reason it cannot supply `seconds`.
+        #
+        # It matters most for the job this whole record exists for: one that waited, never got a
+        # slot, and was interrupted. Its `started_at` is 0.0 and its bill is zero, and without
+        # this field a reader has to know that 0.0 is a convention rather than a gap.
+        "ever_started": bool(float(started_at)),
         "cpu": float(cpu),
         "memory_mb": int(memory_mb),
         "wall_clock_s": int(wall_clock_s),
@@ -259,6 +299,19 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
         # a line that says `succeeded` and carries a 3 is a line a reader can
         # catch. Without it, "succeeded" had to be taken on trust.
         "exit_code": (None if exit_code is None else int(exit_code)),
+        # WHAT BECAME OF THE SANDBOX, because a closing line that does not say leaves the one
+        # question an interrupted run actually raises: is something of mine still running on
+        # that machine?
+        #
+        # Four values, from `protocol.SANDBOX_DISPOSITIONS`, and the two that are easy to
+        # conflate are kept apart: `never_created` is a job that never held a slot, and
+        # `confirmed_gone` is a container that existed and was removed. `not_established` is
+        # what a gateway that could not reach its worker has to say, and writing that case as a
+        # confirmed cleanup is how a container nobody knows about keeps running.
+        #
+        # Empty for a line written by a path that has not been taught to say -- which is
+        # honest, and which `verify` does not accept for an interrupted run.
+        "sandbox": str(sandbox or ""),
         # How much the job wrote, not what it wrote.
         "bytes_out": int(bytes_out),
         "worker_topology": str(worker_topology),
@@ -296,6 +349,35 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
         # with no `seq`, and pointing the first chained line at one of those would make the chain
         # start somewhere `verify` cannot begin -- it starts at GENESIS or it does not start.
         so_far = [r for r in read(root) if "seq" in r]
+
+        # ONE LINE PER RUN, AND THE FILE IS WHAT DECIDES IT.
+        #
+        # A run is metered once, when it ends. That was already true of every path that writes
+        # here -- but it was true because of the ORDER things happen in, not because anything
+        # made a second line impossible, and those are different claims.
+        #
+        # The order it rested on: a restart closes a run, writes its line, and then moves the
+        # ledger entry to `interrupted` so the next restart will not select it again. A process
+        # that dies between those two steps leaves a run that has its line AND is still
+        # selectable, and the next start writes a second one. Nothing caught that, because
+        # nothing had yet died in that particular half-second.
+        #
+        # Two gateways on one directory is the same hole without the timing: both read the
+        # ledger, both see the run mid-flight, both close it.
+        #
+        # So the check is here, against the file, inside the lock that serialises appends --
+        # which means it holds for a crash, for a second process, and for a caller that simply
+        # asks twice. It cannot hold in a caller's memory, because the caller is the thing that
+        # might not be there any more.
+        #
+        # `erase` leaves tombstones behind; a tombstone is not a line about a run and is not
+        # consulted here, which is why `stood_for` is skipped rather than matched on.
+        already = next((r for r in so_far
+                        if str(r.get("run_id") or "") == str(run_id) and not is_a_tombstone(r)),
+                       None)
+        if already is not None:
+            raise AlreadyRecorded(str(run_id), int(already.get("seq") or 0))
+
         previous = so_far[-1] if so_far else None
         line["seq"] = (int(previous.get("seq", 0)) + 1) if previous else 1
         line["prev"] = _digest_of(_without_signature(previous)) if previous else GENESIS
