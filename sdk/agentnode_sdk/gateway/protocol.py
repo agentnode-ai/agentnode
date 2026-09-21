@@ -217,12 +217,16 @@ def what_disagrees(state: str, termination_reason: str, exit_code, native_status
     return ""
 
 
-def outcome_of(state: str, termination_reason: str = NOT_STOPPED) -> str:
+def outcome_of(state: str, termination_reason: str = NOT_STOPPED, exit_code=None) -> str:
     """The outcome of a run in this state, or "" while it still has none.
 
-    About the RUN, not about the program it carried: a run that completed and delivered a result
-    succeeded, whatever number the program returned. Every terminal state maps to exactly one of
-    the four, and a state that is not terminal maps to none of them.
+    It used to be about the RUN and not the program it carried: "a run that completed and
+    delivered a result succeeded, whatever number the program returned". That reading is gone,
+    and deliberately. This record exists so a customer can be told what a service did for them,
+    and a line saying `succeeded` about a job that exited 3 is not something they can use. The
+    exit status is now part of the signed line, so the claim can be checked against it.
+
+    A state that is not terminal maps to no outcome at all.
     """
     if not is_terminal(state):
         return ""
@@ -258,7 +262,20 @@ def outcome_of(state: str, termination_reason: str = NOT_STOPPED) -> str:
         # value that could not occur.
         return UNVERIFIED_OUTCOME
     if state == "finished" and termination_reason in (EXITED, NOT_STOPPED):
-        return SUCCEEDED
+        # 4a. AND THE PROGRAM HAS TO HAVE SAID IT WORKED. This used to end here: a run that
+        #     reached the far end was `succeeded` "whatever number the program returned". For a
+        #     record whose job is to say what a service did, that reads a job which exited 3 as
+        #     a success, and the signed line carried no exit status for a reader to check it
+        #     against. The status is now in the line, and it decides.
+        # 4b. AND A MISSING STATUS IS NOT A ZERO. `exited` with nothing to show for it is the
+        #     original defect in miniature -- absence read as success. Nobody established that
+        #     it worked, so the line says exactly that rather than guessing either way.
+        if exit_code is None:
+            return UNVERIFIED_OUTCOME
+        try:
+            return SUCCEEDED if int(exit_code) == 0 else FAILED
+        except (TypeError, ValueError):
+            return UNVERIFIED_OUTCOME
     return FAILED
 
 #: How far apart the two clocks may be before a request is refused as stale. Wide enough for an

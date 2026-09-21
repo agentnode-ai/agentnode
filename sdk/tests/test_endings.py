@@ -47,14 +47,36 @@ from agentnode_sdk.gateway.protocol import (
 class TestAKilledRunIsNeverCalledSucceeded:
     """E3, stated as a property over every combination rather than as a handful of cases."""
 
-    def test_only_an_exit_can_be_a_success(self):
-        """Exhaustive. `succeeded` may come out of exactly one state and one kind of reason --
-        and if a later change adds a way in, this fails with the pair that did it."""
-        succeeded = [(state, reason)
+    def test_only_a_clean_exit_can_be_a_success(self):
+        """Exhaustive over state, reason AND exit status. If a later change adds a way in, this
+        fails naming the combination that did it."""
+        succeeded = [(state, reason, code)
                      for state in TERMINAL_STATES
                      for reason in TERMINATION_REASONS + (NOT_STOPPED,)
-                     if outcome_of(state, reason) == SUCCEEDED]
-        assert succeeded == [("finished", EXITED), ("finished", NOT_STOPPED)], succeeded
+                     for code in (0, 1, 3, 137, None)
+                     if outcome_of(state, reason, code) == SUCCEEDED]
+        assert succeeded == [("finished", EXITED, 0), ("finished", NOT_STOPPED, 0)], succeeded
+
+    def test_a_program_that_exited_non_zero_is_not_signed_as_a_success(self):
+        """The reading this replaces was deliberate and written down: "a run that completed and
+        delivered a result succeeded, whatever number the program returned". For a record whose
+        job is to tell a customer what a service did for them, a line saying `succeeded` about a
+        job that exited 3 is not something they can use."""
+        for code in (1, 2, 3, 127, 255):
+            assert outcome_of("finished", EXITED, code) == FAILED, code
+
+    def test_and_a_missing_status_is_not_read_as_a_zero(self):
+        """The original defect in miniature: absence read as success."""
+        assert outcome_of("finished", EXITED, None) == UNVERIFIED_OUTCOME
+        assert outcome_of("finished", NOT_STOPPED, None) == UNVERIFIED_OUTCOME
+
+    def test_the_status_is_in_the_signed_line_so_the_claim_can_be_checked(self):
+        """Without it, `succeeded` had to be taken on trust: a reader of the log could not tell
+        a job that exited 0 from one that exited 3, because both said the same word."""
+        from agentnode_sdk.gateway import meter
+
+        assert "exit_code" in meter.FIELDS
+        assert "exit_code" not in meter.SEALED
 
     def test_an_ending_the_runtime_reports_as_out_of_memory_is_not_one(self):
         assert outcome_of("finished", OUT_OF_MEMORY) != SUCCEEDED
@@ -271,14 +293,20 @@ class TestTheEndingDoesNotChangeTheBill:
 class TestTheEndingsThatWereAlreadyRightStillAre:
     """E9. A fix that broke the cases it did not need to touch would be a worse trade."""
 
-    @pytest.mark.parametrize("state,reason,expected", [
-        ("finished", EXITED, SUCCEEDED),
-        ("finished", TIMED_OUT, "timed_out"),
-        ("cancelled", CANCELLED, "cancelled"),
-        ("refused", NOT_STOPPED, FAILED),
+    @pytest.mark.parametrize("state,reason,code,expected", [
+        ("finished", EXITED, 0, SUCCEEDED),
+        ("finished", TIMED_OUT, None, "timed_out"),
+        ("cancelled", CANCELLED, None, "cancelled"),
+        ("refused", NOT_STOPPED, None, FAILED),
     ])
-    def test_the_mapping_that_existed_is_unchanged(self, state, reason, expected):
-        assert outcome_of(state, reason) == expected
+    def test_the_mapping_that_existed_is_unchanged(self, state, reason, code, expected):
+        """A timeout is still a timeout and a cancellation still a cancellation -- the two E9
+        names by name. A clean exit is still a success.
+
+        What DID change, on purpose, is a non-zero exit: it used to be `succeeded` too. That is
+        not one of the endings E9 protects, and the reasoning is at `outcome_of`.
+        """
+        assert outcome_of(state, reason, code) == expected
 
     def test_a_run_still_has_no_outcome_before_it_ends(self):
         assert outcome_of("accepted", NOT_STOPPED) == ""

@@ -197,7 +197,7 @@ class RunRecord:
         """What this run's end amounts to, or "" while it has none."""
         from agentnode_sdk.gateway.protocol import outcome_of
 
-        return outcome_of(self.state, self.termination_reason)
+        return outcome_of(self.state, self.termination_reason, self.exit_code)
 
     def public(self) -> dict[str, Any]:
         """What a client may see. No secrets, and no fields that only mean something inside."""
@@ -971,7 +971,7 @@ class GatewayService:
                 memory_mb=int(admitted.get("memory_mb") or 0),
                 wall_clock_s=int(admitted.get("wall_clock_s") or 0),
                 state="interrupted",
-                outcome=_outcome_of("interrupted", ""),
+                outcome=_outcome_of("interrupted", "", None),
                 termination_reason="",
                 bytes_out=0,
                 # UNATTRIBUTED rather than a guess, for anything the ledger did not carry. It is
@@ -2033,7 +2033,16 @@ class GatewayService:
             # Not a job that failed. Nobody established whether it ran, and saying it failed
             # would tell a client something nobody knows. `EM3C-EVIDENCE-0002` cost an external
             # run to exactly this distinction.
+            #
+            # THIS IS THE TRANSPORT, and it is a different boundary from the one the backend
+            # reports on. `runtime_lost` is the WORKER asking the container runtime and being
+            # told nothing; this is the GATEWAY asking the worker and the connection between
+            # them ending. Two links, two ways to lose an answer, and a reader of the record is
+            # entitled to know which one went.
+            from agentnode_sdk.gateway.protocol import TRANSPORT_LOST
+
             terminal = "unverified"
+            record.termination_reason = TRANSPORT_LOST
             record.refusal = (
                 "the sandbox that runs jobs for this gateway could not be reached, so what "
                 f"happened to this run is not known: {exc}. It was not established that it ran, "
@@ -2225,10 +2234,13 @@ class GatewayService:
                 wall_clock_s=int(granted.limits.wall_clock_s),
                 # The state it is ENDING in, which the record does not carry yet: publishing
                 # it is the last thing that happens, after this.
-                state=terminal, outcome=outcome_of(terminal, record.termination_reason),
+                state=terminal,
+                outcome=outcome_of(terminal, record.termination_reason,
+                                   record.exit_code),
                 # BESIDE the outcome, not instead of it: five different endings share `failed`,
                 # and a reader of one line has to be able to tell which one happened.
                 termination_reason=str(record.termination_reason or ""),
+                exit_code=record.exit_code,
                 bytes_out=len(record.stdout or "") + len(record.stderr or ""),
                 worker_topology=self.worker.topology,
                 # What it was admitted under, not what is configured now.

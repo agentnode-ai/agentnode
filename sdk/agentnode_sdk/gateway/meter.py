@@ -64,7 +64,7 @@ METER_NAME = "use-log.jsonl"
 FIELDS = ("run_id", "client_id", "account_id", "queued_at", "started_at", "finished_at",
           "seconds", "waited_s",
           "cpu", "memory_mb", "wall_clock_s", "state", "outcome", "termination_reason",
-          "bytes_out",
+          "exit_code", "bytes_out",
           "worker_topology", "worker_topology_means", "worker_id", "allowance_sha256",
           "allowance_admitted_under", "operator_policy_sha256", "operator_policy_version")
 
@@ -186,7 +186,7 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
            finished_at: float, queued_at: float = 0.0,
            cpu: float, memory_mb: int, wall_clock_s: int, state: str,
            outcome: str, bytes_out: int, worker_topology: str,
-           termination_reason: str = "",
+           termination_reason: str = "", exit_code=None,
            allowance_sha256: str,
            allowance_admitted_under: dict | None = None,
            account_id: str, worker_id: str,
@@ -254,6 +254,11 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
         # line can tell a container the kernel killed for memory from one somebody
         # destroyed, without asking anybody.
         "termination_reason": str(termination_reason or ""),
+        # THE NUMBER THE PROGRAM CHOSE, or null when it chose none because it was
+        # killed. It is here so the claim in `outcome` can be checked against it:
+        # a line that says `succeeded` and carries a 3 is a line a reader can
+        # catch. Without it, "succeeded" had to be taken on trust.
+        "exit_code": (None if exit_code is None else int(exit_code)),
         # How much the job wrote, not what it wrote.
         "bytes_out": int(bytes_out),
         "worker_topology": str(worker_topology),

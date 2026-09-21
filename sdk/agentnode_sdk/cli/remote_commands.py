@@ -535,7 +535,8 @@ def cmd_cancel(args) -> int:
         print(f"  Ask again, or look:  agentnode remote status --run {args.run}")
         return 1
     outcome = outcome_of(str(record.get("state") or ""),
-                         str(record.get("termination_reason") or ""))
+                         str(record.get("termination_reason") or ""),
+                         record.get("exit_code"))
     print(f"  It stopped. State: {record.get('state')} ({outcome}).")
     return 0
 
