@@ -470,3 +470,121 @@ class TestNothingIsLeftBehind:
         swept = source.index("remove_what_a_previous_worker_left")
         listening = source.index("remembers_at=remembers_at")
         assert swept < listening, "the sweep happens after the worker is already taking work"
+
+
+class TestTheseEndingsAreProducedAndNotOnlyDescribed:
+    """The same distinctions, driven through the code rather than read out of it.
+
+    Most of the checks above establish their mechanism by reading the source -- which is the
+    right instrument for "the reasoning is written down beside the number" or "nothing here
+    consults a clock", and the wrong one for "this ending comes out". Taking a mechanism out and
+    asking the suite showed the difference plainly: removing the memory classification entirely
+    turned NOTHING red, and removing three others turned exactly one source check red and
+    nothing else. A mechanism whose only witness is a check on its own text is a mechanism that
+    can be rewritten into something that no longer works while the suite stays green.
+
+    So these four drive it. The runtime is a stand-in -- a real one cannot be made to lose a
+    container on demand inside a unit test -- and the endings it is made to report are the ones
+    the closed alpha produced against real podman containers, recorded in the external run.
+    """
+
+    # ------------------------------------------------------------------ a stand-in runtime
+
+    class _Proc:
+        def __init__(self, rc: int) -> None:
+            self.returncode = rc
+
+    class _Said:
+        def __init__(self, rc: int, out: str = "") -> None:
+            self.returncode, self.stdout, self.stderr = rc, out, ""
+
+    def _backend_that_is_told(self, monkeypatch, answer):
+        """A container backend whose identity resolves and whose runtime says `answer`."""
+        from agentnode_sdk.sandbox import container_backend as cb
+
+        backend = cb.ContainerBackend.__new__(cb.ContainerBackend)
+        monkeypatch.setattr(cb.ContainerBackend, "_resolve_identity",
+                            lambda self, runtime, name, cidfile: ("c0ffee1234", "cidfile"))
+        monkeypatch.setattr(cb.ContainerBackend, "_what_the_runtime_says",
+                            lambda self, runtime, ident: answer)
+        removed: list = []
+
+        def _ran(argv, timeout=None, **kw):
+            removed.append(list(argv))
+            return TestTheseEndingsAreProducedAndNotOnlyDescribed._Said(0)
+
+        monkeypatch.setattr(cb, "_run_runtime", _ran)
+        return backend, removed
+
+    def _end(self, backend, rc=137):
+        return backend._end_an_ordinary_run(
+            self._Proc(rc), "podman", "agentnode-em3c-abc", "/tmp/cid", "out", "err")
+
+    # ------------------------------------------------------------------ the endings
+
+    def test_a_runtime_that_says_it_killed_for_memory_produces_that_ending(self, monkeypatch):
+        """Removing the line that reads the runtime's answer made no test fail at all."""
+        backend, removed = self._backend_that_is_told(monkeypatch, (True, 137, ""))
+        got = self._end(backend)
+        assert got.reason == OUT_OF_MEMORY, (
+            "the runtime said it killed this container for memory and the ending does not "
+            "say so: %r" % (got.reason,))
+        assert got[0] is None, "a container the kernel killed did not choose a status"
+        assert got.native_status == 137
+        assert any("rm" in argv for argv in removed), "the container was not removed"
+
+    def test_and_the_same_status_without_that_answer_is_an_ordinary_exit(self, monkeypatch):
+        """137 on its own says nothing: it is 128+9 for a kill AND a status a program may pick.
+
+        Without this, the test above would pass just as well on code that read the number.
+        """
+        backend, _removed = self._backend_that_is_told(monkeypatch, (False, 137, ""))
+        got = self._end(backend)
+        assert got.reason == EXITED
+        assert got[0] == 137, "a program that chose 137 had its own status taken away"
+
+    def test_a_runtime_that_will_not_answer_produces_an_unestablished_ending(self, monkeypatch):
+        """`None` is the runtime declining to say. The cheerful reading of that is the defect."""
+        backend, _removed = self._backend_that_is_told(monkeypatch, None)
+        got = self._end(backend, rc=137)
+        assert got.reason == RUNTIME_LOST
+        assert got[0] is None
+        assert got.native_status == 137, "the client's own status was dropped instead of kept"
+        assert outcome_of("finished", got.reason, got[0]) == UNVERIFIED_OUTCOME
+
+    def test_the_command_this_path_builds_carries_no_self_removal(self, monkeypatch):
+        """A container that removes itself cannot be asked how it ended."""
+        from agentnode_sdk.sandbox import container_backend as cb
+
+        backend = cb.ContainerBackend.__new__(cb.ContainerBackend)
+        monkeypatch.setattr(cb.ContainerBackend, "wrap_command",
+                            lambda self, spec: ["podman", "run", "--rm", "--name", "x", "img"])
+        argv = backend._argv_with_cidfile(object(), "/tmp/cid")
+        assert "--rm" not in argv, (
+            "the single-run path still asks the runtime to destroy the only record of how the "
+            "container ended: %r" % (argv,))
+        assert "--cidfile" in argv and "/tmp/cid" in argv
+
+    def test_a_sweep_leaves_alone_what_this_sdk_did_not_name(self, monkeypatch):
+        """The worker shares its machine. A broad pattern would remove somebody else's work."""
+        from agentnode_sdk.worker import local as wl
+
+        worker = wl.LocalWorker.__new__(wl.LocalWorker)
+        monkeypatch.setattr(wl.LocalWorker, "check_available", lambda self: None, raising=False)
+        worker.backend = type("B", (), {
+            "check_available": lambda self: type("A", (), {"backend": "podman"})()})()
+        asked: list = []
+
+        def _ran(argv, capture_output=False, text=False, timeout=None, **kw):
+            asked.append(list(argv))
+            if "ps" in argv:
+                return TestTheseEndingsAreProducedAndNotOnlyDescribed._Said(
+                    0, "agentnode-em3c-mine\nsomebody-elses-database\nagentnode-run-mine2\n")
+            return TestTheseEndingsAreProducedAndNotOnlyDescribed._Said(0)
+
+        monkeypatch.setattr(wl.subprocess, "run", _ran)
+        swept = worker.remove_what_a_previous_worker_left()
+        removed = [argv[-1] for argv in asked if "rm" in argv]
+        assert "somebody-elses-database" not in removed, (
+            "the sweep removed a container this SDK never named: %r" % (removed,))
+        assert sorted(swept["removed"]) == ["agentnode-em3c-mine", "agentnode-run-mine2"]

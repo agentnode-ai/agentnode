@@ -208,7 +208,12 @@ class TestWhatAnEndAmountsTo:
     def test_a_finished_run_with_nothing_to_show_is_not_a_success(self):
         """`exited` and no status is the original defect in miniature: absence read as zero."""
         assert outcome_of("finished", EXITED) == "unverified"
+
+    def test_and_a_program_that_returned_three_did_not_succeed(self):
+        """Kept apart from the case above so that each says which rule it holds: one is about a
+        status nobody reported, the other about a status that was reported and was not zero."""
         assert outcome_of("finished", EXITED, 3) == "failed"
+        assert outcome_of("finished", EXITED, 0) == "succeeded"
 
     def test_a_run_stopped_by_its_own_limit_is_not_a_success(self):
         """The distinction the fourth external run lost when a timeout was an integer."""
