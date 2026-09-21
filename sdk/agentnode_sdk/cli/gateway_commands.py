@@ -342,6 +342,13 @@ def cmd_start(args) -> int:
     except KeyboardInterrupt:
         print()
         print("  Stopped. Nothing is listening any more.")
+    except BaseException as exc:
+        # A CRASH RUNS CODE, and that is what makes it different from being killed. An
+        # unhandled failure gets one moment to say that this gateway is ending badly, and a
+        # later start reads that instead of guessing. Written before it is re-raised, so a
+        # process that then dies has still left the statement.
+        _lifecycle.say_it_crashed(root, type(exc).__name__)
+        raise
     finally:
         # SAID FIRST, so that a stop which is itself cut short still leaves the evidence that a
         # stop had begun. A gateway killed halfway through stopping is nearer to having been

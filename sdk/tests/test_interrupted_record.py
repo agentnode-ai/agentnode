@@ -34,6 +34,8 @@ import pytest
 
 from agentnode_sdk.gateway import meter
 from agentnode_sdk.gateway.protocol import (
+    GATEWAY_CRASHED,
+    GATEWAY_KILLED,
     GATEWAY_LOST,
     GATEWAY_STOPPED,
     NOTHING_WAS_ESTABLISHED,
@@ -122,7 +124,7 @@ def lifecycle_module():
     return lifecycle
 
 
-def restart(service, *, cleanly: bool = False):
+def restart(service, *, cleanly: bool = False, went: str = "killed"):
     """A SECOND gateway on the same directory, which is what a restart is.
 
     `cleanly` decides what the one before it left behind: a gateway that began to stop, or one
@@ -137,6 +139,16 @@ def restart(service, *, cleanly: bool = False):
     root = str(pathlib.Path(service.state.root))
     if cleanly:
         lifecycle.say_it_is_stopping(root)
+    elif went == "crashed":
+        lifecycle.say_it_crashed(root, "RuntimeError")
+    elif went == "the host restarted":
+        # The marker stays as it was and the boot identity moves, which is exactly what a
+        # machine that rebooted leaves behind -- and the only thing that tells it from a
+        # process ended while the machine kept running.
+        where = pathlib.Path(root) / lifecycle.SERVING_NAME
+        said = json.loads(where.read_text(encoding="utf-8"))
+        said["boot"] = "a-different-boot-entirely"
+        where.write_text(json.dumps(said), encoding="utf-8")
     service.close()
     state = GatewayState(root, version="test")
     return GatewayService(state, backend=StandInBackend()), state
@@ -247,6 +259,72 @@ class TestExactlyOneClosingLinePerAcceptedRun:
         finally:
             again.close()
             state.close()
+
+    def test_a_line_that_failed_is_tried_again_by_the_gateway_that_owes_it(self, gateway,
+                                                                           monkeypatch):
+        """`INTERRUPTED-AUDIT-RECORD-0001`, F1: leaving the run in the ledger means a LATER
+        START can write the line, and nothing requires a later start. That is a possibility and
+        not a bound.
+
+        So the gateway that could not write it keeps the debt and tries again while it lives.
+        """
+        now = time.time()
+        claim(gateway, "owed-a-line", when=now - 30.0, started=now - 20.0)
+        broken = {"until": 1}
+        real = meter.record
+
+        def sometimes(*a, **kw):
+            if broken["until"] > 0:
+                broken["until"] -= 1
+                raise OSError("the disk said no")
+            return real(*a, **kw)
+
+        monkeypatch.setattr(meter, "record", sometimes)
+        again, state = restart(gateway)
+        try:
+            assert not lines_for(state.root, "owed-a-line")
+            assert again.what_is_still_owed() == ["owed-a-line"], (
+                "the gateway does not know it owes this line, so only a later start could "
+                "ever write it")
+            # The retry, driven rather than waited for: the same call its thread makes.
+            assert again.pay_what_is_owed() == ["owed-a-line"]
+            assert the_one_line_for(state.root, "owed-a-line")
+            assert again.what_is_still_owed() == []
+        finally:
+            again.close()
+            state.close()
+
+    def test_and_the_debt_is_paid_on_the_way_out_as_well(self, gateway, monkeypatch):
+        """A gateway going away is the last one holding these in memory."""
+        now = time.time()
+        claim(gateway, "owed-at-the-end", when=now - 30.0, started=now - 20.0)
+        broken = {"until": 1}
+        real = meter.record
+
+        def sometimes(*a, **kw):
+            if broken["until"] > 0:
+                broken["until"] -= 1
+                raise OSError("the disk said no")
+            return real(*a, **kw)
+
+        monkeypatch.setattr(meter, "record", sometimes)
+        again, state = restart(gateway)
+        try:
+            assert not lines_for(state.root, "owed-at-the-end")
+            again.close()
+            assert the_one_line_for(state.root, "owed-at-the-end")
+        finally:
+            state.close()
+
+    def test_the_retry_happens_in_this_process_and_not_at_a_later_start(self):
+        """The bound the criterion asks for is one that does not need anybody to start
+        anything."""
+        from agentnode_sdk.gateway.server import GatewayService
+
+        assert isinstance(GatewayService.OWED_RETRY_SECONDS, float)
+        assert 0 < GatewayService.OWED_RETRY_SECONDS <= 60
+        assert "OWED_RETRY_SECONDS" in inspect.getsource(
+            GatewayService._keep_trying_to_pay_what_is_owed)
 
     def test_the_enforcement_is_inside_the_lock_that_serialises_appends(self):
         """Not in a caller, and not before the lock: two processes reaching it together must not
@@ -361,6 +439,57 @@ class TestEveryWayOfBeingInterruptedClosesTheSameWay:
             again.close()
             state.close()
         assert line["termination_reason"] == GATEWAY_LOST
+
+    def test_a_gateway_that_was_killed_says_that_rather_than_only_lost(self, gateway):
+        """`INTERRUPTED-AUDIT-RECORD-0001`, F2: the profile asks for the process-killed case to
+        be tellable from the line alone, and the first version collapsed it into "lost".
+
+        What makes it tellable is the boot identity. No shutdown, no recorded failure, and the
+        SAME boot means the machine kept running while the process did not -- so something
+        outside the process ended it.
+        """
+        if not lifecycle_module().this_boot():
+            pytest.skip("this platform publishes no boot identity, so the case cannot arise")
+        now = time.time()
+        claim(gateway, "killed-me", when=now - 30.0, started=now - 20.0)
+        again, state = restart(gateway, went="killed")
+        try:
+            line = the_one_line_for(state.root, "killed-me")
+        finally:
+            again.close()
+            state.close()
+        assert line["termination_reason"] == GATEWAY_KILLED
+
+    def test_a_gateway_that_failed_says_that_instead(self, gateway):
+        """A crash runs code, which is the whole difference: there is a moment, however short,
+        in which the process can say that it is ending badly."""
+        now = time.time()
+        claim(gateway, "crashed-me", when=now - 30.0, started=now - 20.0)
+        again, state = restart(gateway, went="crashed")
+        try:
+            line = the_one_line_for(state.root, "crashed-me")
+        finally:
+            again.close()
+            state.close()
+        assert line["termination_reason"] == GATEWAY_CRASHED
+
+    def test_and_a_machine_that_restarted_is_not_called_killed(self, gateway):
+        """The one that stays unestablished, and it must not borrow a word from the others."""
+        now = time.time()
+        claim(gateway, "host-went", when=now - 30.0, started=now - 20.0)
+        again, state = restart(gateway, went="the host restarted")
+        try:
+            line = the_one_line_for(state.root, "host-went")
+        finally:
+            again.close()
+            state.close()
+        assert line["termination_reason"] == GATEWAY_LOST
+
+    def test_the_four_gateway_side_reasons_are_distinct(self):
+        assert len({GATEWAY_STOPPED, GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST}) == 4
+        for reason in (GATEWAY_STOPPED, GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST):
+            assert reason in TERMINATION_REASONS
+            assert reason in NOTHING_WAS_ESTABLISHED
 
     def test_a_stop_writes_the_lines_itself_rather_than_leaving_them(self, gateway):
         """The bound on `later`, where there is one.
@@ -516,10 +645,14 @@ class TestTheLineSaysWhy:
             assert outcome_of("interrupted", reason) == UNVERIFIED_OUTCOME
 
     @pytest.mark.parametrize("reason,ever_ran,expected", [
-        (GATEWAY_STOPPED, True, "stopped"),
-        (GATEWAY_STOPPED, False, "stopped"),
-        (GATEWAY_LOST, True, "without stopping cleanly"),
-        (GATEWAY_LOST, False, "without stopping cleanly"),
+        (GATEWAY_STOPPED, True, "was stopped"),
+        (GATEWAY_STOPPED, False, "was stopped"),
+        (GATEWAY_CRASHED, True, "failed and ended"),
+        (GATEWAY_CRASHED, False, "failed and ended"),
+        (GATEWAY_KILLED, True, "ended from outside"),
+        (GATEWAY_KILLED, False, "ended from outside"),
+        (GATEWAY_LOST, True, "not known"),
+        (GATEWAY_LOST, False, "not known"),
     ])
     def test_the_sentence_says_what_the_value_says(self, reason, ever_ran, expected):
         from agentnode_sdk.gateway.server import GatewayService

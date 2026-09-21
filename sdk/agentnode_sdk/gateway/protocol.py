@@ -95,18 +95,35 @@ TRANSPORT_LOST = "transport_lost"
 #:
 #:   gateway_stopped -- a shutdown was begun. Somebody stopped this gateway, and this run was
 #:                      in flight at that moment
-#:   gateway_lost    -- no shutdown was begun. The process did not get to say anything
+#:   gateway_crashed -- the process recorded an unhandled failure on its way out. It ended
+#:                      because of something that went wrong inside it
+#:   gateway_killed  -- no shutdown was begun, no failure was recorded, and the machine did NOT
+#:                      restart in between. The process was ended from outside: it neither
+#:                      stopped nor crashed, and the host it was on kept running
+#:   gateway_lost    -- none of the three can be established. The machine restarted, or the
+#:                      previous gateway left nothing to read
 #:
-#: `gateway_lost` deliberately does NOT say "killed". A process that was killed, one that
-#: crashed, and a machine that lost power leave exactly the same trace -- which is no trace --
-#: and a record that named one of the three would be claiming something nobody established. What
-#: IS established is that it never began to stop, and that is what the word says.
+#: An earlier version of this had only the first and the last, on the reasoning that a killed
+#: process, a crashed one and a machine that lost power leave the same trace, which is none.
+#: Two of the three turned out to leave something after all:
+#:
+#: * a crash runs code. An unhandled failure reaches the top of the process, and the process
+#:   can write down that it is ending badly before it goes;
+#: * a machine that restarted says so. The kernel's boot identity changes across a reboot and
+#:   not otherwise, so a marker written under one boot and read under another means the HOST
+#:   went, while the same boot on both sides means only the process did.
+#:
+#: What is left in `gateway_lost` is the case where the boot identity cannot be had -- a
+#: platform that does not publish one -- or where it changed, which says the machine restarted
+#: but not why. Naming that one `killed` would be the claim this vocabulary refuses to make.
 GATEWAY_STOPPED = "gateway_stopped"
+GATEWAY_CRASHED = "gateway_crashed"
+GATEWAY_KILLED = "gateway_killed"
 GATEWAY_LOST = "gateway_lost"
 
 TERMINATION_REASONS = (EXITED, TIMED_OUT, CANCELLED,
                        OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST,
-                       GATEWAY_STOPPED, GATEWAY_LOST)
+                       GATEWAY_STOPPED, GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST)
 
 #: The reasons under which nobody established what the payload did. They are NOT failures: a run
 #: reported as failed when nobody knows is a false statement about a customer's job in the same
@@ -117,7 +134,8 @@ TERMINATION_REASONS = (EXITED, TIMED_OUT, CANCELLED,
 #: completion, may have done half its work, may never have started. The gateway stopped being
 #: able to tell. Calling that `failed` would be a statement about the customer's code that
 #: nothing supports.
-NOTHING_WAS_ESTABLISHED = (RUNTIME_LOST, TRANSPORT_LOST, GATEWAY_STOPPED, GATEWAY_LOST)
+NOTHING_WAS_ESTABLISHED = (RUNTIME_LOST, TRANSPORT_LOST,
+                           GATEWAY_STOPPED, GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST)
 
 #: WHAT BECAME OF THE SANDBOX a run may have created, as a value a reader can branch on.
 #:

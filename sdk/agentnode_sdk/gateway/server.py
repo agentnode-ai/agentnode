@@ -433,6 +433,11 @@ class GatewayService:
         from agentnode_sdk.gateway import lifecycle as _lifecycle
 
         self._interrupted_by = _lifecycle.why_a_run_was_interrupted(self.state.root)
+        # The closing lines this gateway could not write, and what says it is going away.
+        self._owed: dict = {}
+        self._owed_lock = threading.Lock()
+        self._owed_thread = None
+        self._closing = threading.Event()
         if recover:
             self._restore_interrupted()
             # And now this process is the one serving. After recovery, so that a gateway which
@@ -960,10 +965,14 @@ class GatewayService:
         "did not finish" appears in every one of them on purpose: it is the phrase an
         interrupted run is required to carry, and a test reads for it.
         """
-        from agentnode_sdk.gateway.protocol import GATEWAY_STOPPED
+        from agentnode_sdk.gateway.protocol import (GATEWAY_CRASHED, GATEWAY_KILLED,
+                                                    GATEWAY_STOPPED)
 
-        what = ("this gateway was stopped" if reason == GATEWAY_STOPPED
-                else "this gateway went away without stopping cleanly")
+        what = {
+            GATEWAY_STOPPED: "this gateway was stopped",
+            GATEWAY_CRASHED: "this gateway failed and ended",
+            GATEWAY_KILLED: "this gateway was ended from outside",
+        }.get(reason, "this gateway went away, and what ended it is not known")
         if ever_ran:
             return (what + " while your job was running, so it did not finish. Whether it got "
                     "anything done before that is not known. It has not been started again -- "
@@ -1021,7 +1030,8 @@ class GatewayService:
             return SANDBOX_STILL_THERE
         return SANDBOX_CONFIRMED_GONE if asked_for_a_sandbox else SANDBOX_NEVER_CREATED
 
-    def _close_an_interrupted_run(self, record, entry: dict, *, reason: str = "") -> bool:
+    def _close_an_interrupted_run(self, record, entry: dict, *, reason: str = "",
+                                  owe_it_on_failure: bool = True) -> bool:
         """Write the one signed, chained usage line an interrupted run is owed.
 
         ## Why this exists
@@ -1102,6 +1112,14 @@ class GatewayService:
             # every other interrupted run unanswered. It is reported the way any other failure
             # to record is.
             self.could_not_record(record, exc)
+            # AND IT IS REMEMBERED, so that this gateway tries again while it is still here.
+            # Leaving it in the ledger alone means a LATER START could write it, and nothing
+            # requires a later start -- which is a possibility rather than a bound.
+            if owe_it_on_failure:
+                try:
+                    self._owe_a_line(record.run_id, record, entry, reason)
+                except Exception:                              # noqa: BLE001
+                    pass
             # AND THE CALLER IS TOLD, because what it does next decides whether this run ever
             # gets a line at all.
             #
@@ -1198,6 +1216,71 @@ class GatewayService:
             if self._close_an_interrupted_run(
                     record, entry, reason=self._how_it_was_interrupted()):
                 self.ledger.note_state(run_id, "interrupted")
+
+    #: How often a gateway tries again to write a closing line it could not write.
+    #:
+    #: A bound that does not depend on anybody restarting anything. Leaving the run in the
+    #: ledger means a LATER START can write the line -- and nothing requires a later start, so
+    #: on its own that is not a bound at all, only a possibility. `INTERRUPTED-AUDIT-RECORD-0001`,
+    #: F1: "a failed append leaves no line indefinitely unless a later gateway start happens".
+    #:
+    #: Short enough that a disk which was briefly full is noticed in seconds; long enough that a
+    #: disk which is still full is not hammered.
+    OWED_RETRY_SECONDS = 15.0
+
+    def _owe_a_line(self, run_id: str, record, entry: dict, reason: str) -> None:
+        """Remember a closing line this gateway could not write, and keep trying while it lives.
+
+        The retry is in this process and not in the next one. A run whose line failed stays in
+        the ledger too, so a later start would also find it -- but that is a second chance, not
+        a bound, and the criterion asks for a bound.
+
+        The thread exists only while something is owed. A gateway that has never failed to write
+        a line does not carry a thread for the possibility.
+        """
+        with self._owed_lock:
+            self._owed[str(run_id)] = (record, dict(entry), str(reason))
+            if self._owed_thread is not None and self._owed_thread.is_alive():
+                return
+            self._owed_thread = threading.Thread(
+                target=self._keep_trying_to_pay_what_is_owed,
+                name="agentnode-owed-lines", daemon=True)
+            self._owed_thread.start()
+
+    def _keep_trying_to_pay_what_is_owed(self) -> None:
+        """Until there is nothing owed, or this gateway is closing. Never raises."""
+        while not self._closing.is_set():
+            if self._closing.wait(self.OWED_RETRY_SECONDS):
+                return
+            try:
+                self.pay_what_is_owed()
+            except Exception:                                  # noqa: BLE001
+                pass
+            with self._owed_lock:
+                if not self._owed:
+                    return
+
+    def pay_what_is_owed(self) -> list:
+        """One attempt at every closing line still owed. Returns the run ids that got one."""
+        with self._owed_lock:
+            owed = list(self._owed.items())
+        written = []
+        for run_id, (record, entry, reason) in owed:
+            try:
+                if not self._close_an_interrupted_run(record, entry, reason=reason,
+                                                      owe_it_on_failure=False):
+                    continue
+                self.ledger.note_state(run_id, "interrupted")
+            except Exception:                                  # noqa: BLE001
+                continue
+            written.append(run_id)
+            with self._owed_lock:
+                self._owed.pop(run_id, None)
+        return written
+
+    def what_is_still_owed(self) -> list:
+        with self._owed_lock:
+            return sorted(self._owed)
 
     def close_what_is_still_in_flight(self) -> list:
         """On the way out, close the runs this gateway is still holding. Returns their ids.
@@ -2660,6 +2743,14 @@ class GatewayService:
         # What the pool could not get back is part of what THIS close could not get back.
         # Discarding it meant a cancellation worker could outlive the service while close()
         # reported nothing left running, which is the same mistake in a different place.
+        # ONE LAST ATTEMPT AT WHAT IS OWED, before the thread that keeps trying is told to
+        # stop. A gateway that is going away is the last one that will hold these in memory.
+        self._closing.set()
+        try:
+            self.pay_what_is_owed()
+        except Exception:                                      # noqa: BLE001
+            pass
+
         pool = getattr(self, "stopping", None)
         left_stopping = list(pool.close() or ()) if pool is not None else []
 

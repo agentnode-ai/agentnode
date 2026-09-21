@@ -113,17 +113,19 @@ class TestTheSixEndingsAreToldApart:
     def test_each_ending_a_run_can_have_has_its_own_word(self):
         """Six ways a RUN can end, and two more where the GATEWAY went away.
 
-        The six were this profile's subject. The two others arrived with
+        The six were this profile's subject. The four others arrived with
         `interrupted-audit-record-r1`, which is about the line a run gets when nothing about
-        the run ended it -- a stop, or a gateway that did not get to stop. They are named here
-        rather than kept in a list of their own because a reader branching on
-        `termination_reason` must meet every value it can hold in one place.
+        the run ended it: the gateway was stopped, it failed, it was ended from outside, or
+        what ended it is not established. They are named here rather than kept in a list of
+        their own because a reader branching on `termination_reason` must meet every value it
+        can hold in one place.
         """
-        from agentnode_sdk.gateway.protocol import GATEWAY_LOST, GATEWAY_STOPPED
+        from agentnode_sdk.gateway.protocol import (GATEWAY_CRASHED, GATEWAY_KILLED,
+                                                    GATEWAY_LOST, GATEWAY_STOPPED)
 
         assert set(TERMINATION_REASONS) == {
             EXITED, TIMED_OUT, CANCELLED, OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST,
-            GATEWAY_STOPPED, GATEWAY_LOST,
+            GATEWAY_STOPPED, GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST,
         }
         assert len(set(TERMINATION_REASONS)) == len(TERMINATION_REASONS)
 
