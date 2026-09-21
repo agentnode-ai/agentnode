@@ -129,7 +129,9 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -rs -p no:randomly tests/test_cancel_consistency.py 2>&1 | tee em3c-cancel.txt
-          grep -qE "^40 passed" em3c-cancel.txt || {
+          # 40 -> 43 for the three tests early-ending-success added to this file. The count
+          # stays exact: a test that quietly stops being collected must make this lane red.
+          grep -qE "^43 passed" em3c-cancel.txt || {
             echo "the cancellation tests did not come out as this lane expects"; exit 1; }
 
       # What a client may consume, and the operator's stop. One case needs a kernel whose
