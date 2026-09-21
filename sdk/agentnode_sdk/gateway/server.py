@@ -2430,6 +2430,13 @@ class GatewayService:
                 allowance_sha256=record.admitted_under or self.allowance().digest(),
                 allowance_admitted_under=(record.admitted_under_values
                                           or self.allowance().as_dict()))
+        except meter.AlreadyRecorded:
+            # This run is already in the log, so it is accounted for and there is nothing to do.
+            # Reached when a stop closed it on the way out and its own thread came back a
+            # moment later, which is a race both halves of are correct: whichever reached the
+            # meter first wrote the line, and the meter refused the second. Publishing the
+            # terminal state still happens after this, so the client is answered either way.
+            pass
         except OSError:                                       # pragma: no cover - a full disk
             # A run that happened is not un-happened by a meter that could not be written, and
             # refusing to publish the terminal state over it would lose the run instead.
