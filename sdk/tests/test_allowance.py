@@ -852,7 +852,23 @@ class TestTheRecordOfUseCanBeShownNotToHaveChanged:
         for row in rows:
             assert row["worker_topology_means"] in set(
                 WHAT_A_TOPOLOGY_DOES_NOT_ESTABLISH.values()), "that field is not a constant"
-        scanned = json.dumps([{k: v for k, v in r.items() if k != "worker_topology_means"}
+        # THE VALUES are scanned, and the KEYS are pinned. A field NAME is chosen here and
+        # reviewed; a VALUE is whatever the gateway put in it, and only a value can carry a
+        # secret. Scanning both together made the word-scan trip on `exit_code` -- a field added
+        # so that a signed line saying `succeeded` can be checked against the status the program
+        # returned -- which says nothing about secrets, exactly as the prose case above did.
+        #
+        # Pinning the keys is what keeps this from being a hole: an unreviewed field cannot
+        # appear at all, so no name can be used to smuggle one past a scan of values.
+        from agentnode_sdk.gateway import meter as _meter
+
+        # The chain's own three are not usage fields; they are what makes the line checkable.
+        chain = {"seq", "prev", "signature"}
+        for row in rows:
+            unknown = set(row) - set(_meter.FIELDS) - chain
+            assert not unknown, "the line carries fields nobody declared: %s" % sorted(unknown)
+            assert chain <= set(row), "the line is not chained"
+        scanned = json.dumps([[v for k, v in r.items() if k != "worker_topology_means"]
                               for r in rows])
         for bad in ("token", "PRIVATE", "BEGIN", "code"):
             assert bad not in scanned
