@@ -880,6 +880,96 @@ class GatewayService:
             raise ProtocolError("the signature does not match the request")
         return secret
 
+    def _what_a_closing_line_will_need(self, record, granted) -> dict:
+        """The few values a usage line states that only this process currently knows.
+
+        Written to the ledger at admission so that a gateway which restarts can close the run it
+        interrupted with the figures that run was actually admitted under, rather than with
+        whatever is configured by the time it is writing.
+        """
+        from agentnode_sdk.gateway import policy_version as _versions
+
+        operator_digest, operator_version = "", _versions.UNKNOWN
+        try:
+            operator_digest = self.operator_envelope().digest()
+            operator_version = _versions.version_for(self.state.root, operator_digest)
+        except Exception:                                     # noqa: BLE001
+            pass
+        return {
+            "cpu": float(granted.limits.cpu),
+            "memory_mb": int(granted.limits.memory_mb),
+            "wall_clock_s": int(granted.limits.wall_clock_s),
+            "allowance_sha256": str(record.admitted_under or ""),
+            "operator_policy_sha256": str(operator_digest or ""),
+            "operator_policy_version": operator_version,
+            "worker_topology": str(record.worker_topology or ""),
+        }
+
+    def _close_an_interrupted_run(self, record, entry: dict) -> None:
+        """Write the one signed, chained usage line an interrupted run is owed.
+
+        ## Why this exists
+
+        Before it, a run interrupted by a restart produced NO line at all. Nothing was billed for
+        it, and the gateway could still answer what became of it from the ledger -- but the
+        signed, chained record, which is the thing a customer would be handed as proof of what
+        this service did, did not contain the job. `ALPHA-CAPACITY-QUEUE-0002`, F1: "their waited
+        and billed values are absent from the signed chain ... it directly defeats the recording
+        criterion."
+
+        The queue makes the case ordinary rather than rare: a job waiting when a restart happens
+        is now a normal occurrence.
+
+        ## The times are read, not invented
+
+        `queued_at` is the ledger's `first_seen`; `started_at` is what `note_state('running')`
+        wrote, and is ABSENT for a run that never left the queue. The meter derives `seconds` and
+        `waited_s` from those, so a job that never started bills zero because there is nothing to
+        subtract from -- not because a rule set it to zero afterwards.
+
+        A line written from times this process invented would be a false statement about
+        somebody's bill, which is worse than the missing line it replaces.
+        """
+        from agentnode_sdk.gateway import meter
+        from agentnode_sdk.gateway import policy_version as _versions
+
+        admitted = dict(entry.get("admitted") or {})
+        queued = float(entry.get("first_seen") or 0.0)
+        started = float(entry.get("started_at") or 0.0)
+        try:
+            meter.record(
+                self.state.root,
+                run_id=record.run_id,
+                client_id=record.owner_client_id or meter.UNATTRIBUTED,
+                account_id=record.owner_account_id or meter.UNATTRIBUTED,
+                queued_at=queued or started or record.finished_at,
+                started_at=started,
+                finished_at=float(record.finished_at or time.time()),
+                cpu=float(admitted.get("cpu") or 0.0),
+                memory_mb=int(admitted.get("memory_mb") or 0),
+                wall_clock_s=int(admitted.get("wall_clock_s") or 0),
+                state="interrupted",
+                outcome="interrupted",
+                bytes_out=0,
+                # UNATTRIBUTED rather than a guess, for anything the ledger did not carry. It is
+                # the word this gateway already uses for a policy it cannot name, and a reader
+                # can tell it from a real digest.
+                worker_topology=str(admitted.get("worker_topology") or meter.UNATTRIBUTED),
+                worker_id=self.worker.instance_label() or meter.UNATTRIBUTED,
+                allowance_sha256=str(admitted.get("allowance_sha256") or meter.UNATTRIBUTED),
+                operator_policy_sha256=str(
+                    admitted.get("operator_policy_sha256") or meter.UNATTRIBUTED),
+                # -1, not 0: the meter refuses a zero here because it cannot be told apart from
+                # a field nobody filled in, which is exactly the distinction this line needs.
+                operator_policy_version=int(
+                    admitted.get("operator_policy_version") or _versions.UNKNOWN),
+            )
+        except Exception as exc:                              # noqa: BLE001
+            # A line that could not be written is not a reason to fail the recovery and leave
+            # every other interrupted run unanswered. It is reported the way any other failure
+            # to record is.
+            self.could_not_record(record, exc)
+
     def _restore_interrupted(self) -> None:
         """Runs that were executing when the process died are interrupted, not running.
 
@@ -930,6 +1020,14 @@ class GatewayService:
             record.finished_at = time.time()
             record.container_name = container_name_for(run_id)
             self.runs[run_id] = record
+            # THE LINE FIRST, THE STATE AFTER, and that order is what makes it exactly once.
+            #
+            # `unfinished_runs` selects `accepted` and `running`. Once this entry says
+            # `interrupted` a later restart will not see it again, so the line cannot be written
+            # twice. Writing the line before moving the state means a crash between the two
+            # leaves the run selectable again -- which risks a second line rather than none, and
+            # of the two that is the one a reader can notice.
+            self._close_an_interrupted_run(record, entry)
             self.ledger.note_state(run_id, "interrupted")
             # SWEPT WHICHEVER IT WAS, and that is deliberate after a first version got it wrong.
             #
@@ -1592,7 +1690,8 @@ class GatewayService:
         # was about to check, so every first submission was refused as a replay of itself.
         if not self.ledger.claim(request.run_id, request.nonce, request_sha,
                                  record.owner_client_id,
-                                 owner_account_id=record.owner_account_id):
+                                 owner_account_id=record.owner_account_id,
+                                 admitted=self._what_a_closing_line_will_need(record, granted)):
             refused = RunRecord(run_id=request.run_id, job_id=request.job_id,
                                 request_sha256=request_sha, state="refused")
             refused.refusal = (

@@ -634,3 +634,130 @@ class TestACeilingBiggerThanTheMachine:
         capsys.readouterr()
         main(["gateway", "limits", "--dir", str(root)])
         assert "more than this machine" not in capsys.readouterr().out.lower()
+
+
+class TestAnInterruptedRunIsStillInTheRecord:
+    """Q4 asks that the wait and the billed time BOTH appear in the signed, chained log.
+
+    They did -- for every run that reached an ending. A run interrupted by a restart produced no
+    line at all. Nothing was billed for it and the gateway could still say what became of it, but
+    the signed record, which is the thing a customer would be handed as proof of what this
+    service did, did not contain the job.
+
+    `ALPHA-CAPACITY-QUEUE-0002`, F1: "their waited and billed values are absent from the signed
+    chain ... it directly defeats the recording criterion." It does. The queue also makes the case
+    ordinary rather than rare: a job waiting when a restart happens is now normal.
+
+    These do NOT close `interrupted-audit-record-r1`, which asks for more -- every kind of
+    interruption, and whether 'exactly one' is enforced rather than observed. They establish the
+    one thing Q4 asks for.
+    """
+
+    ADMITTED = {"cpu": 2.0, "memory_mb": 1024, "wall_clock_s": 99,
+                "allowance_sha256": "a" * 64, "operator_policy_sha256": "p" * 64,
+                "operator_policy_version": 7, "worker_topology": "single-host-development"}
+
+    def _claimed(self, service, run_id, *, nonce, when, started=None):
+        assert service.ledger.claim(run_id, nonce, "s" * 64, "dev",
+                                    now=when, owner_account_id="acct-" + "1" * 16,
+                                    admitted=self.ADMITTED)
+        if started is not None:
+            service.ledger.note_state(run_id, "running", at=started)
+
+    def _restarted(self, service):
+        from tests.test_em3c_gateway import StandInBackend
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.server import GatewayService
+
+        root = str(pathlib.Path(service.state.root))
+        service.close()
+        state = GatewayState(root, version="test")
+        return GatewayService(state, backend=StandInBackend()), state
+
+    def test_a_job_that_only_waited_gets_its_line(self, capped):
+        began = time.time() - 30.0
+        self._claimed(capped, "only-waited", nonce="n1", when=began)
+        again, state = self._restarted(capped)
+        try:
+            line = _line_for(again.state.root, "only-waited")
+            assert line["state"] == "interrupted"
+            assert line["seconds"] == 0.0, (
+                "a job that never started was billed %s" % line["seconds"])
+            assert line["waited_s"] >= 29.0, (
+                "the wait was %s; it was not read from the ledger" % line["waited_s"])
+        finally:
+            again.close()
+            state.close()
+
+    def test_and_the_times_come_from_the_ledger_not_from_the_restart(self, capped):
+        """THE POINT. A restored record is CONSTRUCTED now, so its own `queued_at` is the moment
+        of the restart. A line built from that would say the job waited no time at all, which is
+        a false statement about somebody's bill rather than a missing one."""
+        began = time.time() - 300.0
+        self._claimed(capped, "waited-five-minutes", nonce="n1", when=began)
+        again, state = self._restarted(capped)
+        try:
+            line = _line_for(again.state.root, "waited-five-minutes")
+            assert abs(line["queued_at"] - began) < 1.0, (
+                "queued_at is %s, not the ledger's first_seen %s" % (line["queued_at"], began))
+            assert line["waited_s"] > 290.0
+        finally:
+            again.close()
+            state.close()
+
+    def test_a_job_that_was_running_is_billed_from_when_it_started(self, capped):
+        began = time.time() - 100.0
+        self._claimed(capped, "was-running", nonce="n2", when=began, started=began + 60.0)
+        again, state = self._restarted(capped)
+        try:
+            line = _line_for(again.state.root, "was-running")
+            assert line["seconds"] >= 35.0, (
+                "billed %s; it should be from the slot to now" % line["seconds"])
+            assert 55.0 <= line["waited_s"] <= 65.0, (
+                "waited %s; it should be arrival to slot" % line["waited_s"])
+        finally:
+            again.close()
+            state.close()
+
+    def test_the_line_says_what_the_run_was_admitted_under(self, capped):
+        """Not what is configured by the time the line is written. A limit changed while a
+        gateway was down must not rewrite what an interrupted run is recorded as."""
+        self._claimed(capped, "with-its-own-limits", nonce="n3", when=time.time() - 5.0)
+        again, state = self._restarted(capped)
+        try:
+            line = _line_for(again.state.root, "with-its-own-limits")
+            assert line["cpu"] == 2.0 and line["memory_mb"] == 1024
+            assert line["wall_clock_s"] == 99
+            assert line["allowance_sha256"] == "a" * 64
+            assert line["operator_policy_version"] == 7
+        finally:
+            again.close()
+            state.close()
+
+    def test_a_second_restart_does_not_write_a_second_line(self, capped):
+        """Enforced, not hoped: `unfinished_runs` selects `accepted` and `running`, and the entry
+        says `interrupted` once the line is written. A second restart cannot see it again."""
+        self._claimed(capped, "only-once", nonce="n1", when=time.time() - 10.0)
+        again, state = self._restarted(capped)
+        once, state2 = self._restarted(again)
+        try:
+            lines = [json.loads(x) for x
+                     in (pathlib.Path(once.state.root) / meter.METER_NAME)
+                     .read_text(encoding="utf-8").splitlines() if x.strip()]
+            mine = [x for x in lines if x.get("run_id") == "only-once"]
+            assert len(mine) == 1, "closed %d times" % len(mine)
+        finally:
+            once.close()
+            state2.close()
+            state.close()
+
+    def test_and_the_chain_still_verifies(self, capped):
+        self._claimed(capped, "in-the-chain", nonce="n1", when=time.time() - 10.0)
+        again, state = self._restarted(capped)
+        try:
+            checked = meter.verify(again.state.root)
+            assert checked["ok"], checked
+            assert checked["unchecked"] == 0
+        finally:
+            again.close()
+            state.close()

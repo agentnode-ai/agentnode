@@ -137,7 +137,8 @@ class Ledger:
             return dict(entry) if entry else None
 
     def claim(self, run_id: str, nonce: str, request_sha256: str, owner_client_id: str,
-              now: float | None = None, owner_account_id: str = "") -> bool:
+              now: float | None = None, owner_account_id: str = "",
+              admitted: dict | None = None) -> bool:
         """Record this run and its nonce, if neither has been seen. True when newly claimed.
 
         One critical section covers both the look and the write, so two identical requests
@@ -165,6 +166,19 @@ class Ledger:
                 # run, so the answer is to record it rather than to relax the comparison.
                 "owner_account_id": str(owner_account_id),
                 "state": "accepted",
+                # WHAT A CLOSING LINE NEEDS AND A RESTART CANNOT RECOVER.
+                #
+                # A gateway that restarts must write the usage line for the run it interrupted,
+                # and that line states the limits the run was admitted under and which policies
+                # applied. Those live in memory on the record and die with the process. Taking
+                # "whatever is configured now" instead would put a figure on a customer's
+                # record that describes a different run, so they are written down here, once,
+                # at the moment they are settled.
+                #
+                # Empty when the caller did not supply them: then the closing line says
+                # UNATTRIBUTED rather than guessing, which is the same word this gateway
+                # already uses for a policy it cannot name.
+                "admitted": dict(admitted or {}),
             }
             if nonce:
                 self._data["nonces"][str(nonce)] = now
@@ -218,13 +232,27 @@ class Ledger:
             binding = entry.get("challenge")
             return dict(binding) if isinstance(binding, dict) else None
 
-    def note_state(self, run_id: str, state: str) -> None:
+    def note_state(self, run_id: str, state: str, at: float | None = None) -> None:
+        """Move a run to a state, and -- for `running` -- record WHEN.
+
+        The time matters for exactly one reason and it is not bookkeeping: a gateway that
+        restarts has to write a closing line for the run it interrupted, and a closing line
+        whose billed figure was computed from times this process invented is a false statement
+        about a customer's bill. `first_seen` already says when the job arrived; this says when
+        it started, and the difference between them is what was waited rather than billed.
+
+        Written only for `running`, because that is the only transition whose time is not
+        recoverable from somewhere else: arrival is `first_seen`, and an ending is whenever the
+        gateway is writing the line.
+        """
         with self._lock, ProcessLock(self.path):
             self._load()
             entry = self._data["runs"].get(str(run_id))
             if entry is None:
                 return
             entry["state"] = str(state)
+            if str(state) == "running" and not entry.get("started_at"):
+                entry["started_at"] = float(time.time() if at is None else at)
             self._write_locked()
 
     def unfinished_runs(self) -> list[str]:
