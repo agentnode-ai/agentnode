@@ -86,6 +86,22 @@ def a_line(root, run_id: str, **changes):
     return meter.record(root, **said)
 
 
+@pytest.fixture(autouse=True)
+def a_boot_identity(monkeypatch):
+    """Every platform gets one for the duration of a test, because the LOGIC is portable.
+
+    Only Linux publishes a boot identity, so a test that used the real one would SKIP
+    everywhere else -- and a skipped test is not a witness to anything. What is platform-bound
+    is whether the value can be had; what this file is about is what the code does with it, and
+    that is the same code on every machine.
+
+    `test_this_machine_really_publishes_a_boot_identity` covers the other half where it exists.
+    """
+    from agentnode_sdk.gateway import lifecycle
+
+    monkeypatch.setattr(lifecycle, "this_boot", lambda: "the-boot-this-test-runs-under")
+
+
 @pytest.fixture()
 def gateway(tmp_path):
     """A real gateway whose sandbox is a stand-in, on a directory of its own."""
@@ -429,12 +445,21 @@ class TestEveryWayOfBeingInterruptedClosesTheSameWay:
             state.close()
         assert line["termination_reason"] == GATEWAY_STOPPED
 
-    def test_a_gateway_that_did_not_get_to_stop_says_that_instead(self, gateway):
+    def test_a_gateway_that_left_nothing_to_read_is_recorded_as_lost(self, gateway):
+        """The case that stays unestablished, and the word that claims nothing further.
+
+        This used to be every gateway that did not stop cleanly. It is now the narrower and
+        truer set: the ones where there is nothing to read at all -- a directory served before
+        this marker existed -- or where the boot identity says the machine restarted, which
+        says the host went and not why.
+        """
         now = time.time()
-        claim(gateway, "lost-me", when=now - 30.0, started=now - 20.0)
+        claim(gateway, "nothing-to-read", when=now - 30.0, started=now - 20.0)
+        (pathlib.Path(gateway.state.root) / lifecycle_module().SERVING_NAME).unlink(
+            missing_ok=True)
         again, state = restart(gateway, cleanly=False)
         try:
-            line = the_one_line_for(state.root, "lost-me")
+            line = the_one_line_for(state.root, "nothing-to-read")
         finally:
             again.close()
             state.close()
@@ -448,8 +473,6 @@ class TestEveryWayOfBeingInterruptedClosesTheSameWay:
         SAME boot means the machine kept running while the process did not -- so something
         outside the process ended it.
         """
-        if not lifecycle_module().this_boot():
-            pytest.skip("this platform publishes no boot identity, so the case cannot arise")
         now = time.time()
         claim(gateway, "killed-me", when=now - 30.0, started=now - 20.0)
         again, state = restart(gateway, went="killed")
@@ -636,6 +659,52 @@ class TestTheLineSaysWhy:
             state.close()
         assert line["termination_reason"] in TERMINATION_REASONS
         assert line["outcome"] == UNVERIFIED_OUTCOME
+
+    def test_all_four_gateway_side_reasons_come_out_of_real_restarts(self, gateway):
+        """Four runs, four ways for a gateway to go, four different words in four lines.
+
+        Here rather than beside each individual case because what I5 asks is whether a READER
+        can tell which -- and that is a question about the set, not about any one of them. A
+        vocabulary in which two of the four always come out the same answers this test and no
+        other.
+        """
+        now = time.time()
+        said = {}
+        for run_id, went, cleanly in (("by-a-stop", "killed", True),
+                                      ("by-a-failure", "crashed", False),
+                                      ("from-outside", "killed", False),
+                                      ("by-something-unknown", "the host restarted", False)):
+            claim(gateway, run_id, when=now - 30.0, started=now - 20.0)
+            again, state = restart(gateway, cleanly=cleanly, went=went)
+            try:
+                said[run_id] = the_one_line_for(state.root, run_id)["termination_reason"]
+            finally:
+                gateway = again
+        try:
+            assert len(set(said.values())) == 4, (
+                "two of the four ways a gateway can go produce the same word, so a reader of "
+                "one line cannot tell them apart: %r" % said)
+            assert said["by-a-stop"] == GATEWAY_STOPPED
+            assert said["by-a-failure"] == GATEWAY_CRASHED
+            assert said["from-outside"] == GATEWAY_KILLED
+            assert said["by-something-unknown"] == GATEWAY_LOST
+        finally:
+            gateway.close()
+
+    @pytest.mark.skipif(not __import__("sys").platform.startswith("linux"),
+                        reason="only Linux publishes a boot identity")
+    def test_this_machine_really_publishes_a_boot_identity(self, monkeypatch):
+        """The other half, where it can be had: the value the logic above depends on is real.
+
+        `monkeypatch.undo` first, because the fixture that makes the logic portable is exactly
+        what this test must not use.
+        """
+        monkeypatch.undo()
+        from agentnode_sdk.gateway import lifecycle
+
+        first = lifecycle.this_boot()
+        assert first, "this machine publishes no boot identity, so a kill cannot be told apart"
+        assert first == lifecycle.this_boot(), "it changed between two reads of the same boot"
 
     def test_none_of_them_is_read_as_the_job_having_failed(self):
         """A job the gateway lost may have done all of its work. Saying it failed is a claim
