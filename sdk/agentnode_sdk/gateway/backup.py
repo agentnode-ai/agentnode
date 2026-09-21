@@ -91,6 +91,15 @@ BESIDES = {
     "meter-key.pub": (PRESENT, "its public half"),
     "use-log.head": (WHOLE, "where the metering chain ends"),
     "stopping.json": (WHOLE, "cancellations in flight"),
+    # WHICH PROCESS IS SERVING THIS DIRECTORY, and whether the one before it began to stop.
+    # A statement about the here and now, and the only file in this table that would be WRONG
+    # to restore: a marker carried in from an archive says a gateway was serving, with a pid
+    # from another machine and a time from another day, and the next start would read it as a
+    # clean stop and write `gateway_stopped` on runs that nothing had stopped. It is taken
+    # whole for the manifest so that its presence is still accounted for, and it has no age
+    # because it is replaced on every takeover and every shutdown.
+    "serving.json": (WHOLE, "which process is serving this directory now; replaced on every "
+                            "takeover, and misleading if restored from an archive"),
     "config.json": (WHOLE, "the gateway's own configuration"),
     "tls-cert.pem": (PRESENT, "its certificate"),
     "tls-key.pem": (PRESENT, "its private key"),
