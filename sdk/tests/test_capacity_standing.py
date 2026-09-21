@@ -290,15 +290,23 @@ class TestARestartTellsAWaitingJobApartFromARunningOne:
             again.close()
             state.close()
 
-    def test_and_no_sandbox_is_swept_for_a_job_that_never_had_one(self, capped, tmp_path):
+    def test_it_is_still_swept_like_every_other_interrupted_run(self, capped, tmp_path):
+        """AND THAT IS ON PURPOSE, after a first version skipped the sweep for these.
+
+        Skipping it looks right: the job never started, so no container exists to remove. But
+        `running` is noted on a best effort -- a ledger that cannot be written must not stop a
+        job that already holds a slot -- so a run CAN have a live container and still read as
+        `accepted`. Skipping the sweep leaks that container.
+
+        `test_reachable.py::test_the_sandbox_a_cut_short_run_left_is_removed` caught it, in those
+        words. What the two cases differ in is the SENTENCE, not the sweeping.
+        """
         self._a_claimed_run(capped, "only-ever-waited", nonce="n1")
         again, state = self._restarted(capped, tmp_path)
         try:
             record = again.runs["only-ever-waited"]
-            assert record.container_name == "", (
-                "a container was named for a job that never started: %r" % record.container_name)
-            assert record.cleanup_verified is True, (
-                "the recovery went looking for a sandbox that was never created")
+            assert record.container_name, (
+                "nothing names the sandbox this run might have left, so nothing can remove it")
         finally:
             again.close()
             state.close()

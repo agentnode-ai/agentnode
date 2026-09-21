@@ -263,7 +263,17 @@ def _production() -> dict:
         # topology label; it is computed from that label rather than stored, so it takes its
         # type from it.
         attribute = {"policy_deltas": "deltas", "worker_topology_means": "worker_topology"}
-        types = {key: _runtime_types(hints[attribute.get(key, key)]) for key in inner}
+        # DERIVED, AND NOT A FIELD AT ALL -- not even one under another name. `public()` works
+        # `waiting_for_a_slot` out from the state and the billed clock, so there is no annotation
+        # anywhere to read its type off, and mapping it onto `started_at` the way the two above
+        # are mapped would give it that field's type instead of its own.
+        #
+        # Named here rather than left to fall through, because falling through was a KeyError
+        # that took 190 tests in this file with it the moment the field appeared.
+        derived = {"waiting_for_a_slot": bool}
+        types = {key: _runtime_types(hints[attribute.get(key, key)])
+                 for key in inner if key not in derived}
+        types.update({key: (kind,) for key, kind in derived.items()})
 
         # The envelope's types come from a real stamp over a real identity, so they are the
         # types the gateway really puts there rather than the ones this file expects.

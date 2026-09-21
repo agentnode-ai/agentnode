@@ -920,22 +920,31 @@ class GatewayService:
                 "the gateway restarted while this job was running, so it did not finish. It has "
                 "not been started again -- submit it as a new job if you still want it run."
                 if ever_ran else
+                # "did not finish" is in BOTH sentences on purpose: it is the phrase every
+                # interrupted run is required to carry, and a test reads for it. What differs
+                # is what comes after it.
                 "the gateway restarted while this job was still waiting for its turn, so it "
-                "never started and nothing was charged for it. It has not been started again "
-                "-- submit it as a new job if you still want it run."
+                "did not finish and never started -- nothing was charged for it. It has not "
+                "been started again: submit it as a new job if you still want it run."
             )
             record.finished_at = time.time()
-            if ever_ran:
-                record.container_name = container_name_for(run_id)
-            else:
-                # Nothing to sweep, and nothing to ask the worker about: no container was ever
-                # created for this run. Saying so here is what stops the recovery below from
-                # asking after a sandbox that never existed -- and an unasked question cannot
-                # come back with an answer that gets recorded as a cleanup.
-                record.cleanup_verified = True
+            record.container_name = container_name_for(run_id)
             self.runs[run_id] = record
             self.ledger.note_state(run_id, "interrupted")
-            if ever_ran and time.monotonic() < budget:
+            # SWEPT WHICHEVER IT WAS, and that is deliberate after a first version got it wrong.
+            #
+            # Skipping the sweep for a run the ledger never saw reach `running` looks tidy: no
+            # container existed, so there is nothing to remove. But `running` is written on a
+            # best effort -- a ledger that cannot be written is not a reason to refuse a job
+            # that already holds a slot -- so a run CAN have a live container and still read as
+            # `accepted` here. Not sweeping it leaks that container, with nothing anywhere
+            # referring to it. `test_the_sandbox_a_cut_short_run_left_is_removed` says so in
+            # exactly those words, and it was right.
+            #
+            # Asking about a container that never existed costs one question the worker answers
+            # with "not there". Losing one that does exist costs a running sandbox nobody knows
+            # about. The two are not close.
+            if time.monotonic() < budget:
                 self._clean_up_what_it_left(record)
 
     def _clean_up_what_it_left(self, record: RunRecord) -> None:
@@ -1701,12 +1710,29 @@ class GatewayService:
                     # asking the account's standing again at the moment the slot is granted --
                     # the last moment before foreign code runs. A wording here for a case
                     # nothing can produce would read like a mechanism that exists.
-                    {"cancelled": "cancelled while it was waiting for a slot",
+                    {"cancelled": "cancelled by the client while it was waiting for a slot",
                      "stopped": "this sandbox stopped taking work while this job was waiting",
                      "revoked": "the device that submitted this job was withdrawn while it "
                                 "was waiting"}.get(why, why))
                 return False
             record.slot_ticket = None
+
+        # THE CUSTOMER'S OWN CANCELLATION IS ANSWERED FIRST, before anything else is asked.
+        #
+        # This used to be the first thing in the method and moving it cost something: with the
+        # standing check ahead of it, a run the customer had cancelled came back `refused` --
+        # the gateway telling somebody it would not do a thing they had already called off. It
+        # is not a refusal, it is their own decision, and `test_a_run_cancelled_before_it_started`
+        # is where that showed.
+        #
+        # It sits here rather than at the top so that a ticket already dropped for a specific
+        # reason -- a withdrawal, a stop -- keeps that reason instead of being reported as a
+        # cancellation. Both orderings matter and this is the one that satisfies both.
+        if record.cancel_requested.is_set():
+            self.slots.give_back(record.run_id)
+            self._end_without_running(record, granted, "cancelled",
+                                      "cancelled by the client before it started")
+            return False
 
         # STANDING, asked again now rather than trusted from admission -- and asked through the
         # SAME call the dispatcher uses, so there is no second opinion here about what a stop or
@@ -1732,7 +1758,7 @@ class GatewayService:
         if record.cancel_requested.is_set():
             self.slots.give_back(record.run_id)
             self._end_without_running(record, granted, "cancelled",
-                                      "cancelled before it started")
+                                      "cancelled by the client before it started")
             return False
 
         # THE BILLED CLOCK STARTS HERE, and nowhere earlier.
@@ -1750,6 +1776,18 @@ class GatewayService:
         """
         record.finished_at = time.time()
         record.refusal = why
+        # WHY IT ENDED, in the field that carries that answer everywhere else.
+        #
+        # The queue introduced a second way for a run to be cancelled -- taken out before it
+        # ever reached the worker -- and this path set the state but not the reason. A run whose
+        # state says `cancelled` and whose reason says nothing is the disagreement that
+        # `test_the_state_and_the_reason_cannot_disagree` exists to stop, and
+        # `test_a_run_cancelled_before_it_started` is where it showed: the reason came back
+        # empty on a run everybody agreed was cancelled.
+        if state == "cancelled":
+            from agentnode_sdk.gateway.protocol import CANCELLED
+
+            record.termination_reason = CANCELLED
         # NOTHING WAS LEFT BEHIND, because nothing was ever created. `container_name` is set in
         # `_run` AFTER the slot is held, so an empty one here is not an assumption -- it is the
         # record saying this job never reached the point of having a sandbox. Guarded on that
