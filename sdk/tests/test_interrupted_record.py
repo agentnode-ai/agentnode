@@ -116,6 +116,12 @@ def claim(service, run_id: str, *, when: float, started: float | None = None) ->
         service.ledger.note_state(run_id, "running", at=started)
 
 
+def lifecycle_module():
+    from agentnode_sdk.gateway import lifecycle
+
+    return lifecycle
+
+
 def restart(service, *, cleanly: bool = False):
     """A SECOND gateway on the same directory, which is what a restart is.
 
@@ -290,6 +296,29 @@ class TestARestartClosesWhatItInterrupted:
         finally:
             again.close()
             state.close()
+
+    def test_a_restart_tells_a_slot_without_a_container_from_one_with_one(self, gateway):
+        """Two runs, both interrupted, both having held a slot, and only one of which ever had
+        a container. A restart has to record them differently, because they are different.
+
+        Here for I2 rather than for I7: what this is about is what a RESTART writes down, and a
+        restart that cannot tell the two apart writes the same sentence about both.
+        """
+        now = time.time()
+        claim(gateway, "slot-only", when=now - 30.0, started=now - 20.0)
+        claim(gateway, "slot-and-container", when=now - 30.0, started=now - 20.0)
+        gateway.ledger.note_a_sandbox_was_asked_for("slot-and-container")
+        again, state = restart(gateway)
+        try:
+            without = the_one_line_for(state.root, "slot-only")
+            with_one = the_one_line_for(state.root, "slot-and-container")
+        finally:
+            again.close()
+            state.close()
+        assert without["ever_started"] is True and with_one["ever_started"] is True
+        assert without["sandbox"] != with_one["sandbox"], (
+            "a restart records the same thing about a run that had a container and one that "
+            "never asked for one: both say %r" % without["sandbox"])
 
     def test_and_the_run_is_not_started_again(self, gateway):
         """Closing it answers the client. It must not also re-run the job."""
@@ -716,6 +745,39 @@ class TestNothingIsClosedTwice:
             holding.close()
         # And it is given back, so a gateway that stops does not lock the directory for good.
         lifecycle.OnlyOneGateway(root).take().close()
+
+    def test_the_lock_holds_against_another_process(self, tmp_path):
+        """A thread lock is not what is needed here.
+
+        The one above runs both attempts in this interpreter, where a per-path lock inside the
+        process answers first and the kernel is never consulted. Two gateways on one directory
+        are two PROCESSES, so the lock that matters is the one the kernel owns -- and this takes
+        it from a python that shares nothing with this one but the filesystem.
+        """
+        import subprocess
+        import sys
+
+        root = tmp_path / "across-processes"
+        root.mkdir()
+        holding = lifecycle_module().OnlyOneGateway(root).take()
+        try:
+            child = chr(10).join([
+                "import sys",
+                "from agentnode_sdk.gateway import lifecycle",
+                "try:",
+                "    lifecycle.OnlyOneGateway(sys.argv[1]).take()",
+                "    print(chr(84)+chr(79)+chr(79)+chr(75))",
+                "except lifecycle.AnotherGatewayHasIt:",
+                "    print(chr(82)+chr(69)+chr(70)+chr(85)+chr(83)+chr(69)+chr(68))",
+            ])
+            done = subprocess.run(
+                [sys.executable, "-c", child, str(root)],
+                capture_output=True, text=True, timeout=120)
+        finally:
+            holding.close()
+        assert "REFUSED" in (done.stdout or ""), (
+            "another process took the lock while this one held it: %r / %r"
+            % (done.stdout, done.stderr))
 
     def test_the_lock_is_taken_by_the_one_command_that_takes_over(self):
         """An operator command that could not look at a running gateway would be the defect
