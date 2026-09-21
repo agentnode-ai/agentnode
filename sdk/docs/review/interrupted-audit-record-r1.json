@@ -1,0 +1,125 @@
+{
+ "_comment": [
+  "PROSPECTIVELY FROZEN. Written and hashed BEFORE any line of the remediation it judges exists,",
+  "so the criteria cannot be shaped around what gets built. Frozen 2026-09-21.",
+  "",
+  "This profile exists because of a gap found while measuring the capacity queue: a run that was",
+  "interrupted by a gateway restart produces NO line in the signed usage log. Nothing is billed",
+  "for it -- so no customer is overcharged -- and the gateway can still answer what became of it",
+  "from memory rebuilt out of the ledger. But the signed, chained record, which is the thing a",
+  "paying customer would be handed as proof of what this service did, does not contain the job at",
+  "all.",
+  "",
+  "For a service whose product is a record, a job that is absent from the record is not a small",
+  "omission. It is the one kind of job nobody can check: not by reading the log, not by counting",
+  "it, not by reconciling a bill against it. And the queue makes the case ordinary rather than",
+  "rare -- jobs that are waiting when a restart happens are now a normal occurrence.",
+  "",
+  "This profile carries a `roles` map from the start, for the reason `alpha-capacity-queue-r1`",
+  "gives: a profile without one makes every input `context`, and context establishes nothing."
+ ],
+ "profile_id": "interrupted-audit-record-r1",
+ "kind": "implementation-review",
+ "mutable_task": true,
+ "stage": "pre-run",
+ "frozen_prospectively": true,
+ "review_object": "Every job this gateway accepted must end with exactly one signed, chained line, whatever interrupted it -- a restart, the operator's stop, the loss of the worker, or the process being killed. Judge whether that line exists in each of those cases; whether it says which of them happened; whether it carries the wait, whether the job ever started, and what became of its sandbox; whether a job that never held a slot is charged nothing; and whether a run can be closed twice or billed twice when a gateway restarts more than once.",
+ "out_of_scope": "The capacity ceiling and the queue in front of it, judged by `alpha-capacity-queue-r1` and not reopened here. Whether an ending is correctly CLASSIFIED when a container dies early -- that is `early-ending-success-r1`, and the two must not be used to cover for each other. Tenant-to-tenant isolation, the transport to a worker on another machine, egress, identity, payment, domain and TLS. Whether any price is right. How long records are kept and what retention removes.",
+ "verdict_must_state": "A pass concerns the completeness and the single-ness of the closing record for interrupted jobs, and what that record says. It does not establish that the figures for jobs that ran normally are right, that the classification of an early ending is correct, or that anything about tenancy or price is settled. Say which interruptions were EXERCISED against a running gateway and which were only constructed in a test. Say explicitly whether the 'exactly one' property is ENFORCED by the code or merely observed not to have been violated.",
+ "roles_rule": "Any input this profile does not list defaults to the lowest authority, 'context'. A request may name this profile and may not extend it.",
+ "roles": {
+  "brief.md": "context",
+  "what-answers-what.md": "context",
+  "about-the-prior-verdicts.txt": "context",
+  "meter.py": "normative_spec",
+  "ledger.py": "normative_spec",
+  "server-closing-a-run.py.txt": "normative_spec",
+  "server-restore-interrupted.py.txt": "normative_spec",
+  "server-stop-and-worker-loss.py.txt": "normative_spec",
+  "counter-check-audit.sh": "normative_spec",
+  "test_interrupted_record.py": "supporting_evidence",
+  "test_capacity_billing.py": "supporting_evidence",
+  "one-line-per-accepted-run.txt": "frozen_evidence",
+  "a-restart-closes-what-it-interrupted.txt": "frozen_evidence",
+  "every-interruption-closes-the-same-way.txt": "frozen_evidence",
+  "a-job-that-never-started-bills-zero.txt": "frozen_evidence",
+  "the-line-says-why.txt": "frozen_evidence",
+  "the-line-carries-the-wait-and-the-start.txt": "frozen_evidence",
+  "the-line-carries-what-became-of-the-sandbox.txt": "frozen_evidence",
+  "nothing-is-closed-twice.txt": "frozen_evidence",
+  "nothing-is-billed-twice.txt": "frozen_evidence",
+  "the-chain-still-verifies.txt": "frozen_evidence",
+  "counter-checks.txt": "frozen_evidence",
+  "signed-usage-lines.txt": "frozen_evidence",
+  "suite-on-the-pinned-environment.txt": "frozen_evidence",
+  "ci-checks.txt": "frozen_evidence"
+ },
+ "criteria": [
+  {
+   "id": "I1-EXACTLY-ONE-CLOSING-LINE-PER-ACCEPTED-RUN",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether every job this gateway ACCEPTED ends with exactly one line in the signed log -- not at least one, and not at most one. Determine where 'exactly one' is enforced: what makes a second line impossible, and what makes the absence of a line impossible. Determine whether the enforcement is in the code or only in the sequence of events that has happened so far. A property that holds because nothing has yet taken the path that would break it is not enforced, and the answer must say which of the two this is."
+  },
+  {
+   "id": "I2-A-RESTART-CLOSES-WHAT-IT-INTERRUPTED",
+   "blocking": true,
+   "stage": "post-run",
+   "text": "Judge, against a running gateway that is really restarted, whether jobs that were executing and jobs that were only waiting each receive their closing line. Determine that the line appears for both, that it appears once, and that it appears without anybody asking for it -- a record that is written only when a client happens to poll is not a record of what happened."
+  },
+  {
+   "id": "I3-EVERY-WAY-OF-BEING-INTERRUPTED-CLOSES-THE-SAME-WAY",
+   "blocking": true,
+   "stage": "post-run",
+   "text": "Judge whether the closing line also appears when the operator stops the gateway, when the worker becomes unreachable or loses the run, and when the gateway process is killed outright rather than shut down. Determine which of these were exercised for real and which were constructed. Determine what happens to a job whose closing line could not be written at the moment it ended -- whether it is written later, and whether 'later' is bounded by something or left to the next restart."
+  },
+  {
+   "id": "I4-A-JOB-THAT-NEVER-HELD-A-SLOT-BILLS-ZERO",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge that the billed figure on the closing line of a job that never started is zero, and determine WHY it is zero -- whether because there is no start time to subtract from, or because a rule sets it to zero afterwards. The first cannot be got wrong by a later change; the second can. Determine that a job that DID start and was then interrupted is charged for the time it actually held a slot and no more, and that this is visible in the line rather than inferred from it."
+  },
+  {
+   "id": "I5-THE-LINE-SAYS-WHY",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether the closing line distinguishes the reasons a job was interrupted -- a restart, the operator's stop, the loss of the worker, the process being killed -- and whether a reader of the line alone can tell which. Determine that the reason is recorded as a value a machine can branch on and not only as a sentence, and that the sentence, where there is one, says the same thing as the value."
+  },
+  {
+   "id": "I6-THE-LINE-CARRIES-THE-WAIT-AND-WHETHER-IT-STARTED",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether the closing line carries how long the job waited and whether it ever started, as separate and unambiguous values. Determine that 'never started' is distinguishable from 'started at a time that happens to be missing', and that a reader cannot mistake one for the other. Determine that the wait is recorded even when the job never ran, since that is exactly the case where the customer has nothing else to look at."
+  },
+  {
+   "id": "I7-THE-LINE-CARRIES-WHAT-BECAME-OF-THE-SANDBOX",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether the closing line says what happened to the sandbox the job may have created: that it was confirmed gone, that it was confirmed still there, or that nobody could establish which. Determine that 'nobody could establish' is a distinct answer and is not recorded as a confirmed cleanup. Determine what the line says for a job that never created a sandbox at all, and that this is not the same value as a confirmed cleanup of one that did."
+  },
+  {
+   "id": "I8-NOTHING-IS-CLOSED-TWICE",
+   "blocking": true,
+   "stage": "post-run",
+   "text": "Judge, against a gateway restarted more than once, whether a job already closed by the first restart is closed again by the second. Determine what prevents it, and determine it from the mechanism rather than from a count of lines that happened to come out right. Determine what happens when two gateway processes share the same directory -- whether each would close the same job, and whether anything stops that."
+  },
+  {
+   "id": "I9-NOTHING-IS-BILLED-TWICE",
+   "blocking": true,
+   "stage": "post-run",
+   "text": "Judge, by reading the signed log rather than by computing from it, whether any run appears with a billable figure more than once across a sequence of restarts. Determine that the window quota and any other counter charged for a run are also charged once. Determine that the figures were read from the file and not reconciled by hand."
+  },
+  {
+   "id": "I10-THE-CHAIN-STILL-VERIFIES",
+   "blocking": true,
+   "stage": "post-run",
+   "text": "Judge whether the log still verifies end to end with the new lines in it -- every line signed, each pointing at the one before, and the log ending where it is supposed to. Determine that any field added for this work is inside the signature rather than beside it, and that adding it was a decision made in the place that declares the shape of a line rather than at a call site."
+  },
+  {
+   "id": "I11-THE-EVIDENCE-WOULD-FAIL-WITHOUT-THE-MECHANISM",
+   "blocking": true,
+   "stage": "post-run",
+   "text": "Judge the counter-checks rather than the claims. For the writing of a closing line for an interrupted run, the zero billed figure for a run that never started, the recorded reason, and whatever prevents a second closing: determine whether a counter-check removes that one mechanism, names a DIFFERENT test from the one that defines it, shows that test failing with a non-zero exit, proves the mutation landed, and proves the file was restored byte for byte. Determine whether any counter-check fails for a reason unrelated to the mechanism it removed. Determine whether any count was reconciled by hand rather than read from a machine-produced file. Determine that no counter-check operated a real service, installed anything, or reached the closed alpha."
+  }
+ ]
+}
