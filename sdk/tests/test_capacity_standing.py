@@ -465,3 +465,33 @@ class TestAFullMachineSaysWhatToDoAboutIt:
 
         with pytest.raises(Exception):
             Refused("over_a_ceiling", "because", "")
+
+
+class TestFairnessThroughARealGateway:
+    """The same rule as `test_capacity_queue.py`, but through the service rather than a bare
+    `Slots`, and stated as what a CUSTOMER experiences rather than as an ordering.
+
+    It exists as its own test because a counter-check has to be able to remove the fairness rule
+    and fail something OTHER than the test that spells the rule out. Two tests that fail for the
+    same reason are one test.
+
+    Exercised for real on the closed alpha too: A submitted four, B submitted one afterwards, and
+    B started ahead of two of A's -- one of which had waited 8.8 s.
+    """
+
+    def test_a_customer_who_flooded_the_machine_does_not_get_served_first(self, capped):
+        who_floods, who_waits = "acct-floods", "acct-waits"
+        # Both slots taken by the flooder, and two more of theirs queued behind it.
+        capped.slots.take_or_queue("flood-1", who_floods)
+        mine = [capped.slots.take_or_queue("flood-2", who_floods)]
+        # The other customer arrives LAST.
+        theirs = capped.slots.take_or_queue("the-other-customer", who_waits)
+        assert theirs is not None, "it should have had to wait"
+
+        capped.slots.give_back("flood-1")
+
+        assert theirs.granted.is_set(), (
+            "the freed slot went to the account that already had the machine; the customer who "
+            "arrived last and holds nothing is still waiting")
+        assert not any(t.granted.is_set() for t in mine), (
+            "one of the flooder's own queued jobs was promoted ahead of a customer holding none")
