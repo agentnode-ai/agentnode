@@ -472,7 +472,17 @@ class ContainerBackend(SandboxBackend):
                            reason=reason, native_status=oom_status,
                            platform=CONTAINER_PLATFORM)
         if reason == RUNTIME_LOST:
-            return Outcome(proc.returncode, out, err,
+            # NO EXIT CODE, for the reason the timeout path already gives: a run whose container
+            # went away did not choose a status. The client's 137 is what `podman run` returns
+            # when the thing it was attached to is destroyed -- a fact about the client, not a
+            # decision by the payload.
+            #
+            # Exercised on the closed alpha before this line existed: the container was removed
+            # mid-run, the record correctly said `unverified / runtime_lost`, and the customer
+            # saw NOTHING -- the CLI returned 137 silently, because a status that is present is
+            # a status it hands back. Keeping it here as `native_status` and leaving the exit
+            # code empty is what lets the client say "nobody could establish how this ended".
+            return Outcome(None, out, err,
                            reason=reason, native_status=proc.returncode,
                            platform=CONTAINER_PLATFORM)
         return Outcome(proc.returncode, out, err, reason=EXITED)

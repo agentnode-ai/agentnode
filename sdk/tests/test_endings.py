@@ -338,3 +338,39 @@ class TestWhatTheCustomerIsTold:
         source = inspect.getsource(remote_commands.cmd_run)
         assert "Ask for less memory" in source, (
             "the customer is told what happened and not what they can do about it")
+
+
+class TestARunThatWasKilledHasNoExitCode:
+    """The rule this codebase already had, applied to the two endings that did not follow it.
+
+    "A process the sandbox killed did not choose a status, and reporting one it did not choose
+    is how the reason got lost in the first place." That was written for the timeout path. A run
+    whose container was removed under it is in the same position: the 137 belongs to the client
+    that was attached to it, not to the payload.
+
+    Exercised on the closed alpha: with the exit code present, the CLI returned it silently and
+    the customer was told nothing at all about a run nobody could account for.
+    """
+
+    def test_the_endings_that_nobody_chose_carry_no_exit_code(self):
+        from agentnode_sdk.sandbox.container_backend import ContainerBackend
+
+        source = inspect.getsource(ContainerBackend._end_an_ordinary_run)
+        # Each `if reason == ...` branch is one of the endings nobody chose. Every one of them
+        # has to build its Outcome with no exit code.
+        branches = source.split("if reason ==")[1:]
+        assert len(branches) >= 2, "the killed endings no longer have their own branches"
+        for chunk in branches:
+            assert "Outcome(None," in chunk, (
+                "an ending nobody chose still reports an exit code: %s"
+                % chunk.strip()[:120])
+
+    def test_and_the_runtime_status_is_kept_beside_it(self):
+        """Dropped entirely it would be a number nobody can find; reported as the exit code it
+        would be a number attributed to the wrong thing."""
+        from agentnode_sdk.sandbox.container_backend import ContainerBackend
+
+        source = inspect.getsource(ContainerBackend._end_an_ordinary_run)
+        assert source.count("native_status=") >= 2
+        assert "platform=CONTAINER_PLATFORM" in source, (
+            "a status is kept without saying whose it is")
