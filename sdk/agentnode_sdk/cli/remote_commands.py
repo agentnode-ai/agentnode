@@ -446,7 +446,9 @@ def cmd_run(args) -> int:
             print(f"    {delta.get('field')}: asked {delta.get('requested')!r}, "
                   f"got {delta.get('effective')!r}")
 
-    from agentnode_sdk.gateway.protocol import TIMED_OUT, TIMEOUT_EXIT_STATUS
+    from agentnode_sdk.gateway.protocol import (
+        NOTHING_WAS_ESTABLISHED, OUT_OF_MEMORY, TIMED_OUT, TIMEOUT_EXIT_STATUS,
+    )
 
     state = final.get("state")
     # Whatever the answer said, and nothing where it said nothing. `EM3C-E8-RECORD-0001`: this
@@ -466,7 +468,22 @@ def cmd_run(args) -> int:
     if state == "finished":
         code = final.get("exit_code")
         if code is None:
+            # A KILLED RUN HAS NO EXIT CODE, and until there were words for the other endings
+            # that meant there was nothing to say either: "nothing exited, and no reason was
+            # given" was printed for a container the runtime had just told us it killed for
+            # memory. The reason was given; this had no way to read it.
             print()
+            if reason == OUT_OF_MEMORY:
+                print(f"  {bold('It ran out of memory.')} The sandbox stopped it at its ceiling,")
+                print("  so it did not finish and nothing it had not already printed came back.")
+                print("  Ask for less memory, or ask whoever runs this sandbox for more.")
+                return 1
+            if reason in NOTHING_WAS_ESTABLISHED:
+                print(f"  {bold('Nobody could establish how this ended.')}")
+                print("  The sandbox lost track of the run; what your code did is not known")
+                print("  either way, so treat it as neither done nor undone. Send it again if")
+                print("  it is safe to run twice.")
+                return 1
             print(f"  {bold('Did not finish.')} Nothing exited, and no reason was given.")
             return 1
         return int(code)

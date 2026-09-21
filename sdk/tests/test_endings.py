@@ -283,3 +283,58 @@ class TestTheEndingsThatWereAlreadyRightStillAre:
     def test_a_run_still_has_no_outcome_before_it_ends(self):
         assert outcome_of("accepted", NOT_STOPPED) == ""
         assert outcome_of("running", NOT_STOPPED) == ""
+
+
+class TestWhatTheCustomerIsTold:
+    """The endings have names now. The one surface a person reads had no way to use them.
+
+    Measured on the closed alpha, before this: a container the runtime had just reported as
+    killed for memory produced
+
+        Did not finish. Nothing exited, and no reason was given.
+
+    The reason WAS given -- `out_of_memory`, in the signed line, from the runtime itself. The
+    client had no branch for it, because until now there was nothing to branch on.
+    """
+
+    def _said(self, final: dict, capsys) -> str:
+        from agentnode_sdk.cli import remote_commands
+
+        remote_commands._report_the_ending(final) if hasattr(
+            remote_commands, "_report_the_ending") else None
+        return capsys.readouterr().out
+
+    def test_the_client_has_a_branch_for_every_ending_it_can_be_handed(self):
+        """Read from the source of the function that prints it, so a reason added later without
+        a sentence for it is caught here rather than by a customer."""
+        from agentnode_sdk.cli import remote_commands
+
+        source = inspect.getsource(remote_commands)
+        for reason in (OUT_OF_MEMORY,):
+            assert "OUT_OF_MEMORY" in source, (
+                "the client cannot say anything about %s" % reason)
+        assert "NOTHING_WAS_ESTABLISHED" in source, (
+            "the client cannot tell a customer that nobody established how their job ended")
+
+    def test_it_no_longer_claims_no_reason_was_given_when_one_was(self):
+        """The sentence itself is kept -- there IS a case with no reason, a backend that says
+        nothing -- but it must not be the answer for an ending that named itself."""
+        from agentnode_sdk.cli import remote_commands
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(remote_commands.cmd_run)))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            test = ast.unparse(node.test)
+            if "OUT_OF_MEMORY" not in test and "NOTHING_WAS_ESTABLISHED" not in test:
+                continue
+            printed = ast.unparse(node.body)
+            assert "no reason was given" not in printed, (
+                "a named ending is still told it has no reason: %s" % test)
+
+    def test_and_it_says_what_to_do_about_running_out_of_memory(self):
+        from agentnode_sdk.cli import remote_commands
+
+        source = inspect.getsource(remote_commands.cmd_run)
+        assert "Ask for less memory" in source, (
+            "the customer is told what happened and not what they can do about it")
