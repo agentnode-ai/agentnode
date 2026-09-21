@@ -1234,7 +1234,11 @@ class GatewayService:
                 entry = self.ledger.run_entry(run_id) or {}
                 if not record.finished_at:
                     record.finished_at = time.time()
-                record.container_name = record.container_name or container_name_for(run_id)
+                # FROM THE ONE FUNCTION, unconditionally. Keeping an existing value with an
+                # `or` would be harmless here -- the function is deterministic, so it produces
+                # the same name -- but it is a second spelling of where a container name comes
+                # from, and a test reads every assignment to make sure there is only one.
+                record.container_name = container_name_for(run_id)
                 self._clean_up_what_it_left(record)
                 if not self._close_an_interrupted_run(record, entry, reason=GATEWAY_STOPPED):
                     # Left where the next start will find it, for the same reason.
