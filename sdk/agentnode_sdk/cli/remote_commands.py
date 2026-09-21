@@ -397,6 +397,15 @@ def cmd_run(args) -> int:
         print()
         print(f"  {bold('Refused, and nothing was run.')}")
         print(f"  {answer.get('refusal')}")
+        # AND WHAT TO DO ABOUT IT, which travelled with the refusal and was being thrown away
+        # here. Every refusal this gateway can produce is required to carry a next step -- a
+        # test asserts that none can even be constructed without one -- and the one surface a
+        # person actually reads was printing the reason and dropping the step. The full queue
+        # showed it: "this sandbox is already running as many jobs as it will run at once",
+        # and then nothing about sending it again in a moment.
+        what_to_do = str(answer.get("what_to_do") or "").strip()
+        if what_to_do:
+            print(f"  {what_to_do}")
         return 1
 
     # Printed so it can be stopped from another terminal. A job you cannot name is a job you

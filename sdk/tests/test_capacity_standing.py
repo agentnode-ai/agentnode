@@ -405,3 +405,63 @@ class TestAnOperatorCanSetTheCeilingWithoutEditingAFile:
         assert "nobody waits" in shown, shown
         assert "no limit" not in shown.split("queue_depth")[1].splitlines()[0], (
             "a queue depth of zero was shown as 'no limit', which is the opposite of true")
+
+
+class TestAFullMachineSaysWhatToDoAboutIt:
+    """Q6 asks for a refusal that names the condition AND carries a next step.
+
+    It named the condition. The step was built, travelled the whole way to the client, and was
+    dropped by the one surface a person reads. Exercised on the closed alpha, seven jobs against
+    a ceiling of two and a queue of four, the seventh was told:
+
+        Refused, and nothing was run.
+        This sandbox could not carry that out: this sandbox is already running as many jobs as
+        it will run at once, and its queue is full. Nothing was started and nothing will be
+        charged for.
+
+    -- and nothing else. Two things were wrong, and they are separate.
+    """
+
+    def test_a_full_queue_is_a_ceiling_and_not_an_unavailable_sandbox(self):
+        """`sandbox_unavailable` means "nothing could run it, and this is not the caller's
+        fault". The sandbox is fine. It is busy, which is a ceiling and has its own name."""
+        from agentnode_sdk.access.dispatch import _translate
+        from agentnode_sdk.gateway.capacity import QueueIsFull
+
+        refused = _translate(QueueIsFull("it is full", "send it again in a moment", 5.0))
+        assert refused.refusal == "over_a_ceiling", (
+            "a full machine was reported as %r" % refused.refusal)
+
+    def test_and_it_keeps_its_own_remedy_rather_than_the_generic_one(self):
+        """The generic branch substituted "tell whoever runs it", which is advice to complain.
+        `QueueIsFull` knows the operator's actual numbers and says to try again shortly."""
+        from agentnode_sdk.access.dispatch import _translate
+        from agentnode_sdk.gateway.capacity import QueueIsFull
+
+        real = QueueIsFull("it is full", "Send it again in a moment. It runs 2 at once.", 5.0)
+        assert _translate(real).what_to_do == real.remedy
+
+    def test_the_client_prints_the_step_and_not_only_the_reason(self):
+        """Read out of the source of the one function that renders this, because the failure was
+        not that the step was missing from the answer -- it was in the answer -- but that this
+        printed the reason and returned."""
+        import ast
+        import inspect
+        import textwrap
+
+        from agentnode_sdk.cli import remote_commands
+
+        source = textwrap.dedent(inspect.getsource(remote_commands.cmd_run))
+        tree = ast.parse(source)
+        printed = {ast.unparse(node) for node in ast.walk(tree)
+                   if isinstance(node, ast.Call)
+                   and getattr(node.func, "id", "") == "print"}
+        assert any("what_to_do" in one for one in printed), (
+            "the refusal's next step is never printed")
+
+    def test_every_refusal_still_has_a_step_to_print(self):
+        """The guard the above depends on: nothing in the contract may refuse without one."""
+        from agentnode_sdk.access.dispatch import Refused
+
+        with pytest.raises(Exception):
+            Refused("over_a_ceiling", "because", "")
