@@ -139,6 +139,115 @@ UNATTRIBUTED = "(unattributed)"
 #: What a line becomes when its contents are erased. See `erase`.
 TOMBSTONE_FIELDS = ("seq", "erased_at", "erased_because", "stood_for", "signature")
 
+#: A CORRECTION. The third shape a line in this log can have, and the one that exists because
+#: the other two cannot be changed.
+#:
+#: This log is append-only and chained on purpose: a figure that can be edited afterwards is not
+#: evidence of anything. That is exactly what makes a mistake permanent -- and mistakes happen.
+#: Runs on the closed alpha were metered twice before the one-line rule existed, and both lines
+#: carry billable seconds. Rewriting them would defeat the thing the log is for; leaving them and
+#: saying nothing leaves a record that overstates what a customer owes.
+#:
+#: So a correction is APPENDED, signed and chained like everything else, and it says three
+#: things: which run it is about, which line numbers it supersedes, and what the figure actually
+#: is. A reader that honours corrections gets one authoritative figure per run; a reader that
+#: does not still sees every original line, which is the property that made the log worth having.
+#:
+#: This is how an accounting record has always handled a mistake. You do not go back and change
+#: the entry; you post a correcting one, and both stay.
+CORRECTION_FIELDS = ("corrects", "supersedes", "seconds", "why", "at")
+
+
+def is_a_correction(line: dict) -> bool:
+    return bool(line.get("corrects"))
+
+
+def correct(root, *, run_id: str, seconds: float, why: str) -> Path:
+    """Append a signed correction saying what a run was actually billed.
+
+    Deliberate and never automatic. Nothing in the serving path calls this: a gateway that
+    corrected its own figures while running would be a gateway whose figures are whatever it
+    last decided, which is the opposite of what this log is for. It is an operator's act, and
+    it leaves a statement with a reason in it.
+    """
+    from agentnode_sdk.signing_key import sign_payload
+
+    if not str(run_id or "").strip():
+        raise ValueError("a correction has to say which run it is about")
+    if not str(why or "").strip():
+        raise ValueError(
+            "a correction has to say why. A figure changed without a reason beside it is the "
+            "thing this log exists to make impossible")
+    path = Path(root) / METER_NAME
+    with _writing(root):
+        so_far = [r for r in read(root) if "seq" in r]
+        mine = [r for r in so_far
+                if str(r.get("run_id") or "") == str(run_id) and not is_a_tombstone(r)]
+        if not mine:
+            raise ValueError("there is no line for run %s to correct" % run_id)
+        line = {
+            "corrects": str(run_id),
+            # WHICH lines, by their own numbers. A correction that named only the run would
+            # leave a reader unable to tell whether a line written afterwards is also superseded.
+            "supersedes": sorted(int(r.get("seq") or 0) for r in mine),
+            "seconds": round(float(seconds), 3),
+            "why": str(why)[:200],
+            "at": time.time(),
+        }
+        assert set(line) == set(CORRECTION_FIELDS), "a correction has exactly its own fields"
+        previous = so_far[-1] if so_far else None
+        line["seq"] = (int(previous.get("seq", 0)) + 1) if previous else 1
+        line["prev"] = _digest_of(_without_signature(previous)) if previous else GENESIS
+        line["signature"] = sign_payload(_canonical(line), signing_key(root)).hex()
+        handle = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(handle, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n")
+        _write_head(root, line)
+    return path
+
+
+def what_was_billed(root) -> dict:
+    """{run id: the seconds that stand}, corrections honoured. THE place that answers it.
+
+    One function, so that a bill, a report and a test cannot each work it out differently. A
+    run with no correction is the sum of its own lines; a run with one is what the correction
+    says, whatever came before.
+    """
+    billed: dict = {}
+    corrected: dict = {}
+    for line in read(root):
+        if is_a_tombstone(line):
+            continue
+        if is_a_correction(line):
+            corrected[str(line.get("corrects"))] = round(float(line.get("seconds") or 0.0), 3)
+            continue
+        run_id = str(line.get("run_id") or "")
+        if run_id:
+            billed[run_id] = round(billed.get(run_id, 0.0) + float(line.get("seconds") or 0.0), 3)
+    billed.update(corrected)
+    return billed
+
+
+def runs_with_more_than_one_line(root) -> dict:
+    """{run id: how many lines} for runs that have more than one and no correction.
+
+    A run that HAS a correction is not in here: its figure is settled and says so. A run that
+    does not is a run whose billable seconds a reader would add up, which is the thing this
+    reports.
+    """
+    counted: dict = {}
+    corrected = set()
+    for line in read(root):
+        if is_a_tombstone(line):
+            continue
+        if is_a_correction(line):
+            corrected.add(str(line.get("corrects")))
+            continue
+        run_id = str(line.get("run_id") or "")
+        if run_id:
+            counted[run_id] = counted.get(run_id, 0) + 1
+    return {k: v for k, v in counted.items() if v > 1 and k not in corrected}
+
 
 class AlreadyRecorded(Exception):
     """This run already has a line in this log, so a second one was refused.

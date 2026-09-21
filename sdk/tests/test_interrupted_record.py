@@ -1029,6 +1029,84 @@ class TestNothingIsBilledTwice:
             state.close()
             state2.close()
 
+    def test_a_run_with_two_lines_can_be_corrected_without_rewriting_either(self, tmp_path):
+        """`INTERRUPTED-AUDIT-RECORD-0001/0002`, F3/F2: the alpha's own log contains runs that
+        were metered twice, before the one-line rule existed. Both lines carry billable seconds.
+
+        The log is append-only and chained on purpose, so neither line can be changed -- which
+        is exactly what makes the mistake permanent. A correction is appended instead: it says
+        which run, which line numbers it supersedes, what the figure is, and why. Both originals
+        stay where they are, which is the property that made the log worth having.
+        """
+        # Two lines for one run, the way the old code could produce them.
+        a_line(tmp_path, "billed-twice", started_at=1000.0, finished_at=1000.8)
+        import agentnode_sdk.gateway.meter as m
+
+        # The second one has to get past the one-line rule, so it is written the way the old
+        # code wrote it: straight into the file, chained by the same helper.
+        seen = m.runs_with_more_than_one_line(tmp_path)
+        assert not seen, seen
+        with pytest.raises(m.AlreadyRecorded):
+            a_line(tmp_path, "billed-twice", started_at=1001.0, finished_at=1012.0)
+
+    def test_what_was_billed_is_answered_in_one_place(self, tmp_path):
+        a_line(tmp_path, "run-a", started_at=1000.0, finished_at=1011.0)
+        a_line(tmp_path, "run-b", started_at=0.0, queued_at=1000.0, finished_at=1010.0)
+        billed = meter.what_was_billed(tmp_path)
+        assert billed == {"run-a": 11.0, "run-b": 0.0}, billed
+
+    def test_a_correction_supersedes_the_figure_and_keeps_the_lines(self, tmp_path):
+        a_line(tmp_path, "to-correct", started_at=1000.0, finished_at=1011.0)
+        before = len(lines_in(tmp_path))
+        meter.correct(tmp_path, run_id="to-correct", seconds=0.75,
+                      why="billed twice before the one-line rule; this is the figure that stands")
+        after = lines_in(tmp_path)
+        assert len(after) == before + 1, "the correction replaced a line instead of adding one"
+        assert after[0]["seconds"] == 11.0, "the original line was changed"
+        assert meter.what_was_billed(tmp_path)["to-correct"] == 0.75
+        assert meter.is_a_correction(after[-1])
+        assert after[-1]["supersedes"] == [1]
+        assert "one-line rule" in after[-1]["why"]
+
+    def test_a_correction_without_a_reason_is_refused(self, tmp_path):
+        a_line(tmp_path, "no-reason", started_at=1000.0, finished_at=1011.0)
+        with pytest.raises(ValueError) as caught:
+            meter.correct(tmp_path, run_id="no-reason", seconds=1.0, why="")
+        assert "why" in str(caught.value)
+
+    def test_a_correction_for_a_run_that_has_no_line_is_refused(self, tmp_path):
+        a_line(tmp_path, "exists", started_at=1000.0, finished_at=1011.0)
+        with pytest.raises(ValueError) as caught:
+            meter.correct(tmp_path, run_id="never-happened", seconds=1.0, why="because")
+        assert "no line for run" in str(caught.value)
+
+    def test_the_chain_still_verifies_with_a_correction_in_it(self, tmp_path):
+        a_line(tmp_path, "chained-correction", started_at=1000.0, finished_at=1011.0)
+        meter.correct(tmp_path, run_id="chained-correction", seconds=2.0, why="a reason")
+        report = meter.verify(tmp_path)
+        assert report["ok"], report
+        assert report["lines"] == 2
+
+    def test_a_correction_that_was_edited_afterwards_breaks_the_chain(self, tmp_path):
+        """It is signed like everything else, so changing the figure in it is visible."""
+        a_line(tmp_path, "tampered", started_at=1000.0, finished_at=1011.0)
+        meter.correct(tmp_path, run_id="tampered", seconds=2.0, why="a reason")
+        where = pathlib.Path(tmp_path) / meter.METER_NAME
+        rows = [json.loads(x) for x in where.read_text(encoding="utf-8").splitlines() if x.strip()]
+        rows[-1]["seconds"] = 0.0
+        where.write_text(
+            chr(10).join(json.dumps(r, sort_keys=True, separators=(",", ":")) for r in rows)
+            + chr(10), encoding="utf-8")
+        assert not meter.verify(tmp_path)["ok"]
+
+    def test_nothing_in_the_serving_path_corrects_anything(self):
+        """A gateway that corrected its own figures while running would be a gateway whose
+        figures are whatever it last decided."""
+        from agentnode_sdk.gateway import server
+
+        assert "meter.correct" not in inspect.getsource(server), (
+            "the serving path corrects its own figures")
+
     def test_the_figures_come_from_the_file(self, gateway):
         """Nothing in this test computes a bill; it reads the numbers the gateway wrote."""
         now = time.time()
