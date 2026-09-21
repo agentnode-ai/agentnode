@@ -973,7 +973,7 @@ class GatewayService:
                 "again: submit it as a new job if you still want it run.")
 
     @staticmethod
-    def what_became_of_the_sandbox(*, ever_started: bool, cleanup_verified,
+    def what_became_of_the_sandbox(*, asked_for_a_sandbox: bool, cleanup_verified,
                                    the_worker_answered: bool = True) -> str:
         """Which of the four things a closing line may say about the run's sandbox.
 
@@ -983,11 +983,9 @@ class GatewayService:
 
         The mapping, and what each answer is entitled to claim:
 
-          never_created     the ledger never saw this run hold a slot, and nothing by its name
-                            exists now. `running` is written when a slot is taken and BEFORE a
-                            container is asked for, so its absence is the best evidence there is
-                            that none was ever created
-          confirmed_gone    it did hold a slot, and the worker confirms nothing by its name is
+          never_created     nothing ever asked the worker for a container for this run, and
+                            nothing by its name exists now
+          confirmed_gone    one WAS asked for, and the worker confirms nothing by its name is
                             there now
           still_there       the worker says one IS there
           not_established   nobody could ask
@@ -998,11 +996,17 @@ class GatewayService:
 
         ## What this cannot establish, said plainly
 
-        `running` is written on a best effort: a ledger that will not take a write is not a
+        The note is written on a best effort: a ledger that will not take a write is not a
         reason to refuse a job that already holds a slot. So a run that DID have a container and
         whose note was lost reads as `never_created` rather than `confirmed_gone`. That is the
         weaker of the two claims in the direction that matters least -- both say nothing is left,
         and the worker confirmed that part either way.
+
+        It is keyed on the note and NOT on whether a slot was held, and the difference is not
+        academic: `running` goes into the ledger when the slot is taken, before anything is
+        asked of a worker. Keyed on that, a run interrupted in between -- interruption point 2
+        on the closed alpha, a real case with a real line -- would have been recorded as a
+        confirmed cleanup of a container that never existed.
         """
         from agentnode_sdk.gateway.protocol import (SANDBOX_CONFIRMED_GONE,
                                                     SANDBOX_NEVER_CREATED,
@@ -1015,7 +1019,7 @@ class GatewayService:
             return SANDBOX_NOT_ESTABLISHED
         if cleanup_verified is False:
             return SANDBOX_STILL_THERE
-        return SANDBOX_CONFIRMED_GONE if ever_started else SANDBOX_NEVER_CREATED
+        return SANDBOX_CONFIRMED_GONE if asked_for_a_sandbox else SANDBOX_NEVER_CREATED
 
     def _close_an_interrupted_run(self, record, entry: dict, *, reason: str = "") -> bool:
         """Write the one signed, chained usage line an interrupted run is owed.
@@ -1050,7 +1054,7 @@ class GatewayService:
         queued = float(entry.get("first_seen") or 0.0)
         started = float(entry.get("started_at") or 0.0)
         sandbox = self.what_became_of_the_sandbox(
-            ever_started=bool(started),
+            asked_for_a_sandbox=bool(entry.get("asked_for_a_sandbox")),
             cleanup_verified=getattr(record, "cleanup_verified", None))
         try:
             meter.record(
@@ -2159,6 +2163,23 @@ class GatewayService:
         )
         left_behind = None
         terminal = "refused"
+        # WRITTEN BEFORE THE WORKER IS ASKED, because a closing line has to be able to say
+        # whether this run ever had a sandbox at all.
+        #
+        # `running` does not answer that. It is written when a SLOT is taken, which is before a
+        # container is asked for -- so a run interrupted between the two held a slot and never
+        # had a container, and a line keyed on `running` would call that a confirmed cleanup of
+        # something that never existed. Exercised on the alpha as interruption point 2, which is
+        # how the difference came to be noticed.
+        #
+        # Best effort, like the state note beside it, and for the same reason: a ledger that
+        # will not take a write is not a reason to refuse a job that already holds a slot. The
+        # cost of losing it is the weaker of the two claims -- `never_created` where
+        # `confirmed_gone` was true -- and both say nothing is left.
+        try:
+            self.ledger.note_a_sandbox_was_asked_for(record.run_id)
+        except Exception:                                     # noqa: BLE001
+            pass
         try:
             if record.cancel_requested.is_set():
                 raise _Cancelled()
@@ -2420,7 +2441,7 @@ class GatewayService:
                 # whole condition. A transport that ended before an answer arrived is the case
                 # where nobody could establish it, and it says so.
                 sandbox=self.what_became_of_the_sandbox(
-                    ever_started=bool(started),
+                    asked_for_a_sandbox=bool(started),
                     cleanup_verified=True,
                     the_worker_answered=(
                         str(record.termination_reason or "") != _TRANSPORT_LOST)),

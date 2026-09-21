@@ -558,19 +558,52 @@ class TestTheLineCarriesWhatBecameOfTheSandbox:
         assert SANDBOX_NOT_ESTABLISHED != SANDBOX_CONFIRMED_GONE
         assert SANDBOX_NEVER_CREATED != SANDBOX_CONFIRMED_GONE
 
-    @pytest.mark.parametrize("ever_started,verified,answered,expected", [
+    @pytest.mark.parametrize("asked,verified,answered,expected", [
         (True, True, True, SANDBOX_CONFIRMED_GONE),
         (False, True, True, SANDBOX_NEVER_CREATED),
         (True, False, True, SANDBOX_STILL_THERE),
         (True, None, True, SANDBOX_NOT_ESTABLISHED),
         (True, True, False, SANDBOX_NOT_ESTABLISHED),
     ])
-    def test_what_each_case_is_recorded_as(self, ever_started, verified, answered, expected):
+    def test_what_each_case_is_recorded_as(self, asked, verified, answered, expected):
         from agentnode_sdk.gateway.server import GatewayService
 
         assert GatewayService.what_became_of_the_sandbox(
-            ever_started=ever_started, cleanup_verified=verified,
+            asked_for_a_sandbox=asked, cleanup_verified=verified,
             the_worker_answered=answered) == expected
+
+    def test_a_run_that_held_a_slot_but_never_asked_for_a_container_is_not_a_cleanup(self,
+                                                                                    gateway):
+        """Interruption point 2, and the reason the answer is not keyed on `ever_started`.
+
+        A slot is taken and the ledger says `running` BEFORE the worker is asked for anything.
+        A run interrupted in that window held a slot and never had a container, and recording
+        it as a confirmed cleanup would claim one had existed.
+        """
+        now = time.time()
+        claim(gateway, "slot-but-no-container", when=now - 20.0, started=now - 10.0)
+        again, state = restart(gateway)
+        try:
+            line = the_one_line_for(state.root, "slot-but-no-container")
+        finally:
+            again.close()
+            state.close()
+        assert line["ever_started"] is True, "it did hold a slot"
+        assert line["sandbox"] == SANDBOX_NEVER_CREATED, (
+            "a run that never asked for a container is recorded as %r" % line["sandbox"])
+
+    def test_and_one_that_did_ask_is_recorded_as_a_cleanup(self, gateway):
+        """The counterpart, so the test above cannot pass by nothing ever being a cleanup."""
+        now = time.time()
+        claim(gateway, "asked-for-one", when=now - 20.0, started=now - 10.0)
+        gateway.ledger.note_a_sandbox_was_asked_for("asked-for-one")
+        again, state = restart(gateway)
+        try:
+            line = the_one_line_for(state.root, "asked-for-one")
+        finally:
+            again.close()
+            state.close()
+        assert line["sandbox"] == SANDBOX_CONFIRMED_GONE, line["sandbox"]
 
     def test_a_gateway_that_could_not_ask_does_not_record_a_cleanup(self, gateway, monkeypatch):
         """The case a restart is most likely to be in: up before its worker."""

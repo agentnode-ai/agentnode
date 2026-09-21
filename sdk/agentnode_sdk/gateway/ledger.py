@@ -263,6 +263,22 @@ class Ledger:
                 if str(entry.get("state")) in ("accepted", "running")
             )
 
+    def note_a_sandbox_was_asked_for(self, run_id: str) -> None:
+        """This run got as far as asking the worker for a container.
+
+        Kept apart from `running`, which is written when a SLOT is taken -- earlier, and before
+        anything has been asked of a worker. The difference is one a closing line has to be able
+        to state: a run interrupted between the two held a slot and never had a sandbox, and
+        saying its sandbox was confirmed gone would claim one had existed.
+        """
+        with self._lock, ProcessLock(self.path):
+            self._load()
+            entry = self._data["runs"].get(str(run_id))
+            if entry is None:
+                return
+            entry["asked_for_a_sandbox"] = True
+            self._write_locked()
+
     def note_cleanup(self, run_id: str, verified: bool | None) -> None:
         """Whether what a run left behind was confirmed gone. Durable, because the answer
         decides whether anyone ever asks again."""
