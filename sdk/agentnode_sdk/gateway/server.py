@@ -347,7 +347,7 @@ class GatewayService:
         return {**body, **stamp_fields(self.state.identity)}
 
     def __init__(self, state: GatewayState, backend=None, operator_policy=None,
-                 worker=None) -> None:
+                 worker=None, recover: bool = True) -> None:
         self.state = state
         self._backend = backend
         #: What runs foreign code. `ALPHA-BOUNDARY-0001`: this is the only way anything here
@@ -405,7 +405,28 @@ class GatewayService:
 
         self.joining = Joining(self.state.root)
         self.stopping = Stopping(self.state.root, self._stop_it_and_confirm)
-        self._restore_interrupted()
+        # RECOVERY IS WHAT A GATEWAY DOES WHEN IT TAKES OVER A DIRECTORY, not what happens
+        # whenever this object is constructed -- and the difference is not academic.
+        #
+        # Eleven operator commands build one of these to reach a method or, in four cases, only
+        # to get at the state beside it. Each of those was therefore running crash recovery
+        # against a directory a LIVE gateway was serving from: marking its running jobs as
+        # interrupted, asking the worker to remove their containers -- which kills them -- and
+        # then writing a signed usage line saying the job was interrupted.
+        #
+        # Measured, not reasoned about: `agentnode gateway accounts`, which only lists
+        # customers, took 10.6 s and ended a job that had been running for 8. The client got
+        # -9. This is what was behind `EARLY-ENDING-HOLDERS.md` -- holders dying at ~11 s
+        # whenever an exercise ran an operator command, and surviving whenever it did not.
+        #
+        # So callers that are not starting a gateway pass `recover=False`. The default stays
+        # True because every other construction site -- the serving path, and tests that mean
+        # to simulate a restart -- is one where recovering IS the right thing, and a default
+        # that quietly stopped recovering would lose interrupted runs instead of killing live
+        # ones. Which of the two defaults is right in the long run belongs to
+        # `early-ending-success-r1`; this is the part that must not wait for it.
+        if recover:
+            self._restore_interrupted()
         # A container being torn down does not disappear because the process did. Anything the
         # journal still remembers is picked up here, on the way back up.
         self.stopping.pick_up_where_it_left_off()

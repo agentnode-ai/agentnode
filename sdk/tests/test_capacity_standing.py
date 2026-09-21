@@ -761,3 +761,101 @@ class TestAnInterruptedRunIsStillInTheRecord:
         finally:
             again.close()
             state.close()
+
+
+class TestAnOperatorCommandIsNotAGatewayTakingOver:
+    """Building a service to READ something used to end the jobs a live gateway was running.
+
+    `GatewayService.__init__` ran crash recovery. Eleven operator commands build one -- four of
+    them only to reach the state object beside it -- so each was performing recovery against the
+    directory a serving gateway was using: marking its running jobs interrupted, asking the
+    worker to remove their containers, and killing them.
+
+    Measured on the closed alpha, not reasoned about: `agentnode gateway accounts`, which only
+    lists customers, took 10.6 s and ended a job eight seconds into its work. The client got
+    `-9`; the signed line said `interrupted`, billed 8.29 s.
+
+    This is what was behind `EARLY-ENDING-HOLDERS.md`: holders died at ~11 s in every exercise
+    that ran an operator command, and survived in every control that did not. The ~11 s was how
+    long the command took to start.
+    """
+
+    def _an_unfinished_run(self, service, run_id="left-in-flight"):
+        assert service.ledger.claim(run_id, "nonce-" + run_id, "s" * 64, "dev",
+                                    owner_account_id="acct-" + "2" * 16)
+        service.ledger.note_state(run_id, "running")
+        return run_id
+
+    def _another_service(self, service, recover):
+        from tests.test_em3c_gateway import StandInBackend
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.server import GatewayService
+
+        state = GatewayState(str(pathlib.Path(service.state.root)), version="test")
+        return GatewayService(state, backend=StandInBackend(), recover=recover), state
+
+    def test_a_visitor_leaves_a_running_job_alone(self, capped):
+        run_id = self._an_unfinished_run(capped)
+        visitor, state = self._another_service(capped, recover=False)
+        try:
+            assert run_id not in visitor.runs, "a visitor took over a live run"
+            entry = capped.ledger.run_entry(run_id) or {}
+            assert entry.get("state") == "running", (
+                "a visitor moved a live run to %r" % entry.get("state"))
+        finally:
+            visitor.close()
+            state.close()
+
+    def test_and_writes_no_usage_line_for_it(self, capped):
+        """The sharpest form: a signed record saying a job was interrupted, written about a job
+        that is running perfectly well, is a false statement in the one document a customer
+        would be handed as proof."""
+        run_id = self._an_unfinished_run(capped, "still-going")
+        visitor, state = self._another_service(capped, recover=False)
+        try:
+            where = pathlib.Path(capped.state.root) / meter.METER_NAME
+            lines = [json.loads(x) for x in where.read_text(encoding="utf-8").splitlines()
+                     if x.strip()] if where.is_file() else []
+            assert not [x for x in lines if x.get("run_id") == run_id], (
+                "a visitor wrote a usage line about a job that was still running")
+        finally:
+            visitor.close()
+            state.close()
+
+    def test_a_gateway_taking_over_still_recovers(self, capped):
+        """The other half. Turning recovery off everywhere would lose interrupted runs instead
+        of killing live ones, which is the same kind of mistake pointing the other way."""
+        run_id = self._an_unfinished_run(capped, "really-interrupted")
+        taking_over, state = self._another_service(capped, recover=True)
+        try:
+            assert run_id in taking_over.runs
+            assert taking_over.runs[run_id].state == "interrupted"
+        finally:
+            taking_over.close()
+            state.close()
+
+    def test_only_the_start_command_asks_to_recover(self):
+        """Read out of the CLI's own source, so a twelfth command cannot quietly join the other
+        eleven. `_service` defaults to not recovering; exactly one caller overrides it."""
+        import ast
+        import inspect
+        import textwrap
+
+        from agentnode_sdk.cli import gateway_commands
+
+        source = textwrap.dedent(inspect.getsource(gateway_commands))
+        tree = ast.parse(source)
+        asked = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_service":
+                asked.append({k.arg: ast.unparse(k.value) for k in node.keywords})
+        assert asked, "nothing builds a service any more; this test is watching the wrong thing"
+        recovering = [x for x in asked if x.get("recover") == "True"]
+        assert len(recovering) == 1, (
+            "%d commands ask to recover; only `start` is a gateway taking over" % len(recovering))
+
+        made = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == "_service")
+        default = made.args.defaults[-1]
+        assert ast.unparse(default) == "False", (
+            "_service recovers by default again, so a command that forgets the flag kills runs")

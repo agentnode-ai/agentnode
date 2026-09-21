@@ -101,7 +101,17 @@ def _build_id() -> str:
         return ""
 
 
-def _service(root: Path):
+def _service(root: Path, recover: bool = False):
+    """A gateway object for a command to reach a method on. NOT a gateway taking over.
+
+    `recover` defaults to FALSE here, and that is the whole point of the parameter. Building one
+    of these used to run crash recovery against the directory, which for every command except
+    `start` means the directory a LIVE gateway is serving from: its running jobs were marked
+    interrupted and their containers removed. Measured: `agentnode gateway accounts`, which only
+    lists customers, ended a job that was eight seconds into its work.
+
+    Only `cmd_start` is a gateway taking over a directory, and only it asks to recover.
+    """
     from agentnode_sdk.gateway.identity import GatewayState
     from agentnode_sdk.gateway.server import GatewayService
     from agentnode_sdk.sandbox.container_backend import ContainerBackend
@@ -110,7 +120,8 @@ def _service(root: Path):
 
     state = GatewayState(root, version=str(version), build_id=_build_id())
     return state, GatewayService(state, backend=ContainerBackend(),
-                                 operator_policy=_operator_policy(root))
+                                 operator_policy=_operator_policy(root),
+                                 recover=recover)
 
 
 def _tls_from(config: dict, args):
@@ -256,7 +267,9 @@ def cmd_start(args) -> int:
     if _refuse_unless_pinned(_rp.pin_dir(), "gateway"):
         return 1
     config = _load_config(root)
-    state, service = _service(root)
+    # THE ONE COMMAND THAT IS A GATEWAY TAKING OVER THIS DIRECTORY, and therefore the one that
+    # recovers what a previous process left mid-flight. Every other command is a visitor.
+    state, service = _service(root, recover=True)
     host = getattr(args, "host", None) or config.get("host") or "127.0.0.1"
     port = int(getattr(args, "port", None) or config.get("port") or 8099)
 
