@@ -251,7 +251,8 @@ class TestTheGatewayRefusesBeforeClaimingAnything:
         run_id = "refused-before-claim-" + to_instance
         try:
             record = submit_and_wait(gw, run_id)
-            assert record.get("state") == "refused", record
+            assert record.get("state") == "refused", (
+                "the job was accepted before the worker was reached: %r" % record)
             assert other.bytes_in == 0 and other.stub.ran == [], "it got through to the worker"
             assert real.stub.ran == []
             self._nothing_claimed(gw, run_id)

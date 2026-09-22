@@ -125,11 +125,9 @@ CHECKS = [
          green=[PA + "TestTheRecordIsBoundToWhoTheConnectionProved::test_and_w1_is_recorded_as_w1"]),
     dict(id="checked-before-claimed", area="stage 3 / a changed endpoint is refused before the ledger",
          file="agentnode_sdk/gateway/server.py",
-         edits=[("            self.worker.confirm_reachable()
-", "            pass
-")],
+         edits=[("            self.worker.confirm_reachable()\n", "            pass\n")],
          test=FC + "TestTheGatewayRefusesBeforeClaimingAnything::test_a_changed_endpoint_or_certificate_is_refused_before_anything_is_claimed[w2]",
-         expect="refused",
+         expect="the job was accepted before the worker was reached",
          green=[FC + "TestTheTransportLostInTheMiddleOfAJob::test_it_ends_with_exactly_one_line_that_says_so"]),
     # ------------------------------------------------------------ stage 1
     dict(id="fields-from-the-inventory", area="stage 1 (d)",
