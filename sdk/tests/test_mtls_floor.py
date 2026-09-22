@@ -419,7 +419,11 @@ class TestTheFloorIsNotAServicesToChange:
                 os.setgid(gid)
                 os.setuid(uid)
 
-            done = subprocess.run([sys.executable, "-c", attempt, str(path)], preexec_fn=become,
+            # An interpreter the OTHER account can actually execute: this test's own may live
+            # under /root, where it cannot reach it, and that would look like a refusal without
+            # ever testing one.
+            interpreter = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else                 sys.executable
+            done = subprocess.run([interpreter, "-c", attempt, str(path)], preexec_fn=become,
                                   capture_output=True, text=True, timeout=60)
             said = done.stdout.strip().splitlines()
             print("\n".join(["as %s (uid %d):" % (name, uid)] + said))
