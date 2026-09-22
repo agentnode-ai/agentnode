@@ -142,25 +142,35 @@ class TestTheSameJobEitherWay:
             one, two = the_line(over_socket, "same-job"), the_line(over_tls, "same-job")
             for name in SAME:
                 assert one[name] == two[name], (name, one[name], two[name])
-            # Billed by the same rule on both, from each run's own slot.
+            # Billed by the same rule on both, from each run's own slot: the signed line carries
+            # the slot's length rounded to the millisecond (`meter.record`), exactly.
             for line in (one, two):
-                assert line["seconds"] == pytest.approx(
-                    max(0.0, line["finished_at"] - line["started_at"]), abs=1e-6)
+                slot = max(0.0, line["finished_at"] - line["started_at"])
+                assert line["seconds"] == round(slot, 3), (line["seconds"], slot)
             # And distinguishable where, and only where, they should be.
             assert one["worker_transport"] == "unix"
             assert two["worker_transport"] == "mtls"
             assert one["worker_identity"] == bench.address
             assert two["worker_identity"] == "agentnode://alpha/worker/w1"
 
-            # The quota each consumed: one run apiece, for the same account shape.
+            # The quota each consumed: one run apiece, charged the slot's length unrounded.
             for gw, line in ((over_socket, one), (over_tls, two)):
                 runs, seconds = gw.service.use.so_far(line["account_id"])
                 assert runs == 1
-                assert seconds == pytest.approx(line["seconds"], abs=1e-6)
+                assert seconds == pytest.approx(
+                    max(0.0, line["finished_at"] - line["started_at"]), abs=1e-5)
 
-            # The audit and event logs say the same things in the same order.
+            # The audit and event logs say the same things in the same order. The audit log is
+            # per OPERATION, not per run, and how many status polls a client makes depends on
+            # timing -- so what is compared is the ordered set of distinct (operation, via,
+            # outcome), which is what each path did and how each ended.
             def shape(entries, keep):
-                return [tuple(e.get(k) for k in keep) for e in entries]
+                seen: list = []
+                for e in entries:
+                    one_ = tuple(e.get(k) for k in keep)
+                    if one_ not in seen:
+                        seen.append(one_)
+                return seen
 
             assert shape(_log(over_socket, "audit.jsonl"), ("operation", "via", "outcome")) == \
                 shape(_log(over_tls, "audit.jsonl"), ("operation", "via", "outcome"))
