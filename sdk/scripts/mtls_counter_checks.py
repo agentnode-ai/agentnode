@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -224,12 +225,23 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+#: A PEM block in test output -- a certificate a failing test printed, say. The output is kept as
+#: evidence, and evidence may not carry a certificate body or a key, so any such block is removed
+#: before the output is stored. The tests themselves avoid printing one; this is the second layer.
+_PEM = re.compile(r"-----BEGIN [A-Z ]+-----.*?-----END [A-Z ]+-----", re.S)
+
+
 def pytest(nodeids: list[str]) -> tuple[int, str]:
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
                            "-o", "addopts=", *nodeids], cwd=HERE, env=env,
                           capture_output=True, text=True, timeout=900)
-    return done.returncode, done.stdout + done.stderr
+    said = done.stdout + done.stderr
+    said = _PEM.sub("[a PEM block was removed here]", said)
+    # A block printed through repr() arrives with escaped newlines; take those too.
+    said = re.sub(r"-----BEGIN [A-Z ]+-----(?:\\\\n|\\n|[A-Za-z0-9+/=])*?-----END [A-Z ]+-----",
+                  "[a PEM block was removed here]", said)
+    return done.returncode, said
 
 
 def run_one(check: dict) -> dict:

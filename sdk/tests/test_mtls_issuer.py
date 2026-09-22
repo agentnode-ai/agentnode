@@ -78,6 +78,18 @@ def place(tmp_path):
     return Place(tmp_path)
 
 
+def _serials(records) -> list:
+    """What an assertion may print about committed certificates: serial and status, never a body.
+    A failure message is evidence too, and the profile allows no certificate body in evidence."""
+    return [(r.get("serial"), r.get("status")) for r in records]
+
+
+def _said(results: dict) -> dict:
+    """How each claim ended, without the certificate a granted one returned."""
+    return {k: ("certificate, %d bytes" % len(v)) if isinstance(v, bytes) else repr(v)
+            for k, v in results.items()}
+
+
 def serial(certificate) -> str:
     return format(certificate.serial_number, "x")
 
@@ -158,12 +170,12 @@ class TestTheSecret:
     def test_no_secret_no_certificate(self, place):
         with pytest.raises(IssuanceRefused):
             place.issuer().enroll(place.request["csr"].encode(), "")
-        assert place.committed() == []
+        assert _serials(place.committed()) == []
 
     def test_a_wrong_secret_no_certificate(self, place):
         with pytest.raises(IssuanceRefused):
             place.issuer().enroll(place.request["csr"].encode(), "0" * 64)
-        assert place.committed() == []
+        assert _serials(place.committed()) == []
 
     def test_a_used_secret_cannot_be_used_for_another_key(self, place, tmp_path):
         place.enroll()
@@ -279,7 +291,7 @@ class TestTwoClaimsAtOnce:
         b.join(timeout=60)
         granted = [r for r in results.values() if isinstance(r, bytes)]
         refused = [r for r in results.values() if isinstance(r, IssuanceRefused)]
-        assert len(granted) == 1 and len(refused) == 1, "the two claims interfered: %r" % results
+        assert len(granted) == 1 and len(refused) == 1, "the two claims interfered: %r" % _said(results)
         assert len(place.committed()) == 1
 
 
@@ -328,7 +340,7 @@ class TestTheTransactionUnderBothOutcomes:
         assert place.delivered() is None
         place.enroll(F.Files())
         committed = place.committed()
-        assert len(committed) == 1, committed
+        assert len(committed) == 1, _serials(committed)
         assert serial(place.delivered()) == committed[0]["serial"]
         assert not (place.ca / INVENTORY_TMP).exists(), "an uncommitted inventory survived"
         # Every valid certificate of the entry is the committed one.
@@ -344,7 +356,7 @@ class TestTheTransactionUnderBothOutcomes:
         """LOST: the old inventory; the retry issues. SURVIVED: the new one; the retry hands over
         the certificate that was committed -- the same serial, not a second one."""
         _crash(place, "issue:after-rename", F.LOST)
-        assert place.committed() == []
+        assert _serials(place.committed()) == []
         _crash(place, "issue:after-rename", F.SURVIVED)
         survived = place.committed()
         assert len(survived) == 1
