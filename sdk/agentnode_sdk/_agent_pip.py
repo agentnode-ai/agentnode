@@ -274,10 +274,32 @@ for dist in im.distributions():
             "editable": is_editable(dist),
             "has_record": has_record,
             "provides_top": expected_top in tops,
+            # WHERE it really is, so two paths to one directory can be seen as one thing. A venv
+            # with lib64 symlinked to lib puts both on sys.path, and an interpreter that walks
+            # both reports the same installation twice.
+            "where": canon(dip) if dip else "",
         })
     else:
         if expected_top in tops:
             other_top_providers.append(nm or "?")
+
+# ONE INSTALLATION SEEN DOWN TWO PATHS IS ONE INSTALLATION. Deduplicated by the resolved
+# location before anything counts them, because the question `post_verify` asks -- is this
+# installed exactly once -- is about installations and was being answered about paths. Entries
+# with no resolvable location are kept as they are: an unlocatable match is not a duplicate of
+# anything, and silently folding them together would hide the case worth seeing.
+seen = {}
+unique = []
+for m in matches:
+    where = m.get("where") or ""
+    if not where:
+        unique.append(m)
+        continue
+    if where in seen:
+        continue
+    seen[where] = True
+    unique.append(m)
+matches = unique
 
 print(json.dumps({"matches": matches, "other_top_providers": other_top_providers}))
 '''

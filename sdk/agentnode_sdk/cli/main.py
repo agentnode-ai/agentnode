@@ -249,6 +249,11 @@ def main(argv: list[str] | None = None) -> int:
     # gateway runs as. `ALPHA-BOUNDARY-0001`.
     worker_commands.add_parser(sub)
 
+    # This deployment's own issuer for the gateway and worker identities. Additive.
+    from agentnode_sdk.cli import pki_commands
+
+    pki_commands.add_parser(sub)
+
     gw = sub.add_parser("gateway", help="Run a sandbox other machines can send work to")
     gw_sub = gw.add_subparsers(dest="gateway_command")
     gw_init = gw_sub.add_parser("init", help="Set this machine up as a sandbox gateway")
@@ -306,6 +311,20 @@ def main(argv: list[str] | None = None) -> int:
                            type=int, default=None,
                            help="How many seconds of sandbox time one customer may use. "
                                 "0 = no limit")
+    # AND THE ONE THAT BOUNDS THE MACHINE rather than anybody on it. Every ceiling above is
+    # per customer or per device; a hundred customers allowed two runs each are allowed two
+    # hundred, and the machine serves two hundred by making everybody slower -- which lands on
+    # the invoice of whoever is billed by elapsed time.
+    gw_limits.add_argument("--machine-concurrent-runs", dest="machine_concurrent_runs",
+                           type=int, default=None,
+                           help="How many runs THIS MACHINE will execute at once, whoever "
+                                "asked. Not a limit on what a customer may have. 0 = no limit")
+    gw_limits.add_argument("--queue-depth", dest="queue_depth", type=int, default=None,
+                           help="How many jobs may WAIT for a slot when the machine is at its "
+                                "ceiling. 0 means NOBODY WAITS and a job arriving at a full "
+                                "machine is refused at once -- the opposite reading to the "
+                                "ceilings above, because the other one would be an unbounded "
+                                "queue. Only means anything with --machine-concurrent-runs")
     gw_limits.add_argument("--requests-per-minute", dest="requests_per_minute", type=int,
                            default=None,
                            help="How many requests one device may make in a minute. A daily "
@@ -525,6 +544,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "worker":
             from agentnode_sdk.cli.worker_commands import dispatch as worker_dispatch
             return worker_dispatch(args)
+
+        if args.command == "pki":
+            from agentnode_sdk.cli.pki_commands import dispatch as pki_dispatch
+            return pki_dispatch(args)
 
         if args.command == "gateway":
             from agentnode_sdk.cli.gateway_commands import dispatch as gateway_dispatch

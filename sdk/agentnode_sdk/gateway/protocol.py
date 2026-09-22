@@ -58,7 +58,101 @@ SUPERSEDED_VERSIONS = ("em3c/1",)
 EXITED = "exited"
 TIMED_OUT = "timeout"
 CANCELLED = "cancelled"
-TERMINATION_REASONS = (EXITED, TIMED_OUT, CANCELLED)
+
+#: THE THREE ABOVE WERE ALL THERE WAS, and a run that was killed fell into `EXITED` -- because
+#: `why_it_stopped` reads a backend that says nothing as an ordinary exit, and a backend returning
+#: a bare `(137, out, err)` says nothing. `EXITED` plus a finished state then meant `succeeded`.
+#: So a container the kernel had killed for running out of memory, or one an operator's command
+#: had destroyed, was signed into the usage log as a success.
+#:
+#: These are the endings that were missing. Each names ONE thing:
+#:
+#:   out_of_memory  -- the runtime reports the container was killed for exceeding its memory
+#:                     ceiling. Not inferred from an exit status: the runtime answers this
+#:                     directly, and 137 alone cannot tell it from any other SIGKILL
+#:   runtime_lost   -- the container runtime could not be asked what became of the container, or
+#:                     answered that it no longer knows it. NOBODY ESTABLISHED what the payload
+#:                     did, which is not the same as the payload failing
+#:   transport_lost -- the connection carrying the run ended before an answer came back. Same
+#:                     shape as the one above: unestablished, not failed
+#:
+#: There is deliberately NO "killed by a signal" among these. A container runtime reports an exit
+#: status and, separately, whether it killed the container for memory; it does not report who
+#: sent a signal. A status of 137 is 128+9 both for a container something killed AND for a
+#: program that chose to exit 137, and nothing available here tells the two apart. Naming an
+#: ending this code cannot establish is exactly the claim E5 exists to refuse.
+OUT_OF_MEMORY = "out_of_memory"
+RUNTIME_LOST = "runtime_lost"
+TRANSPORT_LOST = "transport_lost"
+
+#: AND THE TWO WHERE THE GATEWAY ITSELF WENT AWAY. The six above are all things that happened to
+#: the RUN: it exited, it hit a ceiling, somebody stopped it, its runtime or its transport went.
+#: These two are things that happened to the GATEWAY, and a run caught by one of them was not
+#: ended by anything about itself.
+#:
+#: They are told apart by whether a clean shutdown was ever begun, which the gateway records on
+#: its way out and a later start reads back:
+#:
+#:   gateway_stopped -- a shutdown was begun. Somebody stopped this gateway, and this run was
+#:                      in flight at that moment
+#:   gateway_crashed -- the process recorded an unhandled failure on its way out. It ended
+#:                      because of something that went wrong inside it
+#:   gateway_killed  -- no shutdown was begun, no failure was recorded, and the machine did NOT
+#:                      restart in between. The process was ended from outside: it neither
+#:                      stopped nor crashed, and the host it was on kept running
+#:   gateway_lost    -- none of the three can be established. The machine restarted, or the
+#:                      previous gateway left nothing to read
+#:
+#: An earlier version of this had only the first and the last, on the reasoning that a killed
+#: process, a crashed one and a machine that lost power leave the same trace, which is none.
+#: Two of the three turned out to leave something after all:
+#:
+#: * a crash runs code. An unhandled failure reaches the top of the process, and the process
+#:   can write down that it is ending badly before it goes;
+#: * a machine that restarted says so. The kernel's boot identity changes across a reboot and
+#:   not otherwise, so a marker written under one boot and read under another means the HOST
+#:   went, while the same boot on both sides means only the process did.
+#:
+#: What is left in `gateway_lost` is the case where the boot identity cannot be had -- a
+#: platform that does not publish one -- or where it changed, which says the machine restarted
+#: but not why. Naming that one `killed` would be the claim this vocabulary refuses to make.
+GATEWAY_STOPPED = "gateway_stopped"
+GATEWAY_CRASHED = "gateway_crashed"
+GATEWAY_KILLED = "gateway_killed"
+GATEWAY_LOST = "gateway_lost"
+
+TERMINATION_REASONS = (EXITED, TIMED_OUT, CANCELLED,
+                       OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST,
+                       GATEWAY_STOPPED, GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST)
+
+#: The reasons under which nobody established what the payload did. They are NOT failures: a run
+#: reported as failed when nobody knows is a false statement about a customer's job in the same
+#: way a run reported as succeeded is.
+#:
+#: The two gateway-side reasons belong here for the same reason the other two do, and it is worth
+#: saying why rather than leaving it to the tuple: a job the gateway lost may have run to
+#: completion, may have done half its work, may never have started. The gateway stopped being
+#: able to tell. Calling that `failed` would be a statement about the customer's code that
+#: nothing supports.
+NOTHING_WAS_ESTABLISHED = (RUNTIME_LOST, TRANSPORT_LOST,
+                           GATEWAY_STOPPED, GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST)
+
+#: WHAT BECAME OF THE SANDBOX a run may have created, as a value a reader can branch on.
+#:
+#: Four answers, and the fourth is the one that is usually left out. "Confirmed gone" and "still
+#: there" are the obvious pair; "nobody could establish which" is the honest third, and it must
+#: not be written as a confirmed cleanup -- a gateway that came up before its worker cannot ask,
+#: and recording that silence as tidiness is how a container nobody knows about keeps running.
+#:
+#: The fourth, `never_created`, is separate from `confirmed_gone` on purpose. A job that never
+#: held a slot never asked for a container, so there was nothing to clean up; a job whose
+#: container was removed had one and it is gone. Both are tidy, and they are not the same fact.
+SANDBOX_NEVER_CREATED = "never_created"
+SANDBOX_CONFIRMED_GONE = "confirmed_gone"
+SANDBOX_STILL_THERE = "still_there"
+SANDBOX_NOT_ESTABLISHED = "not_established"
+SANDBOX_DISPOSITIONS = (SANDBOX_NEVER_CREATED, SANDBOX_CONFIRMED_GONE,
+                        SANDBOX_STILL_THERE, SANDBOX_NOT_ESTABLISHED)
 
 #: What a run that has not stopped says about why it stopped: nothing.
 #:
@@ -134,7 +228,14 @@ SUCCEEDED = "succeeded"
 CANCELLED_OUTCOME = "cancelled"
 TIMED_OUT_OUTCOME = "timed_out"
 FAILED = "failed"
-OUTCOMES = (SUCCEEDED, CANCELLED_OUTCOME, TIMED_OUT_OUTCOME, FAILED)
+
+#: THE FIFTH, and it is not a kind of failure. `unverified` was already a terminal STATE -- "the
+#: gateway could not establish what happened" -- and `outcome_of` mapped it to `failed`, which
+#: rounds an open question into an answer. A customer told their job failed will not resubmit it;
+#: a customer told nobody could establish what it did will ask. Those are different, and the
+#: record has to be able to say the second one.
+UNVERIFIED_OUTCOME = "unverified"
+OUTCOMES = (SUCCEEDED, CANCELLED_OUTCOME, TIMED_OUT_OUTCOME, FAILED, UNVERIFIED_OUTCOME)
 
 
 def what_disagrees(state: str, termination_reason: str, exit_code, native_status,
@@ -177,21 +278,65 @@ def what_disagrees(state: str, termination_reason: str, exit_code, native_status
     return ""
 
 
-def outcome_of(state: str, termination_reason: str = NOT_STOPPED) -> str:
+def outcome_of(state: str, termination_reason: str = NOT_STOPPED, exit_code=None) -> str:
     """The outcome of a run in this state, or "" while it still has none.
 
-    About the RUN, not about the program it carried: a run that completed and delivered a result
-    succeeded, whatever number the program returned. Every terminal state maps to exactly one of
-    the four, and a state that is not terminal maps to none of them.
+    It used to be about the RUN and not the program it carried: "a run that completed and
+    delivered a result succeeded, whatever number the program returned". That reading is gone,
+    and deliberately. This record exists so a customer can be told what a service did for them,
+    and a line saying `succeeded` about a job that exited 3 is not something they can use. The
+    exit status is now part of the signed line, so the claim can be checked against it.
+
+    A state that is not terminal maps to no outcome at all.
     """
     if not is_terminal(state):
         return ""
+    # THE ORDER IS DELIBERATE, and it is stated here because two of these can be true at once.
+    #
+    # 1. A cancellation outranks everything the container did afterwards. The customer asked for
+    #    it to stop; whatever the runtime made of a container this gateway then destroyed is a
+    #    consequence of that request and not a second, competing reason. (`EM3C-E8-RECORD-0001`
+    #    is the same point, made about the exit status.)
+    # 2. The operator's wall clock next: it ended the run on purpose, and the record should say
+    #    that rather than that the payload was killed -- which is true but less useful.
+    # 3. Then the endings where NOBODY ESTABLISHED what the payload did. These must not fall
+    #    through to `failed`, which is the whole of what `UNVERIFIED_OUTCOME` exists for.
+    # 4. Only then: a run whose state says finished AND whose reason says it exited. Both, not
+    #    either. This is the line the old version got wrong -- it asked only about the state, so
+    #    a killed container that the gateway had recorded as finished came out `succeeded`.
+    # 5. Everything else is a failure, and `termination_reason` beside it says which kind.
     if state == "cancelled":
         return CANCELLED_OUTCOME
     if termination_reason == TIMED_OUT:
         return TIMED_OUT_OUTCOME
-    if state == "finished":
-        return SUCCEEDED
+    if (state in ("unverified", "interrupted")
+            or termination_reason in NOTHING_WAS_ESTABLISHED):
+        # `interrupted` belongs here and not under `failed`. The gateway went away; nobody
+        # established what the payload did, and the job certainly did not fail at anything it
+        # was asked to do. Whether it had started at all is in the same line -- `started_at` is
+        # 0.0 and `seconds` is 0.0 for one that never left the queue -- so the distinction is
+        # answerable without making it a second outcome. Saying it in the REASON is
+        # `interrupted-audit-record-r1`'s question (I5), not this one's.
+        #
+        # It used to be written as `outcome="interrupted"`, which is not one of the five at all:
+        # a state's name standing in an outcome's field, so a reader branching on OUTCOMES saw a
+        # value that could not occur.
+        return UNVERIFIED_OUTCOME
+    if state == "finished" and termination_reason in (EXITED, NOT_STOPPED):
+        # 4a. AND THE PROGRAM HAS TO HAVE SAID IT WORKED. This used to end here: a run that
+        #     reached the far end was `succeeded` "whatever number the program returned". For a
+        #     record whose job is to say what a service did, that reads a job which exited 3 as
+        #     a success, and the signed line carried no exit status for a reader to check it
+        #     against. The status is now in the line, and it decides.
+        # 4b. AND A MISSING STATUS IS NOT A ZERO. `exited` with nothing to show for it is the
+        #     original defect in miniature -- absence read as success. Nobody established that
+        #     it worked, so the line says exactly that rather than guessing either way.
+        if exit_code is None:
+            return UNVERIFIED_OUTCOME
+        try:
+            return SUCCEEDED if int(exit_code) == 0 else FAILED
+        except (TypeError, ValueError):
+            return UNVERIFIED_OUTCOME
     return FAILED
 
 #: How far apart the two clocks may be before a request is refused as stale. Wide enough for an

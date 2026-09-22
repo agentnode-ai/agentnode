@@ -122,6 +122,47 @@ class Allowance:
     account_runs_per_window: int = 0
     account_seconds_per_window: int = 0
 
+    # ---------------------------------------------------------------- the machine
+    #
+    # The two above bound ONE CUSTOMER. Neither bounds the MACHINE: a hundred customers allowed
+    # two runs each are allowed two hundred runs, and two cores serve them by making everybody
+    # slower. Measured on the alpha: four runs on two cores took 7.76 s of wall clock for work
+    # that took 3.44 s alone, while using the same 3.37 s of CPU. A customer billed by elapsed
+    # time then pays 2.25x for the same job because the gateway oversold -- the gateway's
+    # arithmetic on the customer's invoice.
+    #
+    # This is the ceiling that stops that. It is not a limit on what a customer may have; it is
+    # what this machine will run at once, whoever asked.
+    #
+    # THE THREE VALUES IT CAN HAVE, and each answer is on purpose:
+    #
+    #   absent or zero  -- no machine ceiling. The same reading as every other ceiling in this
+    #                      file, and then `Slots` is a pass-through that decides nothing.
+    #   at most what    -- the ordinary case: the machine runs that many at once and queues the
+    #   the machine has    rest, which is what the whole mechanism is for.
+    #   more than that  -- ALLOWED, AND SAID. Not clamped, because serving fewer than the number
+    #                      reported is the gateway deciding for the operator and hiding it. Not
+    #                      refused, because a core count is not the whole of what a machine can
+    #                      serve and a configuration should not become an outage. The reasoning
+    #                      in full, and what "what the machine has" means, is in
+    #                      `capacity.more_than_this_machine_can_serve`; the saying is done by
+    #                      `agentnode gateway limits`, both when the value is set and every time
+    #                      it is shown.
+    machine_concurrent_runs: int = 0
+
+    #: How many jobs may WAIT for a slot. Not a ceiling like the others and deliberately not read
+    #: like one: **zero here means nobody waits**, so a job arriving at a full machine is refused
+    #: at once rather than queued.
+    #:
+    #: That is the opposite of "zero means no ceiling of that kind" two paragraphs up, and the
+    #: inversion is on purpose: the other reading would be an unbounded queue, which is a way to
+    #: accept work nobody can serve and to hide it from whoever is watching the ceiling. An
+    #: unbounded queue is never reachable from this file.
+    #:
+    #: It only means anything when `machine_concurrent_runs` is set. With no machine ceiling
+    #: there is nothing to wait for.
+    queue_depth: int = 0
+
     # ---------------------------------------------------------------- the rate
     #
     # Volume over a day is not the same question as volume over a minute: a client that may
@@ -210,6 +251,8 @@ def read_allowance(root: str | os.PathLike[str]) -> Allowance:
         account_concurrent_runs=int(body.get("account_concurrent_runs") or 0),
         account_runs_per_window=int(body.get("account_runs_per_window") or 0),
         account_seconds_per_window=int(body.get("account_seconds_per_window") or 0),
+        machine_concurrent_runs=int(body.get("machine_concurrent_runs") or 0),
+        queue_depth=int(body.get("queue_depth") or 0),
         requests_per_minute=int(body.get("requests_per_minute") or 0),
         account_requests_per_minute=int(body.get("account_requests_per_minute") or 0),
         max_artifact_bytes=int(body.get("max_artifact_bytes") or 0),

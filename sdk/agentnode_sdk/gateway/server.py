@@ -29,6 +29,7 @@ import hmac
 import urllib.parse
 import json
 import os
+import pathlib
 import secrets
 import sys
 import threading
@@ -154,9 +155,24 @@ class RunRecord:
     refusal_remedy: str = ""
     container_name: str = ""
     cleanup_verified: bool | None = None
-    started_at: float = field(default_factory=time.time)
+    #: WHEN THIS JOB ARRIVED. Not when it started: a job may wait for a slot, and the wait is
+    #: this gateway's doing rather than the customer's, so it is kept apart from anything that
+    #: is charged for.
+    queued_at: float = field(default_factory=time.time)
+    #: WHEN THE BILLED CLOCK STARTED, which is the moment a worker slot was actually held.
+    #:
+    #: **0.0 means it never started**, and that is load-bearing rather than a default: a job
+    #: cancelled while it waited must be billed nothing, and the way that is guaranteed is that
+    #: there is no start time to subtract from. This used to be `default_factory=time.time`,
+    #: set when the record was CONSTRUCTED -- so the moment a queue existed in front of the
+    #: worker, every second of waiting would have been billed as execution.
+    started_at: float = 0.0
     finished_at: float | None = None
     cancel_requested: threading.Event = field(default_factory=threading.Event)
+    #: The place in the queue, while this run has one. None once it holds a slot, and None for
+    #: every run on a gateway with no machine ceiling. Not in `public`: it is an object, and what
+    #: a caller may know about waiting is `waiting_for_a_slot` and their own `queued_at`.
+    slot_ticket: object | None = None
     #: The value this gateway issued for this run, while the run is alive. It is NOT in `public`,
     #: it is not in the ledger, and it is dropped when the run reaches a terminal state -- what
     #: survives is its digest, in the binding the ledger holds.
@@ -181,7 +197,7 @@ class RunRecord:
         """What this run's end amounts to, or "" while it has none."""
         from agentnode_sdk.gateway.protocol import outcome_of
 
-        return outcome_of(self.state, self.termination_reason)
+        return outcome_of(self.state, self.termination_reason, self.exit_code)
 
     def public(self) -> dict[str, Any]:
         """What a client may see. No secrets, and no fields that only mean something inside."""
@@ -211,6 +227,10 @@ class RunRecord:
             "policy_deltas": self.deltas,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            # What the caller may know about its OWN wait. Not a position and not a count:
+            # a position is by construction a tally of other people's jobs.
+            "queued_at": self.queued_at,
+            "waiting_for_a_slot": bool(self.state == "accepted" and not self.started_at),
         }
 
 
@@ -327,7 +347,7 @@ class GatewayService:
         return {**body, **stamp_fields(self.state.identity)}
 
     def __init__(self, state: GatewayState, backend=None, operator_policy=None,
-                 worker=None) -> None:
+                 worker=None, recover: bool = True) -> None:
         self.state = state
         self._backend = backend
         #: What runs foreign code. `ALPHA-BOUNDARY-0001`: this is the only way anything here
@@ -345,6 +365,13 @@ class GatewayService:
         # What must survive this process. In-memory replay protection has a documented way
         # around it: restart the gateway, which on a server happens on its own.
         self.ledger = Ledger(self.state.root / "ledger.json")
+        #: WHAT THIS MACHINE RUNS AT ONCE, and who waits for it. Built from the operator's own
+        #: ceilings, so the number is theirs and appears in no source file here. Rebuilt on
+        #: demand by `slots` below when those ceilings change, because an operator who lowers the
+        #: ceiling should not have to restart the gateway to be obeyed.
+        self._slots = None
+        self._slots_for = None
+        self._slots_lock = threading.Lock()
         #: Which gateway process, and which sandbox behind it. A restart is a different instance,
         #: and a challenge says which one issued it.
         self.instance = "%s:%s" % (self.worker.instance_label(), secrets.token_hex(8))
@@ -378,11 +405,53 @@ class GatewayService:
 
         self.joining = Joining(self.state.root)
         self.stopping = Stopping(self.state.root, self._stop_it_and_confirm)
-        self._restore_interrupted()
+        # RECOVERY IS WHAT A GATEWAY DOES WHEN IT TAKES OVER A DIRECTORY, not what happens
+        # whenever this object is constructed -- and the difference is not academic.
+        #
+        # Eleven operator commands build one of these to reach a method or, in four cases, only
+        # to get at the state beside it. Each of those was therefore running crash recovery
+        # against a directory a LIVE gateway was serving from: marking its running jobs as
+        # interrupted, asking the worker to remove their containers -- which kills them -- and
+        # then writing a signed usage line saying the job was interrupted.
+        #
+        # Measured, not reasoned about: `agentnode gateway accounts`, which only lists
+        # customers, took 10.6 s and ended a job that had been running for 8. The client got
+        # -9. This is what was behind `EARLY-ENDING-HOLDERS.md` -- holders dying at ~11 s
+        # whenever an exercise ran an operator command, and surviving whenever it did not.
+        #
+        # So callers that are not starting a gateway pass `recover=False`. The default stays
+        # True because every other construction site -- the serving path, and tests that mean
+        # to simulate a restart -- is one where recovering IS the right thing, and a default
+        # that quietly stopped recovering would lose interrupted runs instead of killing live
+        # ones. Which of the two defaults is right in the long run belongs to
+        # `early-ending-success-r1`; this is the part that must not wait for it.
+        # WHY the runs it is about to find were interrupted, read BEFORE anything is written.
+        #
+        # The answer is in a file the previous gateway left: it says whether a shutdown was ever
+        # begun. Read first and overwritten after, because overwriting it first would erase the
+        # only evidence of what happened to the process that wrote it.
+        from agentnode_sdk.gateway import lifecycle as _lifecycle
+
+        self._interrupted_by = _lifecycle.why_a_run_was_interrupted(self.state.root)
+        # The closing lines this gateway could not write, and what says it is going away.
+        self._owed: dict = {}
+        self._owed_lock = threading.Lock()
+        self._owed_thread = None
+        self._closing = threading.Event()
+        if recover:
+            self._restore_interrupted()
+            # And now this process is the one serving. After recovery, so that a gateway which
+            # dies during recovery is still read as having been lost rather than as having
+            # served and stopped.
+            _lifecycle.say_it_is_serving(self.state.root)
         # A container being torn down does not disappear because the process did. Anything the
         # journal still remembers is picked up here, on the way back up.
         self.stopping.pick_up_where_it_left_off()
         self._lock = threading.Lock()
+
+    def _how_it_was_interrupted(self) -> str:
+        """The reason for a run this gateway found mid-flight when it took the directory over."""
+        return getattr(self, "_interrupted_by", "") or ""
 
     # ------------------------------------------------------------------ backend
 
@@ -415,10 +484,11 @@ class GatewayService:
 
         That is not the same as saying the worker can be moved, and this docstring used to say it
         was. The address this reads is handed to `from_address`, which speaks unix sockets and
-        refuses every other scheme, so a worker on another machine needs a transport this build
-        does not have, and writing one is a change to the product, not to a deployment. What this
-        property establishes is that the transport is the only thing missing -- one place to
-        change, not many.
+        mutual TLS on loopback (`worker/tls.py`) and refuses everything else. A `tcps://` address
+        takes its certificate settings from `worker_tls` in the same configuration; an address
+        of that kind without them is refused there, not reached some other way. A worker on
+        another machine is therefore still a change to the product, not to a deployment: the
+        transport refuses every address that is not loopback, in code.
         """
         if self._worker is None:
             address = str(self.config.get("worker_address") or "")
@@ -427,12 +497,61 @@ class GatewayService:
                 from agentnode_sdk.worker.remote import from_address
 
                 self._worker = from_address(
-                    address, wire.read_key(str(self.config.get("worker_key") or "")))
+                    address, wire.read_key(str(self.config.get("worker_key") or "")),
+                    tls=self._worker_tls())
             else:
                 from agentnode_sdk.worker.local import LocalWorker
 
                 self._worker = LocalWorker(self.backend)
         return self._worker
+
+    def _who_ran(self, run_id: str) -> tuple[str, str, str]:
+        """(transport, identity, worker id) for the line about this run.
+
+        Over mutual TLS all three come from the connection that carried the run, checked in its
+        handshake -- never from what the worker said about itself. If no such connection was made
+        by this process the line says UNATTRIBUTED rather than naming anybody. Over the socket
+        the id is the worker's label, read exactly as it always was.
+        """
+        from agentnode_sdk.gateway import meter
+
+        transport, identity, worker_id = self.worker.who_ran(run_id)
+        if transport == "mtls" and not identity:
+            identity = meter.UNATTRIBUTED
+        return transport, identity, worker_id or meter.UNATTRIBUTED
+
+    def _worker_tls(self):
+        """The certificate settings for a `tcps://` worker, or None when none are configured.
+
+        `worker_tls` in the configuration: this gateway's own certificate and key, the one trust
+        anchor, the deployment, and the worker instance(s) it accepts. All or nothing -- a
+        partial set is refused rather than completed with a default, because a default here would
+        be a check nobody decided on.
+        """
+        said = self.config.get("worker_tls")
+        if not said:
+            return None
+        from agentnode_sdk.worker.tls import (DEFAULT_REEVALUATE_SECONDS, DEFAULT_RELOAD_SECONDS,
+                                              TlsSettings)
+
+        # From stage 5 the revocation list and the floor belong to the whole: a TLS side without
+        # them could not tell a revoked worker from a valid one, or a clock set back from the
+        # right time. The two intervals have defaults, and their sum is the promised delay.
+        needed = ("certificate", "key", "anchor", "deployment", "accept", "revocation_list",
+                  "floor")
+        missing = [k for k in needed if not said.get(k)]
+        if missing:
+            raise ValueError("worker_tls is missing %s; it is used whole or not at all"
+                             % ", ".join(missing))
+        return TlsSettings(certificate=str(said["certificate"]), key=str(said["key"]),
+                           anchor=str(said["anchor"]), deployment=str(said["deployment"]),
+                           accept=frozenset(str(a) for a in said["accept"]),
+                           revocation_list=str(said["revocation_list"]),
+                           floor=str(said["floor"]),
+                           reload_seconds=float(said.get("reload_seconds")
+                                                or DEFAULT_RELOAD_SECONDS),
+                           reevaluate_seconds=float(said.get("reevaluate_seconds")
+                                                    or DEFAULT_REEVALUATE_SECONDS))
 
     @property
     def config(self) -> dict:
@@ -577,7 +696,33 @@ class GatewayService:
             # a report somebody will read as describing the other.
             worker_topology=self.worker.topology,
             worker_configuration_sha256=self.worker.configuration_sha256(),
+            # WHAT THIS GATEWAY IS RUNNING AS. Read from the running process and from the pin
+            # written by the deployment, never from a constant in the source: a field that says
+            # what somebody intended rather than what is true is a field that keeps saying it
+            # after the intention stops matching.
+            **self._what_this_is_running_as(),
         )
+
+    def _what_this_is_running_as(self) -> dict:
+        """The interpreter, artefact, commit and build identity, as facts about this process.
+
+        Empty strings where this gateway genuinely cannot tell -- an installation made before
+        the pin existed has no commit to report, and inventing one would be worse than the gap.
+        """
+        from agentnode_sdk.gateway import runtime_pin
+
+        said = {"python_version": runtime_pin.running_python(),
+                "artefact_sha256": runtime_pin.installed_artefact_digest(),
+                "commit": "", "build_id": ""}
+        try:
+            pinned = runtime_pin.read_pin(runtime_pin.pin_dir())
+        except Exception:                                     # noqa: BLE001
+            return said
+        said["commit"] = str(pinned.get("commit") or "")
+        said["artefact_sha256"] = said["artefact_sha256"] or str(
+            pinned.get("artefact_sha256") or "")
+        said["build_id"] = str(pinned.get("build_id") or "")
+        return said
 
     def runtime_version(self) -> str:
         """The container runtime's own version, asked once per process.
@@ -827,6 +972,221 @@ class GatewayService:
             raise ProtocolError("the signature does not match the request")
         return secret
 
+    def _what_a_closing_line_will_need(self, record, granted) -> dict:
+        """The few values a usage line states that only this process currently knows.
+
+        Written to the ledger at admission so that a gateway which restarts can close the run it
+        interrupted with the figures that run was actually admitted under, rather than with
+        whatever is configured by the time it is writing.
+        """
+        from agentnode_sdk.gateway import policy_version as _versions
+
+        operator_digest, operator_version = "", _versions.UNKNOWN
+        try:
+            operator_digest = self.operator_envelope().digest()
+            operator_version = _versions.version_for(self.state.root, operator_digest)
+        except Exception:                                     # noqa: BLE001
+            pass
+        return {
+            "cpu": float(granted.limits.cpu),
+            "memory_mb": int(granted.limits.memory_mb),
+            "wall_clock_s": int(granted.limits.wall_clock_s),
+            "allowance_sha256": str(record.admitted_under or ""),
+            "operator_policy_sha256": str(operator_digest or ""),
+            "operator_policy_version": operator_version,
+            "worker_topology": str(record.worker_topology or ""),
+        }
+
+    @staticmethod
+    def what_to_tell_them_about_an_interruption(reason: str, ever_ran: bool) -> str:
+        """The sentence that goes with the reason, saying the same thing the value says.
+
+        The value is what a machine branches on; this is what a person reads. They have to
+        agree, and they did not: every interrupted run was told "the gateway restarted", which
+        is a specific claim and was wrong for a job cut short by a planned stop -- nothing had
+        restarted at that point, and possibly nothing ever would.
+
+        Two things differ between the sentences and both matter to the reader:
+
+          WHAT HAPPENED TO THE GATEWAY   somebody stopped it, or it went without saying so
+          WHETHER THEIR JOB EVER RAN     because one of the two costs money and the other does
+                                         not, and because only one of them may have done work
+
+        "did not finish" appears in every one of them on purpose: it is the phrase an
+        interrupted run is required to carry, and a test reads for it.
+        """
+        from agentnode_sdk.gateway.protocol import (GATEWAY_CRASHED, GATEWAY_KILLED,
+                                                    GATEWAY_STOPPED)
+
+        what = {
+            GATEWAY_STOPPED: "this gateway was stopped",
+            GATEWAY_CRASHED: "this gateway failed and ended",
+            GATEWAY_KILLED: "this gateway was ended from outside",
+        }.get(reason, "this gateway went away, and what ended it is not known")
+        if ever_ran:
+            return (what + " while your job was running, so it did not finish. Whether it got "
+                    "anything done before that is not known. It has not been started again -- "
+                    "submit it as a new job if you still want it run.")
+        return (what + " while your job was still waiting for its turn, so it did not finish "
+                "and never started -- nothing was charged for it. It has not been started "
+                "again: submit it as a new job if you still want it run.")
+
+    @staticmethod
+    def what_became_of_the_sandbox(*, asked_for_a_sandbox: bool, cleanup_verified,
+                                   the_worker_answered: bool = True) -> str:
+        """Which of the four things a closing line may say about the run's sandbox.
+
+        The one question an interrupted run actually raises is whether something of the
+        customer's is still running on somebody else's machine. A line that does not answer it
+        leaves them to ask, and there is nobody to ask.
+
+        The mapping, and what each answer is entitled to claim:
+
+          never_created     nothing ever asked the worker for a container for this run, and
+                            nothing by its name exists now
+          confirmed_gone    one WAS asked for, and the worker confirms nothing by its name is
+                            there now
+          still_there       the worker says one IS there
+          not_established   nobody could ask
+
+        The two tidy answers are kept apart on purpose. Operationally they say the same thing --
+        nothing of yours is running -- and they differ in whether anything ever was, which is a
+        different fact and not this code's to blur.
+
+        ## What this cannot establish, said plainly
+
+        The note is written on a best effort: a ledger that will not take a write is not a
+        reason to refuse a job that already holds a slot. So a run that DID have a container and
+        whose note was lost reads as `never_created` rather than `confirmed_gone`. That is the
+        weaker of the two claims in the direction that matters least -- both say nothing is left,
+        and the worker confirmed that part either way.
+
+        It is keyed on the note and NOT on whether a slot was held, and the difference is not
+        academic: `running` goes into the ledger when the slot is taken, before anything is
+        asked of a worker. Keyed on that, a run interrupted in between -- interruption point 2
+        on the closed alpha, a real case with a real line -- would have been recorded as a
+        confirmed cleanup of a container that never existed.
+        """
+        from agentnode_sdk.gateway.protocol import (SANDBOX_CONFIRMED_GONE,
+                                                    SANDBOX_NEVER_CREATED,
+                                                    SANDBOX_NOT_ESTABLISHED,
+                                                    SANDBOX_STILL_THERE)
+
+        if not the_worker_answered:
+            return SANDBOX_NOT_ESTABLISHED
+        if cleanup_verified is None:
+            return SANDBOX_NOT_ESTABLISHED
+        if cleanup_verified is False:
+            return SANDBOX_STILL_THERE
+        return SANDBOX_CONFIRMED_GONE if asked_for_a_sandbox else SANDBOX_NEVER_CREATED
+
+    def _close_an_interrupted_run(self, record, entry: dict, *, reason: str = "",
+                                  owe_it_on_failure: bool = True) -> bool:
+        """Write the one signed, chained usage line an interrupted run is owed.
+
+        ## Why this exists
+
+        Before it, a run interrupted by a restart produced NO line at all. Nothing was billed for
+        it, and the gateway could still answer what became of it from the ledger -- but the
+        signed, chained record, which is the thing a customer would be handed as proof of what
+        this service did, did not contain the job. `ALPHA-CAPACITY-QUEUE-0002`, F1: "their waited
+        and billed values are absent from the signed chain ... it directly defeats the recording
+        criterion."
+
+        The queue makes the case ordinary rather than rare: a job waiting when a restart happens
+        is now a normal occurrence.
+
+        ## The times are read, not invented
+
+        `queued_at` is the ledger's `first_seen`; `started_at` is what `note_state('running')`
+        wrote, and is ABSENT for a run that never left the queue. The meter derives `seconds` and
+        `waited_s` from those, so a job that never started bills zero because there is nothing to
+        subtract from -- not because a rule set it to zero afterwards.
+
+        A line written from times this process invented would be a false statement about
+        somebody's bill, which is worse than the missing line it replaces.
+        """
+        from agentnode_sdk.gateway import meter
+        from agentnode_sdk.gateway import policy_version as _versions
+        from agentnode_sdk.gateway.protocol import outcome_of as _outcome_of
+
+        admitted = dict(entry.get("admitted") or {})
+        queued = float(entry.get("first_seen") or 0.0)
+        started = float(entry.get("started_at") or 0.0)
+        sandbox = self.what_became_of_the_sandbox(
+            asked_for_a_sandbox=bool(entry.get("asked_for_a_sandbox")),
+            cleanup_verified=getattr(record, "cleanup_verified", None))
+        try:
+            transport, identity, worker_id = self._who_ran(record.run_id)
+            meter.record(
+                self.state.root,
+                run_id=record.run_id,
+                client_id=record.owner_client_id or meter.UNATTRIBUTED,
+                account_id=record.owner_account_id or meter.UNATTRIBUTED,
+                queued_at=queued or started or record.finished_at,
+                started_at=started,
+                finished_at=float(record.finished_at or time.time()),
+                cpu=float(admitted.get("cpu") or 0.0),
+                memory_mb=int(admitted.get("memory_mb") or 0),
+                wall_clock_s=int(admitted.get("wall_clock_s") or 0),
+                state="interrupted",
+                # WHICH INTERRUPTION, as a value a reader can branch on. It used to be the empty
+                # string -- the same field every other line fills in, left blank on the one kind
+                # of line whose whole subject is that something went wrong. A customer holding
+                # it could see that their job did not finish and not why.
+                outcome=_outcome_of("interrupted", reason, None),
+                termination_reason=str(reason or ""),
+                sandbox=sandbox,
+                bytes_out=0,
+                # UNATTRIBUTED rather than a guess, for anything the ledger did not carry. It is
+                # the word this gateway already uses for a policy it cannot name, and a reader
+                # can tell it from a real digest.
+                worker_topology=str(admitted.get("worker_topology") or meter.UNATTRIBUTED),
+                worker_id=worker_id,
+                worker_transport=transport,
+                worker_identity=identity,
+                allowance_sha256=str(admitted.get("allowance_sha256") or meter.UNATTRIBUTED),
+                operator_policy_sha256=str(
+                    admitted.get("operator_policy_sha256") or meter.UNATTRIBUTED),
+                # -1, not 0: the meter refuses a zero here because it cannot be told apart from
+                # a field nobody filled in, which is exactly the distinction this line needs.
+                operator_policy_version=int(
+                    admitted.get("operator_policy_version") or _versions.UNKNOWN),
+            )
+        except meter.AlreadyRecorded:
+            # SOMEBODY ALREADY CLOSED THIS RUN, and that is this path succeeding rather than
+            # failing. It is reached when a previous process wrote the line and did not get to
+            # move the ledger entry before it went, and it would be reached by a second gateway
+            # sharing this directory. Either way the run has its one line, the caller goes on to
+            # move the state, and nothing is written twice.
+            return True
+        except Exception as exc:                              # noqa: BLE001
+            # A line that could not be written is not a reason to fail the recovery and leave
+            # every other interrupted run unanswered. It is reported the way any other failure
+            # to record is.
+            self.could_not_record(record, exc)
+            # AND IT IS REMEMBERED, so that this gateway tries again while it is still here.
+            # Leaving it in the ledger alone means a LATER START could write it, and nothing
+            # requires a later start -- which is a possibility rather than a bound.
+            if owe_it_on_failure:
+                try:
+                    self._owe_a_line(record.run_id, record, entry, reason)
+                except Exception:                              # noqa: BLE001
+                    pass
+            # AND THE CALLER IS TOLD, because what it does next decides whether this run ever
+            # gets a line at all.
+            #
+            # It used to return nothing, and the caller moved the ledger entry to `interrupted`
+            # either way -- out of the set a later start selects from. So a line that could not
+            # be written was not written later; it was never written, and the run was gone from
+            # the only place anything would have looked. The run existed, it was accepted, and
+            # the signed log did not contain it.
+            #
+            # Found by driving it rather than by reading it: a check on the ORDER of the two
+            # calls passes on this code, because the order was never the problem.
+            return False
+        return True
+
     def _restore_interrupted(self) -> None:
         """Runs that were executing when the process died are interrupted, not running.
 
@@ -853,16 +1213,177 @@ class GatewayService:
                 owner_account_id=str(entry.get("owner_account_id", "")),
                 state="interrupted",
             )
-            record.refusal = (
-                "the gateway restarted while this job was running, so it did not finish. It has "
-                "not been started again -- submit it as a new job if you still want it run."
-            )
+            # WHICH OF THE TWO THIS WAS, from the last thing the ledger durably saw. `running`
+            # is written once, when a slot is held and before a container is asked for; a run
+            # still sitting at `accepted` therefore never left the queue.
+            #
+            # They are told apart because they are not the same event and the customer's next
+            # move differs: one had a sandbox that may have done work and left something behind,
+            # the other never started and owes nothing. Neither is billed -- `started_at` stays
+            # 0.0 on a rebuilt record either way -- but telling somebody their job was running
+            # when it was queued is a false statement in the one place they go to find out.
+            ever_ran = str(entry.get("state")) == "running"
+            record.refusal = self.what_to_tell_them_about_an_interruption(
+                self._how_it_was_interrupted(), ever_ran)
             record.finished_at = time.time()
             record.container_name = container_name_for(run_id)
             self.runs[run_id] = record
-            self.ledger.note_state(run_id, "interrupted")
+            # THE SANDBOX FIRST, THEN THE LINE, THEN THE STATE.
+            #
+            # It used to be line, state, sandbox, and the reason given was that writing the line
+            # first risks a SECOND line rather than none if the process dies between the two,
+            # "and of the two that is the one a reader can notice". That trade is gone: the
+            # meter now refuses a second line for a run it already has, under the lock that
+            # serialises appends. Neither order can produce two.
+            #
+            # So the order is free to serve the line's contents instead, and it does: the line
+            # has to say what became of the sandbox, and nobody knows that until the sandbox has
+            # been asked about. Written first, the line could only have said "not established"
+            # about every run, including the ones this code had just tidied up.
+            #
+            # What each crash window now costs:
+            #
+            #   after the sweep, before the line   the run is still selectable, so the next
+            #                                      start closes it. The sweep runs again and
+            #                                      answers the same way
+            #   after the line, before the state   the next start selects it, the meter refuses
+            #                                      the second line, and the state moves on
+            #
+            # SWEPT WHICHEVER IT WAS, and that is deliberate after a first version got it wrong.
+            # Skipping the sweep for a run the ledger never saw reach `running` looks tidy: no
+            # container existed, so there is nothing to remove. But `running` is written on a
+            # best effort -- a ledger that cannot be written is not a reason to refuse a job
+            # that already holds a slot -- so a run CAN have a live container and still read as
+            # `accepted` here. Not sweeping it leaks that container, with nothing anywhere
+            # referring to it. `test_the_sandbox_a_cut_short_run_left_is_removed` says so in
+            # exactly those words, and it was right.
+            #
+            # Asking about a container that never existed costs one question the worker answers
+            # with "not there". Losing one that does exist costs a running sandbox nobody knows
+            # about. The two are not close.
             if time.monotonic() < budget:
                 self._clean_up_what_it_left(record)
+            # ONLY IF IT HAS ITS LINE. Moving the entry takes the run out of the set a later
+            # start selects from, and doing that for a run whose line could not be written is
+            # how a run leaves the signed log for good.
+            if self._close_an_interrupted_run(
+                    record, entry, reason=self._how_it_was_interrupted()):
+                self.ledger.note_state(run_id, "interrupted")
+
+    #: How often a gateway tries again to write a closing line it could not write.
+    #:
+    #: A bound that does not depend on anybody restarting anything. Leaving the run in the
+    #: ledger means a LATER START can write the line -- and nothing requires a later start, so
+    #: on its own that is not a bound at all, only a possibility. `INTERRUPTED-AUDIT-RECORD-0001`,
+    #: F1: "a failed append leaves no line indefinitely unless a later gateway start happens".
+    #:
+    #: Short enough that a disk which was briefly full is noticed in seconds; long enough that a
+    #: disk which is still full is not hammered.
+    OWED_RETRY_SECONDS = 15.0
+
+    def _owe_a_line(self, run_id: str, record, entry: dict, reason: str) -> None:
+        """Remember a closing line this gateway could not write, and keep trying while it lives.
+
+        The retry is in this process and not in the next one. A run whose line failed stays in
+        the ledger too, so a later start would also find it -- but that is a second chance, not
+        a bound, and the criterion asks for a bound.
+
+        The thread exists only while something is owed. A gateway that has never failed to write
+        a line does not carry a thread for the possibility.
+        """
+        with self._owed_lock:
+            self._owed[str(run_id)] = (record, dict(entry), str(reason))
+            if self._owed_thread is not None and self._owed_thread.is_alive():
+                return
+            self._owed_thread = threading.Thread(
+                target=self._keep_trying_to_pay_what_is_owed,
+                name="agentnode-owed-lines", daemon=True)
+            self._owed_thread.start()
+
+    def _keep_trying_to_pay_what_is_owed(self) -> None:
+        """Until there is nothing owed, or this gateway is closing. Never raises."""
+        while not self._closing.is_set():
+            if self._closing.wait(self.OWED_RETRY_SECONDS):
+                return
+            try:
+                self.pay_what_is_owed()
+            except Exception:                                  # noqa: BLE001
+                pass
+            with self._owed_lock:
+                if not self._owed:
+                    return
+
+    def pay_what_is_owed(self) -> list:
+        """One attempt at every closing line still owed. Returns the run ids that got one."""
+        with self._owed_lock:
+            owed = list(self._owed.items())
+        written = []
+        for run_id, (record, entry, reason) in owed:
+            try:
+                if not self._close_an_interrupted_run(record, entry, reason=reason,
+                                                      owe_it_on_failure=False):
+                    continue
+                self.ledger.note_state(run_id, "interrupted")
+            except Exception:                                  # noqa: BLE001
+                continue
+            written.append(run_id)
+            with self._owed_lock:
+                self._owed.pop(run_id, None)
+        return written
+
+    def what_is_still_owed(self) -> list:
+        with self._owed_lock:
+            return sorted(self._owed)
+
+    def close_what_is_still_in_flight(self) -> list:
+        """On the way out, close the runs this gateway is still holding. Returns their ids.
+
+        ## Why a stop does not simply leave them
+
+        It could: the next gateway to take this directory over finds them and closes them, which
+        is what a killed gateway has to rely on. But "the next start" is not a bound on anything
+        -- a directory nobody starts again never gets its lines, and the customer of a job cut
+        short by a planned stop would wait on a record that arrives when somebody happens to
+        restart a service.
+
+        A stop is the one interruption where the gateway is still there to say what happened. So
+        it says it, immediately, and `later` is left to the cases that genuinely have no choice.
+
+        ## The race, and why it is safe
+
+        A run finishing normally at this moment writes its own line from its own thread. Both
+        paths reach the same meter, which refuses a second line for a run it already has, under
+        the lock that serialises appends. Whichever arrives first writes; the other is told the
+        run is already recorded and moves on. There is no window in which both succeed and none
+        in which neither does.
+
+        Never raises. A gateway that would not stop because it could not write a line is a
+        gateway that has to be killed, which is the worse ending of the two.
+        """
+        from agentnode_sdk.gateway.protocol import GATEWAY_STOPPED, is_terminal
+
+        closed = []
+        for run_id, record in list(self.runs.items()):
+            try:
+                if is_terminal(getattr(record, "state", "")):
+                    continue
+                entry = self.ledger.run_entry(run_id) or {}
+                if not record.finished_at:
+                    record.finished_at = time.time()
+                # FROM THE ONE FUNCTION, unconditionally. Keeping an existing value with an
+                # `or` would be harmless here -- the function is deterministic, so it produces
+                # the same name -- but it is a second spelling of where a container name comes
+                # from, and a test reads every assignment to make sure there is only one.
+                record.container_name = container_name_for(run_id)
+                self._clean_up_what_it_left(record)
+                if not self._close_an_interrupted_run(record, entry, reason=GATEWAY_STOPPED):
+                    # Left where the next start will find it, for the same reason.
+                    continue
+                self.ledger.note_state(run_id, "interrupted")
+                closed.append(run_id)
+            except Exception:                                  # noqa: BLE001
+                continue
+        return closed
 
     def _clean_up_what_it_left(self, record: RunRecord) -> None:
         """Ask the worker to remove the sandbox an interrupted run left running.
@@ -921,10 +1442,8 @@ class GatewayService:
                 owner_account_id=str(entry.get("owner_account_id", "")),
                 state="interrupted",
             )
-            record.refusal = (
-                "the gateway restarted while this job was running, so it did not finish. It has "
-                "not been started again -- submit it as a new job if you still want it run."
-            )
+            record.refusal = self.what_to_tell_them_about_an_interruption(
+                self._how_it_was_interrupted(), True)
             record.finished_at = time.time()
             record.container_name = container_name_for(run_id)
             self.runs[run_id] = record
@@ -1472,6 +1991,12 @@ class GatewayService:
             record.worker_topology = self.worker.topology
             record.worker_configuration_sha256 = self.worker.configuration_sha256()
             record.backend_version = self.runtime_version()
+            # The worker itself, reached the way the run will reach it and checked the way the
+            # run will check it, BEFORE anything is claimed. A worker that is down, or one that
+            # is not the identity this gateway expects, is a refusal with nothing in the ledger
+            # and nothing in the signed log -- not an accepted job that must then be closed as
+            # lost. A worker that goes away after this point is `transport_lost`, as before.
+            self.worker.confirm_reachable()
         except Exception as exc:                              # noqa: BLE001 - refusal is an answer
             record.move_to("refused")
             record.refusal = str(exc)
@@ -1509,7 +2034,8 @@ class GatewayService:
         # was about to check, so every first submission was refused as a replay of itself.
         if not self.ledger.claim(request.run_id, request.nonce, request_sha,
                                  record.owner_client_id,
-                                 owner_account_id=record.owner_account_id):
+                                 owner_account_id=record.owner_account_id,
+                                 admitted=self._what_a_closing_line_will_need(record, granted)):
             refused = RunRecord(run_id=request.run_id, job_id=request.job_id,
                                 request_sha256=request_sha, state="refused")
             refused.refusal = (
@@ -1575,16 +2101,188 @@ class GatewayService:
         try:
             self._run(request, artifact, granted, record)
         finally:
+            # THE SLOT GOES BACK HERE, whatever happened -- finished, failed, cancelled, or an
+            # exception nobody expected. It belongs in this frame for the same reason the thread
+            # bookkeeping does: it is owned by the attempt, not by the work. A slot given back
+            # only on the happy path is a machine that runs one fewer job after every failure
+            # until it runs none.
+            #
+            # Safe for a run that never held one: `give_back` for an unknown id does nothing,
+            # and it hands any freed slot to whoever is waiting.
+            self.slots.give_back(record.run_id)
             # Taken out of the set on the way past, whatever happened, so what the service holds
             # is what is actually running rather than everything it ever started.
             with self._running_lock:
                 self._running.discard(threading.current_thread())
 
+    def _wait_for_a_slot(self, record: RunRecord, granted) -> bool:
+        """Hold a slot before running, or end the run without ever having started it.
+
+        True means the slot is held and the billed clock has started. False means this run is
+        over -- cancelled, suspended, revoked or stopped while it waited -- and it was billed
+        nothing, because `started_at` was never set.
+
+        ## What is re-checked here and why it cannot be checked only at admission
+
+        A job may wait. While it waits its account can be suspended, its device withdrawn, or the
+        whole gateway told to stop taking work. Admission happened before any of that. So the
+        standing is asked again at the moment the slot is granted, which is the last moment
+        before foreign code runs and therefore the only one that counts.
+        """
+        ticket = record.slot_ticket
+        if ticket is not None:
+            # WHATEVER ALREADY TOOK THIS TICKET OUT KNOWS WHY, and its reason wins.
+            #
+            # A withdrawal sets `cancel_requested` as well -- every way of ending a run does --
+            # so reading that flag first told a customer whose device had been withdrawn that
+            # they had cancelled their own job. The ticket carries the specific cause; the flag
+            # only says that something ended this. So the flag is consulted ONLY when nothing
+            # has dropped the ticket yet, and then it means what it says: the customer asked.
+            if not ticket.dropped and record.cancel_requested.is_set():
+                self.slots.drop(record.run_id, "cancelled")
+            if not self.slots.wait_for_slot(ticket):
+                why = getattr(ticket, "dropped", "") or "dropped"
+                self._end_without_running(
+                    record, granted,
+                    "cancelled" if why == "cancelled" else "refused",
+                    # EVERY REASON SOMETHING ACTUALLY DROPS A TICKET WITH, and no others.
+                    #
+                    # A suspension is deliberately absent. It is applied by the operator's CLI,
+                    # which is a DIFFERENT PROCESS from the one holding this queue and cannot
+                    # reach these tickets at all. It is enforced instead a few lines below, by
+                    # asking the account's standing again at the moment the slot is granted --
+                    # the last moment before foreign code runs. A wording here for a case
+                    # nothing can produce would read like a mechanism that exists.
+                    {"cancelled": "cancelled by the client while it was waiting for a slot",
+                     "stopped": "this sandbox stopped taking work while this job was waiting",
+                     "revoked": "the device that submitted this job was withdrawn while it "
+                                "was waiting"}.get(why, why))
+                return False
+            record.slot_ticket = None
+
+        # THE CUSTOMER'S OWN CANCELLATION IS ANSWERED FIRST, before anything else is asked.
+        #
+        # This used to be the first thing in the method and moving it cost something: with the
+        # standing check ahead of it, a run the customer had cancelled came back `refused` --
+        # the gateway telling somebody it would not do a thing they had already called off. It
+        # is not a refusal, it is their own decision, and `test_a_run_cancelled_before_it_started`
+        # is where that showed.
+        #
+        # It sits here rather than at the top so that a ticket already dropped for a specific
+        # reason -- a withdrawal, a stop -- keeps that reason instead of being reported as a
+        # cancellation. Both orderings matter and this is the one that satisfies both.
+        if record.cancel_requested.is_set():
+            self.slots.give_back(record.run_id)
+            self._end_without_running(record, granted, "cancelled",
+                                      "cancelled by the client before it started")
+            return False
+
+        # STANDING, asked again now rather than trusted from admission -- and asked through the
+        # SAME call the dispatcher uses, so there is no second opinion here about what a stop or
+        # a suspension means. `may_this_caller_proceed` is the one implementation of the
+        # operator's stop, this account's standing and the request rate.
+        #
+        # The rate ceiling is deliberately not re-applied to a job that is already inside: it
+        # bounds how fast work ARRIVES, and a job that has been waiting did not just arrive. So
+        # this asks with `would_run_work=True` and treats only a refusal that is about standing
+        # as a reason not to run. A job refused here consumed a slot for the length of this check
+        # and nothing more, because the billed clock has not started.
+        try:
+            self.may_this_caller_proceed(record.owner_account_id, record.owner_client_id,
+                                         True)
+        except Exception as refused:                          # noqa: BLE001
+            because = getattr(refused, "because", "") or str(refused)
+            what = getattr(refused, "what_to_do", "")
+            self.slots.give_back(record.run_id)
+            self._end_without_running(
+                record, granted, "refused",
+                because + ((" " + what) if what else ""))
+            return False
+        if record.cancel_requested.is_set():
+            self.slots.give_back(record.run_id)
+            self._end_without_running(record, granted, "cancelled",
+                                      "cancelled by the client before it started")
+            return False
+
+        # THE BILLED CLOCK STARTS HERE, and nowhere earlier.
+        record.started_at = time.time()
+        return True
+
+    def _end_without_running(self, record: RunRecord, granted, state: str,
+                             why: str) -> None:
+        """Finish a run that never ran. Billed nothing, and said so.
+
+        It goes through the same publication as any other ending, so a job that waited and was
+        cancelled appears in the signed log like everything else -- with `seconds` at zero and
+        the wait recorded beside it. A run that quietly vanished would be the one kind of run
+        nobody could check.
+        """
+        record.finished_at = time.time()
+        record.refusal = why
+        # WHY IT ENDED, in the field that carries that answer everywhere else.
+        #
+        # The queue introduced a second way for a run to be cancelled -- taken out before it
+        # ever reached the worker -- and this path set the state but not the reason. A run whose
+        # state says `cancelled` and whose reason says nothing is the disagreement that
+        # `test_the_state_and_the_reason_cannot_disagree` exists to stop, and
+        # `test_a_run_cancelled_before_it_started` is where it showed: the reason came back
+        # empty on a run everybody agreed was cancelled.
+        if state == "cancelled":
+            from agentnode_sdk.gateway.protocol import CANCELLED
+
+            record.termination_reason = CANCELLED
+        # NOTHING WAS LEFT BEHIND, because nothing was ever created. `container_name` is set in
+        # `_run` AFTER the slot is held, so an empty one here is not an assumption -- it is the
+        # record saying this job never reached the point of having a sandbox. Guarded on that
+        # rather than on the state, so this can never claim cleanup for a run that did create
+        # one.
+        if not record.container_name:
+            record.cleanup_verified = True
+        if state == "refused":
+            record.refused_as = "over_a_ceiling"
+            record.refusal_remedy = "Send it again when this sandbox is taking work."
+        try:
+            record.move_to(state)
+        except Exception:                                     # noqa: BLE001 - already terminal
+            return
+        # The same publication as any other ending: one line in the signed log, with `seconds`
+        # at zero and the wait recorded beside it. A run that vanished silently would be the one
+        # kind of run nobody could check afterwards.
+        try:
+            self.write_down_what_it_used(record, granted, state)
+        except Exception as exc:                              # noqa: BLE001
+            self.could_not_record(record, exc)
+
     def _run(self, request: JobRequest, artifact: bytes, granted, record: RunRecord) -> None:
         from agentnode_sdk.sandbox.composition import network_mode
+
+        # WAIT FOR A SLOT, before anything about a container exists and before the billed clock
+        # starts. A job that waits here has a record, an owner and a claim; what it does not have
+        # is a start time, so nothing about this wait can be charged for.
+        if not self._wait_for_a_slot(record, granted):
+            return
+
         mode, domains = network_mode(granted)
         record.container_name = container_name_for(record.run_id)
         record.move_to("running")
+        # DURABLY, so that a restart can tell this job from one that only ever waited.
+        #
+        # The ledger held `accepted` from submission until a terminal state and nothing ever
+        # wrote anything between, so after a restart every unfinished run looked identical --
+        # and each was told "the gateway restarted while this job was running", including jobs
+        # that had never left the queue. That sentence was false for them, and the recovery
+        # went on to ask the worker to clean up a sandbox that had never been created.
+        #
+        # Written BEFORE the container is asked for, never after: a crash between these two
+        # lines then leaves a run marked as having run when it may not have, which costs one
+        # pointless question to the worker. The other order would leave a run marked as merely
+        # waiting while its sandbox was live, and that one loses a container.
+        try:
+            self.ledger.note_state(record.run_id, "running")
+        except Exception:                                     # noqa: BLE001
+            # A ledger that cannot be written is not a reason to refuse a job that has already
+            # been admitted and holds a slot. The cost is the old behaviour for this one run.
+            pass
         payload = base64.b64encode(artifact).decode("ascii")
         # The client's own command if it brought one, otherwise this gateway's bootstrap -- which
         # reads the challenge off the first line of standard input and puts it in its own process
@@ -1611,6 +2309,23 @@ class GatewayService:
         )
         left_behind = None
         terminal = "refused"
+        # WRITTEN BEFORE THE WORKER IS ASKED, because a closing line has to be able to say
+        # whether this run ever had a sandbox at all.
+        #
+        # `running` does not answer that. It is written when a SLOT is taken, which is before a
+        # container is asked for -- so a run interrupted between the two held a slot and never
+        # had a container, and a line keyed on `running` would call that a confirmed cleanup of
+        # something that never existed. Exercised on the alpha as interruption point 2, which is
+        # how the difference came to be noticed.
+        #
+        # Best effort, like the state note beside it, and for the same reason: a ledger that
+        # will not take a write is not a reason to refuse a job that already holds a slot. The
+        # cost of losing it is the weaker of the two claims -- `never_created` where
+        # `confirmed_gone` was true -- and both say nothing is left.
+        try:
+            self.ledger.note_a_sandbox_was_asked_for(record.run_id)
+        except Exception:                                     # noqa: BLE001
+            pass
         try:
             if record.cancel_requested.is_set():
                 raise _Cancelled()
@@ -1656,7 +2371,16 @@ class GatewayService:
             # Not a job that failed. Nobody established whether it ran, and saying it failed
             # would tell a client something nobody knows. `EM3C-EVIDENCE-0002` cost an external
             # run to exactly this distinction.
+            #
+            # THIS IS THE TRANSPORT, and it is a different boundary from the one the backend
+            # reports on. `runtime_lost` is the WORKER asking the container runtime and being
+            # told nothing; this is the GATEWAY asking the worker and the connection between
+            # them ending. Two links, two ways to lose an answer, and a reader of the record is
+            # entitled to know which one went.
+            from agentnode_sdk.gateway.protocol import TRANSPORT_LOST
+
             terminal = "unverified"
+            record.termination_reason = TRANSPORT_LOST
             record.refusal = (
                 "the sandbox that runs jobs for this gateway could not be reached, so what "
                 f"happened to this run is not known: {exc}. It was not established that it ran, "
@@ -1786,16 +2510,36 @@ class GatewayService:
         fields are declared and a test walks a real line looking for every secret there is.
         """
         from agentnode_sdk.gateway import meter
+        from agentnode_sdk.gateway.protocol import TRANSPORT_LOST as _TRANSPORT_LOST
         from agentnode_sdk.gateway.protocol import outcome_of
 
+        # WHAT IS BILLED, and what is not.
+        #
+        # `started_at` is zero until a worker slot was actually held, so a job that waited and
+        # was then cancelled, suspended or revoked has nothing to subtract from and is billed
+        # nothing. That is the whole mechanism: not a rule applied to the number afterwards, but
+        # the absence of a number to bill.
+        #
+        # `queued_at` is when it arrived. The wait is recorded because a customer is entitled to
+        # see it, and it is recorded SEPARATELY because it is this gateway's doing and not
+        # theirs.
         started = float(record.started_at or 0.0)
-        finished = float(record.finished_at or started)
+        finished = float(record.finished_at or started or time.time())
+        billed = max(0.0, finished - started) if started else 0.0
+        queued = float(record.queued_at or started or finished)
+        # Up to the slot if it ever got one, otherwise up to the end. A job that never started
+        # waited until whatever ended it.
+        waited = max(0.0, (started or finished) - queued)
         if record.owner_client_id:
             # Every scope that counted it, or an account ceiling would be charged for the run
             # starting and never for it ending.
+            # The window quota is charged the BILLED seconds too. A customer whose job sat in
+            # this gateway's queue must not have that count against the seconds they are allowed
+            # to consume -- that would be charging them twice for our ceiling, once in money and
+            # once in quota.
             self.use.finished_every(
                 [k for k in (record.owner_client_id, record.owner_account_id) if k],
-                record.run_id, max(0.0, finished - started))
+                record.run_id, billed)
         try:
             # Which policy this run was admitted under, by digest and by ordinal. Read from
             # the record's own effective policy rather than from whatever is configured now: a
@@ -1813,6 +2557,7 @@ class GatewayService:
                 # checked, which is worse than one binding none.
                 pass
 
+            transport, identity, worker_id = self._who_ran(record.run_id)
             meter.record(
                 self.state.root,
                 run_id=record.run_id,
@@ -1820,25 +2565,75 @@ class GatewayService:
                 # name. That is a real state and it is said rather than left blank.
                 client_id=record.owner_client_id or meter.UNATTRIBUTED,
                 account_id=record.owner_account_id or meter.UNATTRIBUTED,
-                worker_id=self.worker.instance_label() or meter.UNATTRIBUTED,
+                worker_id=worker_id,
+                worker_transport=transport,
+                worker_identity=identity,
                 operator_policy_sha256=operator_digest or meter.UNATTRIBUTED,
                 operator_policy_version=operator_version,
                 started_at=started, finished_at=finished,
+                queued_at=queued,
                 cpu=float(granted.limits.cpu), memory_mb=int(granted.limits.memory_mb),
                 wall_clock_s=int(granted.limits.wall_clock_s),
                 # The state it is ENDING in, which the record does not carry yet: publishing
                 # it is the last thing that happens, after this.
-                state=terminal, outcome=outcome_of(terminal, record.termination_reason),
+                state=terminal,
+                outcome=outcome_of(terminal, record.termination_reason,
+                                   record.exit_code),
+                # BESIDE the outcome, not instead of it: five different endings share `failed`,
+                # and a reader of one line has to be able to tell which one happened.
+                termination_reason=str(record.termination_reason or ""),
+                exit_code=record.exit_code,
+                # WHAT BECAME OF THE SANDBOX, on the ordinary line too and not only on the one a
+                # restart writes. A run that came back with an answer had its container removed
+                # by the worker, which proves the container is gone or raises rather than
+                # reporting a tidy-up it could not confirm -- so `the worker answered` is the
+                # whole condition. A transport that ended before an answer arrived is the case
+                # where nobody could establish it, and it says so.
+                sandbox=self.what_became_of_the_sandbox(
+                    asked_for_a_sandbox=bool(started),
+                    cleanup_verified=True,
+                    the_worker_answered=(
+                        str(record.termination_reason or "") != _TRANSPORT_LOST)),
                 bytes_out=len(record.stdout or "") + len(record.stderr or ""),
                 worker_topology=self.worker.topology,
                 # What it was admitted under, not what is configured now.
                 allowance_sha256=record.admitted_under or self.allowance().digest(),
                 allowance_admitted_under=(record.admitted_under_values
                                           or self.allowance().as_dict()))
+        except meter.AlreadyRecorded:
+            # This run is already in the log, so it is accounted for and there is nothing to do.
+            # Reached when a stop closed it on the way out and its own thread came back a
+            # moment later, which is a race both halves of are correct: whichever reached the
+            # meter first wrote the line, and the meter refused the second. Publishing the
+            # terminal state still happens after this, so the client is answered either way.
+            pass
         except OSError:                                       # pragma: no cover - a full disk
             # A run that happened is not un-happened by a meter that could not be written, and
             # refusing to publish the terminal state over it would lose the run instead.
             pass
+
+    @property
+    def slots(self):
+        """The machine ceiling and its queue, from whatever the operator currently allows.
+
+        Rebuilt when the ceilings change and reused when they have not: a new object would drop
+        every waiting job on the floor, and an operator raising a limit must not be a way to lose
+        work that is already queued.
+        """
+        from agentnode_sdk.gateway.capacity import Slots
+
+        allowed = self.allowance()
+        shape = (int(allowed.machine_concurrent_runs or 0), int(allowed.queue_depth or 0))
+        with self._slots_lock:
+            if self._slots is None or self._slots_for != shape:
+                if self._slots is None:
+                    self._slots = Slots(ceiling=shape[0], queue_depth=shape[1])
+                else:
+                    # Changed in place, so tickets already waiting keep waiting on the same
+                    # object rather than on one nobody will ever promote from.
+                    self._slots.ceiling, self._slots.queue_depth = shape
+                self._slots_for = shape
+            return self._slots
 
     def reserve(self, client_id: str, run_id: str, record, asking_for: int,
                 account_id: str = "") -> None:
@@ -1896,6 +2691,33 @@ class GatewayService:
             # Taken in the same breath as it was checked.
             self.runs[run_id] = record
 
+        # THE MACHINE CEILING, after the customer's own and outside the lock above.
+        #
+        # After, because the customer's ceilings are the customer's own doing and should be the
+        # answer they get: telling somebody "this machine is busy" when what is actually true is
+        # "you already have two going" sends them to complain to the wrong person.
+        #
+        # Outside, because this one may put the job in a queue and a queue that is entered while
+        # holding the lock every other run needs would stop the machine rather than pace it. The
+        # two locks are never held together: `Slots` has its own and takes nothing else.
+        #
+        # A refusal here happens AFTER the window allowance was claimed above, so it gives it
+        # back -- otherwise a job that never ran would still have spent the customer's quota.
+        try:
+            record.slot_ticket = self.slots.take_or_queue(run_id, account_id or client_id)
+        except Exception:
+            with self._lock:
+                self.runs.pop(run_id, None)
+            if (allowed.runs_per_window or allowed.seconds_per_window
+                    or allowed.account_runs_per_window
+                    or allowed.account_seconds_per_window):
+                try:
+                    self.use.finished_every(
+                        [k for k in (client_id, account_id) if k], run_id, 0.0)
+                except Exception:                             # noqa: BLE001
+                    pass
+            raise
+
     def stop_what_is_running(self, why: str, settle: float | None = None) -> list:
         """End every run that has not ended, because the operator stopped this gateway.
 
@@ -1910,6 +2732,13 @@ class GatewayService:
         thing and claiming more than happened would defeat it.
         """
         from agentnode_sdk.gateway.protocol import is_terminal
+
+        # THE QUEUE EMPTIES FIRST, in one pass. A kill switch that stopped the running jobs and
+        # left the waiting ones to be promoted into the slots just freed would start new work
+        # while shutting down -- the exact opposite of what somebody reaching for it wants.
+        # Dropping them all under one lock is what stops a job slipping from waiting to running
+        # between two of these decisions.
+        self.slots.drop_every(lambda ticket: True, "stopped")
 
         done = []
         for record in list(self.runs.values()):
@@ -1976,6 +2805,14 @@ class GatewayService:
         # What the pool could not get back is part of what THIS close could not get back.
         # Discarding it meant a cancellation worker could outlive the service while close()
         # reported nothing left running, which is the same mistake in a different place.
+        # ONE LAST ATTEMPT AT WHAT IS OWED, before the thread that keeps trying is told to
+        # stop. A gateway that is going away is the last one that will hold these in memory.
+        self._closing.set()
+        try:
+            self.pay_what_is_owed()
+        except Exception:                                      # noqa: BLE001
+            pass
+
         pool = getattr(self, "stopping", None)
         left_stopping = list(pool.close() or ()) if pool is not None else []
 
@@ -2018,6 +2855,12 @@ class GatewayService:
             return record, True
         deadline = time.monotonic() + (self.CANCEL_SETTLE_SECONDS if settle is None else settle)
         record.cancel_requested.set()
+        # A JOB THAT IS STILL WAITING HAS NO CONTAINER TO STOP, and asking the worker to stop one
+        # that was never created would be asking about nothing. Taken out of the queue instead --
+        # which wakes the thread holding it, and that thread ends the run without ever starting
+        # it. `drop` answers whether this was the case, so nothing has to be inferred from the
+        # absence of a container name.
+        self.slots.drop(record.run_id, "cancelled")
         self.worker.stop(record.run_id, record.container_name, self.CONTAINER_APPEAR_SECONDS)
         while time.monotonic() < deadline:
             if is_terminal(record.state):

@@ -1842,6 +1842,18 @@ def _devices_revoke(service, principal, params):
         if getattr(record, "owner_client_id", "") != wanted or is_terminal(record.state):
             continue
         record.cancel_requested.set()
+        # A JOB STILL WAITING FOR A SLOT HAS NO SANDBOX TO STOP, and nothing wakes it: the
+        # thread holding it is blocked on its ticket, and setting `cancel_requested` above is
+        # not something that ticket is watching. Left alone it would sit in the queue --
+        # occupying a place somebody else could use -- until a slot happened to free up, and
+        # only then notice it was withdrawn.
+        #
+        # Taking it out of the queue wakes that thread at once, and it ends the run without
+        # ever starting it. `drop` answers whether this was such a job, so the loop below does
+        # not have to infer it from the absence of a container name.
+        if service.slots.drop(run_id, "revoked"):
+            stopped.append(run_id)
+            continue
         try:
             service.stopping.ask(run_id, by="(a withdrawal)")
             stopped.append(run_id)
@@ -1862,6 +1874,7 @@ def _translate(exc: Exception) -> Refused:
     refuses the same thing the same way."""
     from agentnode_sdk.gateway import admission as _admission
     from agentnode_sdk.gateway.allowance import OverTheCeiling
+    from agentnode_sdk.gateway.capacity import QueueIsFull
     from agentnode_sdk.gateway.protocol import ProtocolError
 
     if isinstance(exc, Refused):
@@ -1874,6 +1887,16 @@ def _translate(exc: Exception) -> Refused:
     cannot_read = _admission.what_it_cannot_read(exc)
     if cannot_read is not None:
         return Refused(cannot_read.refusal, cannot_read.because, cannot_read.what_to_do)
+    # THE MACHINE IS FULL, which is a ceiling and not a fault.
+    #
+    # Without this it fell through to `sandbox_unavailable` -- "nothing could run it, and this
+    # is not the caller's fault" -- and the customer was told the sandbox could not carry their
+    # job out. The sandbox is fine. It is busy, it said so, and it carries its OWN next step:
+    # try again shortly, and if it keeps happening, these are the numbers the operator set.
+    # The generic branch threw that away and substituted "tell whoever runs it", which is
+    # advice to complain rather than something to do.
+    if isinstance(exc, QueueIsFull):
+        return Refused("over_a_ceiling", str(exc), exc.remedy)
     if isinstance(exc, OverTheCeiling):
         return Refused("over_a_ceiling", str(exc),
                        "Wait until the window clears, or ask for a higher ceiling.")

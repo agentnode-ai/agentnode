@@ -86,16 +86,42 @@ def _operator_policy(root: Path):
                                               allowed_destinations=frozenset(hosts)))
 
 
-def _service(root: Path):
+def _build_id() -> str:
+    """Which build this process is, from the pin the deployment wrote.
+
+    Empty when there is no pin -- an installation made before pinning existed genuinely cannot
+    say which build it is, and a made-up answer would be read as a real one. `_refuse_unless_pinned`
+    is what decides whether running without a pin is allowed; this only reports.
+    """
+    from agentnode_sdk.gateway import runtime_pin
+
+    try:
+        return str(runtime_pin.read_pin(runtime_pin.pin_dir()).get("build_id") or "")
+    except Exception:                                         # noqa: BLE001
+        return ""
+
+
+def _service(root: Path, recover: bool = False):
+    """A gateway object for a command to reach a method on. NOT a gateway taking over.
+
+    `recover` defaults to FALSE here, and that is the whole point of the parameter. Building one
+    of these used to run crash recovery against the directory, which for every command except
+    `start` means the directory a LIVE gateway is serving from: its running jobs were marked
+    interrupted and their containers removed. Measured: `agentnode gateway accounts`, which only
+    lists customers, ended a job that was eight seconds into its work.
+
+    Only `cmd_start` is a gateway taking over a directory, and only it asks to recover.
+    """
     from agentnode_sdk.gateway.identity import GatewayState
     from agentnode_sdk.gateway.server import GatewayService
     from agentnode_sdk.sandbox.container_backend import ContainerBackend
 
     from agentnode_sdk import __version__ as version
 
-    state = GatewayState(root, version=str(version))
+    state = GatewayState(root, version=str(version), build_id=_build_id())
     return state, GatewayService(state, backend=ContainerBackend(),
-                                 operator_policy=_operator_policy(root))
+                                 operator_policy=_operator_policy(root),
+                                 recover=recover)
 
 
 def _tls_from(config: dict, args):
@@ -217,13 +243,52 @@ def cmd_init(args) -> int:
     return 0
 
 
+def _refuse_unless_pinned(root, what: str) -> int:
+    """A thin call into the one implementation, in `runtime_pin`.
+
+    This file and the worker's one each held their own copy of the whole rule. They had already
+    started to disagree -- one was changed to refuse an unpinned start and the other was
+    not -- which would have left a machine whose gateway refuses and whose worker shrugs.
+    `bold` is handed in so each surface keeps its own emphasis without the rule moving.
+    """
+    from agentnode_sdk.gateway import runtime_pin
+
+    return runtime_pin.refuse_unless_pinned(root, what, say=print, bold=bold)
+
 def cmd_start(args) -> int:
     from agentnode_sdk.gateway.server import make_server
     from agentnode_sdk.gateway.transport import InsecureTransportError, public_url_for
 
     root = _root(args)
+    # The PIN directory, not the state directory. A restore replaces the state; it must not be
+    # able to replace what this installation is allowed to run as.
+    from agentnode_sdk.gateway import runtime_pin as _rp
+
+    if _refuse_unless_pinned(_rp.pin_dir(), "gateway"):
+        return 1
     config = _load_config(root)
-    state, service = _service(root)
+    # THE ONE COMMAND THAT IS A GATEWAY TAKING OVER THIS DIRECTORY, and therefore the one that
+    # recovers what a previous process left mid-flight. Every other command is a visitor.
+    #
+    # Taking it over means holding it. Two gateways on one directory share one ledger and one
+    # signed log, and both would select the same interrupted run and answer for it; the meter
+    # refuses the second line, so the record survives that, but nothing else about the
+    # arrangement is intended. Found on the closed alpha, where one left over from an exercise
+    # had been serving the production directory on a second port for four days.
+    #
+    # Only this command takes the lock. Operator commands build a gateway object to read
+    # something and are visitors; locking them out would stop an operator looking at a running
+    # gateway, which is a defect this project has already fixed once from the other direction.
+    from agentnode_sdk.gateway import lifecycle as _lifecycle
+
+    try:
+        holding = _lifecycle.OnlyOneGateway(root).take()
+    except _lifecycle.AnotherGatewayHasIt as exc:
+        print()
+        print(f"  {bold('Not started.')}")
+        print(f"  {exc}")
+        return 1
+    state, service = _service(root, recover=True)
     host = getattr(args, "host", None) or config.get("host") or "127.0.0.1"
     port = int(getattr(args, "port", None) or config.get("port") or 8099)
 
@@ -257,12 +322,38 @@ def cmd_start(args) -> int:
         print("    agentnode gateway pair")
     print()
     print(dim("  Press Ctrl-C to stop."))
+    # A SERVICE MANAGER STOPS THINGS WITH SIGTERM, and Python's default for SIGTERM is to end
+    # the process without running a single `finally`. So everything below -- the marker saying a
+    # shutdown was begun, and the closing line for every run still in flight -- did not happen
+    # on `systemctl stop`. Ctrl-C was handled and the way a service is actually stopped was not.
+    #
+    # Turned into the same event as Ctrl-C rather than given a handler of its own, so there is
+    # one shutdown path and not two that can drift.
+    import signal as _signal
+
+    def _stop_the_way_ctrl_c_does(_number, _frame):
+        raise KeyboardInterrupt
+    try:
+        _signal.signal(_signal.SIGTERM, _stop_the_way_ctrl_c_does)
+    except (ValueError, OSError, AttributeError):              # pragma: no cover - not main
+        pass
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print()
         print("  Stopped. Nothing is listening any more.")
+    except BaseException as exc:
+        # A CRASH RUNS CODE, and that is what makes it different from being killed. An
+        # unhandled failure gets one moment to say that this gateway is ending badly, and a
+        # later start reads that instead of guessing. Written before it is re-raised, so a
+        # process that then dies has still left the statement.
+        _lifecycle.say_it_crashed(root, type(exc).__name__)
+        raise
     finally:
+        # SAID FIRST, so that a stop which is itself cut short still leaves the evidence that a
+        # stop had begun. A gateway killed halfway through stopping is nearer to having been
+        # stopped than to having vanished, and the next start reads it that way.
+        _lifecycle.say_it_is_stopping(root)
         # Everything this command owns, given back in order and by name. The state holds a
         # directory descriptor and the server holds a listening socket and two watcher threads;
         # a finalizer exists for the ones nobody remembers, but it is a net and not the way
@@ -270,10 +361,18 @@ def cmd_start(args) -> int:
         # tells the watchers to stop -- closing the socket does not.
         server.shutdown()
         server.server_close()
+        # NOTHING IS LISTENING NOW, so nothing new can arrive -- and the runs still in flight
+        # get their closing line from the gateway that is still here to write it, rather than
+        # from whoever restarts this directory next.
+        still_going = service.close_what_is_still_in_flight()
+        if still_going:
+            print("  %d job(s) that were still going were closed and recorded."
+                  % len(still_going))
         # The pool that carries out cancellations is owned by the service, so it is given back
         # here too. Production closes what it opens; the finalizer stays a net.
         service.close()
         state.close()
+        holding.close()
     return 0
 
 
@@ -1185,6 +1284,32 @@ def cmd_resume(args) -> int:
     return 0
 
 
+def _say_if_it_is_more_than_the_machine_has(ceiling: int) -> None:
+    """Name a machine ceiling that allows more runs than this machine has cores for.
+
+    Said rather than clamped and rather than refused -- `capacity.more_than_this_machine_can_serve`
+    carries the reasoning for both. Said in BOTH places an operator meets this number: when they
+    set it, and every time they look at it. A warning that appears once, at a moment nobody was
+    reading, is a warning that was not given.
+    """
+    from agentnode_sdk.gateway.capacity import (
+        more_than_this_machine_can_serve, what_this_machine_can_serve,
+    )
+
+    over = more_than_this_machine_can_serve(int(ceiling or 0))
+    if not over:
+        return
+    have = what_this_machine_can_serve()
+    print(f"      {bold('This is more than this machine has cores for.')} It has {have}, and "
+          f"each sandbox")
+    print(f"      is allotted one, so {ceiling} at once means {over} more than can run without")
+    print("      slowing each other down -- and time spent being slowed down is time the")
+    print("      customer is billed for.")
+    print("      It is allowed to stand: work that waits on a network or a disk uses almost no")
+    print("      CPU, and only you know whether yours does. Nothing has been changed or")
+    print("      reduced. If you did not mean it, set it to the number you did mean.")
+
+
 def cmd_limits(args) -> int:
     """Show or set what one client may use."""
     from agentnode_sdk.gateway.allowance import Allowance, read_allowance, write_allowance
@@ -1194,7 +1319,8 @@ def cmd_limits(args) -> int:
     asked = {name: getattr(args, name, None) for name in
              ("concurrent_runs", "runs_per_window", "seconds_per_window",
               "account_concurrent_runs", "account_runs_per_window",
-              "account_seconds_per_window", "requests_per_minute",
+              "account_seconds_per_window", "machine_concurrent_runs", "queue_depth",
+              "requests_per_minute",
               "account_requests_per_minute", "max_artifact_bytes", "max_output_bytes")}
     if all(value is None for value in asked.values()):
         print()
@@ -1208,6 +1334,23 @@ def cmd_limits(args) -> int:
                      "account_seconds_per_window"):
             value = now.as_dict()[name]
             print(f"    {name:<28}: {value if value else 'no limit'}")
+        print()
+        print(f"  {bold('What THIS MACHINE will run at once, whoever asked')}")
+        machine = now.as_dict()["machine_concurrent_runs"]
+        print(f"    {'machine_concurrent_runs':<28}: {machine if machine else 'no limit'}")
+        # SAID IN WORDS, because the number alone reads backwards. Everywhere else on this
+        # screen a zero means "no limit"; here it means nobody waits at all, and an operator
+        # who reads it the other way believes they have an unbounded queue.
+        depth = now.as_dict()["queue_depth"]
+        print(f"    {'queue_depth':<28}: "
+              f"{depth if depth else 'nobody waits -- a full machine refuses at once'}")
+        _say_if_it_is_more_than_the_machine_has(machine)
+        if machine and not depth:
+            print("      With a ceiling set and nothing allowed to wait, a job arriving at a")
+            print("      full machine is refused rather than queued.")
+        if depth and not machine:
+            print("      This does nothing while there is no machine ceiling: with nothing to")
+            print("      wait for, no job ever queues.")
         print()
         print(f"  {bold('How fast, and how big')}")
         for name in ("requests_per_minute", "account_requests_per_minute",
@@ -1231,6 +1374,9 @@ def cmd_limits(args) -> int:
     for name, value in changed.as_dict().items():
         if name != "window_seconds":
             print(f"    {name:<28}: {value if value else 'no limit'}")
+    # AT THE MOMENT IT IS SET, not only when somebody later looks. This is where an operator
+    # who typed one digit too many is still looking at their own command.
+    _say_if_it_is_more_than_the_machine_has(changed.machine_concurrent_runs)
     return 0
 
 

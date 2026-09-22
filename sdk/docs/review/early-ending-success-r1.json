@@ -1,0 +1,117 @@
+{
+ "_comment": [
+  "PROSPECTIVELY FROZEN. Written and hashed BEFORE any line of the remediation it judges exists,",
+  "so the criteria cannot be shaped around what gets built. Frozen 2026-09-21.",
+  "",
+  "This profile exists because of one observation, made while measuring something else: sandbox",
+  "containers that were told to sleep 120 seconds ended after about 11.3 seconds, the client saw",
+  "-9, and the signed usage line said `state=finished, outcome=succeeded`. The same path records",
+  "`timed_out` correctly when a wall-clock limit ends a run, so the machinery for telling endings",
+  "apart exists and did not reach this case.",
+  "",
+  "Two questions, and they are not the same question. WHY did the run end early -- and WHY was an",
+  "ending that was not a success written down as one. The second is the defect that matters for a",
+  "service that bills by runtime and sells a record of what happened; the first may turn out to be",
+  "an environment problem. A remediation that answers only the first has not finished.",
+  "",
+  "This profile carries a `roles` map from the start. `alpha-runtime-pin-r1` did not, every input",
+  "therefore defaulted to `context`, context establishes nothing, and nine criteria were",
+  "unsatisfiable by any submission. That cost two versioned corrections."
+ ],
+ "profile_id": "early-ending-success-r1",
+ "kind": "implementation-review",
+ "mutable_task": true,
+ "stage": "pre-run",
+ "frozen_prospectively": true,
+ "review_object": "A run that ended before its work was done must never be recorded as having succeeded, and the reason it ended must be the reason that is written down. Judge whether the early ending was reproduced and explained rather than guessed at; whether a container that was killed is told apart from one that finished, timed out, was cancelled, ran out of memory, lost its runtime or lost its transport; whether that distinction comes from what the runtime reported rather than from how long the run took; whether an ending nobody established is left as unestablished instead of rounded; and whether what a killed run costs the customer was decided on purpose.",
+ "out_of_scope": "The capacity ceiling and the queue in front of it, which are judged by `alpha-capacity-queue-r1` and are not reopened here. Tenant-to-tenant isolation, the transport to a worker on another machine, egress, identity, payment, domain and TLS. Whether any price is right. Making the sandbox faster, larger or able to run more at once: this profile is about what is WRITTEN DOWN about an ending, not about preventing every ending.",
+ "verdict_must_state": "A pass concerns the truthfulness of the recorded ending and the separation of the ways a run can end. It does not establish that early endings no longer happen, that the sandbox is correctly sized, or that the billing figures elsewhere in the record are right. Say which endings were EXERCISED against a real container runtime and which were only constructed in a test or read in source. If the underlying cause of the 11.3-second ending was not established, say that too, and say whether the recorded-ending defect was fixed independently of it.",
+ "roles_rule": "Any input this profile does not list defaults to the lowest authority, 'context'. A request may name this profile and may not extend it.",
+ "roles": {
+  "brief.md": "context",
+  "what-answers-what.md": "context",
+  "about-the-prior-verdicts.txt": "context",
+  "outcome.py.txt": "normative_spec",
+  "worker-reports-an-ending.py.txt": "normative_spec",
+  "server-ending-and-outcome.py.txt": "normative_spec",
+  "meter.py": "normative_spec",
+  "protocol-termination-reasons.py.txt": "normative_spec",
+  "counter-check-endings.sh": "normative_spec",
+  "test_endings.py": "supporting_evidence",
+  "test_stop_reason.py": "supporting_evidence",
+  "the-reproduction.txt": "frozen_evidence",
+  "the-cause.txt": "frozen_evidence",
+  "a-killed-run-is-not-succeeded.txt": "frozen_evidence",
+  "six-endings-on-a-real-container.txt": "frozen_evidence",
+  "oom-is-named-as-oom.txt": "frozen_evidence",
+  "what-nobody-established-stays-unestablished.txt": "frozen_evidence",
+  "what-a-killed-run-costs.txt": "frozen_evidence",
+  "the-endings-that-were-already-right.txt": "frozen_evidence",
+  "counter-checks.txt": "frozen_evidence",
+  "signed-usage-lines.txt": "frozen_evidence",
+  "suite-on-the-pinned-environment.txt": "frozen_evidence",
+  "ci-checks.txt": "frozen_evidence"
+ },
+ "criteria": [
+  {
+   "id": "E1-THE-EARLY-ENDING-IS-REPRODUCED-OR-HONESTLY-NOT",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether the reported behaviour -- a run given 120 seconds of work ending after about 11.3 seconds -- was reproduced under conditions somebody else could repeat, and how many times. Determine whether the reproduction is described precisely enough to be run again: what was submitted, under what ceiling, with how many clients, on what machine. If it could NOT be reproduced, determine whether that is stated plainly, what was tried, and on what basis the work continued anyway. A remediation that quietly stops mentioning an observation it could not reproduce is worse than one that says so."
+  },
+  {
+   "id": "E2-THE-CAUSE-IS-SHOWN-AND-NOT-INFERRED",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether the cause of the early ending is established from something the system itself reported -- a kernel message, a runtime status, an exit signal, a log line -- rather than deduced from timing or from what is plausible. Determine whether each candidate cause that was ruled out was ruled out by a test that would have distinguished it, and whether any remaining candidate is presented as settled when it is not. A duration is diagnosis and not proof; a cause named because it 'would explain' the numbers has not been shown."
+  },
+  {
+   "id": "E3-A-RUN-THAT-WAS-KILLED-IS-NEVER-CALLED-SUCCEEDED",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge, from the code that decides what a line says, whether a run whose container ended by signal can still be recorded with an outcome meaning success. Determine what the outcome is derived FROM, and whether there is any path -- including an error path, a fallback, or an exception swallowed on the way -- by which an ending that was not a completion reaches a successful outcome. Determine this from the derivation itself and not from the absence of a failing test."
+  },
+  {
+   "id": "E4-THE-WAYS-A-RUN-CAN-END-ARE-TOLD-APART",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge whether these are distinguishable in the signed record, each by its own name: the payload ran to completion; the wall-clock limit stopped it; somebody cancelled it; it ran out of memory; the container runtime became unavailable or lost the container; the connection carrying the run was lost. Determine whether each name means one thing and only one, whether any two collapse into a single name, and whether a reader of one line can tell which happened without asking anybody. Determine what happens when two apply at once -- a cancellation during a timeout, a memory kill during a cancellation -- and whether the answer is a deliberate order of precedence or whichever check ran first."
+  },
+  {
+   "id": "E5-THE-DISTINCTION-COMES-FROM-WHAT-WAS-REPORTED",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge what the distinction in E4 is computed from. It must come from what the container runtime and the operating system report about the ending -- an exit status, a signal, an out-of-memory indication, an error from the runtime -- and not from how long the run took, how much of its limit it used, or what the gateway expected. Determine whether any ending is classified by comparing a duration against a limit, and if so whether that is the only available evidence and is stated as such."
+  },
+  {
+   "id": "E6-WHAT-NOBODY-ESTABLISHED-STAYS-UNESTABLISHED",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge what is recorded when the gateway cannot find out how a run ended. Determine whether that case has its own answer that a reader can act on, distinct from both success and failure, and whether it is reachable in practice rather than only declared. Determine that it is not rounded towards success to keep a record tidy, nor towards failure to be safe -- a run reported as failed when nobody knows is a false statement about a customer's job in the same way a run reported as succeeded is."
+  },
+  {
+   "id": "E7-WHAT-A-KILLED-RUN-COSTS-IS-DECIDED-ON-PURPOSE",
+   "blocking": true,
+   "stage": "pre-run",
+   "text": "Judge what the customer is charged for a run that ended early and not by their own doing. Determine that the answer is a decision somebody made and wrote down, with its reasoning, and not whatever the existing arithmetic happens to produce. Determine that the answer is consistent with how the same record treats a cancellation and a timeout, and that a reader of the line can tell what they were charged and why."
+  },
+  {
+   "id": "E8-EXERCISED-AGAINST-A-REAL-CONTAINER-RUNTIME",
+   "blocking": true,
+   "stage": "post-run",
+   "text": "Judge which endings were produced against a REAL container runtime rather than constructed in a stand-in. Determine, for each of the endings named in E4, whether it was exercised for real, and where it was not, whether the submission says so plainly. A stand-in backend can be made to report anything, so a distinction shown only through one establishes what the code does with a value, not that the value ever arrives."
+  },
+  {
+   "id": "E9-THE-ENDINGS-THAT-WERE-ALREADY-RIGHT-STILL-ARE",
+   "blocking": true,
+   "stage": "post-run",
+   "text": "Judge whether endings this gateway already recorded correctly are unchanged. A timeout was recorded as a timeout and a cancellation as a cancellation before this work; determine that both still are, against a real runtime, and that no ending that used to carry a reason now carries a different one. Determine whether the full test suite was run, against what it is compared, and whether any failure it produces is shown to pre-date this work rather than asserted to."
+  },
+  {
+   "id": "E10-THE-EVIDENCE-WOULD-FAIL-WITHOUT-THE-MECHANISM",
+   "blocking": true,
+   "stage": "post-run",
+   "text": "Judge the counter-checks rather than the claims. For the derivation of the outcome, the distinction between the ways a run can end, and the handling of an ending nobody established: determine whether a counter-check removes that one mechanism, names a DIFFERENT test from the one that defines it, shows that test failing with a non-zero exit, proves the mutation landed, and proves the file was restored byte for byte. Determine whether any counter-check fails for a reason unrelated to the mechanism it removed. Determine whether any count was reconciled by hand rather than read from a machine-produced file, and whether any duration is offered as proof rather than as diagnosis. Determine that no counter-check operated a real service, installed anything, or reached the closed alpha."
+  }
+ ]
+}

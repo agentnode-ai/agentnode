@@ -96,6 +96,9 @@ class Bench:
         #: that does not forget.
         self.floor = wire.Floor(remembers_at)
         self._socket: socket.socket | None = None
+        #: What this worker calls itself when it holds a certificate: the instance in it.
+        #: None when it does not, and then the worker's own label is used as before.
+        self.label: str | None = None
         #: Set once, never cleared. Separate from `_serving` so a stop cannot be undone by
         #: a loop that starts afterwards.
         self._stopped = False
@@ -192,21 +195,40 @@ class Bench:
         return uid
 
     def _one(self, connection) -> None:
+        if self.only_uid is not None:
+            uid = self.who_is_connecting(connection)
+            if uid != self.only_uid:
+                # Closed without a word. Telling an account it is the wrong account is
+                # telling it there is a right one.
+                try:
+                    connection.close()
+                except OSError:                               # pragma: no cover
+                    pass
+                return
+        self.converse(connection)
+
+    def converse(self, connection, noted=None) -> None:
+        """Everything after the door: MAC, nonce, floor, the closed list, the answer.
+
+        The same for both doors. The unix socket reaches it after the kernel has named the
+        account; the TLS listener (`worker/tls.py`) reaches it after the handshake and the
+        identity checks. Neither door skips anything in here because of what it checked first.
+
+        `noted`, when given, is told the method and parameters of a request that PASSED every
+        check here, before it is answered -- the TLS door uses it to know which run a connection
+        carries, so that a connection cut because its caller was revoked also stops that run.
+        """
         # Per connection and never on `self`: a field would be one thread's request id answered
         # to another thread's caller.
         asked = ""
         try:
-            if self.only_uid is not None:
-                uid = self.who_is_connecting(connection)
-                if uid != self.only_uid:
-                    # Closed without a word. Telling an account it is the wrong account is
-                    # telling it there is a right one.
-                    return
             connection.settimeout(wire.FRESHNESS_SECONDS)
             with connection.makefile("rb") as stream:
                 body = wire.read_frame(stream, self.key)
             asked = str(body.get("request_id") or "")
             wire.check(body, self.seen, floor=self.floor)
+            if noted is not None:
+                noted(str(body["method"]), dict(body["params"]))
             result = self.answer(str(body["method"]), dict(body["params"]))
             connection.sendall(wire.seal(wire.answer(asked, result), self.key))
         except wire.ProtocolError as exc:
@@ -250,7 +272,10 @@ class Bench:
             return {
                 "isolation": isolation.as_message(),
                 "runtime_version": self.worker.runtime_version(),
-                "instance_label": self.worker.instance_label(),
+                # A worker that holds a certificate calls itself by the instance in it, through
+                # either door. What a gateway records over TLS does not rest on this answer --
+                # it is the identity checked in the handshake -- but the two agree.
+                "instance_label": self.label or self.worker.instance_label(),
                 "image_digest": self.worker.image_digest(),
                 "configuration_sha256": self.worker.configuration_sha256(),
             }
@@ -335,8 +360,18 @@ class CannotHoldItsLimits(RuntimeError):
         self.evidence = dict(evidence or {})
 
 
-def serve(address: str, key_path: str, only_uid: int | None, worker=None) -> None:
-    """Start a worker on this machine and answer until something stops the process."""
+def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
+          tls_address: str = "", tls=None) -> None:
+    """Start a worker on this machine and answer until something stops the process.
+
+    `tls_address` and `tls` open a second door, TCP with mutual TLS on loopback (`worker/tls.py`),
+    beside the socket and never instead of it. Both or neither: an address without settings, or
+    settings without an address, is refused rather than half-started.
+    """
+    if bool(tls_address) != bool(tls):
+        raise ValueError(
+            "a TLS listener needs both an address and its certificate settings; one without the "
+            "other is refused rather than started without its checks")
     from agentnode_sdk.sandbox.container_backend import ContainerBackend
     from agentnode_sdk.worker.local import LocalWorker
 
@@ -362,6 +397,22 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None) -> Non
             "is not one to hand foreign code to: " + (proof.reason or "no reason given"),
             proof.evidence)
 
+    # WHAT THE PREVIOUS WORKER LEFT, before this one opens its socket. At this moment no job of
+    # its own can be in flight, so anything carrying this SDK's prefixes is a leftover from a
+    # worker that died mid-run -- which is now possible to leave behind, because the single-run
+    # path no longer passes `--rm` and a container that removes itself cannot be asked how it
+    # ended. Never fatal: it reports what it could not do rather than refusing to start.
+    left = getattr(the_worker, "remove_what_a_previous_worker_left", None)
+    if callable(left):
+        swept = left()
+        if swept.get("found"):
+            print("  Removed %d container(s) a previous worker left: %s"
+                  % (len(swept.get("removed") or []), ", ".join(swept.get("found") or [])))
+        if swept.get("failed") or swept.get("why"):
+            print("  Could not account for every leftover: %s%s"
+                  % (", ".join(swept.get("failed") or []) or "-",
+                     (" (" + swept["why"] + ")") if swept.get("why") else ""))
+
     # Next to the worker's own state, which is the only directory it may write. A worker that
     # could not write this would still refuse replays within its own life; it just could not
     # refuse one that spans a restart, so a failure here is a narrowing and not an opening.
@@ -383,13 +434,28 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None) -> Non
             "message captured before a restart: " + str(exc),
             {"replay_floor": remembers_at}) from exc
     path = bench.open()
+    listener = None
+    if tls:
+        from agentnode_sdk.worker.tls import TlsListener, own_instance
+
+        bench.label = own_instance(tls)
+        listener = TlsListener(bench, tls_address, tls)
+        host, port = listener.open()
+        threading.Thread(target=listener.serve_forever, daemon=True).start()
+        print("  also listening with mutual TLS at %s:%s, loopback only, as %s"
+              % (host, port, bench.label), flush=True)
+        print("  it accepts gateway instance(s): " + ", ".join(sorted(tls.accept)), flush=True)
     print("  listening at " + path + " for uid " + str(only_uid))
     print("  this worker holds no pairing state, no signing identity and no client's token.")
     print("  On one host, two accounts are not isolation: see ALPHA-BOUNDARY-0001.")
     print("  a ceiling was hit here before this socket opened, and it held.")
     print("  it can also write down what it accepts, which is what refuses a replay after a "
           "restart.")
-    bench.serve_forever()
+    try:
+        bench.serve_forever()
+    finally:
+        if listener is not None:
+            listener.stop_serving()
 
 
 def _time_now() -> float:                                     # pragma: no cover - a seam for tests

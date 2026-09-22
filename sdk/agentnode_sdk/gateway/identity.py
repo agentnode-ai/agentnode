@@ -81,26 +81,62 @@ def normalise_code(raw: str) -> str:
     )
 
 
+def fingerprint_of(gateway_id: str) -> str:
+    """THE ONE PLACE THIS IS COMPUTED. Four copies of it existed -- here, in the client that
+    re-checks it, in the evidence reader that recomputes it, and in a test helper that spelled
+    out "the way the gateway produces it" while being a fourth spelling of it. Changing the rule
+    meant finding all four, and the way that was discovered was three of them disagreeing.
+    """
+    return hashlib.sha256(str(gateway_id or "").encode()).hexdigest()
+
+
 @dataclass(frozen=True)
 class GatewayIdentity:
     """What a client is talking to. T-C binds every measurement to exactly this."""
 
     gateway_id: str
     version: str
+    #: WHICH BUILD IS ANSWERING -- `managed-<commit>+<artefact>`, computed by the deployment from
+    #: the commit and the artefact digest, not written down beside them. Empty on an installation
+    #: made before the pin existed, because inventing one would be worse than the gap.
+    #:
+    #: A version number could not do this job: 0.24.1 was installed before AND after a deployment
+    #: that changed the code, so anything reading the version saw one build where there were two.
+    #: This field is what a reader compares instead.
+    build_id: str = ""
 
     def as_dict(self) -> dict[str, str]:
-        return {"gateway_id": self.gateway_id, "version": self.version}
+        return {"gateway_id": self.gateway_id, "version": self.version,
+                "build_id": self.build_id}
 
     @property
     def fingerprint(self) -> str:
-        """Identity and version together. A change to either produces a different value.
+        """WHICH MACHINE, and nothing else. A paired client pins this when it is introduced to
+        a gateway and re-checks it on every later answer, so it answers exactly one question:
+        is this still the gateway I paired with?
 
-        That is the point: a report describes a build, and a gateway that upgraded is a different
-        build even though it is the same machine.
+        IT USED TO INCLUDE THE VERSION, and that was wrong in a way nothing could notice while
+        the version never moved. The moment a deployment actually changed it -- 0.24.1 to
+        0.25.0, the first real change after two builds had shared one number -- every paired
+        client recomputed a different value and refused to talk to the machine, reporting that
+        something else was answering on that address. True of the code. False of the machine.
+        And it is the machine a person paired with; a managed service whose every upgrade
+        unpairs every device is not a managed service.
+
+        Measured rather than argued: sha256(id + \\n + "0.24.1") is e84fbe45..., which is what
+        a client had saved, and the same over "0.25.0" is fe89106a..., which is what the gateway
+        then said. The client was right to refuse what it was told; it was told the wrong thing.
+
+        WHICH BUILD is a different question and now has its own answer: `build_id`, computed
+        from the commit and the artefact digest, carried in every stamp and SIGNED in the report
+        binding. Splitting the two is the point -- one value cannot mean "same machine" to a
+        pairing and "same code" to a report without failing one of them.
+
+        Changing this unpairs every device ONCE, at the deployment that introduces it, and never
+        again. That cost is paid deliberately and is written down in
+        `docs/review/BUILD-IDENTITY-AND-WHAT-SIGNS-IT.md`.
         """
-        return hashlib.sha256(
-            f"{self.gateway_id}\n{self.version}".encode()
-        ).hexdigest()
+        return fingerprint_of(self.gateway_id)
 
 
 def _give_back_the_descriptor(fd: int, where: str) -> None:
@@ -119,9 +155,13 @@ class GatewayState:
     permissions, and is never meant to be edited by hand.
     """
 
-    def __init__(self, root: str | os.PathLike[str], version: str) -> None:
+    def __init__(self, root: str | os.PathLike[str], version: str,
+                 build_id: str = "") -> None:
         self.root = Path(root)
         self.version = version
+        # Handed in by whoever built this service rather than read from disk here, so a test
+        # constructing a state does not pick up whatever the host machine happens to be pinned to.
+        self.build_id = build_id
         self.root.mkdir(parents=True, exist_ok=True)
         self._harden(self.root)
         self._identity_path = self.root / "identity.json"
@@ -214,7 +254,8 @@ class GatewayState:
             # somebody removed it rather than that nothing has been recorded yet.
             self._throttle.ensure_initialised()
             self._admission.ensure_initialised()
-        return GatewayIdentity(gateway_id=gid, version=self.version)
+        return GatewayIdentity(gateway_id=gid, version=self.version,
+                               build_id=self.build_id)
 
     # ---------------------------------------------------------------- pairing
 

@@ -46,6 +46,7 @@ from agentnode_sdk.gateway.protocol import (
     OUTCOMES,
     QUEUED,
     RUNNING,
+    RUNTIME_LOST,
     STATES,
     TERMINAL_STATES,
     TIMED_OUT,
@@ -173,8 +174,15 @@ class TestAStateGoesOneWay:
 
 
 class TestWhatAnEndAmountsTo:
-    """The four the record has to be able to say: it succeeded, it was cancelled, it ran out of
-    time, it failed."""
+    """The five the record has to be able to say: it succeeded, it was cancelled, it ran out of
+    time, it failed -- and nobody established which.
+
+    There were four. The fifth exists because a run whose container the runtime lost, or whose
+    worker stopped answering, has no honest place among the other four: calling it `failed`
+    tells a customer their code did not work, which nobody established, and calling it
+    `succeeded` is the defect this whole track is about. So the endings where NOTHING was
+    established now say so, and this file says it too rather than keeping the old shape.
+    """
 
     def test_a_run_that_has_not_ended_has_no_outcome(self):
         assert outcome_of(QUEUED) == ""
@@ -185,21 +193,43 @@ class TestWhatAnEndAmountsTo:
             got = outcome_of(state)
             assert got in OUTCOMES, (state, got)
 
-    def test_the_four_are_reachable_and_distinct(self):
-        assert outcome_of("finished", EXITED) == "succeeded"
+    def test_the_five_are_reachable_and_distinct(self):
+        # A finished run now has to show the status its program returned. Omitting it is not the
+        # same question any more: with nothing to show, nobody established that it worked.
+        assert outcome_of("finished", EXITED, 0) == "succeeded"
         assert outcome_of("cancelled", CANCELLED) == "cancelled"
         assert outcome_of("finished", TIMED_OUT) == "timed_out"
         assert outcome_of("refused", EXITED) == "failed"
-        assert len({outcome_of("finished", EXITED), outcome_of("cancelled", CANCELLED),
-                    outcome_of("finished", TIMED_OUT), outcome_of("refused", EXITED)}) == 4
+        assert outcome_of("finished", RUNTIME_LOST) == "unverified"
+        assert len({outcome_of("finished", EXITED, 0), outcome_of("cancelled", CANCELLED),
+                    outcome_of("finished", TIMED_OUT), outcome_of("refused", EXITED),
+                    outcome_of("finished", RUNTIME_LOST)}) == 5
+
+    def test_a_finished_run_with_nothing_to_show_is_not_a_success(self):
+        """`exited` and no status is the original defect in miniature: absence read as zero."""
+        assert outcome_of("finished", EXITED) == "unverified"
+
+    def test_and_a_program_that_returned_three_did_not_succeed(self):
+        """Kept apart from the case above so that each says which rule it holds: one is about a
+        status nobody reported, the other about a status that was reported and was not zero."""
+        assert outcome_of("finished", EXITED, 3) == "failed"
+        assert outcome_of("finished", EXITED, 0) == "succeeded"
 
     def test_a_run_stopped_by_its_own_limit_is_not_a_success(self):
         """The distinction the fourth external run lost when a timeout was an integer."""
         assert outcome_of("finished", TIMED_OUT) != outcome_of("finished", EXITED)
 
-    def test_the_ones_that_are_neither_cancelled_nor_timed_out_nor_finished_failed(self):
-        for state in ("refused", "unverified", "interrupted"):
-            assert outcome_of(state, EXITED) == "failed"
+    def test_a_run_that_was_refused_failed(self):
+        assert outcome_of("refused", EXITED) == "failed"
+
+    def test_but_a_run_nobody_could_account_for_did_not(self):
+        """`unverified` and `interrupted` used to be read as failures.
+
+        That is a claim about the customer's code -- that it did not work -- and neither state
+        establishes it. Both mean the opposite: what the code did is not known either way.
+        """
+        for state in ("unverified", "interrupted"):
+            assert outcome_of(state, EXITED) == "unverified"
 
 
 class TestTheRecordWillNotGoBackwards:

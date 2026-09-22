@@ -1,0 +1,18 @@
+[Unit]
+# Soon after boot -- the services serve over TLS only once the floor was written in THIS boot --
+# and then every minute. The floors' maximum age (900 s unless `pki floor init --max-age` said
+# otherwise) is much longer than this interval, so a late run does nothing and a dead one shows.
+Description=Run the AgentNode issuer root run soon after boot and every minute
+
+[Timer]
+# OnActiveSec as well as OnBootSec: a timer enabled on a machine that has been up for weeks has
+# its OnBootSec long behind it, and OnUnitActiveSec counts from a run that never happened -- so
+# with those two alone it never fires at all (found on the alpha). OnActiveSec starts the chain
+# whenever the timer itself is started, at boot or later.
+OnActiveSec=5s
+OnBootSec=5s
+OnUnitActiveSec=60s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

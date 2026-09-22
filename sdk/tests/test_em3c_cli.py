@@ -400,8 +400,40 @@ def _wait_until_listening(url: str, timeout: float = 90.0) -> None:
     raise AssertionError("the gateway never started listening: " + last)
 
 
+def _pin_like_a_deployment(where):
+    """Record the installed artefact's digest and pin it, the way `deploy-pinned.sh` does.
+
+    Two steps in that order: the digest goes INSIDE the installed distribution, and the pin names
+    that same value. Writing a digest into the pin that the installation does not record produces
+    a refusal -- correctly -- and the refusal says so.
+    """
+    import hashlib
+    import importlib.metadata as md
+    import pathlib
+
+    from agentnode_sdk.gateway import runtime_pin
+
+    where = pathlib.Path(where)
+    where.mkdir(parents=True, exist_ok=True)
+    digest = runtime_pin.installed_artefact_digest()
+    if not digest:
+        meta = pathlib.Path(md.distribution("agentnode-sdk")._path)
+        record = meta / "RECORD"
+        digest = hashlib.sha256(record.read_bytes() if record.is_file()
+                                else meta.as_posix().encode()).hexdigest()
+        (meta / "AGENTNODE_ARTEFACT").write_text(digest + chr(10), encoding="utf-8")
+    runtime_pin.write_pin(where, python_version=runtime_pin.running_python(),
+                          artefact_sha256=digest, commit="0" * 40)
+    return where
+
+
 @pytest.mark.skipif(not os.environ.get("AGENTNODE_SANDBOX_E2E"),
                     reason="needs a container runtime")
+# THE MARKER BELONGS TO THIS CLASS, and for a while it did not. A helper added later landed
+# BETWEEN the decorator and the class, so the skip attached to the helper -- a function, which
+# nothing skips -- and the journey started running in lanes with no container runtime. It
+# failed there for an honest reason (`doctor --measure` cannot measure what is not installed),
+# which is how it was noticed, but the lane was never meant to run it at all.
 class TestTheWholeJourneyThroughThePublishedCommands:
     """Set one up, connect to it, run something, stop something, and be shut out again.
 
@@ -419,6 +451,17 @@ class TestTheWholeJourneyThroughThePublishedCommands:
     @staticmethod
     @pytest.fixture(scope="class")
     def gateway_process(tmp_path_factory):
+        # PINNED MEANS PINNED TO THE TESTED FAMILY. On 3.10 and 3.11 a pin naming the running
+        # interpreter is a pin naming an untested one, and `doctor --measure` refuses it -- which
+        # is the mechanism working, not a problem with the journey. The journey needs a machine
+        # the service will run on at all, and that is 3.12.
+        import sys as _sys
+
+        if _sys.version_info[:2] != (3, 12):
+            pytest.skip("the managed service is tested on 3.12; a pin naming %d.%d is a pin "
+                        "naming an untested interpreter, and the service refuses it"
+                        % _sys.version_info[:2])
+
         import subprocess
         import sys
 
@@ -426,7 +469,24 @@ class TestTheWholeJourneyThroughThePublishedCommands:
         gw_dir = root / "gw"
         home = root / "home"
         home.mkdir()
-        env = dict(os.environ, AGENTNODE_HOME=str(home))
+
+        # PINNED, BECAUSE THE GATEWAY HERE IS A SEPARATE PROCESS. A start with no pin is a
+        # refusal, and this fixture starts the real command in a subprocess, so the pin has to be
+        # on disk and named in the environment -- an in-process monkeypatch does not cross that
+        # boundary, which is exactly how this was found: the subprocess read the real (absent)
+        # pin and refused, correctly, and the journey never got a listening gateway.
+        #
+        # Not AGENTNODE_ALLOW_UNPINNED. This is the lane that runs the published commands the way
+        # a person runs them, and a person runs them on a machine that was deployed.
+        pin_dir = _pin_like_a_deployment(root / "pin")
+        # IN THIS PROCESS TOO, not only in the subprocess's environment. `doctor --measure` runs
+        # in-process and binds what it measured to the build it is running as; the gateway then
+        # runs in a subprocess and re-derives that. Setting the pin only for the child made the
+        # two disagree, and the gateway refused work -- correctly, saying "the stored measurement
+        # describes something else". The measurement and the service have to be the same build.
+        was = os.environ.get("AGENTNODE_PIN_DIR")
+        os.environ["AGENTNODE_PIN_DIR"] = str(pin_dir)
+        env = dict(os.environ, AGENTNODE_HOME=str(home), AGENTNODE_PIN_DIR=str(pin_dir))
 
         assert main(["gateway", "init", "--dir", str(gw_dir)]) == 0
         # The real suite against the real runtime. This is the slow part, and it is the part
@@ -449,6 +509,12 @@ class TestTheWholeJourneyThroughThePublishedCommands:
                 process.wait(timeout=30)
             except Exception:                                 # noqa: BLE001
                 process.kill()
+            # Put the environment back. A fixture that leaves AGENTNODE_PIN_DIR pointing at its
+            # own temporary directory has changed what every later test in the session reads.
+            if was is None:
+                os.environ.pop("AGENTNODE_PIN_DIR", None)
+            else:
+                os.environ["AGENTNODE_PIN_DIR"] = was
 
     def _pair_and_connect(self, url, gw_dir, home, capsys, name="e2e"):
         import re

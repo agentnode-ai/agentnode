@@ -242,6 +242,7 @@ def _production() -> dict:
     would make that worse for no gain.
     """
     if not _PRODUCTION:
+        from agentnode_sdk.gateway.identity import fingerprint_of
         from agentnode_sdk.gateway.policy_paths import policy_shape
         from agentnode_sdk.gateway.protocol import (
             ERROR_FIELDS, EXITED, PROTOCOL_VERSION, SIGNATURE_FIELDS, STAMP_FIELDS,
@@ -262,7 +263,17 @@ def _production() -> dict:
         # topology label; it is computed from that label rather than stored, so it takes its
         # type from it.
         attribute = {"policy_deltas": "deltas", "worker_topology_means": "worker_topology"}
-        types = {key: _runtime_types(hints[attribute.get(key, key)]) for key in inner}
+        # DERIVED, AND NOT A FIELD AT ALL -- not even one under another name. `public()` works
+        # `waiting_for_a_slot` out from the state and the billed clock, so there is no annotation
+        # anywhere to read its type off, and mapping it onto `started_at` the way the two above
+        # are mapped would give it that field's type instead of its own.
+        #
+        # Named here rather than left to fall through, because falling through was a KeyError
+        # that took 190 tests in this file with it the moment the field appeared.
+        derived = {"waiting_for_a_slot": bool}
+        types = {key: _runtime_types(hints[attribute.get(key, key)])
+                 for key in inner if key not in derived}
+        types.update({key: (kind,) for key, kind in derived.items()})
 
         # The envelope's types come from a real stamp over a real identity, so they are the
         # types the gateway really puts there rather than the ones this file expects.
@@ -288,6 +299,7 @@ def _production() -> dict:
             "response_binding": response_binding,
             "types": types,
             "seal": lambda answer: digest(canonical_bytes(answer)),
+            "fingerprint_of": fingerprint_of,
         })
     return _PRODUCTION
 
@@ -1445,13 +1457,15 @@ def verify_answers(steps) -> list[Finding]:
 
         said = record.get("gateway")
         if isinstance(said, dict):
-            expected_print = hashlib.sha256(
-                f"{said.get('gateway_id', '')}\n{said.get('version', '')}".encode()).hexdigest()
+            # From the gateway's own function, not a fourth spelling of it. This module carried
+            # its own copy, folding the version in; when the rule changed it went on rejecting
+            # every honest answer, which is what a duplicated definition does.
+            expected_print = production["fingerprint_of"](said.get("gateway_id", ""))
             if str(record.get("fingerprint") or "") != expected_print:
                 problems.append(Finding(
                     where, FAIL,
-                    "the fingerprint is not the one this gateway identity and version produce, "
-                    "so the stamp and what it stamps disagree"))
+                    "the fingerprint is not the one this gateway identity produces, so the "
+                    "stamp and what it stamps disagree"))
             if said.get("gateway_id"):
                 gateways.add(str(said["gateway_id"]))
 

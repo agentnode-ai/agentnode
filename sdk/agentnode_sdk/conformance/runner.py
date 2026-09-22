@@ -256,11 +256,30 @@ def memory_ceiling_proof(backend, *, megabytes: int, run_id: str, timeout: float
     stdout, stderr = r["stdout"] or "", r["stderr"] or ""
     started = "ALLOCATING" in stdout
     completed = "ALLOCATED" in stdout
-    # What a ceiling looks like when it binds: the kernel kills the process, or the allocation
-    # is refused inside it. Anything else that ends the run is not the ceiling.
-    by_the_ceiling = r["rc"] == OOM_KILLED_RC or "MemoryError" in stderr
+    # What a ceiling looks like when it binds, strongest evidence first.
+    #
+    # 1. THE RUNTIME SAYS SO. `OOMKilled` is a separate boolean a container runtime keeps
+    #    precisely because an exit status cannot carry it, and a backend that can ask now does.
+    #    This did not exist when the two below were written.
+    # 2. A status of 137. It is 128+9 and it is what an OOM kill usually looks like from
+    #    outside -- but a program that chose to exit 137 looks identical, so it is a weaker
+    #    statement than the one above and is kept only for backends that cannot make it.
+    # 3. `MemoryError` in the output: the allocation was refused INSIDE the container rather
+    #    than the process being killed. A different way for the same ceiling to bind.
+    #
+    # The order matters and the fallbacks stay. A backend with nothing but an operating-system
+    # exit code is still entitled to prove a ceiling; what changed is that one which can say
+    # more is now asked.
+    from agentnode_sdk.gateway.protocol import OUT_OF_MEMORY
+
+    by_the_ceiling = (r.get("reason") == OUT_OF_MEMORY
+                      or r["rc"] == OOM_KILLED_RC
+                      or r.get("native_status") == OOM_KILLED_RC
+                      or "MemoryError" in stderr)
     return {
-        "requested_mb": int(megabytes), "rc": r["rc"], "started": started, "completed": completed,
+        "requested_mb": int(megabytes), "rc": r["rc"], "reason": r.get("reason"),
+        "native_status": r.get("native_status"),
+        "started": started, "completed": completed,
         "ended_by_the_ceiling": by_the_ceiling,
         "killed": started and not completed and by_the_ceiling,
         "stdout_tail": stdout[-80:].strip(), "stderr_tail": stderr[-160:].strip(),

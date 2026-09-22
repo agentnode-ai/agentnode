@@ -91,6 +91,15 @@ BESIDES = {
     "meter-key.pub": (PRESENT, "its public half"),
     "use-log.head": (WHOLE, "where the metering chain ends"),
     "stopping.json": (WHOLE, "cancellations in flight"),
+    # WHICH PROCESS IS SERVING THIS DIRECTORY, and whether the one before it began to stop.
+    # A statement about the here and now, and the only file in this table that would be WRONG
+    # to restore: a marker carried in from an archive says a gateway was serving, with a pid
+    # from another machine and a time from another day, and the next start would read it as a
+    # clean stop and write `gateway_stopped` on runs that nothing had stopped. It is taken
+    # whole for the manifest so that its presence is still accounted for, and it has no age
+    # because it is replaced on every takeover and every shutdown.
+    "serving.json": (WHOLE, "which process is serving this directory now; replaced on every "
+                            "takeover, and misleading if restored from an archive"),
     "config.json": (WHOLE, "the gateway's own configuration"),
     "tls-cert.pem": (PRESENT, "its certificate"),
     "tls-key.pem": (PRESENT, "its private key"),
@@ -125,6 +134,12 @@ HOW_THE_AGED_ONES_LOOK = {
 #: circular, and a `KeyError` here is how that was found rather than by reasoning about it. Every
 #: other class in the table IS in a backup, and the test that compares the two still holds.
 NOT_IN_A_BACKUP = {"backups"}
+
+#: Nothing. The category existed for one file -- the runtime pin -- which has since moved OUT of
+#: the state directory, where it should never have been. It is kept as an empty set rather than
+#: deleted: the machinery that honours it is right, and the next file that is genuinely "here and
+#: must not come back" should go here rather than being handled ad hoc.
+NOT_RESTORED: set = set()
 
 
 def everything_a_gateway_keeps() -> dict:
@@ -222,6 +237,14 @@ def differences(before: dict, after: dict) -> list:
     now = (after or {}).get("kept") or {}
     said = []
     for name in sorted(set(was) | set(now)):
+        # THE THIRD CATEGORY, honoured here as well as in the restore. `NOT_RESTORED` names files
+        # that are in a backup and deliberately do not come back -- the runtime pin, which
+        # describes the SENDING installation and would tell the receiving machine it is something
+        # it is not. Wiring that into the restore alone was half a job: the comparison then
+        # reported the deliberate absence as a lost store, on every single restore, which is the
+        # kind of standing false alarm that teaches people to ignore a real one.
+        if name in NOT_RESTORED:
+            continue
         mine, theirs = was.get(name), now.get(name)
         if mine is None:
             said.append("%s: not in the manifest this backup was taken with, but present now"

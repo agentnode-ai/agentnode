@@ -651,9 +651,15 @@ class TestWhoMayConnect:
 
         source = inspect.getsource(Bench.who_is_connecting)
         assert "SO_PEERCRED" in source
-        # Nothing in the body is consulted: the check happens before a byte of it is read.
+        # Nothing in the body is consulted: the check happens before a byte of it is read. The
+        # reading moved into `converse`, which both doors share (the TLS listener reaches it
+        # after its handshake), so the property is stated in three parts that together are the
+        # old one: the door reads nothing itself, it asks the kernel before it hands over, and
+        # what it hands over to is where the reading is.
         order = inspect.getsource(Bench._one)
-        assert order.index("who_is_connecting") < order.index("read_frame")
+        assert "read_frame" not in order
+        assert order.index("who_is_connecting") < order.index("self.converse(")
+        assert "read_frame" in inspect.getsource(Bench.converse)
 
     def test_a_message_from_the_right_account_with_the_wrong_key_is_not_answered(self):
         connection = AConnectionFrom(1000, key=OTHER)
@@ -920,13 +926,21 @@ class TestAWorkerShowsItsCeilingsBindBeforeItServes:
         serve_text = inspect.getsource(service.serve)
         assert serve_text.index("prove_its_ceilings") < serve_text.index("bench.open()")
 
-    def test_the_refusal_says_what_to_do_about_it(self, capsys):
-        """A refusal an operator cannot act on gets worked around rather than fixed."""
+    def test_the_refusal_says_what_to_do_about_it(self, capsys, a_pinned_machine):
+        """A refusal an operator cannot act on gets worked around rather than fixed.
+
+        `a_pinned_machine` because the worker refuses to serve unpinned now, and this test is
+        about the CEILINGS refusal. Without a pin the worker answers with the other refusal --
+        correctly, and about a different question than the one being asked here."""
         from agentnode_sdk.cli import worker_commands
 
         class Args:
             socket = "unix:///tmp/x.sock"
-            key = "/tmp/x.key"
+            # BESIDE ITS KEY is where the worker looks for its pin -- a different rule from the
+            # gateway's, and deliberately so: the two are separate accounts and the worker must
+            # not have to read the gateway's directory to know what it is. So the key goes in the
+            # pinned directory, or the worker answers the pin question instead of this one.
+            key = str(a_pinned_machine / "worker.key")
             for_user = "0"
 
         def refuse(*_a, **_k):

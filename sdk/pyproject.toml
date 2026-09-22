@@ -4,10 +4,36 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentnode-sdk"
-version = "0.24.1"
+# 0.25.0, NOT 0.24.1. The line below this one narrows requires-python, and publishing narrowed
+# metadata under a version already on PyPI is precisely the silent replacement that was
+# forbidden -- somebody who installed 0.24.1 on 3.13 would find that the same version number
+# suddenly refuses them. The bump makes that impossible rather than leaving it to whoever
+# publishes next to remember. A minor bump rather than a patch because a narrowed
+# requires-python is visible to every installer.
+# Built from `agentnode_sdk/__init__.py` (see [tool.hatch.version] below) rather than
+# repeated here. It was repeated here, and the two copies disagreed.
+dynamic = ["version"]
 description = "Python SDK for AgentNode — the open upgrade and discovery infrastructure for AI agents."
 readme = "README.md"
-requires-python = ">=3.10"
+# The versions CI actually runs. It used to say ">=3.10" with no upper bound, which is a promise
+# about software that does not exist yet.
+#
+# AN EARLIER VERSION OF THIS COMMENT BLAMED PYTHON 3.14, and that was wrong. Five
+# installation-transaction tests did fail on 3.14 -- and also on 3.12.14, while passing on
+# 3.12.13. The cause was a venv with lib64 symlinked to lib, where both directories sit on
+# sys.path and every distribution is discovered twice; `post_verify` counted paths where it meant
+# installations. Fixed in 9b1968a, after which the same tests pass on 3.12.13, 3.12.14 and 3.14.6.
+# The correction is written here rather than quietly dropped, because a false explanation left in
+# the source is worse than none: somebody will act on it.
+#
+# ALPHA-RUNTIME-DECISION-PY314-0001 returned PASS on Option C: make this honest now, and treat
+# supporting 3.14 as separate work with its own evidence rather than as a side effect of a
+# runtime fix. The three limitations it recorded are real and are not talked away: this shuts out
+# 3.13 and 3.14 users in the next release, it does not prove the retained versions are correct,
+# and it does not find the 3.14 cause.
+#
+# 0.24.1 IS ALREADY ON PyPI AND IS NOT REPLACED. This applies to what is published next.
+requires-python = ">=3.10,<3.13"
 license = "MIT"
 keywords = ["ai", "agent", "capabilities", "agentnode", "mcp", "langchain"]
 classifiers = [
@@ -42,6 +68,9 @@ Documentation = "https://agentnode.net/docs"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "respx"]
+
+[tool.hatch.version]
+path = "agentnode_sdk/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agentnode_sdk"]

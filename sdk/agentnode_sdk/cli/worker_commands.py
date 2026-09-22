@@ -15,6 +15,8 @@ arrangement until it gets there.
 """
 from __future__ import annotations
 
+import pathlib
+
 import os
 import sys
 from pathlib import Path
@@ -70,10 +72,29 @@ def _this_account() -> str:
         return str(getattr(os, "getuid", lambda: "?")())
 
 
+def _refuse_unless_pinned(root, what: str) -> int:
+    """A thin call into the one implementation, in `runtime_pin`.
+
+    This file and the gateway's one each held their own copy of the whole rule. They had already
+    started to disagree -- one was changed to refuse an unpinned start and the other was
+    not -- which would have left a machine whose gateway refuses and whose worker shrugs.
+    `bold` is handed in so each surface keeps its own emphasis without the rule moving.
+    """
+    from agentnode_sdk.gateway import runtime_pin
+
+    return runtime_pin.refuse_unless_pinned(root, what, say=print, bold=bold)
+
 def cmd_serve(args) -> int:
     """Serve one socket, for one account, until something stops this process."""
     from agentnode_sdk.worker.service import CannotHoldItsLimits, serve
 
+    # The worker is where foreign code actually runs, so it is the LAST place that should be
+    # allowed to run on an interpreter nobody tested. Its pin lives beside its key rather than
+    # in the gateway's state, because the two are separate accounts and a worker must not need
+    # to read the gateway's directory to know what it is.
+    _pin_root = pathlib.Path(str(getattr(args, "key", "") or "/etc/agentnode")).parent
+    if _refuse_unless_pinned(_pin_root, "worker"):
+        return 1
     address = str(getattr(args, "socket", "") or "")
     key = str(getattr(args, "key", "") or "")
     for_whom = getattr(args, "for_user", None)
@@ -103,8 +124,28 @@ def cmd_serve(args) -> int:
     print("  This account is the only one that drives a container runtime. It holds no pairing")
     print("  Before it opens the socket it hits a memory ceiling, to see whether one binds.")
     print("  state, no signing identity and no client's token.")
+    listen = str(getattr(args, "listen", "") or "")
+    tls = None
+    tls_parts = [getattr(args, n, None) for n in ("tls_dir", "trust", "deployment",
+                                                  "revocation_list", "floor")]
+    if listen or any(tls_parts) or getattr(args, "accept_gateway", None):
+        if not (listen and all(tls_parts) and getattr(args, "accept_gateway", None)):
+            print()
+            print("  A TLS door needs --listen, --tls-dir, --trust, --deployment,")
+            print("  --revocation-list, --floor and at least one --accept-gateway. Part of that")
+            print("  is refused rather than started without its checks.")
+            return 2
+        from agentnode_sdk.worker.tls import TlsSettings
+
+        folder = Path(args.tls_dir)
+        tls = TlsSettings(certificate=str(folder / "cert.pem"), key=str(folder / "key.pem"),
+                          anchor=str(args.trust), deployment=str(args.deployment),
+                          accept=frozenset(args.accept_gateway),
+                          revocation_list=str(args.revocation_list), floor=str(args.floor),
+                          reload_seconds=float(args.trust_reload_seconds),
+                          reevaluate_seconds=float(args.reevaluate_seconds))
     try:
-        serve(address, key, uid)
+        serve(address, key, uid, tls_address=listen, tls=tls)
     except KeyboardInterrupt:                                 # pragma: no cover - operator
         print("\n  stopped.")
         return 0
@@ -165,6 +206,28 @@ def add_parser(subparsers) -> None:
     serve.add_argument("--key", default="", metavar="PATH")
     serve.add_argument("--for-user", dest="for_user", default=None, metavar="ACCOUNT",
                        help="the account the gateway runs as; nothing else may speak here")
+    # A second door, mutual TLS on loopback, beside the socket and never instead of it. All of
+    # these together or none of them.
+    serve.add_argument("--listen", default="", metavar="ADDRESS",
+                       help="tcps://127.0.0.1:<port> -- loopback only")
+    serve.add_argument("--tls-dir", dest="tls_dir", default="", metavar="DIR",
+                       help="where this worker's cert.pem and key.pem are")
+    serve.add_argument("--trust", default="", metavar="FILE",
+                       help="the deployment's CA certificate, and nothing else")
+    serve.add_argument("--deployment", default="", metavar="ID")
+    serve.add_argument("--accept-gateway", dest="accept_gateway", action="append", default=[],
+                       metavar="INSTANCE", help="a gateway instance this worker accepts")
+    # Stage 5: what the TLS door judges a caller by, besides its certificate. Required with it.
+    serve.add_argument("--revocation-list", dest="revocation_list", default="", metavar="FILE",
+                       help="the deployment's signed revocation list")
+    serve.add_argument("--floor", default="", metavar="FILE",
+                       help="this worker's time floor, written by root and read here")
+    serve.add_argument("--trust-reload-seconds", dest="trust_reload_seconds", type=float,
+                       default=10.0, metavar="S",
+                       help="reread the list and the floor at least this often")
+    serve.add_argument("--reevaluate-seconds", dest="reevaluate_seconds", type=float,
+                       default=5.0, metavar="S",
+                       help="judge every open TLS connection again this often")
 
 
 __all__ = ["add_parser", "dispatch", "cmd_key", "cmd_serve", "sys"]

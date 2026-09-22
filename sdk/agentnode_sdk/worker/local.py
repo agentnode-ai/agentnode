@@ -244,6 +244,61 @@ class LocalWorker(Worker):
 
     # ------------------------------------------------------------------ stopping one
 
+    #: The names this SDK gives the containers it creates. Nothing else is ever addressed by the
+    #: sweep below -- a worker that removed by a broad pattern would be a worker that removes
+    #: somebody else's work on a machine it happens to share.
+    ITS_OWN_PREFIXES = ("agentnode-em3c-", "agentnode-run-", "agentnode-conformance-")
+
+    def remove_what_a_previous_worker_left(self) -> dict:
+        """Remove containers this SDK created that nobody is waiting for any more.
+
+        Called when a worker takes over, and only then: at that moment no job of ITS can be in
+        flight, so a container carrying one of this SDK's prefixes belongs to a worker that is
+        gone. That is the same reasoning the gateway's own recovery rests on.
+
+        ## Why this became necessary
+
+        `--rm` used to remove a container the moment it exited, so a worker that died mid-run
+        left one that the runtime tidied up on its own once the payload finished. The single-run
+        path no longer passes `--rm` -- it has to ask the runtime how the container ended, and a
+        container that removes itself cannot be asked -- so the tidying is this code's job now.
+
+        Measured on the closed alpha, before this existed: the worker was stopped while a job was
+        in flight to produce a `transport_lost`, the record was correct, and the container was
+        still there afterwards. A leak nobody was told about is worse than the one it replaced,
+        because the old one at least ended by itself.
+
+        Returns what it found and what it removed. It never raises: a worker that would not start
+        because a leftover could not be removed is a worse answer than one that starts and says
+        what it could not do.
+        """
+        found: list[str] = []
+        removed: list[str] = []
+        failed: list[str] = []
+        runtime = ""
+        try:
+            runtime = str(self.backend.check_available().backend or "")
+            if not runtime or runtime == "none":
+                return {"runtime": "", "found": [], "removed": [], "failed": [],
+                        "why": "there is no container runtime here to ask"}
+            listed = subprocess.run([runtime, "ps", "-a", "--format", "{{.Names}}"],
+                                    capture_output=True, text=True, timeout=60)
+            if listed.returncode != 0:
+                return {"runtime": runtime, "found": [], "removed": [], "failed": [],
+                        "why": "the runtime would not list its containers: "
+                               + (listed.stderr or "").strip()[:160]}
+            found = [x for x in (listed.stdout or "").split()
+                     if x.startswith(self.ITS_OWN_PREFIXES)]
+            for name in found:
+                gone = subprocess.run([runtime, "rm", "-f", name],
+                                      capture_output=True, text=True, timeout=60)
+                (removed if gone.returncode == 0 else failed).append(name)
+        except Exception as exc:                                    # noqa: BLE001
+            return {"runtime": runtime, "found": found, "removed": removed, "failed": failed,
+                    "why": "%s: %s" % (type(exc).__name__, str(exc)[:160])}
+        return {"runtime": runtime, "found": found, "removed": removed, "failed": failed,
+                "why": ""}
+
     def stop(self, run_id: str, container_name: str, appear_seconds: float) -> bool:
         """Remove this run's container by the identity the backend actually gave it.
 

@@ -274,6 +274,17 @@ class TestTimeoutEndsThePayload:
             cb._remove_quietly(cidfile, tmpdir)
 
     def test_an_ordinary_run_is_untouched(self, monkeypatch):
+        """The timeout path still leaves an ordinary run alone -- and it now gets an ending.
+
+        This used to stub the process and nothing else. That was enough while the ordinary path
+        was `return proc.returncode, out, err`; it is not enough now, because the run's ending is
+        asked of the RUNTIME (`early-ending-success-r1`) and a stub that creates no container
+        and answers no question is a runtime that lost it. Which is what this test then said --
+        rc `None`, reason `runtime_lost` -- correctly, about a container that never existed.
+
+        So the runtime answers here, the way a real one does after an ordinary run: the
+        container is there, it was not killed for memory, and it exited 0.
+        """
         seen = {}
 
         class OkProc:
@@ -283,9 +294,44 @@ class TestTimeoutEndsThePayload:
             returncode = 0
 
         monkeypatch.setattr(cb.subprocess, "Popen", lambda *a, **k: OkProc())
-        rc, out, err = cb.ContainerBackend(runtime="docker").run_process(
+        monkeypatch.setattr(cb.ContainerBackend, "_resolve_identity",
+                            lambda self, runtime, name, cidfile: ("c0ffee1234", "cidfile"))
+        monkeypatch.setattr(cb.ContainerBackend, "_what_the_runtime_says",
+                            lambda self, runtime, ident: (False, 0, ""))
+        monkeypatch.setattr(cb, "_run_runtime",
+                            lambda argv, timeout=None, **kw: _Answered(0))
+        got = cb.ContainerBackend(runtime="docker").run_process(
             ProcessSpec(command=["true"], network="none"), input_text="payload")
+        rc, out, err = got
         assert (rc, out, err) == (0, "output", "") and seen["input"] == "payload"
+        assert got.reason == "exited", "an ordinary run was classified as something else"
+
+    def test_but_a_run_whose_container_cannot_be_found_afterwards_is_not_one(self, monkeypatch):
+        """The same stubbing MINUS the runtime's answer, kept because it is the real case.
+
+        A container that is not there to be asked is not evidence that the payload worked. The
+        client's own status is kept beside the reason rather than handed back as the payload's.
+        """
+        class OkProc:
+            def communicate(self, input=None, timeout=None):
+                return "output", ""
+            returncode = 0
+
+        monkeypatch.setattr(cb.subprocess, "Popen", lambda *a, **k: OkProc())
+        monkeypatch.setattr(cb.ContainerBackend, "_resolve_identity",
+                            lambda self, runtime, name, cidfile: ("", "none"))
+        got = cb.ContainerBackend(runtime="docker").run_process(
+            ProcessSpec(command=["true"], network="none"), input_text="payload")
+        assert got[0] is None, "a run nobody could account for handed back an exit status"
+        assert got.reason == "runtime_lost"
+        assert got.native_status == 0
+
+
+class _Answered:
+    """What `_run_runtime` hands back: a finished command with a status and no output."""
+
+    def __init__(self, rc: int) -> None:
+        self.returncode, self.stdout, self.stderr = rc, "", ""
 
 
 # --------------------------------------------------------------------- R2: the ceiling must bind

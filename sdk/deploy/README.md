@@ -82,6 +82,30 @@ The worker starts first and the gateway waits for it. A gateway whose worker is 
 run jobs on the host instead: it tells the client that nobody established what happened, which is
 the honest answer and the one that keeps a sandbox from quietly becoming a shell.
 
+## Only with the mutual-TLS door: the issuer's root run
+
+The unix socket stays the default and needs nothing from this section. A worker that also opens
+the mutual-TLS door on loopback (`agentnode worker serve --listen tcps://127.0.0.1:<port> ...`)
+judges every caller by the deployment's signed revocation list and by a time floor, and so does a
+gateway configured with `worker_tls` -- neither starts over TLS without both. Both are root's:
+
+```sh
+sudo agentnode pki floor init                       # /var/lib/agentnode-floor, root-owned, once
+sudo cp agentnode-pki-tick.service agentnode-pki-tick.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now agentnode-pki-tick.timer
+```
+
+The floors live in `/var/lib/agentnode-floor`, not under `/var/lib/agentnode`: that directory is
+the gateway's own (`StateDirectory=`, 0700), where the gateway could put a floor of its own in
+place of root's, and the worker's unit cannot see into it at all. If the timer stops, the floors
+age and both services stop serving over TLS after the floor's maximum age -- on purpose.
+
+Revoking (`sudo agentnode pki revoke --serial <hex>`) publishes the list before it returns and says
+whether the revocation is in effect; an open connection of the revoked identity is cut within the
+two intervals the services were given (`--trust-reload-seconds` plus `--reevaluate-seconds` on the
+worker, `reload_seconds` plus `reevaluate_seconds` in `worker_tls`, 10 s + 5 s by default).
+
 ## What to check afterwards
 
 ```sh

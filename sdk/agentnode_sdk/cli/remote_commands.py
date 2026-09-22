@@ -240,6 +240,11 @@ def cmd_status(args) -> int:
     if getattr(args, "verbose", False):
         print()
         print(dim(f"    gateway id      {hello.get('gateway', {}).get('gateway_id', '')}"))
+        # WHICH BUILD, not which version. Two builds carried 0.24.1, so a person comparing
+        # versions would have seen one where there were two. Shown as "not stated" rather than
+        # blank when the gateway cannot tell, because a blank line reads as a value of nothing.
+        told = str(hello.get("gateway", {}).get("build_id", "") or "")
+        print(dim(f"    build           {told or 'not stated by this gateway'}"))
         print(dim(f"    fingerprint     {hello.get('fingerprint', '')}"))
         print(dim(f"    protocol        {hello.get('protocol', '')}"))
         for name, held in sorted((hello.get("properties") or {}).items()):
@@ -392,6 +397,15 @@ def cmd_run(args) -> int:
         print()
         print(f"  {bold('Refused, and nothing was run.')}")
         print(f"  {answer.get('refusal')}")
+        # AND WHAT TO DO ABOUT IT, which travelled with the refusal and was being thrown away
+        # here. Every refusal this gateway can produce is required to carry a next step -- a
+        # test asserts that none can even be constructed without one -- and the one surface a
+        # person actually reads was printing the reason and dropping the step. The full queue
+        # showed it: "this sandbox is already running as many jobs as it will run at once",
+        # and then nothing about sending it again in a moment.
+        what_to_do = str(answer.get("what_to_do") or "").strip()
+        if what_to_do:
+            print(f"  {what_to_do}")
         return 1
 
     # Printed so it can be stopped from another terminal. A job you cannot name is a job you
@@ -432,7 +446,9 @@ def cmd_run(args) -> int:
             print(f"    {delta.get('field')}: asked {delta.get('requested')!r}, "
                   f"got {delta.get('effective')!r}")
 
-    from agentnode_sdk.gateway.protocol import TIMED_OUT, TIMEOUT_EXIT_STATUS
+    from agentnode_sdk.gateway.protocol import (
+        NOTHING_WAS_ESTABLISHED, OUT_OF_MEMORY, TIMED_OUT, TIMEOUT_EXIT_STATUS,
+    )
 
     state = final.get("state")
     # Whatever the answer said, and nothing where it said nothing. `EM3C-E8-RECORD-0001`: this
@@ -452,7 +468,22 @@ def cmd_run(args) -> int:
     if state == "finished":
         code = final.get("exit_code")
         if code is None:
+            # A KILLED RUN HAS NO EXIT CODE, and until there were words for the other endings
+            # that meant there was nothing to say either: "nothing exited, and no reason was
+            # given" was printed for a container the runtime had just told us it killed for
+            # memory. The reason was given; this had no way to read it.
             print()
+            if reason == OUT_OF_MEMORY:
+                print(f"  {bold('It ran out of memory.')} The sandbox stopped it at its ceiling,")
+                print("  so it did not finish and nothing it had not already printed came back.")
+                print("  Ask for less memory, or ask whoever runs this sandbox for more.")
+                return 1
+            if reason in NOTHING_WAS_ESTABLISHED:
+                print(f"  {bold('Nobody could establish how this ended.')}")
+                print("  The sandbox lost track of the run; what your code did is not known")
+                print("  either way, so treat it as neither done nor undone. Send it again if")
+                print("  it is safe to run twice.")
+                return 1
             print(f"  {bold('Did not finish.')} Nothing exited, and no reason was given.")
             return 1
         return int(code)
@@ -504,7 +535,8 @@ def cmd_cancel(args) -> int:
         print(f"  Ask again, or look:  agentnode remote status --run {args.run}")
         return 1
     outcome = outcome_of(str(record.get("state") or ""),
-                         str(record.get("termination_reason") or ""))
+                         str(record.get("termination_reason") or ""),
+                         record.get("exit_code"))
     print(f"  It stopped. State: {record.get('state')} ({outcome}).")
     return 0
 

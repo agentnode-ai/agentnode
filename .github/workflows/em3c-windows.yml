@@ -139,7 +139,11 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -rs -p no:randomly tests/test_cancel_consistency.py 2>&1 | tee cancel.txt
-          grep -qE "^39 passed, 1 skipped" cancel.txt || {
+          # An exact count, so that tests quietly failing to be collected on Windows is a red
+          # lane and not a green one. It moves when tests are added on purpose: 39 -> 42 for
+          # the three that early-ending-success added to this file (a finished run with no
+          # status, a program that returned three, and a run nobody could account for).
+          grep -qE "^42 passed, 1 skipped" cancel.txt || {
             echo "the cancellation tests did not come out as this lane expects"; exit 1; }
           grep -q "needs a container runtime" cancel.txt || {
             echo "the skipped case is not the one this lane expects"; tail -5 cancel.txt; exit 1; }
@@ -185,7 +189,10 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_stop_reason.py 2>&1 | tee stop.txt
-          grep -qE "^32 passed" stop.txt || {
+          # 32 -> 33: early-ending-success split the test that listed the reasons a
+          # stopped run may give into two -- the reasons somebody chose, and that each
+          # names exactly one ending. The count stays exact on purpose.
+          grep -qE "^33 passed" stop.txt || {
             echo "the stop-reason tests did not all pass"; exit 1; }
 
       - name: The challenge a gateway issues, on Windows

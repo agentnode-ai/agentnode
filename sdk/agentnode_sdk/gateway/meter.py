@@ -61,10 +61,52 @@ METER_NAME = "use-log.jsonl"
 
 #: Exactly the fields a line has. Named here so that adding one is a decision somebody makes on
 #: purpose, in a place a reviewer reads, rather than a keyword appearing at a call site.
-FIELDS = ("run_id", "client_id", "account_id", "started_at", "finished_at", "seconds",
-          "cpu", "memory_mb", "wall_clock_s", "state", "outcome", "bytes_out",
-          "worker_topology", "worker_topology_means", "worker_id", "allowance_sha256",
+FIELDS = ("run_id", "client_id", "account_id", "queued_at", "started_at", "finished_at",
+          "seconds", "waited_s", "ever_started",
+          "cpu", "memory_mb", "wall_clock_s", "state", "outcome", "termination_reason",
+          "exit_code", "sandbox", "bytes_out",
+          "worker_topology", "worker_topology_means", "worker_id",
+          "worker_transport", "worker_identity", "allowance_sha256",
           "allowance_admitted_under", "operator_policy_sha256", "operator_policy_version")
+
+#: The three times a line carries, and what each one is for. Written out because a reader who
+#: mistakes one for another mis-reads a bill.
+#:
+#:   queued_at    when the job arrived and began waiting for a slot
+#:   started_at   when a slot was actually held and the billed clock started.
+#:                **0.0 means it never started** -- cancelled, suspended or revoked while waiting
+#:   ever_started WHETHER it started, said outright. `started_at == 0.0` already carried that,
+#:                and carrying it in a number is exactly the kind of convention a reader gets
+#:                wrong: zero is also what an unset field looks like, and the two mean opposite
+#:                things for a bill. This says it as a boolean so that "never started" cannot be
+#:                mistaken for "started at a time nobody recorded", and so that a reader does not
+#:                have to know the convention to read the line
+#:   seconds      WHAT IS CHARGED FOR: started_at to finished_at, and zero when there is no
+#:                started_at. DERIVED here from the three times above, never accepted from a
+#:                caller -- the same rule every other computed field in this line follows
+#:   waited_s     how long it waited. Recorded because the customer is entitled to see it, kept
+#:                apart from `seconds` because the wait is this gateway's doing and not theirs
+#:
+#: WHAT AN ENDING COSTS, decided rather than inherited: **the bill follows the slot, not the
+#: outcome.** A run that held a worker slot for eleven seconds is charged eleven seconds whether
+#: it completed, hit its wall clock, ran out of memory, or ended in a way nobody could establish.
+#: The machine was occupied either way, and it was occupied by that customer's work.
+#:
+#: The two alternatives were considered and are worse:
+#:
+#: * charging nothing for an ending that was not a success makes exceeding the memory ceiling
+#:   the cheapest way to use the machine, and a customer who discovers that is not doing anything
+#:   wrong by using it;
+#: * charging a different rate per ending means the invoice depends on a classification the
+#:   customer cannot check, which is the opposite of what this record is for.
+#:
+#: What changes with the ending is not the number but what the line SAYS: `outcome` and
+#: `termination_reason` are there so a customer looking at a charge can see that the run they
+#: paid for ran out of memory rather than finishing. A charge nobody can explain is the problem;
+#: a charge somebody can explain and dispute is a bill.
+#:
+#: The one ending that costs nothing is the one that never held a slot -- and that is not a rule
+#: applied here, it is the absence of a `started_at` to subtract from.
 
 #: What binds one line to the one before it. Not in FIELDS: those are what a line SAYS, these are
 #: what makes it hard to change, and keeping them apart stops a reader mistaking one for the
@@ -98,6 +140,238 @@ UNATTRIBUTED = "(unattributed)"
 #: What a line becomes when its contents are erased. See `erase`.
 TOMBSTONE_FIELDS = ("seq", "erased_at", "erased_because", "stood_for", "signature")
 
+#: A CORRECTION. The third shape a line in this log can have, and the one that exists because
+#: the other two cannot be changed.
+#:
+#: This log is append-only and chained on purpose: a figure that can be edited afterwards is not
+#: evidence of anything. That is exactly what makes a mistake permanent -- and mistakes happen.
+#: Runs on the closed alpha were metered twice before the one-line rule existed, and both lines
+#: carry billable seconds. Rewriting them would defeat the thing the log is for; leaving them and
+#: saying nothing leaves a record that overstates what a customer owes.
+#:
+#: So a correction is APPENDED, signed and chained like everything else, and it says three
+#: things: which run it is about, which line numbers it supersedes, and what the figure actually
+#: is. A reader that honours corrections gets one authoritative figure per run; a reader that
+#: does not still sees every original line, which is the property that made the log worth having.
+#:
+#: This is how an accounting record has always handled a mistake. You do not go back and change
+#: the entry; you post a correcting one, and both stay.
+CORRECTION_FIELDS = ("corrects", "supersedes", "seconds", "why", "at", "in_file")
+
+#: WHAT THIS LOG CARRIES FORWARD. The fourth shape, and the one that keeps a history from being
+#: orphaned when a log has to be closed and another opened.
+#:
+#: A chained log cannot be repaired. When one breaks -- and one did, see the note in `record`
+#: about what a line after a tombstone used to point at -- the file is preserved and a new one
+#: begins. Nothing in the new file would then say that anything came before it, and a reader
+#: holding it would have no way to know that the runs in it are not all the runs there were.
+#:
+#: So the new log opens by naming the old one: its digest, how many lines and runs it held, and
+#: why it was closed. The statement is signed and is the first link of the new chain, which means
+#: the history is bound to the present even though the two files cannot be one chain.
+#:
+#: This is the opening entry of a new book. It does not make the old book verify; nothing can.
+#: It makes the new one honest about what it is.
+CARRIED_FORWARD_FIELDS = ("carries_forward", "bytes", "lines", "runs", "why", "at")
+
+
+def is_carried_forward(line: dict) -> bool:
+    return bool(line.get("carries_forward"))
+
+
+def carry_forward(root, *, file_sha256: str, byte_count: int, lines: int, runs: int,
+                  why: str) -> Path:
+    """Open this log by naming the one it continues. An operator's act, never automatic."""
+    from agentnode_sdk.signing_key import sign_payload
+
+    for named, value in (("file_sha256", file_sha256), ("why", why)):
+        if not str(value or "").strip():
+            raise ValueError("a carried-forward statement has to name its %s" % named)
+    path = Path(root) / METER_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _writing(root):
+        so_far = [r for r in read(root) if "seq" in r]
+        line = {
+            "carries_forward": str(file_sha256),
+            "bytes": int(byte_count),
+            "lines": int(lines),
+            "runs": int(runs),
+            "why": str(why)[:300],
+            "at": time.time(),
+        }
+        assert set(line) == set(CARRIED_FORWARD_FIELDS), "it has exactly its own fields"
+        previous = so_far[-1] if so_far else None
+        line["seq"] = (int(previous.get("seq", 0)) + 1) if previous else 1
+        line["prev"] = what_the_next_line_points_at(previous) if previous else GENESIS
+        line["signature"] = sign_payload(_canonical(line), signing_key(root)).hex()
+        handle = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(handle, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n")
+        _write_head(root, line)
+    return path
+
+
+def is_a_correction(line: dict) -> bool:
+    return bool(line.get("corrects"))
+
+
+def when_it_happened(line: dict) -> float:
+    """The moment a line is ABOUT, whatever shape it has. 0.0 when it is about no moment.
+
+    Every shape in this log carries its time in a field of its own, and a reader that knows
+    only one of them ages the others wrongly. That is not hypothetical: the retention sweep
+    selected by `finished_at`, a correction line has no `finished_at`, and so every correction
+    read as infinitely old and was erased on the next sweep -- taking with it the statement
+    about what a customer actually owed.
+    """
+    for named in ("finished_at", "at", "erased_at"):
+        value = line.get(named)
+        if value:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def what_the_next_line_points_at(line: dict) -> str:
+    """The digest the line AFTER this one has to carry.
+
+    For an ordinary line it is that line's own digest. For a TOMBSTONE it is `stood_for` -- the
+    digest of the line the tombstone replaced -- because that is what the chain was built on
+    and what `verify` walks with.
+
+    It existed in `erase`, which rewrites the head correctly, and nowhere else. `record` always
+    took the digest of whatever the last line was, so the FIRST line appended after a retention
+    sweep pointed at the tombstone instead of at what it stood for, and every line from there on
+    read as tampered with. Nothing had noticed because nothing had yet appended a line after a
+    sweep on a log anybody checked.
+    """
+    return (str(line.get("stood_for") or "") if is_a_tombstone(line)
+            else _digest_of(_without_signature(line)))
+
+
+def correct(root, *, run_id: str, seconds: float, why: str, in_file: str = "",
+            supersedes=None) -> Path:
+    """Append a signed correction saying what a run was actually billed.
+
+    Deliberate and never automatic. Nothing in the serving path calls this: a gateway that
+    corrected its own figures while running would be a gateway whose figures are whatever it
+    last decided, which is the opposite of what this log is for. It is an operator's act, and
+    it leaves a statement with a reason in it.
+    """
+    from agentnode_sdk.signing_key import sign_payload
+
+    if not str(run_id or "").strip():
+        raise ValueError("a correction has to say which run it is about")
+    if not str(why or "").strip():
+        raise ValueError(
+            "a correction has to say why. A figure changed without a reason beside it is the "
+            "thing this log exists to make impossible")
+    path = Path(root) / METER_NAME
+    with _writing(root):
+        so_far = [r for r in read(root) if "seq" in r]
+        mine = [r for r in so_far
+                if str(r.get("run_id") or "") == str(run_id) and not is_a_tombstone(r)]
+        if in_file:
+            # THE LINES ARE IN ANOTHER FILE, named by its digest. A log that had to be closed
+            # takes its corrections here, because they cannot go where the lines are: appending
+            # to a chain that is broken adds a line nobody can check.
+            if not supersedes:
+                raise ValueError(
+                    "a correction about another file has to say which line numbers in it")
+        elif not mine:
+            raise ValueError("there is no line for run %s to correct" % run_id)
+        line = {
+            "corrects": str(run_id),
+            # WHICH lines, by their own numbers. A correction that named only the run would
+            # leave a reader unable to tell whether a line written afterwards is also superseded.
+            "supersedes": (sorted(int(x) for x in supersedes) if in_file
+                           else sorted(int(r.get("seq") or 0) for r in mine)),
+            # WHICH FILE those line numbers are in. Empty means this one, which is the ordinary
+            # case; a digest means the correction is about a log that was closed.
+            "in_file": str(in_file or ""),
+            "seconds": round(float(seconds), 3),
+            "why": str(why)[:200],
+            "at": time.time(),
+        }
+        assert set(line) == set(CORRECTION_FIELDS), "a correction has exactly its own fields"
+        previous = so_far[-1] if so_far else None
+        line["seq"] = (int(previous.get("seq", 0)) + 1) if previous else 1
+        line["prev"] = what_the_next_line_points_at(previous) if previous else GENESIS
+        line["signature"] = sign_payload(_canonical(line), signing_key(root)).hex()
+        handle = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(handle, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n")
+        _write_head(root, line)
+    return path
+
+
+def what_was_billed(root) -> dict:
+    """{run id: the seconds that stand}, corrections honoured. THE place that answers it.
+
+    One function, so that a bill, a report and a test cannot each work it out differently. A
+    run with no correction is the sum of its own lines; a run with one is what the correction
+    says, whatever came before.
+    """
+    billed: dict = {}
+    corrected: dict = {}
+    for line in read(root):
+        if is_a_tombstone(line) or is_carried_forward(line):
+            continue
+        if is_a_correction(line):
+            corrected[str(line.get("corrects"))] = round(float(line.get("seconds") or 0.0), 3)
+            continue
+        run_id = str(line.get("run_id") or "")
+        if run_id:
+            billed[run_id] = round(billed.get(run_id, 0.0) + float(line.get("seconds") or 0.0), 3)
+    billed.update(corrected)
+    return billed
+
+
+def runs_with_more_than_one_line(root) -> dict:
+    """{run id: how many lines} for runs that have more than one and no correction.
+
+    A run that HAS a correction is not in here: its figure is settled and says so. A run that
+    does not is a run whose billable seconds a reader would add up, which is the thing this
+    reports.
+    """
+    counted: dict = {}
+    corrected = set()
+    for line in read(root):
+        if is_a_tombstone(line) or is_carried_forward(line):
+            continue
+        if is_a_correction(line):
+            corrected.add(str(line.get("corrects")))
+            continue
+        run_id = str(line.get("run_id") or "")
+        if run_id:
+            counted[run_id] = counted.get(run_id, 0) + 1
+    return {k: v for k, v in counted.items() if v > 1 and k not in corrected}
+
+
+class AlreadyRecorded(Exception):
+    """This run already has a line in this log, so a second one was refused.
+
+    Raised rather than returned quietly, and it carries the sequence number of the line that is
+    already there, so a caller can say which one it is rather than only that there was one.
+
+    It is not an error in the ordinary sense. The paths that meet it are the ones that exist to
+    make sure a line gets written at all -- a restart closing what it interrupted, most of all --
+    and for them "somebody already did" is the successful outcome, not a failure. They catch it
+    and move on. It is an exception rather than a return value because every other way of
+    failing to write here is one too, and a caller that forgets to look at a returned flag would
+    write nothing and believe it had.
+    """
+
+    def __init__(self, run_id: str, seq: int) -> None:
+        super().__init__(
+            "run %s already has a metered line (seq %d), so a second was refused. A run is "
+            "metered once: the bill and the record of what happened are the same line."
+            % (run_id, seq))
+        self.run_id = str(run_id)
+        self.seq = int(seq)
+
 
 def _canonical(line: dict) -> bytes:
     """The bytes that are digested and signed. One spelling, so two readers cannot disagree."""
@@ -116,13 +390,27 @@ def signing_key(root: str | os.PathLike[str]):
         save_signing_key,
     )
 
+    from agentnode_sdk.gateway.filelock import ProcessLock
+
     path = Path(root) / METER_KEY_NAME
     if path.exists():
         return load_signing_key(path)
-    private, public = generate_ed25519_keypair()
-    save_signing_key(private, path)
-    (Path(root) / METER_PUBLIC_NAME).write_text(public.hex() + "\n", encoding="utf-8")
-    return private
+    # UNDER A LOCK, AND CHECKED AGAIN INSIDE IT. "if it is not there, make one" is two steps,
+    # and twelve callers arriving on an empty directory took them in twelve interleavings: each
+    # generated a key, each wrote it, the last rename won, and the other eleven went on holding
+    # keys that were no longer the gateway's. A metering line signed with one of those cannot
+    # be verified afterwards -- the signature is right and the key it belongs to is gone.
+    #
+    # The cheap read above stays. After the first call this is only ever a read, and taking a
+    # lock every time would be a cost paid forever for a window that closes once.
+    with ProcessLock(path):
+        if path.exists():
+            return load_signing_key(path)
+        private, public = generate_ed25519_keypair()
+        save_signing_key(private, path)
+        (Path(root) / METER_PUBLIC_NAME).write_text(public.hex() + "\n",
+                                                    encoding="utf-8")
+        return private
 
 
 def public_key(root: str | os.PathLike[str]) -> bytes:
@@ -134,12 +422,15 @@ def public_key(root: str | os.PathLike[str]) -> bytes:
 
 
 def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started_at: float,
-           finished_at: float, cpu: float, memory_mb: int, wall_clock_s: int, state: str,
+           finished_at: float, queued_at: float = 0.0,
+           cpu: float, memory_mb: int, wall_clock_s: int, state: str,
            outcome: str, bytes_out: int, worker_topology: str,
+           termination_reason: str = "", exit_code=None, sandbox: str = "",
            allowance_sha256: str,
            allowance_admitted_under: dict | None = None,
            account_id: str, worker_id: str,
-           operator_policy_sha256: str, operator_policy_version: int) -> Path:
+           operator_policy_sha256: str, operator_policy_version: int,
+           worker_transport: str = "", worker_identity: str = "") -> Path:
     """Write one line about one run.
 
     Every value is named. There is deliberately no parameter that takes free-form content: a
@@ -176,14 +467,62 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
         "run_id": str(run_id),
         "client_id": str(client_id),
         "account_id": str(account_id),
+        "queued_at": float(queued_at or started_at),
         "started_at": float(started_at),
         "finished_at": float(finished_at),
-        "seconds": round(max(0.0, float(finished_at) - float(started_at)), 3),
+        # BOTH DERIVED, neither accepted from a caller -- a meter with somewhere to put a
+        # number of somebody's choosing is a meter whose bills cannot be checked.
+        #
+        # What makes deriving possible is the convention on `started_at`: zero means no slot was
+        # ever held. So a job cancelled while waiting has nothing to subtract from and bills
+        # zero, and a job that waited bills only from the slot. This used to be
+        # `finished_at - started_at` outright, which with a queue in front of the worker would
+        # have charged the wait as execution -- and for a job that never started, the whole of
+        # the unix epoch.
+        "seconds": round(max(0.0, float(finished_at) - float(started_at)), 3)
+                   if float(started_at) else 0.0,
+        "waited_s": round(max(0.0, (float(started_at) or float(finished_at))
+                              - float(queued_at or started_at or finished_at)), 3),
+        # WHETHER IT EVER STARTED, said outright rather than left to be inferred from a zero.
+        #
+        # Derived here from the same value `seconds` is derived from, so the two cannot
+        # disagree: a line that bills nothing and claims to have started, or bills something and
+        # claims not to have, is not a line this meter can produce. A caller cannot supply it
+        # for the same reason it cannot supply `seconds`.
+        #
+        # It matters most for the job this whole record exists for: one that waited, never got a
+        # slot, and was interrupted. Its `started_at` is 0.0 and its bill is zero, and without
+        # this field a reader has to know that 0.0 is a convention rather than a gap.
+        "ever_started": bool(float(started_at)),
         "cpu": float(cpu),
         "memory_mb": int(memory_mb),
         "wall_clock_s": int(wall_clock_s),
         "state": str(state),
         "outcome": str(outcome),
+        # WHICH ENDING, beside what it amounted to. `outcome` is the coarse answer --
+        # succeeded, failed, cancelled, timed out, unverified -- and five different
+        # endings share `failed` between them. This says which one, so a reader of one
+        # line can tell a container the kernel killed for memory from one somebody
+        # destroyed, without asking anybody.
+        "termination_reason": str(termination_reason or ""),
+        # THE NUMBER THE PROGRAM CHOSE, or null when it chose none because it was
+        # killed. It is here so the claim in `outcome` can be checked against it:
+        # a line that says `succeeded` and carries a 3 is a line a reader can
+        # catch. Without it, "succeeded" had to be taken on trust.
+        "exit_code": (None if exit_code is None else int(exit_code)),
+        # WHAT BECAME OF THE SANDBOX, because a closing line that does not say leaves the one
+        # question an interrupted run actually raises: is something of mine still running on
+        # that machine?
+        #
+        # Four values, from `protocol.SANDBOX_DISPOSITIONS`, and the two that are easy to
+        # conflate are kept apart: `never_created` is a job that never held a slot, and
+        # `confirmed_gone` is a container that existed and was removed. `not_established` is
+        # what a gateway that could not reach its worker has to say, and writing that case as a
+        # confirmed cleanup is how a container nobody knows about keeps running.
+        #
+        # Empty for a line written by a path that has not been taught to say -- which is
+        # honest, and which `verify` does not accept for an interrupted run.
+        "sandbox": str(sandbox or ""),
         # How much the job wrote, not what it wrote.
         "bytes_out": int(bytes_out),
         "worker_topology": str(worker_topology),
@@ -194,6 +533,13 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
         # WHICH worker. A topology says what KIND of arrangement; this says which instance of
         # it, so a statement can be made per worker rather than per arrangement.
         "worker_id": str(worker_id),
+        # HOW it was reached, and WHO that connection proved to be. Over mutual TLS the identity
+        # is the certificate identity checked in the handshake of the connection that carried
+        # this run, and `worker_id` above is its instance -- not what the worker said about
+        # itself. Over the socket it is the address the gateway connected to. Two lines for the
+        # same job over the two transports differ here and only here (decision 3.5).
+        "worker_transport": str(worker_transport),
+        "worker_identity": str(worker_identity),
         # Under which rules. The digest says exactly which policy and cannot be turned back into
         # one; the version orders it among this gateway's policies, which is the part a person
         # reading a record months later can actually use. Neither alone is enough.
@@ -221,9 +567,38 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
         # with no `seq`, and pointing the first chained line at one of those would make the chain
         # start somewhere `verify` cannot begin -- it starts at GENESIS or it does not start.
         so_far = [r for r in read(root) if "seq" in r]
+
+        # ONE LINE PER RUN, AND THE FILE IS WHAT DECIDES IT.
+        #
+        # A run is metered once, when it ends. That was already true of every path that writes
+        # here -- but it was true because of the ORDER things happen in, not because anything
+        # made a second line impossible, and those are different claims.
+        #
+        # The order it rested on: a restart closes a run, writes its line, and then moves the
+        # ledger entry to `interrupted` so the next restart will not select it again. A process
+        # that dies between those two steps leaves a run that has its line AND is still
+        # selectable, and the next start writes a second one. Nothing caught that, because
+        # nothing had yet died in that particular half-second.
+        #
+        # Two gateways on one directory is the same hole without the timing: both read the
+        # ledger, both see the run mid-flight, both close it.
+        #
+        # So the check is here, against the file, inside the lock that serialises appends --
+        # which means it holds for a crash, for a second process, and for a caller that simply
+        # asks twice. It cannot hold in a caller's memory, because the caller is the thing that
+        # might not be there any more.
+        #
+        # `erase` leaves tombstones behind; a tombstone is not a line about a run and is not
+        # consulted here, which is why `stood_for` is skipped rather than matched on.
+        already = next((r for r in so_far
+                        if str(r.get("run_id") or "") == str(run_id) and not is_a_tombstone(r)),
+                       None)
+        if already is not None:
+            raise AlreadyRecorded(str(run_id), int(already.get("seq") or 0))
+
         previous = so_far[-1] if so_far else None
         line["seq"] = (int(previous.get("seq", 0)) + 1) if previous else 1
-        line["prev"] = _digest_of(_without_signature(previous)) if previous else GENESIS
+        line["prev"] = what_the_next_line_points_at(previous) if previous else GENESIS
         line["signature"] = sign_payload(_canonical(line), signing_key(root)).hex()
 
         # Opened with its permissions on creation rather than narrowed afterwards, and appended

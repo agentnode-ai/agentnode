@@ -61,6 +61,18 @@ class TestTheBindingCoversWhatTheWorkOrderNames:
             cannot_answer.add("image_digest")
         if not gateway.runtime_version():
             cannot_answer.add("backend_version")
+        # An installation with no runtime pin cannot name the commit it was built from or the
+        # build identity derived from it. Derived from the machine, exactly like the two above,
+        # rather than written as a list of names -- a list is where a field nobody fills in goes
+        # to hide, and this test exists to stop that.
+        from agentnode_sdk.gateway import runtime_pin
+
+        try:
+            runtime_pin.read_pin(gateway.state.root)
+        except Exception:                                         # noqa: BLE001
+            cannot_answer |= {"commit", "build_id"}
+            if not runtime_pin.installed_artefact_digest():
+                cannot_answer.add("artefact_sha256")
 
         empty = {name for name, value in said.items() if not str(value or "").strip()}
         assert empty <= cannot_answer, (

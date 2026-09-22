@@ -14,8 +14,13 @@ STATE=/var/lib/agentnode/state
 SECRET=/var/lib/agentnode/state.secret
 BACKUPS=/root/agentnode-backups
 KEY=/root/.agentnode-backup.key
-PY=/opt/agentnode/venv/bin/python
-AN=/opt/agentnode/venv/bin/agentnode
+# WHICH ENVIRONMENT. Overridable, and it has to be: the interpreter this service runs from is
+# pinned and can move, and a drill that hardcodes one path asks the OLD installation whether the
+# NEW one is complete. That is exactly what happened once -- the drill reported `runtime-pin.json`
+# as an unaccounted file because it was asking a build that did not know about it yet.
+VENV="${AGENTNODE_VENV:-/opt/agentnode/venv312}"
+PY="${AGENTNODE_PYTHON:-$VENV/bin/python}"
+AN="${AGENTNODE_AGENTNODE:-$VENV/bin/agentnode}"
 
 step() { printf '\n=== %s\n' "$*"; }
 died() { printf '\n!!! FAILED: %s\n' "$*"; exit 1; }
