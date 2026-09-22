@@ -102,6 +102,18 @@ def _now() -> float:                                          # a seam for tests
     return time.time()
 
 
+def _not_after(certificate) -> float:
+    """The end of a certificate's validity, as a timestamp.
+
+    `not_valid_after_utc` exists from cryptography 42; this package allows 41, where only the naive
+    `not_valid_after` (UTC by definition) exists. Read whichever is there.
+    """
+    aware = getattr(certificate, "not_valid_after_utc", None)
+    if aware is not None:
+        return aware.timestamp()
+    return certificate.not_valid_after.replace(tzinfo=_dt.timezone.utc).timestamp()
+
+
 def _public_key_fingerprint(public_key) -> str:
     from cryptography.hazmat.primitives import serialization
 
@@ -364,7 +376,7 @@ class Issuer:
             entry["certificates"].append({
                 "transaction": transaction, "serial": format(certificate.serial_number, "x"),
                 "public_key_sha256": fingerprint, "status": CURRENT,
-                "not_after": certificate.not_valid_after_utc.timestamp(),
+                "not_after": _not_after(certificate),
                 "pem": pem.decode("ascii")})
             self._commit(inventory, "issue")
             self._deliver(entry, pem)
@@ -421,7 +433,7 @@ class Issuer:
                 "transaction": uuid.uuid4().hex,
                 "serial": format(certificate.serial_number, "x"),
                 "public_key_sha256": _public_key_fingerprint(public_key), "status": CURRENT,
-                "not_after": certificate.not_valid_after_utc.timestamp(),
+                "not_after": _not_after(certificate),
                 "pem": pem.decode("ascii")})
             self._commit(inventory, "renew")
             self._deliver(entry, pem, suffix=".next")

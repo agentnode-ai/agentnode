@@ -145,8 +145,10 @@ class TestTheRequestContributesOnlyItsKey:
         assert who.uri() == "agentnode://alpha/worker/w1"
         assert certificate.extensions.get_extension_for_class(
             x509.BasicConstraints).value.ca is False
-        lifetime = certificate.not_valid_after_utc - certificate.not_valid_before_utc
-        assert lifetime.days <= 91
+        # Whichever the installed cryptography has: the *_utc pair exists from 42, the SDK allows 41.
+        after = getattr(certificate, "not_valid_after_utc", None) or certificate.not_valid_after
+        before = getattr(certificate, "not_valid_before_utc", None) or certificate.not_valid_before
+        assert (after - before).days <= 91
 
 
 # ====================================================================== (e) the secret
