@@ -169,11 +169,15 @@ class TlsListener:
     """The worker's second door. Shares the worker, the nonce memory and the replay floor with
     the socket's `Bench`, so a message accepted through one door is a replay at the other."""
 
-    def __init__(self, bench, address: str, settings: TlsSettings, say=print) -> None:
+    def __init__(self, bench, address: str, settings: TlsSettings, say=None) -> None:
         self.bench = bench
         self.address = address
         self.settings = settings
-        self.say = say
+        #: Where a refusal is said. Flushed line by line: under systemd stdout is a pipe, and a
+        #: refusal that waits in a buffer for the next few kilobytes -- or for the process to
+        #: exit -- is not a log anybody can read when it matters. The first alpha run found
+        #: exactly that: the worker's journal held none of its own lines.
+        self.say = say or (lambda text: print(text, flush=True))
         self.context = server_context(settings)
         self._socket: socket.socket | None = None
         self._stopped = False

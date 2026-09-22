@@ -437,8 +437,8 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         host, port = listener.open()
         threading.Thread(target=listener.serve_forever, daemon=True).start()
         print("  also listening with mutual TLS at %s:%s, loopback only, as %s"
-              % (host, port, bench.label))
-        print("  it accepts gateway instance(s): " + ", ".join(sorted(tls.accept)))
+              % (host, port, bench.label), flush=True)
+        print("  it accepts gateway instance(s): " + ", ".join(sorted(tls.accept)), flush=True)
     print("  listening at " + path + " for uid " + str(only_uid))
     print("  this worker holds no pairing state, no signing identity and no client's token.")
     print("  On one host, two accounts are not isolation: see ALPHA-BOUNDARY-0001.")
