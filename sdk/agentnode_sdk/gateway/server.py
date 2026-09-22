@@ -531,16 +531,27 @@ class GatewayService:
         said = self.config.get("worker_tls")
         if not said:
             return None
-        from agentnode_sdk.worker.tls import TlsSettings
+        from agentnode_sdk.worker.tls import (DEFAULT_REEVALUATE_SECONDS, DEFAULT_RELOAD_SECONDS,
+                                              TlsSettings)
 
-        needed = ("certificate", "key", "anchor", "deployment", "accept")
+        # From stage 5 the revocation list and the floor belong to the whole: a TLS side without
+        # them could not tell a revoked worker from a valid one, or a clock set back from the
+        # right time. The two intervals have defaults, and their sum is the promised delay.
+        needed = ("certificate", "key", "anchor", "deployment", "accept", "revocation_list",
+                  "floor")
         missing = [k for k in needed if not said.get(k)]
         if missing:
             raise ValueError("worker_tls is missing %s; it is used whole or not at all"
                              % ", ".join(missing))
         return TlsSettings(certificate=str(said["certificate"]), key=str(said["key"]),
                            anchor=str(said["anchor"]), deployment=str(said["deployment"]),
-                           accept=frozenset(str(a) for a in said["accept"]))
+                           accept=frozenset(str(a) for a in said["accept"]),
+                           revocation_list=str(said["revocation_list"]),
+                           floor=str(said["floor"]),
+                           reload_seconds=float(said.get("reload_seconds")
+                                                or DEFAULT_RELOAD_SECONDS),
+                           reevaluate_seconds=float(said.get("reevaluate_seconds")
+                                                    or DEFAULT_REEVALUATE_SECONDS))
 
     @property
     def config(self) -> dict:

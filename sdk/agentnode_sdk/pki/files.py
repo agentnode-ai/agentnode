@@ -13,6 +13,13 @@ simulated crash in either outcome ON PURPOSE:
 
 `durable_replace` is the only way a file is committed: temporary file, fsync of the file, rename,
 fsync of the directory. The commit is the directory fsync returning, not the rename.
+
+`durable_publish` is the same thing twice, for what the SERVICES read -- the revocation list and
+the time floor (decision 5.0). The services cannot be made to wait for somebody else's fsync, so
+nothing they can ever see under the name they read may be a state that was not already durable:
+the new contents are first made durable under a STAGE name, and only then renamed to the name the
+services read, and that directory fsynced again. Whatever a service saw before a crash was durable
+under the stage name before it could see it, so a crash cannot take it away.
 """
 from __future__ import annotations
 
@@ -125,6 +132,92 @@ def durable_replace(files: Files, target, data: bytes, *, mode: int = 0o600,
     files.point(label + ":after-dirsync")
 
 
+class NotDurable(OSError):
+    """A publication whose stage could not be made durable. Nothing a service reads changed."""
+
+
+class NotPromoted(OSError):
+    """The stage is durable, and renaming it to the name the services read -- or making that
+    rename durable -- failed. The next run promotes the stage; until then the publication is not
+    in effect, and nobody may say it is."""
+
+
+def stage_names(target) -> tuple[Path, Path]:
+    """(stage, temporary) for a published file. Both are hidden, fixed and in the same directory,
+    so the root run can find what a crash left and nobody else mistakes it for the real thing."""
+    target = Path(target)
+    return (target.parent / ("." + target.name + ".stage"),
+            target.parent / ("." + target.name + ".tmp"))
+
+
+def durable_publish(files: Files, target, data: bytes, *, mode: int = 0o644,
+                    label: str = "publish") -> None:
+    """Publish `data` at `target` in two durable stages (decision 5.0).
+
+        1. temporary file, fsync of the file, rename to the STAGE name, fsync of the directory
+        2. rename the stage to `target`, fsync of the directory
+
+    The caller must have promoted or removed any earlier stage first (`settle_stage`): a new stage
+    is written only when the previous one is promoted and durable. Raises `NotDurable` if step 1
+    failed -- then nothing a service reads changed, and nothing may be reported -- and
+    `NotPromoted` if step 2 failed, when the stage is durable and the next run promotes it.
+    Returns only when both steps are durable, which is the only moment anything may act on it.
+    """
+    target = Path(target)
+    directory = target.parent
+    stage, tmp = stage_names(target)
+    try:
+        files.write_new(tmp, data, mode)
+        files.point(label + ":stage-written")
+        files.fsync_file(tmp)
+        files.rename(tmp, stage)
+        files.point(label + ":stage-renamed")
+        files.fsync_dir(directory)
+    except OSError as exc:
+        raise NotDurable("the new contents could not be made durable under the stage name: "
+                         + str(exc)) from exc
+    files.point(label + ":stage-durable")
+    try:
+        files.rename(stage, target)
+        files.point(label + ":promoted")
+        files.fsync_dir(directory)
+    except OSError as exc:
+        raise NotPromoted("the durable stage could not be promoted durably: " + str(exc)) from exc
+    files.point(label + ":promoted-durable")
+
+
+def settle_stage(files: Files, target, newer, *, label: str = "settle") -> str:
+    """What a crash left of a two-stage publication, resolved -- the first thing a root run does.
+
+    The directory is fsynced first, unconditionally, so that what is found is durable before it
+    is acted on. A leftover temporary file was never durable and goes unread. A leftover stage is
+    promoted when `newer(stage_bytes, target_bytes_or_None)` says it is newer than what the
+    services read, and removed otherwise; either way the directory is fsynced again. Returns
+    "promoted", "removed" or "nothing". Raises `OSError` when any of it fails: then nothing new
+    may be written after it, because a new stage over an unresolved one could leave an older
+    state durable in both places.
+    """
+    target = Path(target)
+    directory = target.parent
+    stage, tmp = stage_names(target)
+    files.fsync_dir(directory)
+    if files.exists(tmp):
+        files.remove(tmp)
+        files.fsync_dir(directory)
+    if not files.exists(stage):
+        return "nothing"
+    staged = files.read(stage)
+    current = files.read(target) if files.exists(target) else None
+    if newer(staged, current):
+        files.rename(stage, target)
+        files.point(label + ":promoted")
+        files.fsync_dir(directory)
+        return "promoted"
+    files.remove(stage)
+    files.fsync_dir(directory)
+    return "removed"
+
+
 class RecordingFiles(Files):
     """A test's stand-in: real files on disk, plus a journal of what a crash could take away.
 
@@ -156,7 +249,20 @@ class RecordingFiles(Files):
         fsync right after a rename, say, and not the one every call begins with. Once."""
         self._fail_after = (point, operation, error)
 
-    def _maybe_fail(self, operation: str) -> None:
+    def fail_in(self, directory, operation: str, error: BaseException) -> None:
+        """Make `operation` raise every time it touches `directory` -- a disk that keeps refusing
+        in one place, the trust directory say, while the others behave. Until `heal_in`."""
+        self._failing_in = getattr(self, "_failing_in", {})
+        self._failing_in[(str(Path(directory)), operation)] = error
+
+    def heal_in(self, directory, operation: str) -> None:
+        getattr(self, "_failing_in", {}).pop((str(Path(directory)), operation), None)
+
+    def _maybe_fail(self, operation: str, directory=None) -> None:
+        if directory is not None:
+            planned_here = getattr(self, "_failing_in", {}).get((str(Path(directory)), operation))
+            if planned_here is not None:
+                raise planned_here
         if operation in self.failures:
             raise self.failures[operation]
         planned = getattr(self, "_fail_after", None)
@@ -195,12 +301,12 @@ class RecordingFiles(Files):
         self._unsynced.add(str(path))
 
     def fsync_file(self, path) -> None:
-        self._maybe_fail("fsync_file")
+        self._maybe_fail("fsync_file", Path(path).parent)
         super().fsync_file(path)
         self._unsynced.discard(str(path))
 
     def rename(self, source, target) -> None:
-        self._maybe_fail("rename")
+        self._maybe_fail("rename", Path(target).parent)
         before = self._snapshot(target)
         moving = self._snapshot(source)
         super().rename(source, target)
@@ -210,7 +316,7 @@ class RecordingFiles(Files):
             self._unsynced.add(str(target))
 
     def fsync_dir(self, directory) -> None:
-        self._maybe_fail("fsync_dir")
+        self._maybe_fail("fsync_dir", directory)
         super().fsync_dir(directory)
         self._journal.pop(str(Path(directory)), None)
 
@@ -266,5 +372,5 @@ class RecordingFiles(Files):
         self._armed = None
 
 
-__all__ = ["Files", "LOST", "OUTCOMES", "RecordingFiles", "SURVIVED", "SimulatedCrash",
-           "durable_replace"]
+__all__ = ["Files", "LOST", "NotDurable", "NotPromoted", "OUTCOMES", "RecordingFiles", "SURVIVED",
+           "SimulatedCrash", "durable_publish", "durable_replace", "settle_stage", "stage_names"]

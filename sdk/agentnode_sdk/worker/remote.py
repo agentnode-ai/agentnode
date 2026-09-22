@@ -323,18 +323,32 @@ class TlsWorker(SocketWorker):
     transport = "mtls"
 
     def __init__(self, address: str, key: bytes, tls, connect_timeout: float = 10.0,
-                 run_margin: float = RUN_MARGIN_SECONDS) -> None:
-        from agentnode_sdk.worker.tls import client_context, endpoint
+                 run_margin: float = RUN_MARGIN_SECONDS, say=None) -> None:
+        import ssl
+
+        from agentnode_sdk.pki import identity as _identity
+        from agentnode_sdk.worker.tls import Contexts, Watch, endpoint
 
         endpoint(address)                                     # loopback, or refused here
         super().__init__(address, key, connect_timeout=connect_timeout, run_margin=run_margin)
         self.tls = tls
-        self._context = client_context(tls)
+        #: Where the gateway says what its TLS side did -- a renewed certificate taken up, an
+        #: open connection cut. Flushed, for the same reason as the worker's (`worker/tls.py`).
+        self.say = say or (lambda text: print(text, flush=True))
+        self._contexts = Contexts(ssl.PROTOCOL_TLS_CLIENT, tls, say=self.say)
+        #: The open connections to the worker, re-evaluated (decision 5.3): a worker revoked
+        #: while a run is on its connection is cut, and the run ends as `transport_lost` with
+        #: exactly one line -- the path an aborted run already takes.
+        self.watch = Watch(tls, _identity.GATEWAY, say=self.say)
 
     def _open(self):
         from agentnode_sdk.worker.tls import open_to_worker
 
-        return open_to_worker(self.address, self.tls, self._context, self.connect_timeout)
+        connection, who, der = open_to_worker(self.address, self.tls, self._contexts,
+                                              self.connect_timeout)
+        # Watched until it is closed; a closed one is dropped at the next pass.
+        self.watch.add(connection, der, who)
+        return connection, who
 
     def instance_label(self) -> str:
         """The instance the worker's CERTIFICATE names, from the connection that answered the

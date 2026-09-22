@@ -126,20 +126,24 @@ def cmd_serve(args) -> int:
     print("  state, no signing identity and no client's token.")
     listen = str(getattr(args, "listen", "") or "")
     tls = None
-    tls_parts = [getattr(args, n, None) for n in ("tls_dir", "trust", "deployment")]
+    tls_parts = [getattr(args, n, None) for n in ("tls_dir", "trust", "deployment",
+                                                  "revocation_list", "floor")]
     if listen or any(tls_parts) or getattr(args, "accept_gateway", None):
         if not (listen and all(tls_parts) and getattr(args, "accept_gateway", None)):
             print()
-            print("  A TLS door needs --listen, --tls-dir, --trust, --deployment and at least one")
-            print("  --accept-gateway. Part of that is refused rather than started without its")
-            print("  checks.")
+            print("  A TLS door needs --listen, --tls-dir, --trust, --deployment,")
+            print("  --revocation-list, --floor and at least one --accept-gateway. Part of that")
+            print("  is refused rather than started without its checks.")
             return 2
         from agentnode_sdk.worker.tls import TlsSettings
 
         folder = Path(args.tls_dir)
         tls = TlsSettings(certificate=str(folder / "cert.pem"), key=str(folder / "key.pem"),
                           anchor=str(args.trust), deployment=str(args.deployment),
-                          accept=frozenset(args.accept_gateway))
+                          accept=frozenset(args.accept_gateway),
+                          revocation_list=str(args.revocation_list), floor=str(args.floor),
+                          reload_seconds=float(args.trust_reload_seconds),
+                          reevaluate_seconds=float(args.reevaluate_seconds))
     try:
         serve(address, key, uid, tls_address=listen, tls=tls)
     except KeyboardInterrupt:                                 # pragma: no cover - operator
@@ -213,6 +217,17 @@ def add_parser(subparsers) -> None:
     serve.add_argument("--deployment", default="", metavar="ID")
     serve.add_argument("--accept-gateway", dest="accept_gateway", action="append", default=[],
                        metavar="INSTANCE", help="a gateway instance this worker accepts")
+    # Stage 5: what the TLS door judges a caller by, besides its certificate. Required with it.
+    serve.add_argument("--revocation-list", dest="revocation_list", default="", metavar="FILE",
+                       help="the deployment's signed revocation list")
+    serve.add_argument("--floor", default="", metavar="FILE",
+                       help="this worker's time floor, written by root and read here")
+    serve.add_argument("--trust-reload-seconds", dest="trust_reload_seconds", type=float,
+                       default=10.0, metavar="S",
+                       help="reread the list and the floor at least this often")
+    serve.add_argument("--reevaluate-seconds", dest="reevaluate_seconds", type=float,
+                       default=5.0, metavar="S",
+                       help="judge every open TLS connection again this often")
 
 
 __all__ = ["add_parser", "dispatch", "cmd_key", "cmd_serve", "sys"]

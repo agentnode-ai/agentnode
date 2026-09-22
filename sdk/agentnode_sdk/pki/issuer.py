@@ -43,9 +43,30 @@ The invariant is the decision's, stated in its two parts:
 * per issuance transaction, at most one certificate committed and at most one delivered, and no
   uncommitted certificate surviving the next lock;
 * per entry, every committed certificate recorded with its status -- `current`, at most one
-  `overlapping`, `superseded` -- and no valid certificate of that entry that is not listed.
+  `overlapping`, `superseded`, `revoked` -- and no valid certificate of that entry that is not
+  listed.
 
-Revocation is decision stage 5 and is not implemented here.
+## Stage 5: revocation, the bounded overlap, recovery, and the root run
+
+Revocation is recorded HERE, in the inventory, with the same commit as an issuance; the signed
+list the services read (`revocation.py`) is derived from it and published in two durable stages
+(`files.durable_publish`). A revocation is reported effective only when that publication has been
+promoted and its directory fsynced -- never at the rename.
+
+A renewal makes the previous certificate `overlapping` until the earlier of its own expiry and
+`OVERLAP_SECONDS` from the renewal (the 30 days between the decision's day 60 and day 90), and
+whatever was `overlapping` before becomes `superseded` AND revoked. The root run revokes an
+overlapping certificate whose overlap has ended. So at most two unrevoked certificates of an entry
+are ever usable, and the second only for a bounded time -- enforced through the list the peers
+check, not merely noted here.
+
+Recovery from a compromised key (`recover_entry`, decision 5.6) locks the entry against renewal,
+revokes every serial it ever had, publishes the list and hands out a fresh enrollment secret, in
+one call under the same lock and the same commit.
+
+`tick` is the root run (decision 5.0, 5.3, 5.7): resolve what a crash left of the list and the
+floors, end overlaps, reconcile the list with the inventory, and only then -- and only if no
+revocation is waiting to be published -- write the floors.
 """
 from __future__ import annotations
 
@@ -59,7 +80,9 @@ import uuid
 from pathlib import Path
 
 from agentnode_sdk.pki import files as _files
+from agentnode_sdk.pki import floor as _floor
 from agentnode_sdk.pki import identity as _identity
+from agentnode_sdk.pki import revocation as _revocation
 
 DEFAULT_CA_DIR = "/etc/agentnode/ca"
 DEFAULT_TRUST_DIR = "/etc/agentnode/trust"
@@ -76,9 +99,20 @@ DAYS = 90
 SECRET_HOURS = 24
 CA_YEARS = 10
 
+#: How long the previous certificate stays usable after a renewal, at most: the decision's day 60
+#: to day 90. It ends earlier if the certificate itself expires earlier.
+OVERLAP_SECONDS = 30 * 24 * 3600
+
 CURRENT = "current"
 OVERLAPPING = "overlapping"
 SUPERSEDED = "superseded"
+REVOKED = "revoked"
+
+#: Why a serial is in the list. Written into the inventory next to the revocation.
+BY_ROOT = "revoked by root"
+BY_RENEWAL = "superseded by a renewal while it was still overlapping"
+OVERLAP_ENDED = "its overlap ended"
+COMPROMISE = "the entry was recovered from a compromised key"
 
 
 class IssuanceRefused(Exception):
@@ -227,7 +261,13 @@ class Issuer:
                                    label="init-key")
             _files.durable_replace(self.files, self.trust_dir / CA_CERT, ca_pem, mode=0o644,
                                    label="init-anchor")
-            self._commit({"deployment": deployment, "entries": {}}, "init-inventory")
+            inventory = {"deployment": deployment, "entries": {}, "list_number": 0}
+            self._commit(inventory, "init-inventory")
+            # An empty list, signed, so that a service has one to believe from the start. No
+            # list would not be "nothing revoked"; it would be every connection refused.
+            if not self._publish_list(inventory, key, ca):
+                raise Indeterminate("the issuer exists, and its first revocation list could not "
+                                    "be published durably; `agentnode pki tick` publishes it")
         return deployment
 
     def add(self, role: str, instance: str, *, secret_at, owner_uid=None, owner_gid=None,
@@ -373,6 +413,9 @@ class Issuer:
             entry["consumed"].append({"secret_sha256": presented, "transaction": transaction,
                                       "public_key_sha256": fingerprint})
             entry["secret_sha256"] = ""
+            # A secret root handed out after a recovery is what lifts the lock on renewal: this
+            # key is fresh, and every certificate before it is already revoked.
+            entry["renewal_locked"] = False
             entry["certificates"].append({
                 "transaction": transaction, "serial": format(certificate.serial_number, "x"),
                 "public_key_sha256": fingerprint, "status": CURRENT,
@@ -410,9 +453,17 @@ class Issuer:
                 raise self._refused("the presented certificate is not in the inventory", "",
                                     public_key)
             name, entry, record = found[0]
-            if record["status"] not in (CURRENT, OVERLAPPING):
-                raise self._refused("the presented certificate has been superseded", name,
-                                    public_key)
+            if record.get("revoked_at") is not None:
+                raise self._refused("the presented certificate is revoked; a revoked key is "
+                                    "re-enrolled by root, not renewed", name, public_key)
+            if entry.get("renewal_locked"):
+                raise self._refused("this entry is locked against renewal until root re-enrolls "
+                                    "it with a fresh key", name, public_key)
+            # Only the CURRENT key renews. The overlapping one is on its way out; letting it
+            # renew would let whoever still holds an old key keep an identity going.
+            if record["status"] != CURRENT:
+                raise self._refused("the presented certificate is not the current one of its "
+                                    "entry", name, public_key)
             if float(record["not_after"]) < _now():
                 raise self._refused("the presented certificate has expired; a lost or expired "
                                     "key is re-enrolled by root, not renewed", name, public_key)
@@ -424,11 +475,21 @@ class Issuer:
 
             certificate = self._build(inventory, entry, public_key, ca_key, ca_cert)
             pem = certificate.public_bytes(serialization.Encoding.PEM)
+            now = _now()
+            superseded_now = False
             for other in entry["certificates"]:
                 if other["status"] == OVERLAPPING:
+                    # Still inside its validity, possibly: so it goes into the list, or the
+                    # bound on the overlap would be a note and not a limit.
                     other["status"] = SUPERSEDED
+                    if other.get("revoked_at") is None:
+                        other["revoked_at"] = round(now, 3)
+                        other["revocation_reason"] = BY_RENEWAL
+                        superseded_now = True
                 elif other["status"] == CURRENT:
                     other["status"] = OVERLAPPING
+                    other["overlap_until"] = round(min(float(other["not_after"]),
+                                                       now + OVERLAP_SECONDS), 3)
             entry["certificates"].append({
                 "transaction": uuid.uuid4().hex,
                 "serial": format(certificate.serial_number, "x"),
@@ -437,7 +498,343 @@ class Issuer:
                 "pem": pem.decode("ascii")})
             self._commit(inventory, "renew")
             self._deliver(entry, pem, suffix=".next")
+            if superseded_now:
+                # Not a reason to withhold the renewal -- it is committed and delivered. If this
+                # publication fails, the revocation is pending, and the root run neither reports
+                # it effective nor promotes a floor until it is published (decision 5.6).
+                self._publish_list(inventory, ca_key, ca_cert)
             return pem
+
+    # ------------------------------------------------------------------ revoking (stage 5)
+
+    def _revoked(self, inventory: dict) -> dict:
+        """Every revoked serial in the inventory, with when. The list is made from this."""
+        return {c["serial"]: float(c["revoked_at"])
+                for entry in inventory["entries"].values()
+                for c in entry.get("certificates", [])
+                if c.get("revoked_at") is not None}
+
+    def _list_path(self) -> Path:
+        return self.trust_dir / _revocation.LIST_NAME
+
+    def _published(self, ca_cert):
+        """The list the services read now, as root reads it: (RevocationList or None, reason)."""
+        path = self._list_path()
+        data = self.files.read(path) if self.files.exists(path) else None
+        try:
+            return _revocation.read(data, ca_cert, _now()), ""
+        except _revocation.ListUnusable as unusable:
+            return None, str(unusable)
+
+    def _settle_list(self) -> str:
+        """Resolve what a crash left of a list publication (`files.settle_stage`)."""
+        def newer(staged, current):
+            staged_number = _revocation.number_of(staged)
+            if staged_number is None:
+                return False
+            current_number = _revocation.number_of(current)
+            return current_number is None or staged_number > current_number
+        return _files.settle_stage(self.files, self._list_path(), newer, label="settle-list")
+
+    def _publish_list(self, inventory: dict, ca_key, ca_cert) -> bool:
+        """Derive the list from the inventory, number it, sign it, publish it in two stages.
+        Under the lock. True only when the promotion is durable -- the one moment a revocation in
+        it may be called effective. Every failure is False, with the inventory already holding
+        what was revoked, so that the root run tries again and holds back the floor meanwhile."""
+        try:
+            self._settle_list()
+        except OSError:
+            return False
+        inventory["list_number"] = int(inventory.get("list_number") or 0) + 1
+        try:
+            self._commit(inventory, "list-number")
+        except Indeterminate:
+            return False
+        data = _revocation.build(ca_key, ca_cert, self._revoked(inventory),
+                                 number=inventory["list_number"], now=_now())
+        try:
+            _files.durable_publish(self.files, self._list_path(), data, mode=0o644, label="list")
+        except OSError:
+            return False
+        return True
+
+    def revoke(self, serial: str, reason: str = BY_ROOT) -> dict:
+        """Revoke one certificate, by serial, and publish the list before returning.
+
+        Returns `{"serial", "entry", "effective"}`. `effective` is True only when the published
+        list carrying this serial has been promoted and made durable; otherwise the revocation
+        is recorded in the inventory and NOT in effect, and the caller is told so.
+        """
+        serial = str(serial).strip().lower()
+        with self._lock():
+            self._begin()
+            inventory = self._inventory()
+            found = [(n, c) for n, e in inventory["entries"].items()
+                     for c in e.get("certificates", []) if c["serial"] == serial]
+            if not found:
+                raise IssuanceRefused("no certificate with serial %s was issued here" % serial)
+            name, record = found[0]
+            if record.get("revoked_at") is None:
+                record["revoked_at"] = round(_now(), 3)
+                record["revocation_reason"] = str(reason)
+                if record["status"] in (CURRENT, OVERLAPPING):
+                    record["status"] = REVOKED
+                self._commit(inventory, "revoke")
+            ca_key, ca_cert = self._ca()
+            effective = self._publish_list(inventory, ca_key, ca_cert)
+            return {"serial": serial, "entry": name, "effective": effective}
+
+    def recover_entry(self, role: str, instance: str, *, secret_at, owner_uid=None,
+                      owner_gid=None) -> dict:
+        """Decision 5.6: the entry's key is compromised. In ONE call, under the issuer lock and
+        with one commit: lock the entry against renewal, revoke every serial it ever had, hand it
+        a fresh single-use secret -- then publish the list. The secret goes to `secret_at` for a
+        fresh key. A renewal racing this either landed before (and is revoked here, because every
+        recorded serial is) or comes after (and is refused, whatever key it shows)."""
+        with self._lock():
+            self._begin()
+            inventory = self._inventory()
+            name = role + "/" + instance
+            entry = inventory["entries"].get(name)
+            if entry is None:
+                raise IssuanceRefused("there is no entry %s to recover" % name)
+            now = round(_now(), 3)
+            revoked = []
+            for record in entry.get("certificates", []):
+                if record.get("revoked_at") is None:
+                    record["revoked_at"] = now
+                    record["revocation_reason"] = COMPROMISE
+                    revoked.append(record["serial"])
+                if record["status"] in (CURRENT, OVERLAPPING):
+                    record["status"] = REVOKED
+            entry["renewal_locked"] = True
+            secret = secrets.token_hex(32)
+            entry["secret_sha256"] = _sha256(secret.encode("ascii"))
+            entry["secret_expires"] = round(now + SECRET_HOURS * 3600, 3)
+            self._commit(inventory, "recover")
+            ca_key, ca_cert = self._ca()
+            effective = self._publish_list(inventory, ca_key, ca_cert)
+            secret_path = Path(secret_at)
+            if self.files.exists(secret_path):
+                self.files.remove(secret_path)
+            _files.durable_replace(self.files, secret_path, secret.encode("ascii"), mode=0o400,
+                                   label="recover-secret")
+            if owner_uid is not None and hasattr(os, "chown"):
+                os.chown(secret_path, int(owner_uid), int(owner_gid if owner_gid is not None
+                                                          else -1))
+            return {"entry": name, "revoked": revoked, "effective": effective}
+
+    def publish(self) -> dict:
+        """Sign and publish a fresh list now, from the inventory. For root, after a clock was
+        corrected or when a list must be replaced before the root run would do it."""
+        with self._lock():
+            self._begin()
+            inventory = self._inventory()
+            ca_key, ca_cert = self._ca()
+            published = self._publish_list(inventory, ca_key, ca_cert)
+            return {"published": published, "number": int(inventory.get("list_number") or 0)}
+
+    # ------------------------------------------------------------------ the root run (stage 5)
+
+    def _end_overlaps(self, inventory: dict) -> list:
+        now = _now()
+        ended = []
+        for entry in inventory["entries"].values():
+            for record in entry.get("certificates", []):
+                if record["status"] != OVERLAPPING:
+                    continue
+                until = float(record.get("overlap_until") or record["not_after"])
+                if until <= now:
+                    record["status"] = SUPERSEDED
+                    if record.get("revoked_at") is None:
+                        record["revoked_at"] = round(now, 3)
+                        record["revocation_reason"] = OVERLAP_ENDED
+                    ended.append(record["serial"])
+        return ended
+
+    def tick(self, floor_dir=None) -> dict:
+        """The root run, in the order decision 5.0 fixes -- also, and above all, after a restart:
+
+            1. resolve what a crash left of the list's publication, then of each floor's
+               (fsync first, promote a newer stage, drop an older one);
+            2. end overlaps that have run out;
+            3. reconcile the list with the inventory, and publish a fresh one when a revoked
+               serial is missing from it, when it cannot be read, or when it is due a refresh;
+            4. ONLY THEN, and only if no revocation is waiting to be published, write each floor.
+
+        Returns what it did. Never raises for a failed step: it reports it, and the floor --
+        which ages -- is what turns a writer that keeps failing into services that stop.
+        """
+        report: dict = {"list": "", "overlaps_ended": [], "pending_revocation": False,
+                        "floors": {}}
+        floor_dir = Path(floor_dir) if floor_dir else None
+        with self._lock():
+            self._begin()
+            inventory = self._inventory()
+            ca_key, ca_cert = self._ca()
+
+            # 1. What a crash left. The list first, then the floors.
+            settle_failed = False
+            try:
+                report["list"] = "stage " + self._settle_list()
+            except OSError as exc:
+                settle_failed = True
+                report["list"] = "could not resolve a leftover stage: " + str(exc)
+            floors = {}
+            if floor_dir is not None:
+                for role in _floor.ROLES:
+                    path = _floor.path_for(floor_dir, role)
+                    if not self.files.exists(path) and not self.files.exists(
+                            _files.stage_names(path)[0]):
+                        continue
+                    try:
+                        floors[role] = _files.settle_stage(self.files, path, _floor.newer,
+                                                           label="settle-floor-" + role)
+                    except OSError as exc:
+                        report["floors"][role] = "could not resolve a leftover stage: " + str(exc)
+
+            # 2. Overlaps that ran out are revoked -- this is what makes the bound a limit.
+            ended = self._end_overlaps(inventory)
+            if ended:
+                report["overlaps_ended"] = ended
+                try:
+                    self._commit(inventory, "overlap-ended")
+                except Indeterminate as exc:
+                    report["list"] += "; ending overlaps not committed: " + str(exc)
+                    return report
+
+            # 3. Reconcile. The inventory decides; the list must carry every revoked serial.
+            revoked = set(self._revoked(inventory))
+            published, why = self._published(ca_cert)
+            missing = revoked - set(published.serials) if published else revoked
+            due = (published is None or bool(missing)
+                   or _now() - published.this_update >= _revocation.REFRESH_AFTER_SECONDS)
+            if due and not settle_failed:
+                if self._publish_list(inventory, ca_key, ca_cert):
+                    report["list"] += "; published number %d" % inventory["list_number"]
+                else:
+                    report["list"] += "; publication FAILED"
+                published, why = self._published(ca_cert)
+            elif due:
+                report["list"] += "; publication not attempted over an unresolved stage"
+            missing = revoked - set(published.serials) if published else revoked
+            if missing:
+                report["pending_revocation"] = True
+
+            # 4. The floors -- held back while a revocation is not durably published.
+            if floor_dir is None:
+                return report
+            for role, settled in floors.items():
+                if report["floors"].get(role):
+                    continue
+                if report["pending_revocation"]:
+                    report["floors"][role] = ("not written: a revocation is not yet durably "
+                                              "published")
+                    continue
+                report["floors"][role] = self._advance_floor(
+                    _floor.path_for(floor_dir, role), published)
+        return report
+
+    def _advance_floor(self, path: Path, published) -> str:
+        try:
+            state = _floor.parse(self.files.read(path))
+        except (OSError, _floor.FloorUnusable) as exc:
+            return "not written: the floor file is missing or unreadable, and only `agentnode " \
+                   "pki floor init` may start one (%s)" % type(exc).__name__
+        try:
+            new = _floor.advance(state, system_now=_now(), monotonic_now=_floor._monotonic(),
+                                 boot=_floor._boot(),
+                                 list_this_update=published.this_update if published else None)
+        except _floor.FloorUnusable as exc:
+            return "not written: " + str(exc)
+        try:
+            _files.durable_publish(self.files, path, new.to_bytes(), mode=0o644,
+                                   label="floor-" + state.role)
+        except OSError as exc:
+            return "not written: " + str(exc)
+        return "written, generation %d" % new.generation
+
+    # ------------------------------------------------------------------ the floor's lifecycle
+
+    def floor_init(self, floor_dir, roles=_floor.ROLES, *,
+                   tolerance_s: float = _floor.DEFAULT_TOLERANCE_SECONDS,
+                   max_age_s: float = _floor.DEFAULT_MAX_AGE_SECONDS,
+                   after_loss: bool = False) -> dict:
+        """Set up the floor files, root's and read-only to everyone else, in their initial state.
+
+        A floor that exists and parses is never replaced here: that would grant a second
+        tolerance. One that is missing or unreadable after it had existed is replaced only with
+        `after_loss`, and that is written down in the issuer's log.
+        """
+        floor_dir = Path(floor_dir)
+        floor_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(floor_dir, 0o755)
+        except OSError:                                       # pragma: no cover
+            pass
+        done = {}
+        with self._lock():
+            self._begin()
+            _key, ca_cert = self._ca()
+            not_before = getattr(ca_cert, "not_valid_before_utc", None)
+            not_before = (not_before.timestamp() if not_before is not None else
+                          ca_cert.not_valid_before.replace(tzinfo=_dt.timezone.utc).timestamp())
+            for role in roles:
+                path = _floor.path_for(floor_dir, role)
+                _files.settle_stage(self.files, path, _floor.newer, label="init-floor-" + role)
+                if self.files.exists(path):
+                    try:
+                        _floor.parse(self.files.read(path))
+                        raise IssuanceRefused(
+                            "the %s floor exists and is readable; setting it up again would "
+                            "grant a second tolerance. `agentnode pki floor recover` moves a "
+                            "floor that stands too far ahead" % role)
+                    except _floor.FloorUnusable:
+                        if not after_loss:
+                            raise IssuanceRefused(
+                                "the %s floor is unreadable. Replacing it starts its counters "
+                                "again, which is a root decision: repeat with --after-loss"
+                                % role) from None
+                        self._note("floor re-initialised after loss", role)
+                state = _floor.initial(role, not_before, tolerance_s=tolerance_s,
+                                       max_age_s=max_age_s)
+                _files.durable_publish(self.files, path, state.to_bytes(), mode=0o644,
+                                       label="init-floor-" + role)
+                done[role] = str(path)
+        return done
+
+    def floor_recover(self, floor_dir, role: str) -> dict:
+        """Root's recovery of a floor that stands too far ahead (decision 5.7): set it to the
+        later of the CA's notBefore and the valid list's thisUpdate -- both signed -- and change
+        nothing else. The lifetime counters stay; the tolerance stays spent."""
+        path = _floor.path_for(floor_dir, role)
+        with self._lock():
+            self._begin()
+            _key, ca_cert = self._ca()
+            _files.settle_stage(self.files, path, _floor.newer, label="recover-floor-" + role)
+            state = _floor.parse(self.files.read(path))
+            not_before = getattr(ca_cert, "not_valid_before_utc", None)
+            not_before = (not_before.timestamp() if not_before is not None else
+                          ca_cert.not_valid_before.replace(tzinfo=_dt.timezone.utc).timestamp())
+            published, _why = self._published(ca_cert)
+            target = max(not_before, published.this_update if published else not_before)
+            new = _floor.recover(state, target)
+            _files.durable_publish(self.files, path, new.to_bytes(), mode=0o644,
+                                   label="recover-floor-" + role)
+            self._note("floor recovered from %.3f to %.3f" % (state.floor, target), role)
+            return {"role": role, "from": state.floor, "to": target,
+                    "elapsed_total": new.elapsed_total, "granted_total": new.granted_total}
+
+    def _note(self, what: str, subject: str = "") -> None:
+        """A root action on the floor, in the issuer's log. Names and numbers only."""
+        line = {"at": round(_now(), 3), "action": what, "subject": subject}
+        try:
+            with open(self.ca_dir / REFUSALS, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(line, sort_keys=True) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError:                                       # pragma: no cover
+            pass
 
     # ------------------------------------------------------------------ looking
 
@@ -446,14 +843,28 @@ class Issuer:
         with self._lock():
             self._begin()
             raw = self._inventory()
-        shown = {"deployment": raw["deployment"], "entries": {}}
+        now = _now()
+        shown = {"deployment": raw["deployment"], "list_number": raw.get("list_number", 0),
+                 "entries": {}}
         for name, entry in raw["entries"].items():
+            certificates = []
+            for c in entry["certificates"]:
+                one = {k: c[k] for k in ("serial", "status", "not_after", "public_key_sha256")}
+                # Decision 5.5: the remaining validity belongs in the view an operator asks for
+                # anyway, and so does the day renewal falls due -- the last third of the
+                # lifetime, day 60 of 90.
+                one["remaining_days"] = round((float(c["not_after"]) - now) / 86400.0, 2)
+                one["renewal_due_from"] = round(float(c["not_after"])
+                                                - int(entry.get("days") or DAYS) * 86400 / 3.0, 3)
+                one["overlap_until"] = c.get("overlap_until")
+                one["revoked_at"] = c.get("revoked_at")
+                one["revocation_reason"] = c.get("revocation_reason", "")
+                certificates.append(one)
             shown["entries"][name] = {
                 "uri": entry["uri"], "usage": entry["usage"],
                 "claimed": not entry.get("secret_sha256"),
-                "certificates": [{k: c[k] for k in ("serial", "status", "not_after",
-                                                    "public_key_sha256")}
-                                 for c in entry["certificates"]]}
+                "renewal_locked": bool(entry.get("renewal_locked")),
+                "certificates": certificates}
         return shown
 
 
@@ -500,6 +911,49 @@ def make_request(tls_dir, secret: str = "", *, renew: bool = False) -> Path:
     return out
 
 
-__all__ = ["CURRENT", "DEFAULT_CA_DIR", "DEFAULT_TRUST_DIR", "INVENTORY", "INVENTORY_TMP",
-           "Indeterminate", "IssuanceRefused", "Issuer", "OVERLAPPING", "SUPERSEDED",
-           "make_request"]
+def install_renewal(tls_dir, anchor) -> dict:
+    """Run AS THE SERVICE, after root renewed: put the renewed pair where the service reads it.
+
+    Checks before it moves anything: `cert.pem.next` was issued by the anchor, carries exactly the
+    identity `cert.pem` carries, and belongs to `key.next.pem`. Then the key moves into place and
+    then the certificate, each rename made durable. A running service takes the new pair up on its
+    next connection (`worker/tls.py`, `Contexts`) and keeps using the previous pair -- still valid,
+    it is overlapping -- for any connection that finds the two halves between the renames, so no
+    connection presents a certificate with a key that is not its own, and nothing restarts.
+    """
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+
+    folder = Path(tls_dir)
+    next_cert_path, next_key_path = folder / "cert.pem.next", folder / "key.next.pem"
+    ca = x509.load_pem_x509_certificate(Path(anchor).read_bytes())
+    renewed = x509.load_pem_x509_certificate(next_cert_path.read_bytes())
+    current = x509.load_pem_x509_certificate((folder / "cert.pem").read_bytes())
+    renewed.verify_directly_issued_by(ca)
+
+    def uris(certificate):
+        return certificate.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName).value.get_values_for_type(x509.UniformResourceIdentifier)
+
+    if uris(renewed) != uris(current):
+        raise IssuanceRefused("the renewed certificate names another identity than the current "
+                              "one; it is not installed")
+    key = serialization.load_pem_private_key(next_key_path.read_bytes(), None)
+    if _public_key_fingerprint(key.public_key()) != _public_key_fingerprint(renewed.public_key()):
+        raise IssuanceRefused("the renewed certificate is not for the key made for it; it is not "
+                              "installed")
+    files = _files.Files()
+    files.rename(next_key_path, folder / "key.pem")
+    files.fsync_dir(folder)
+    files.rename(next_cert_path, folder / "cert.pem")
+    files.fsync_dir(folder)
+    leftover = folder / "renewal.json"
+    if leftover.exists():
+        leftover.unlink()
+    return {"serial": format(renewed.serial_number, "x"), "not_after": _not_after(renewed)}
+
+
+__all__ = ["BY_RENEWAL", "BY_ROOT", "COMPROMISE", "CURRENT", "DEFAULT_CA_DIR", "DEFAULT_TRUST_DIR",
+           "INVENTORY", "INVENTORY_TMP", "Indeterminate", "IssuanceRefused", "Issuer",
+           "OVERLAPPING", "OVERLAP_ENDED", "OVERLAP_SECONDS", "REVOKED", "SUPERSEDED",
+           "install_renewal", "make_request"]

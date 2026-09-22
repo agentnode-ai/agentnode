@@ -1,0 +1,26 @@
+[Unit]
+# The root run of the deployment's own issuer (mtls-transport-decision.md, 5.0, 5.3, 5.7). Only
+# needed when the worker's mutual-TLS door is in use; the unix socket needs none of it.
+#
+# In this order, every time and above all after a restart: resolve what a crash left of the
+# revocation list's and the floors' publication; revoke overlaps that ran out; reconcile the list
+# with the inventory and publish a fresh one when it lacks a revoked serial or is due; and ONLY
+# THEN -- and only if no revocation is waiting to be published -- write the two time floors.
+#
+# It runs as root because it holds the issuing key and writes files no service may write. If it
+# stops, nothing is silently kept alive: the floors age, and both services stop serving over TLS
+# once a floor is older than its maximum age. That is the point of it.
+Description=AgentNode issuer root run (revocation list, overlaps, time floors)
+Documentation=https://agentnode.ai/docs/sandbox
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/agentnode/venv/bin/agentnode pki tick --floor-dir /var/lib/agentnode-floor
+# What it writes, and nothing else.
+ProtectSystem=strict
+ReadWritePaths=/etc/agentnode/ca /etc/agentnode/trust /var/lib/agentnode-floor
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes

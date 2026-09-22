@@ -9,7 +9,8 @@ check and see this test -- and only this test -- turn red. A fixture wrong in tw
 refused with either check gone, and prove nothing about either.
 
     check 1  chain       a foreign CA, with a perfect name and usage
-    check 2  validity    expired, otherwise perfect
+    check 2  validity    expired, otherwise perfect -- judged after the handshake, at the
+                         effective time, since stage 5 (OpenSSL's time check is off)
     check 3  usage       no extended-key-usage extension at all (OpenSSL lets that through)
     check 4  name        outside the grammar / another deployment / the wrong role
     check 5  instance    regularly issued, for an instance this side does not accept
@@ -19,8 +20,9 @@ certificate, the wrong role, swapped certificates, a worker endpoint that change
 changed without the binding, and the transport lost in the middle of a running job. For each:
 refused, the refusal names the check, and nothing ran.
 
-Validity is judged by the system clock in this arc. The decision's rollback-resistant floor is
-stage 5 and is not here.
+Since stage 5, validity is judged at the effective time -- the later of the system clock and the
+root-written floor -- in exactly one place, `check_peer`; `test_mtls_floor.py` and
+`test_mtls_revocation.py` hold what stage 5 adds.
 """
 from __future__ import annotations
 
@@ -33,6 +35,7 @@ import pytest
 from agentnode_sdk.pki import identity as ids
 from agentnode_sdk.worker import WorkerUnreachable
 from agentnode_sdk.worker.remote import TlsWorker
+from tests.test_mtls_transport import _one_boot  # noqa: F401 - autouse: one boot throughout
 from tests.test_mtls_transport import (DEPLOYMENT, KEY, Door, World, a_job, a_raw_tls_client,
                                        send_a_sealed_run, settle)
 
@@ -85,7 +88,8 @@ class TestEachCheckRefusesOnItsOwn:
                              not_before_days=-30, not_after_days=-1)
         door = presented_to_the_worker(world, forged)
         assert door.bytes_in == 0 and door.stub.ran == [], "it got through to the worker"
-        assert any("handshake" in s for s in door.said), door.said
+        # Since stage 5 the handshake does not judge dates; the one place that does is here.
+        assert refused_at(door, ids.CHECK_VALIDITY), door.said
 
     def test_check_3_a_certificate_with_no_usage_is_refused(self, world):
         forged = world.forge("no-usage", uri="agentnode://alpha/gateway/g1", usages=None)
@@ -340,9 +344,9 @@ class TestTheTransportLostInTheMiddleOfAJob:
         live = []
         counted = door.bench.converse
 
-        def keeping(connection):
+        def keeping(connection, noted=None):
             live.append(connection)
-            return counted(connection)
+            return counted(connection, noted=noted)
 
         door.bench.converse = keeping
         client = TlsWorker(door.address, KEY, world.settings(gateway_dir, {"w1"}))

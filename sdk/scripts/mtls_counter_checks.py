@@ -1,5 +1,11 @@
 """Counter-checks for mtls-loopback-identity-r1 (profile M16).
 
+Kept runnable after stage 5 (mtls-revocation-time-r1): three anchors moved with the code they
+mutate -- the worker's context is now built by `Contexts`, `check_peer` takes the trust view, and
+check 2 (validity) is judged by `check_peer` at the effective time instead of by OpenSSL, so its
+mutation now removes that judgement rather than switching OpenSSL's time check off (which stage 5
+does on purpose). Every mutation still takes away the same property as before.
+
 For every check: the control is green first; the mutation LANDS -- the file's digest moves and
 the new text is present; a NAMED test fails, non-zero, and its output contains the reason the
 mutation predicts; the tests that must not be affected stay green; and the file is restored
@@ -36,22 +42,25 @@ CHECKS = [
     # ------------------------------------------------------------ stage 2, per direction
     dict(id="worker-side-verification", area="stage 2 (b) / identity, worker side",
          file="agentnode_sdk/worker/tls.py",
-         edits=[("        self.context = server_context(settings)\n",
-                 "        self.context = server_context(settings)\n"
-                 "        self.context.verify_mode = ssl.CERT_NONE\n"),
-                ("            who = _identity.check_peer(connection.getpeercert(binary_form=True),\n"
+         edits=[("            connection = self.contexts.current().wrap_socket(raw, server_side=True)\n",
+                 "            _unchecked = self.contexts.current()\n"
+                 "            _unchecked.verify_mode = ssl.CERT_NONE\n"
+                 "            connection = _unchecked.wrap_socket(raw, server_side=True)\n"),
+                ("            who = _identity.check_peer(der,\n"
                  "                                       deployment=self.settings.deployment,\n"
                  "                                       expected_role=_identity.GATEWAY,\n"
-                 "                                       accept_instances=self.settings.accept)\n",
+                 "                                       accept_instances=self.settings.accept,\n"
+                 "                                       trust=self.settings.trust(_identity.WORKER))\n",
                  "            who = None\n")],
          test=B_TEST, expect="an application byte from it reached the worker",
          green=[C_TEST]),
     dict(id="gateway-side-verification", area="stage 2 (c) / identity, gateway side",
          file="agentnode_sdk/worker/tls.py",
-         edits=[("        who = _identity.check_peer(connection.getpeercert(binary_form=True),\n"
+         edits=[("        who = _identity.check_peer(der,\n"
                  "                                   deployment=settings.deployment,\n"
                  "                                   expected_role=_identity.WORKER,\n"
-                 "                                   accept_instances=settings.accept)\n",
+                 "                                   accept_instances=settings.accept,\n"
+                 "                                   trust=settings.trust(_identity.GATEWAY))\n",
                  "        who = _identity.Identity(settings.deployment, 'worker', 'unchecked')\n")],
          test=C_TEST, expect="DID NOT RAISE", green=[B_TEST]),
     dict(id="message-layer-mac", area="stage 2 (a) / the MAC over TLS",
@@ -62,7 +71,11 @@ CHECKS = [
          expect="and the MAC still refused it", green=[B_TEST, C_TEST]),
     dict(id="plaintext-refusal", area="stage 2 (d) / plaintext refusal",
          file="agentnode_sdk/worker/tls.py",
-         edits=[("        connection = self.admit(raw)\n", "        connection = raw\n")],
+         # Since stage 5 an admitted connection is also registered for re-evaluation; a door
+         # with no admission has no identity to register, so the registration goes with it.
+         edits=[("        connection = self.admit(raw)\n", "        connection = raw\n"),
+                ("        handle = self.watch.add(connection, connection.gateway_der, "
+                 "connection.gateway, on_cut)\n", "        handle = 0\n")],
          test=T + "TestPlaintextIsNotAWayIn::test_plaintext_on_the_tls_port_reaches_nothing",
          expect="plaintext bytes reached the worker's message layer",
          green=[T + "TestLoopbackOnly::test_neither_end_can_be_pointed_elsewhere"]),
@@ -78,10 +91,8 @@ CHECKS = [
          test=FC + "TestEachCheckRefusesOnItsOwn::test_check_1_a_foreign_ca_with_a_perfect_name_is_refused",
          expect="it got through to the worker", green=[FC + "TestEachCheckRefusesOnItsOwn::test_check_2_an_expired_certificate_is_refused"]),
     dict(id="validity-window", area="check 2 / validity",
-         file="agentnode_sdk/worker/tls.py",
-         edits=[("    context.verify_mode = ssl.CERT_REQUIRED\n",
-                 "    context.verify_mode = ssl.CERT_REQUIRED\n"
-                 "    context.verify_flags |= 0x200000\n")],
+         file="agentnode_sdk/pki/identity.py",
+         edits=[("        if effective_time > not_after:\n", "        if False:\n")],
          test=FC + "TestEachCheckRefusesOnItsOwn::test_check_2_an_expired_certificate_is_refused",
          expect="it got through to the worker", green=[FC + "TestEachCheckRefusesOnItsOwn::test_check_1_a_foreign_ca_with_a_perfect_name_is_refused"]),
     dict(id="extended-key-usage", area="check 3 / usage",

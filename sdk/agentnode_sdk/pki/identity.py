@@ -1,16 +1,23 @@
 """Who a certificate says its holder is, and whether that is who this side expected.
 
 The transport decision (`mtls-transport-decision.md`, 3.1 and 3.4) names one identity per service
-and six checks each side makes of the other. Two of those checks are OpenSSL's and are done in the
-handshake -- the chain to exactly this deployment's CA, and the validity window. The other three
-that exist in this arc are here, after the handshake and before a single application byte:
+and six checks each side makes of the other. One of them is OpenSSL's and is done in the handshake
+-- the chain to exactly this deployment's CA. The other five are here, after the handshake and
+before a single application byte:
 
+    2  both the certificate and the CA certificate are inside their validity at the EFFECTIVE
+       time -- the later of the system clock and the root-written floor (decision 5.7)
     3  the extended key usage fits the direction
     4  the URI SAN is in the grammar, the deployment is ours, the role is the expected one
     5  the instance is one this side was configured to accept
+    6  it is not revoked, according to a revocation list this side can believe (decision 5.3)
 
-Check 6 -- not revoked -- belongs to stage 5 of the decision and does not exist yet. That is said
-here rather than discovered.
+Check 2 used to be OpenSSL's too, judged by the system clock. It moved here in stage 5, and
+OpenSSL's own time check is switched off (`worker/tls.py`): a check made in two places cannot be
+shown to work, and OpenSSL can only judge by the clock that a set-back clock has already fooled.
+
+`standing` is checks 2 and 6 again, for a connection that is already open: the identity on a live
+connection cannot change, but whether it is still valid and still unrevoked can.
 
 ## Each check in exactly one place
 
@@ -65,6 +72,8 @@ CHECK_DEPLOYMENT = "deployment"
 CHECK_ROLE = "role"
 CHECK_INSTANCE = "instance"
 CHECK_NO_CERTIFICATE = "no-certificate"
+CHECK_VALIDITY = "validity"
+CHECK_REVOKED = "revoked"
 
 
 class NotAnIdentity(ValueError):
@@ -158,14 +167,60 @@ def _uri_sans(certificate) -> list[str]:
     return list(extension.value.get_values_for_type(x509.UniformResourceIdentifier))
 
 
+def _window(certificate) -> tuple[float, float]:
+    """(notBefore, notAfter) as timestamps, on every cryptography the SDK allows."""
+    import datetime as _dt
+
+    def stamp(name):
+        aware = getattr(certificate, name + "_utc", None)
+        if aware is not None:
+            return aware.timestamp()
+        return getattr(certificate, name).replace(tzinfo=_dt.timezone.utc).timestamp()
+    return stamp("not_valid_before"), stamp("not_valid_after")
+
+
+def _valid_at(certificate, anchor, effective_time: float, presented: str) -> None:
+    """Check 2. The certificate and the CA certificate, each inside its window at the effective
+    time. The ONLY place a validity window is judged: OpenSSL's time check is off."""
+    for what, subject in (("its certificate", certificate), ("the CA certificate", anchor)):
+        not_before, not_after = _window(subject)
+        if effective_time < not_before:
+            raise PeerRefused(CHECK_VALIDITY, presented, "%s is not yet valid at the effective "
+                              "time" % what)
+        if effective_time > not_after:
+            raise PeerRefused(CHECK_VALIDITY, presented, "%s expired %d seconds before the "
+                              "effective time" % (what, int(effective_time - not_after)))
+
+
+def _not_revoked(certificate, trust, effective_time: float, presented: str) -> None:
+    """Check 6. A list this side can believe at the effective time, and the serial not in it.
+    No believable list is a refusal, never 'nothing is revoked'."""
+    serials = trust.revoked_serials(effective_time, presented)
+    if format(certificate.serial_number, "x") in serials:
+        raise PeerRefused(CHECK_REVOKED, presented, "its certificate is revoked")
+
+
+def standing(der: bytes, trust, presented: str = "") -> None:
+    """Checks 2 and 6 for a connection that is already open, against the current trust state.
+    Raises `PeerRefused` when the connection must be cut."""
+    from cryptography import x509
+
+    certificate = x509.load_der_x509_certificate(der)
+    effective_time = trust.effective_time(presented)
+    _valid_at(certificate, trust.anchor(), effective_time, presented)
+    _not_revoked(certificate, trust, effective_time, presented)
+
+
 def check_peer(der: bytes | None, *, deployment: str, expected_role: str,
-               accept_instances) -> Identity:
-    """Checks 3, 4 and 5 of decision 3.4, in that order, on a certificate the handshake accepted.
+               accept_instances, trust) -> Identity:
+    """Checks 2 to 6 of decision 3.4, in that order, on a certificate the handshake accepted.
 
     `der` is what the TLS layer handed over as the peer's certificate. It has already chained to
-    this deployment's CA and is inside its validity window -- OpenSSL established both and would
-    not have completed the handshake otherwise. What is left is whether it is the RIGHT
-    certificate from that CA.
+    this deployment's CA -- OpenSSL established that and would not have completed the handshake
+    otherwise. Everything else is judged here: whether it is valid at the effective time, whether
+    it is the RIGHT certificate from that CA, and whether it has been revoked. `trust` is where
+    the effective time and the revocation list come from (`pki/trust.py`); there is no default,
+    because a call without one would be a call that skips checks 2 and 6.
     """
     if not der:
         raise PeerRefused(CHECK_NO_CERTIFICATE, detail="the peer presented no certificate")
@@ -174,6 +229,10 @@ def check_peer(der: bytes | None, *, deployment: str, expected_role: str,
     certificate = x509.load_der_x509_certificate(der)
     sans = _uri_sans(certificate)
     presented = sans[0] if len(sans) == 1 else ""
+
+    # 2. Valid at the effective time. The floor is read here; no usable floor, no judgement.
+    effective_time = trust.effective_time(presented)
+    _valid_at(certificate, trust.anchor(), effective_time, presented)
 
     # 3. The usage. Present, and exactly the one this direction needs. A certificate carrying
     #    both would be one that can stand on either end, which is the thing the split prevents.
@@ -206,12 +265,15 @@ def check_peer(der: bytes | None, *, deployment: str, expected_role: str,
     if identity.instance not in set(accept_instances or ()):
         raise PeerRefused(CHECK_INSTANCE, presented,
                           "this side was not configured to accept that %s" % expected_role)
+
+    # 6. Not revoked.
+    _not_revoked(certificate, trust, effective_time, presented)
     return identity
 
 
 __all__ = [
-    "CHECK_DEPLOYMENT", "CHECK_INSTANCE", "CHECK_NO_CERTIFICATE", "CHECK_ROLE", "CHECK_SAN",
-    "CHECK_USAGE", "CLIENT_AUTH", "GATEWAY", "Identity", "MAX_LENGTH", "NotAnIdentity",
-    "PeerRefused", "ROLES", "SCHEME", "SERVER_AUTH", "USAGE_OF", "WORKER", "check_peer",
-    "identity_of", "is_component", "parse",
+    "CHECK_DEPLOYMENT", "CHECK_INSTANCE", "CHECK_NO_CERTIFICATE", "CHECK_REVOKED", "CHECK_ROLE",
+    "CHECK_SAN", "CHECK_USAGE", "CHECK_VALIDITY", "CLIENT_AUTH", "GATEWAY", "Identity",
+    "MAX_LENGTH", "NotAnIdentity", "PeerRefused", "ROLES", "SCHEME", "SERVER_AUTH", "USAGE_OF", "WORKER", "check_peer",
+    "identity_of", "is_component", "parse", "standing",
 ]

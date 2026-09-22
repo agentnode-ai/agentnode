@@ -207,12 +207,16 @@ class Bench:
                 return
         self.converse(connection)
 
-    def converse(self, connection) -> None:
+    def converse(self, connection, noted=None) -> None:
         """Everything after the door: MAC, nonce, floor, the closed list, the answer.
 
         The same for both doors. The unix socket reaches it after the kernel has named the
         account; the TLS listener (`worker/tls.py`) reaches it after the handshake and the
         identity checks. Neither door skips anything in here because of what it checked first.
+
+        `noted`, when given, is told the method and parameters of a request that PASSED every
+        check here, before it is answered -- the TLS door uses it to know which run a connection
+        carries, so that a connection cut because its caller was revoked also stops that run.
         """
         # Per connection and never on `self`: a field would be one thread's request id answered
         # to another thread's caller.
@@ -223,6 +227,8 @@ class Bench:
                 body = wire.read_frame(stream, self.key)
             asked = str(body.get("request_id") or "")
             wire.check(body, self.seen, floor=self.floor)
+            if noted is not None:
+                noted(str(body["method"]), dict(body["params"]))
             result = self.answer(str(body["method"]), dict(body["params"]))
             connection.sendall(wire.seal(wire.answer(asked, result), self.key))
         except wire.ProtocolError as exc:

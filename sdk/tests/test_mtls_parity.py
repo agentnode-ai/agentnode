@@ -37,6 +37,7 @@ from agentnode_sdk.worker.remote import SocketWorker, TlsWorker
 from agentnode_sdk.worker.service import Bench
 from tests import consent
 from tests.test_em3c_gateway import StandInBackend, _granted, _paired, _store_measurement
+from tests.test_mtls_transport import _one_boot  # noqa: F401 - autouse: one boot throughout
 from tests.test_mtls_transport import KEY, Door, World
 from tests.test_socket_worker import AWorkerThatAnswers
 

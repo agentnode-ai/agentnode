@@ -130,12 +130,25 @@ class TestTheCertificateSaysExactlyTheEntry:
 
 class TestTheRequestContributesOnlyItsKey:
 
-    def test_a_request_asking_for_more_gets_exactly_the_entry(self, place):
+    def test_a_request_asking_for_more_gets_exactly_the_entry(self, place, monkeypatch):
         """A request naming another role, another instance, both usages and a CA -- signed by
         the right key and carrying the right secret. What comes back is the entry, unchanged."""
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+        from agentnode_sdk.pki import floor as floors
+        from agentnode_sdk.pki.trust import TrustView
+
+        # What the peer check judges by since stage 5: this issuer's list, and a floor its root
+        # run wrote in this (one) boot. Both valid, so only the certificate's fields decide.
+        monkeypatch.setattr(floors, "_boot", lambda: "test-boot")
+        place.issuer().floor_init(place.root / "floor")
+        place.issuer().tick(place.root / "floor")
+        trust = TrustView.read(anchor=place.trust / "ca.pem",
+                               revocation_list=place.trust / "revoked.crl",
+                               floor=floors.path_for(place.root / "floor", "worker"),
+                               role="worker")
 
         key = serialization.load_pem_private_key((place.folder / "key.pem").read_bytes(), None)
         greedy = (x509.CertificateSigningRequestBuilder()
@@ -153,7 +166,7 @@ class TestTheRequestContributesOnlyItsKey:
         certificate = x509.load_pem_x509_certificate(pem)
         der = certificate.public_bytes(serialization.Encoding.DER)
         who = ids.check_peer(der, deployment="alpha", expected_role="worker",
-                             accept_instances={"w1"})
+                             accept_instances={"w1"}, trust=trust)
         assert who.uri() == "agentnode://alpha/worker/w1"
         assert certificate.extensions.get_extension_for_class(
             x509.BasicConstraints).value.ca is False

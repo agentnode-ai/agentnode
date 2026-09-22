@@ -11,7 +11,10 @@ nothing about TLS. With the key in hand, the certificate check is the ONLY thing
 The observation is made where the bytes would have arrived -- at the worker for the worker's
 check, at the impostor for the gateway's.
 
-The builders at the top (`World`, `Door`) are shared with the other three `test_mtls_*` files.
+The builders at the top (`World`, `Door`) are shared with the other `test_mtls_*` files. From
+stage 5 a `World` also has what every TLS side must judge by: the signed revocation list its issuer
+published at setup, and a floor directory set up and written by the root run (`Issuer.tick`) --
+so every side here is valid and fresh unless a test makes one thing wrong on purpose.
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+from agentnode_sdk.pki import floor as floors
 from agentnode_sdk.pki import identity as ids
 from agentnode_sdk.pki.issuer import Issuer, make_request
 from agentnode_sdk.worker import Job, Limits, WorkerUnreachable
@@ -38,6 +42,20 @@ from tests.test_socket_worker import AWorkerThatAnswers
 DEPLOYMENT = "alpha"
 KEY = b"m" * 32
 
+#: One boot for the whole test process. The floor is judged against the kernel's boot identity,
+#: which Windows does not have; on Linux the real one would do, and this makes both the same.
+TEST_BOOT = "test-boot"
+
+#: Short intervals, so a re-evaluation happens within a test. Their sum is what is promised.
+TEST_RELOAD_SECONDS = 0.2
+TEST_REEVALUATE_SECONDS = 0.1
+
+
+@pytest.fixture(autouse=True)
+def _one_boot(monkeypatch):
+    """Every test here runs in one boot. A test about another boot says so itself."""
+    monkeypatch.setattr(floors, "_boot", lambda: TEST_BOOT)
+
 
 # ====================================================================== the shared builders
 
@@ -49,6 +67,14 @@ class World:
         self.issuer = Issuer(self.root / "ca", self.root / "trust")
         self.issuer.initialise(DEPLOYMENT)
         self.anchor = self.root / "trust" / "ca.pem"
+        self.revocation_list = self.root / "trust" / "revoked.crl"
+        self.floor_dir = self.root / "floor"
+        self.issuer.floor_init(self.floor_dir)
+        self.tick()
+
+    def tick(self) -> dict:
+        """The root run, once: reconcile the list, write both floors in this boot."""
+        return self.issuer.tick(self.floor_dir)
 
     def service(self, role: str, instance: str) -> Path:
         """A service's TLS directory, enrolled through the issuer exactly as a deployment does."""
@@ -60,10 +86,20 @@ class World:
         self.issuer.enroll(request["csr"].encode("ascii"), request["secret"])
         return folder
 
-    def settings(self, folder: Path, accept, *, anchor=None, deployment=DEPLOYMENT):
+    def settings(self, folder: Path, accept, *, anchor=None, deployment=DEPLOYMENT, role=None,
+                 revocation_list=None, floor=None):
+        """A side's settings. Its floor is its ROLE's: a worker's door reads worker.floor, a
+        gateway's client gateway.floor. The role follows the folder a service was enrolled into
+        unless the caller names it -- a forged or swapped folder has to."""
+        if role is None:
+            role = "worker" if Path(folder).name.startswith("worker-") else "gateway"
         return TlsSettings(certificate=str(folder / "cert.pem"), key=str(folder / "key.pem"),
                            anchor=str(anchor or self.anchor), deployment=deployment,
-                           accept=frozenset(accept))
+                           accept=frozenset(accept),
+                           revocation_list=str(revocation_list or self.revocation_list),
+                           floor=str(floor or floors.path_for(self.floor_dir, role)),
+                           reload_seconds=TEST_RELOAD_SECONDS,
+                           reevaluate_seconds=TEST_REEVALUATE_SECONDS)
 
     def _ca(self):
         from cryptography import x509
@@ -174,7 +210,7 @@ class Door:
     """
 
     def __init__(self, world: World, worker_dir: Path, accept, *, stub=None, label=None,
-                 anchor=None) -> None:
+                 anchor=None, settings=None) -> None:
         self.stub = stub or AWorkerThatAnswers()
         self.bench = Bench(self.stub, "unix:///nowhere.sock", KEY, only_uid=None)
         self.bench.label = label
@@ -182,14 +218,15 @@ class Door:
         self.bytes_in = 0
         through = self.bench.converse
 
-        def counted(connection):
+        def counted(connection, noted=None):
             self.conversations += 1
-            return through(_CountingConnection(connection, self))
+            return through(_CountingConnection(connection, self), noted=noted)
 
         self.bench.converse = counted
         self.said: list[str] = []
         self.listener = TlsListener(self.bench, "tcps://127.0.0.1:0",
-                                    world.settings(worker_dir, accept, anchor=anchor),
+                                    settings or world.settings(worker_dir, accept, anchor=anchor,
+                                                               role="worker"),
                                     say=self.said.append)
         _, port = self.listener.open()
         self.address = "tcps://127.0.0.1:%d" % port
@@ -371,7 +408,8 @@ class TestLoopbackOnly:
         with pytest.raises(NotLoopback):
             TlsWorker("tcps://10.1.2.3:8443", KEY, world.settings(gateway, {"w1"}))
         bench = Bench(AWorkerThatAnswers(), "unix:///nowhere.sock", KEY, only_uid=None)
-        listener = TlsListener(bench, "tcps://0.0.0.0:0", world.settings(worker, {"g1"}))
+        listener = TlsListener(bench, "tcps://0.0.0.0:0",
+                               world.settings(worker, {"g1"}, role="worker"))
         with pytest.raises(NotLoopback):
             listener.open()
 
