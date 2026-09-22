@@ -373,6 +373,25 @@ class TestExactlyOneClosingLinePerAcceptedRun:
         assert "OWED_RETRY_SECONDS" in inspect.getsource(
             GatewayService._keep_trying_to_pay_what_is_owed)
 
+    def test_a_run_is_accepted_only_once_a_durable_entry_exists_for_it(self, gateway,
+                                                                       monkeypatch):
+        """The precondition that makes `at least one` a claim about ACCEPTED runs.
+
+        A job is accepted only after the ledger has taken it, under a lock, durably. So the set
+        of accepted runs is exactly the set with an entry, and an entry is what makes a closing
+        line owed. A submission the ledger could not take is refused, and a refused job is not
+        an accepted one.
+        """
+        from agentnode_sdk.gateway import ledger as _ledger
+
+        def refuse(self, *a, **kw):
+            return False
+
+        monkeypatch.setattr(_ledger.Ledger, "claim", refuse)
+        record = gateway.runs.get("never-claimed")
+        assert record is None
+        assert "never-claimed" not in gateway.ledger.unfinished_runs()
+
     def test_the_enforcement_is_inside_the_lock_that_serialises_appends(self):
         """Not in a caller, and not before the lock: two processes reaching it together must not
         both see an empty file."""
@@ -1172,6 +1191,61 @@ class TestTheChainStillVerifies:
             state.close()
         assert report["ok"], report
         assert report["lines"] == 2 and report["unchecked"] == 0, report
+
+    def test_a_new_log_opens_by_naming_the_one_it_continues(self, tmp_path):
+        """A chained log cannot be repaired. When one breaks it is preserved and another
+        begins -- and nothing in the new file would say that anything came before it.
+
+        So the new one opens by naming the old: its digest, its size, how many lines and runs it
+        held, and why it was closed. Signed, and the first link of the new chain.
+        """
+        meter.carry_forward(tmp_path, file_sha256="a" * 64, byte_count=775010, lines=516,
+                            runs=472, why="its chain broke; preserved unrepaired")
+        a_line(tmp_path, "after-the-break", started_at=1000.0, finished_at=1011.0)
+        rows = lines_in(tmp_path)
+        assert meter.is_carried_forward(rows[0])
+        assert rows[0]["carries_forward"] == "a" * 64
+        assert rows[0]["lines"] == 516 and rows[0]["runs"] == 472
+        assert meter.verify(tmp_path)["ok"], "the opening entry is not part of the chain"
+
+    def test_the_opening_entry_is_signed_like_everything_else(self, tmp_path):
+        meter.carry_forward(tmp_path, file_sha256="b" * 64, byte_count=1, lines=1, runs=1,
+                            why="a reason")
+        where = pathlib.Path(tmp_path) / meter.METER_NAME
+        row = json.loads(where.read_text(encoding="utf-8").splitlines()[0])
+        row["lines"] = 999
+        where.write_text(json.dumps(row, sort_keys=True, separators=(",", ":")) + chr(10),
+                         encoding="utf-8")
+        assert not meter.verify(tmp_path)["ok"]
+
+    def test_it_has_to_say_which_file_and_why(self, tmp_path):
+        with pytest.raises(ValueError):
+            meter.carry_forward(tmp_path, file_sha256="", byte_count=1, lines=1, runs=1,
+                                why="a reason")
+        with pytest.raises(ValueError):
+            meter.carry_forward(tmp_path, file_sha256="c" * 64, byte_count=1, lines=1, runs=1,
+                                why="")
+
+    def test_a_correction_can_be_about_a_log_that_was_closed(self, tmp_path):
+        """Where else would it go? Appending to a broken chain adds a line nobody can check."""
+        meter.carry_forward(tmp_path, file_sha256="d" * 64, byte_count=10, lines=2, runs=1,
+                            why="its chain broke")
+        meter.correct(tmp_path, run_id="in-the-old-file", seconds=11.27,
+                      why="metered twice before a run could only be metered once",
+                      in_file="d" * 64, supersedes=[470, 471])
+        row = lines_in(tmp_path)[-1]
+        assert meter.is_a_correction(row)
+        assert row["in_file"] == "d" * 64 and row["supersedes"] == [470, 471]
+        assert meter.what_was_billed(tmp_path)["in-the-old-file"] == 11.27
+        assert meter.verify(tmp_path)["ok"]
+
+    def test_and_one_about_another_file_has_to_name_its_line_numbers(self, tmp_path):
+        meter.carry_forward(tmp_path, file_sha256="e" * 64, byte_count=10, lines=2, runs=1,
+                            why="a reason")
+        with pytest.raises(ValueError) as caught:
+            meter.correct(tmp_path, run_id="somewhere-else", seconds=1.0, why="a reason",
+                          in_file="e" * 64)
+        assert "which line numbers" in str(caught.value)
 
     def test_the_new_fields_are_inside_the_signature(self, tmp_path):
         """Beside it, they could be changed without the signature noticing, which is the same as

@@ -155,7 +155,59 @@ TOMBSTONE_FIELDS = ("seq", "erased_at", "erased_because", "stood_for", "signatur
 #:
 #: This is how an accounting record has always handled a mistake. You do not go back and change
 #: the entry; you post a correcting one, and both stay.
-CORRECTION_FIELDS = ("corrects", "supersedes", "seconds", "why", "at")
+CORRECTION_FIELDS = ("corrects", "supersedes", "seconds", "why", "at", "in_file")
+
+#: WHAT THIS LOG CARRIES FORWARD. The fourth shape, and the one that keeps a history from being
+#: orphaned when a log has to be closed and another opened.
+#:
+#: A chained log cannot be repaired. When one breaks -- and one did, see the note in `record`
+#: about what a line after a tombstone used to point at -- the file is preserved and a new one
+#: begins. Nothing in the new file would then say that anything came before it, and a reader
+#: holding it would have no way to know that the runs in it are not all the runs there were.
+#:
+#: So the new log opens by naming the old one: its digest, how many lines and runs it held, and
+#: why it was closed. The statement is signed and is the first link of the new chain, which means
+#: the history is bound to the present even though the two files cannot be one chain.
+#:
+#: This is the opening entry of a new book. It does not make the old book verify; nothing can.
+#: It makes the new one honest about what it is.
+CARRIED_FORWARD_FIELDS = ("carries_forward", "bytes", "lines", "runs", "why", "at")
+
+
+def is_carried_forward(line: dict) -> bool:
+    return bool(line.get("carries_forward"))
+
+
+def carry_forward(root, *, file_sha256: str, byte_count: int, lines: int, runs: int,
+                  why: str) -> Path:
+    """Open this log by naming the one it continues. An operator's act, never automatic."""
+    from agentnode_sdk.signing_key import sign_payload
+
+    for named, value in (("file_sha256", file_sha256), ("why", why)):
+        if not str(value or "").strip():
+            raise ValueError("a carried-forward statement has to name its %s" % named)
+    path = Path(root) / METER_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _writing(root):
+        so_far = [r for r in read(root) if "seq" in r]
+        line = {
+            "carries_forward": str(file_sha256),
+            "bytes": int(byte_count),
+            "lines": int(lines),
+            "runs": int(runs),
+            "why": str(why)[:300],
+            "at": time.time(),
+        }
+        assert set(line) == set(CARRIED_FORWARD_FIELDS), "it has exactly its own fields"
+        previous = so_far[-1] if so_far else None
+        line["seq"] = (int(previous.get("seq", 0)) + 1) if previous else 1
+        line["prev"] = what_the_next_line_points_at(previous) if previous else GENESIS
+        line["signature"] = sign_payload(_canonical(line), signing_key(root)).hex()
+        handle = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(handle, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n")
+        _write_head(root, line)
+    return path
 
 
 def is_a_correction(line: dict) -> bool:
@@ -198,7 +250,8 @@ def what_the_next_line_points_at(line: dict) -> str:
             else _digest_of(_without_signature(line)))
 
 
-def correct(root, *, run_id: str, seconds: float, why: str) -> Path:
+def correct(root, *, run_id: str, seconds: float, why: str, in_file: str = "",
+            supersedes=None) -> Path:
     """Append a signed correction saying what a run was actually billed.
 
     Deliberate and never automatic. Nothing in the serving path calls this: a gateway that
@@ -219,13 +272,24 @@ def correct(root, *, run_id: str, seconds: float, why: str) -> Path:
         so_far = [r for r in read(root) if "seq" in r]
         mine = [r for r in so_far
                 if str(r.get("run_id") or "") == str(run_id) and not is_a_tombstone(r)]
-        if not mine:
+        if in_file:
+            # THE LINES ARE IN ANOTHER FILE, named by its digest. A log that had to be closed
+            # takes its corrections here, because they cannot go where the lines are: appending
+            # to a chain that is broken adds a line nobody can check.
+            if not supersedes:
+                raise ValueError(
+                    "a correction about another file has to say which line numbers in it")
+        elif not mine:
             raise ValueError("there is no line for run %s to correct" % run_id)
         line = {
             "corrects": str(run_id),
             # WHICH lines, by their own numbers. A correction that named only the run would
             # leave a reader unable to tell whether a line written afterwards is also superseded.
-            "supersedes": sorted(int(r.get("seq") or 0) for r in mine),
+            "supersedes": (sorted(int(x) for x in supersedes) if in_file
+                           else sorted(int(r.get("seq") or 0) for r in mine)),
+            # WHICH FILE those line numbers are in. Empty means this one, which is the ordinary
+            # case; a digest means the correction is about a log that was closed.
+            "in_file": str(in_file or ""),
             "seconds": round(float(seconds), 3),
             "why": str(why)[:200],
             "at": time.time(),
@@ -252,7 +316,7 @@ def what_was_billed(root) -> dict:
     billed: dict = {}
     corrected: dict = {}
     for line in read(root):
-        if is_a_tombstone(line):
+        if is_a_tombstone(line) or is_carried_forward(line):
             continue
         if is_a_correction(line):
             corrected[str(line.get("corrects"))] = round(float(line.get("seconds") or 0.0), 3)
@@ -274,7 +338,7 @@ def runs_with_more_than_one_line(root) -> dict:
     counted: dict = {}
     corrected = set()
     for line in read(root):
-        if is_a_tombstone(line):
+        if is_a_tombstone(line) or is_carried_forward(line):
             continue
         if is_a_correction(line):
             corrected.add(str(line.get("corrects")))
