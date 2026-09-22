@@ -124,8 +124,24 @@ def cmd_serve(args) -> int:
     print("  This account is the only one that drives a container runtime. It holds no pairing")
     print("  Before it opens the socket it hits a memory ceiling, to see whether one binds.")
     print("  state, no signing identity and no client's token.")
+    listen = str(getattr(args, "listen", "") or "")
+    tls = None
+    tls_parts = [getattr(args, n, None) for n in ("tls_dir", "trust", "deployment")]
+    if listen or any(tls_parts) or getattr(args, "accept_gateway", None):
+        if not (listen and all(tls_parts) and getattr(args, "accept_gateway", None)):
+            print()
+            print("  A TLS door needs --listen, --tls-dir, --trust, --deployment and at least one")
+            print("  --accept-gateway. Part of that is refused rather than started without its")
+            print("  checks.")
+            return 2
+        from agentnode_sdk.worker.tls import TlsSettings
+
+        folder = Path(args.tls_dir)
+        tls = TlsSettings(certificate=str(folder / "cert.pem"), key=str(folder / "key.pem"),
+                          anchor=str(args.trust), deployment=str(args.deployment),
+                          accept=frozenset(args.accept_gateway))
     try:
-        serve(address, key, uid)
+        serve(address, key, uid, tls_address=listen, tls=tls)
     except KeyboardInterrupt:                                 # pragma: no cover - operator
         print("\n  stopped.")
         return 0
@@ -186,6 +202,17 @@ def add_parser(subparsers) -> None:
     serve.add_argument("--key", default="", metavar="PATH")
     serve.add_argument("--for-user", dest="for_user", default=None, metavar="ACCOUNT",
                        help="the account the gateway runs as; nothing else may speak here")
+    # A second door, mutual TLS on loopback, beside the socket and never instead of it. All of
+    # these together or none of them.
+    serve.add_argument("--listen", default="", metavar="ADDRESS",
+                       help="tcps://127.0.0.1:<port> -- loopback only")
+    serve.add_argument("--tls-dir", dest="tls_dir", default="", metavar="DIR",
+                       help="where this worker's cert.pem and key.pem are")
+    serve.add_argument("--trust", default="", metavar="FILE",
+                       help="the deployment's CA certificate, and nothing else")
+    serve.add_argument("--deployment", default="", metavar="ID")
+    serve.add_argument("--accept-gateway", dest="accept_gateway", action="append", default=[],
+                       metavar="INSTANCE", help="a gateway instance this worker accepts")
 
 
 __all__ = ["add_parser", "dispatch", "cmd_key", "cmd_serve", "sys"]

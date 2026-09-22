@@ -65,7 +65,8 @@ FIELDS = ("run_id", "client_id", "account_id", "queued_at", "started_at", "finis
           "seconds", "waited_s", "ever_started",
           "cpu", "memory_mb", "wall_clock_s", "state", "outcome", "termination_reason",
           "exit_code", "sandbox", "bytes_out",
-          "worker_topology", "worker_topology_means", "worker_id", "allowance_sha256",
+          "worker_topology", "worker_topology_means", "worker_id",
+          "worker_transport", "worker_identity", "allowance_sha256",
           "allowance_admitted_under", "operator_policy_sha256", "operator_policy_version")
 
 #: The three times a line carries, and what each one is for. Written out because a reader who
@@ -428,7 +429,8 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
            allowance_sha256: str,
            allowance_admitted_under: dict | None = None,
            account_id: str, worker_id: str,
-           operator_policy_sha256: str, operator_policy_version: int) -> Path:
+           operator_policy_sha256: str, operator_policy_version: int,
+           worker_transport: str = "", worker_identity: str = "") -> Path:
     """Write one line about one run.
 
     Every value is named. There is deliberately no parameter that takes free-form content: a
@@ -531,6 +533,13 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
         # WHICH worker. A topology says what KIND of arrangement; this says which instance of
         # it, so a statement can be made per worker rather than per arrangement.
         "worker_id": str(worker_id),
+        # HOW it was reached, and WHO that connection proved to be. Over mutual TLS the identity
+        # is the certificate identity checked in the handshake of the connection that carried
+        # this run, and `worker_id` above is its instance -- not what the worker said about
+        # itself. Over the socket it is the address the gateway connected to. Two lines for the
+        # same job over the two transports differ here and only here (decision 3.5).
+        "worker_transport": str(worker_transport),
+        "worker_identity": str(worker_identity),
         # Under which rules. The digest says exactly which policy and cannot be turned back into
         # one; the version orders it among this gateway's policies, which is the part a person
         # reading a record months later can actually use. Neither alone is enough.

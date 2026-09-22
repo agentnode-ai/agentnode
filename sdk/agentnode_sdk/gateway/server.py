@@ -484,10 +484,11 @@ class GatewayService:
 
         That is not the same as saying the worker can be moved, and this docstring used to say it
         was. The address this reads is handed to `from_address`, which speaks unix sockets and
-        refuses every other scheme, so a worker on another machine needs a transport this build
-        does not have, and writing one is a change to the product, not to a deployment. What this
-        property establishes is that the transport is the only thing missing -- one place to
-        change, not many.
+        mutual TLS on loopback (`worker/tls.py`) and refuses everything else. A `tcps://` address
+        takes its certificate settings from `worker_tls` in the same configuration; an address
+        of that kind without them is refused there, not reached some other way. A worker on
+        another machine is therefore still a change to the product, not to a deployment: the
+        transport refuses every address that is not loopback, in code.
         """
         if self._worker is None:
             address = str(self.config.get("worker_address") or "")
@@ -496,12 +497,50 @@ class GatewayService:
                 from agentnode_sdk.worker.remote import from_address
 
                 self._worker = from_address(
-                    address, wire.read_key(str(self.config.get("worker_key") or "")))
+                    address, wire.read_key(str(self.config.get("worker_key") or "")),
+                    tls=self._worker_tls())
             else:
                 from agentnode_sdk.worker.local import LocalWorker
 
                 self._worker = LocalWorker(self.backend)
         return self._worker
+
+    def _who_ran(self, run_id: str) -> tuple[str, str, str]:
+        """(transport, identity, worker id) for the line about this run.
+
+        Over mutual TLS all three come from the connection that carried the run, checked in its
+        handshake -- never from what the worker said about itself. If no such connection was made
+        by this process the line says UNATTRIBUTED rather than naming anybody. Over the socket
+        the id is the worker's label, read exactly as it always was.
+        """
+        from agentnode_sdk.gateway import meter
+
+        transport, identity, worker_id = self.worker.who_ran(run_id)
+        if transport == "mtls" and not identity:
+            identity = meter.UNATTRIBUTED
+        return transport, identity, worker_id or meter.UNATTRIBUTED
+
+    def _worker_tls(self):
+        """The certificate settings for a `tcps://` worker, or None when none are configured.
+
+        `worker_tls` in the configuration: this gateway's own certificate and key, the one trust
+        anchor, the deployment, and the worker instance(s) it accepts. All or nothing -- a
+        partial set is refused rather than completed with a default, because a default here would
+        be a check nobody decided on.
+        """
+        said = self.config.get("worker_tls")
+        if not said:
+            return None
+        from agentnode_sdk.worker.tls import TlsSettings
+
+        needed = ("certificate", "key", "anchor", "deployment", "accept")
+        missing = [k for k in needed if not said.get(k)]
+        if missing:
+            raise ValueError("worker_tls is missing %s; it is used whole or not at all"
+                             % ", ".join(missing))
+        return TlsSettings(certificate=str(said["certificate"]), key=str(said["key"]),
+                           anchor=str(said["anchor"]), deployment=str(said["deployment"]),
+                           accept=frozenset(str(a) for a in said["accept"]))
 
     @property
     def config(self) -> dict:
@@ -1067,6 +1106,7 @@ class GatewayService:
             asked_for_a_sandbox=bool(entry.get("asked_for_a_sandbox")),
             cleanup_verified=getattr(record, "cleanup_verified", None))
         try:
+            transport, identity, worker_id = self._who_ran(record.run_id)
             meter.record(
                 self.state.root,
                 run_id=record.run_id,
@@ -1091,7 +1131,9 @@ class GatewayService:
                 # the word this gateway already uses for a policy it cannot name, and a reader
                 # can tell it from a real digest.
                 worker_topology=str(admitted.get("worker_topology") or meter.UNATTRIBUTED),
-                worker_id=self.worker.instance_label() or meter.UNATTRIBUTED,
+                worker_id=worker_id,
+                worker_transport=transport,
+                worker_identity=identity,
                 allowance_sha256=str(admitted.get("allowance_sha256") or meter.UNATTRIBUTED),
                 operator_policy_sha256=str(
                     admitted.get("operator_policy_sha256") or meter.UNATTRIBUTED),
@@ -1938,6 +1980,12 @@ class GatewayService:
             record.worker_topology = self.worker.topology
             record.worker_configuration_sha256 = self.worker.configuration_sha256()
             record.backend_version = self.runtime_version()
+            # The worker itself, reached the way the run will reach it and checked the way the
+            # run will check it, BEFORE anything is claimed. A worker that is down, or one that
+            # is not the identity this gateway expects, is a refusal with nothing in the ledger
+            # and nothing in the signed log -- not an accepted job that must then be closed as
+            # lost. A worker that goes away after this point is `transport_lost`, as before.
+            self.worker.confirm_reachable()
         except Exception as exc:                              # noqa: BLE001 - refusal is an answer
             record.move_to("refused")
             record.refusal = str(exc)
@@ -2498,6 +2546,7 @@ class GatewayService:
                 # checked, which is worse than one binding none.
                 pass
 
+            transport, identity, worker_id = self._who_ran(record.run_id)
             meter.record(
                 self.state.root,
                 run_id=record.run_id,
@@ -2505,7 +2554,9 @@ class GatewayService:
                 # name. That is a real state and it is said rather than left blank.
                 client_id=record.owner_client_id or meter.UNATTRIBUTED,
                 account_id=record.owner_account_id or meter.UNATTRIBUTED,
-                worker_id=self.worker.instance_label() or meter.UNATTRIBUTED,
+                worker_id=worker_id,
+                worker_transport=transport,
+                worker_identity=identity,
                 operator_policy_sha256=operator_digest or meter.UNATTRIBUTED,
                 operator_policy_version=operator_version,
                 started_at=started, finished_at=finished,

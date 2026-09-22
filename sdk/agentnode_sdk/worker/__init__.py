@@ -331,6 +331,28 @@ class Worker(ABC):
     #: Where this worker is, for the record to bind. One of `TOPOLOGIES`.
     topology = SINGLE_HOST_DEVELOPMENT
 
+    #: How the gateway reaches it: "in-process" here, "unix" or "mtls" for a worker elsewhere.
+    transport = "in-process"
+
+    def confirm_reachable(self) -> None:
+        """Reach the worker through its transport, with that transport's checks, and let go.
+
+        Called by the gateway after a job is admitted and BEFORE its run id is claimed, so a
+        worker that cannot be reached -- or one that is not who this gateway was told to expect
+        -- turns the submission into a refusal with nothing in the ledger and nothing in the
+        signed log, instead of an accepted job that then has to be closed as lost. In this
+        process there is nothing to reach.
+        """
+
+    def who_ran(self, run_id: str) -> tuple[str, str, str]:
+        """(transport, identity, worker id) for the record of that run.
+
+        In this process there is no connection to prove anything, so the identity is empty and
+        the id is the worker's own label. A worker reached over mutual TLS answers with what the
+        connection that carried the run proved (`worker/remote.py`, `TlsWorker`).
+        """
+        return self.transport, "", self.instance_label()
+
     #: What distinguishes one worker's configuration from another's, for the record to bind. A
     #: digest rather than the configuration itself: a record is read by people who may not be
     #: allowed to know what the worker was told.

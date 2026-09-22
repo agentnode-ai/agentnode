@@ -651,9 +651,15 @@ class TestWhoMayConnect:
 
         source = inspect.getsource(Bench.who_is_connecting)
         assert "SO_PEERCRED" in source
-        # Nothing in the body is consulted: the check happens before a byte of it is read.
+        # Nothing in the body is consulted: the check happens before a byte of it is read. The
+        # reading moved into `converse`, which both doors share (the TLS listener reaches it
+        # after its handshake), so the property is stated in three parts that together are the
+        # old one: the door reads nothing itself, it asks the kernel before it hands over, and
+        # what it hands over to is where the reading is.
         order = inspect.getsource(Bench._one)
-        assert order.index("who_is_connecting") < order.index("read_frame")
+        assert "read_frame" not in order
+        assert order.index("who_is_connecting") < order.index("self.converse(")
+        assert "read_frame" in inspect.getsource(Bench.converse)
 
     def test_a_message_from_the_right_account_with_the_wrong_key_is_not_answered(self):
         connection = AConnectionFrom(1000, key=OTHER)

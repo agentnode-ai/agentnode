@@ -5,12 +5,11 @@ no product code names a path, an account or a host. That is what `ALPHA-BOUNDARY
 be true before the second machine exists, and it is true.
 
 **It does not follow that the worker can be moved by changing that string, and an earlier version
-of this docstring said it did.** `from_address` below speaks `unix://` and `unix+stream://` and
-refuses every other scheme in as many words -- there is no `tcp://` here, and a worker on another
-machine needs a transport that has not been written. Writing it is a change to the product, not
-to a deployment. What IS established is that it would be the only thing to add: one function to
-extend, with the vocabulary, the data, the failure modes and the record all indifferent to where
-the other end is.
+of this docstring said it did.** `from_address` below speaks `unix://` and `unix+stream://`, and
+`tcps://` -- mutual TLS -- on a literal LOOPBACK address only (`worker/tls.py`). It refuses every
+other scheme and every non-loopback host in as many words. So moving the worker to another
+machine is still a change to the product, not to a deployment: the loopback restriction is in
+this code, and lifting it is the transport decision's post-loopback gate, with its own review.
 
 ## Where the topology in the record comes from
 
@@ -32,6 +31,7 @@ from __future__ import annotations
 import socket
 import struct
 import time
+from collections import OrderedDict
 from urllib.parse import urlparse
 
 from agentnode_sdk.worker import (
@@ -101,6 +101,10 @@ class SocketWorker(Worker):
         #: without waiting out the default.
         self.run_margin = run_margin
         self._described: dict | None = None
+        #: Who answered the describe, when the transport proves it. None on a socket.
+        self._described_by = None
+        #: run_id -> the identity the connection carrying that run proved. Bounded, oldest out.
+        self._ran_on: "OrderedDict[str, object]" = OrderedDict()
 
     # ------------------------------------------------------------------ the line itself
 
@@ -108,10 +112,12 @@ class SocketWorker(Worker):
     def topology(self) -> str:                                # type: ignore[override]
         return topology_of(self.address)
 
-    def _ask(self, method: str, params: dict, *, wait: float) -> object:
-        """One question and its answer, or a refusal that says which kind it is."""
-        deadline = time.time() + wait
-        body = wire.request(method, params, deadline=deadline)
+    #: How this gateway reaches the worker, for the record to say. `worker/tls.py` overrides it.
+    transport = "unix"
+
+    def _open(self):
+        """A connected stream to the worker, and who it proved to be -- None on a socket, where
+        the kernel's account check on the worker's side is what stands in for an identity."""
         if not hasattr(socket, "AF_UNIX"):
             raise WorkerUnreachable(
                 "this machine has no unix sockets, so it cannot reach a worker over one. The "
@@ -124,6 +130,30 @@ class SocketWorker(Worker):
             raise WorkerUnreachable(
                 "the sandbox worker at " + self.address + " could not be reached: " + str(exc)
             ) from exc
+        return connection, None
+
+    def confirm_reachable(self) -> None:
+        """Open the connection a run would use -- over TLS that is the handshake and the identity
+        checks -- and close it without sending anything. Raises `WorkerUnreachable` as a run
+        would, which the gateway turns into a refusal before it claims anything."""
+        connection, _who = self._open()
+        try:
+            connection.close()
+        except OSError:                                       # pragma: no cover
+            pass
+
+    def _ask(self, method: str, params: dict, *, wait: float, run_id: str = "") -> object:
+        """One question and its answer, or a refusal that says which kind it is."""
+        deadline = time.time() + wait
+        body = wire.request(method, params, deadline=deadline)
+        connection, who = self._open()
+        if who is not None:
+            # The identity THIS connection proved, noted before a byte is sent -- so that a run
+            # whose connection is lost afterwards is still recorded against who was checked.
+            if run_id:
+                self._note_who_ran(run_id, who)
+            if method == "describe":
+                self._described_by = who
         try:
             connection.settimeout(wait)
             connection.sendall(wire.seal(body, self._key))
@@ -225,11 +255,23 @@ class SocketWorker(Worker):
 
     # ------------------------------------------------------------------ doing things
 
+    def _note_who_ran(self, run_id: str, who) -> None:
+        self._ran_on[run_id] = who
+        while len(self._ran_on) > 10000:
+            self._ran_on.popitem(last=False)
+
+    def who_ran(self, run_id: str) -> tuple[str, str, str]:
+        """(transport, identity, worker id) for the record. On a socket the identity is the
+        address -- what the gateway knows it connected to -- and the id is the worker's own
+        label, as it always was."""
+        return self.transport, self.address, self.instance_label()
+
     def run(self, job: Job) -> Outcome:
         params = dict(job.as_message())
         params["artifact"] = wire.as_text(job.artifact)
         got = self._ask("run", {"job": params},
-                        wait=float(job.limits.wall_clock_s) + self.run_margin)
+                        wait=float(job.limits.wall_clock_s) + self.run_margin,
+                        run_id=job.run_id)
         if not isinstance(got, dict):
             raise WorkerUnreachable("the sandbox worker did not say what happened to the job")
         return Outcome(
@@ -271,15 +313,65 @@ class SocketWorker(Worker):
                           "denied": denied}, wait=1800.0)
 
 
-def from_address(address: str, key: bytes) -> Worker:
-    """The worker at this address. The only place that decides which transport is used."""
+class TlsWorker(SocketWorker):
+    """The same line, over TCP with mutual TLS on loopback (`worker/tls.py`).
+
+    Only `_open` differs. Every message still carries its MAC and every answer is still checked
+    against its request -- a handshake that succeeded changes none of that.
+    """
+
+    transport = "mtls"
+
+    def __init__(self, address: str, key: bytes, tls, connect_timeout: float = 10.0,
+                 run_margin: float = RUN_MARGIN_SECONDS) -> None:
+        from agentnode_sdk.worker.tls import client_context, endpoint
+
+        endpoint(address)                                     # loopback, or refused here
+        super().__init__(address, key, connect_timeout=connect_timeout, run_margin=run_margin)
+        self.tls = tls
+        self._context = client_context(tls)
+
+    def _open(self):
+        from agentnode_sdk.worker.tls import open_to_worker
+
+        return open_to_worker(self.address, self.tls, self._context, self.connect_timeout)
+
+    def instance_label(self) -> str:
+        """The instance the worker's CERTIFICATE names, from the connection that answered the
+        describe -- not the name it gave for itself in the answer."""
+        self._describe()
+        return str(getattr(self._described_by, "instance", "") or "")
+
+    def who_ran(self, run_id: str) -> tuple[str, str, str]:
+        """What the connection that carried this run proved. Empty when no such connection was
+        made by this process -- a run interrupted before it reached the worker, or one this
+        gateway did not start -- which the record says rather than filling in a guess."""
+        who = self._ran_on.get(run_id)
+        if who is None:
+            return self.transport, "", ""
+        return self.transport, who.uri(), who.instance
+
+
+def from_address(address: str, key: bytes, tls=None) -> Worker:
+    """The worker at this address. The only place that decides which transport is used.
+
+    `unix://` is the socket, as before, and stays the default. `tcps://` is mutual TLS on
+    loopback and needs `tls`; without it the address is refused rather than reached some other
+    way. Nothing here ever tries a second transport after the first one failed.
+    """
     parsed = urlparse(address or "")
     if parsed.scheme in ("unix", "unix+stream"):
         return SocketWorker(address, key)
+    if parsed.scheme == "tcps":
+        if tls is None:
+            raise WorkerUnreachable(
+                "%r asks for mutual TLS, and this gateway has no certificate settings for it. "
+                "It is refused, not reached another way." % address[:60])
+        return TlsWorker(address, key, tls)
     raise WorkerUnreachable(
-        "this build knows how to reach a worker over a unix socket and nothing else yet. "
-        + repr(address[:60]) + " would need a transport that is not here.")
+        "this build reaches a worker over a unix socket or over mutual TLS on loopback, and "
+        + repr(address[:60]) + " is neither.")
 
 
-__all__ = ["SocketWorker", "from_address", "topology_of", "QUICK_SECONDS", "RUN_MARGIN_SECONDS",
-           "struct"]
+__all__ = ["SocketWorker", "TlsWorker", "from_address", "topology_of", "QUICK_SECONDS",
+           "RUN_MARGIN_SECONDS", "struct"]
