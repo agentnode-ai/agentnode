@@ -218,10 +218,16 @@ def _the_line_that_says(text: str, marker: str) -> str | None:
     every caller here names the reason it predicts and this returns the line that carries it --
     or nothing, and then the counter-check has not established what it claims.
     """
-    for line in text.splitlines():
-        if marker.lower() in line.lower():
-            return line.strip()[:300]
-    return None
+    matched = [line.strip() for line in text.splitlines() if marker.lower() in line.lower()]
+    if not matched:
+        return None
+    # pytest echoes the source of the failing assertion as well as the message it produced, and
+    # the source line carries the format string rather than the values. The line that begins with
+    # `E` is the one that says what actually happened, so it wins when both are present.
+    for line in matched:
+        if line.startswith("E "):
+            return line[:300]
+    return matched[-1][:300]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -254,7 +260,9 @@ MUTATIONS = [
         "test": ("tests/test_admission.py::TestTheRangeTheCheckAboveReads"
                  "::test_an_event_that_describes_no_range_is_refused"),
         "because": "guessing a range is how a check ends up reading something nobody chose",
-        "expect": "DID NOT RAISE",
+        # The guess is `origin/main`, which the hermetic repository does not have -- so the
+        # refusal that arrives names THAT, which is the proof the fallback was taken.
+        "expect": "('origin/main') is not a commit",
     },
     {
         "name": "the check is allowed to skip itself",
@@ -272,7 +280,9 @@ MUTATIONS = [
         "test": ("tests/test_admission.py::TestTheRangeTheCheckAboveReads"
                  "::test_a_malformed_sha_is_refused"),
         "because": "a payload value that is not a commit id should never reach git",
-        "expect": "DID NOT RAISE",
+        # Without the shape check the raw payload reaches git, and the refusal quotes it --
+        # which is exactly the thing the shape check exists to prevent.
+        "expect": "('not-a-sha; rm -rf /') is not a commit",
     },
 ]
 
