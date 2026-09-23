@@ -134,10 +134,24 @@ def a_real_forbidden_commit(out) -> bool:
             "::test_the_commit_messages_on_this_branch_do_not_claim_it_either",
             {"GITHUB_ACTIONS": "", "GITHUB_EVENT_PATH": "",
              "AGENTNODE_COMMIT_RANGE_BASE": start, "AGENTNODE_COMMIT_RANGE_HEAD": claim})
-        red = done.returncode != 0 and "claims to determine intent" in done.stdout
+        said = _the_line_that_says(done.stdout, "claims to determine intent")
+        failed_line = _the_line_that_says(done.stdout, "FAILED tests/test_admission.py")
+        phrase = "malicious intent"
+        red = (done.returncode != 0 and said is not None and phrase in said.lower()
+               and failed_line is not None)
+        out("the commit's message: %r"
+            % git("log", "-1", "--format=%B", claim).stdout.strip())
         out("range %s..%s (one commit, made for this check)" % (start[:12], claim[:12]))
-        out("the check exits %d and says: %s" % (done.returncode, _one_line(done.stdout)))
-        out("REFUSED AS PREDICTED: %s" % red)
+        out("the check exits %d" % done.returncode)
+        out("and the failure it raised, verbatim:")
+        out("    %s" % (said if said else "(no line naming a claim was printed -- see below)"))
+        out("    %s" % (failed_line if failed_line else "(no FAILED line for this test)"))
+        out("the failure names the phrase %r: %s" % (phrase, bool(said and phrase in said.lower())))
+        out("REFUSED FOR THE PREDICTED REASON: %s" % red)
+        if not red:
+            out("the whole tail of what it printed:")
+            for line in done.stdout.strip().splitlines()[-12:]:
+                out("    %s" % line)
         return red
     finally:
         git("update-ref", "-d", "refs/heads/%s" % scratch)
@@ -178,20 +192,36 @@ def an_empty_and_a_broken_range(out) -> bool:
         env = dict({"GITHUB_ACTIONS": "", "GITHUB_EVENT_PATH": "",
                     "AGENTNODE_COMMIT_RANGE_BASE": "", "AGENTNODE_COMMIT_RANGE_HEAD": ""}, **env)
         done = run_test(node, env)
-        red = done.returncode != 0 and expected in done.stdout
-        out("%-34s exit %d  expected %-32r  RED: %s" % (what, done.returncode, expected, red))
+        said = _the_line_that_says(done.stdout, expected)
+        failed_line = _the_line_that_says(done.stdout, "FAILED tests/test_admission.py")
+        red = done.returncode != 0 and said is not None and failed_line is not None
+        out("")
+        out("%s" % what)
+        out("    exit %d, and the reason it gave, verbatim:" % done.returncode)
+        out("    %s" % (said or "(nothing it printed contained %r)" % expected))
+        out("    RED FOR THE PREDICTED REASON (%r): %s" % (expected, red))
         if not red:
-            out("    what it said instead: %s" % _one_line(done.stdout))
+            for line in done.stdout.strip().splitlines()[-10:]:
+                out("      %s" % line)
         every = every and red
-    out("every one of them ended red: %s" % every)
+    out("")
+    out("every one of them ended red, each naming its own reason: %s" % every)
     return every
 
 
-def _one_line(text: str) -> str:
+def _the_line_that_says(text: str, marker: str) -> str | None:
+    """The line carrying `marker`, or None.
+
+    An earlier version of this file picked "a line that looks like a failure", which printed
+    whatever source line pytest happened to echo and proved nothing about WHY a check went red.
+    A counter-check that only knows the exit code cannot tell a refusal from an import error, so
+    every caller here names the reason it predicts and this returns the line that carries it --
+    or nothing, and then the counter-check has not established what it claims.
+    """
     for line in text.splitlines():
-        if "NoRange" in line or "could not be established" in line or "claims to determine" in line:
-            return line.strip()[:200]
-    return (text.strip().splitlines() or [""])[-1][:200]
+        if marker.lower() in line.lower():
+            return line.strip()[:300]
+    return None
 
 
 # ---------------------------------------------------------------------------------------------
@@ -206,6 +236,7 @@ MUTATIONS = [
         "test": ("tests/test_admission.py::TestTheRangeTheCheckAboveReads"
                  "::test_an_empty_range_is_refused_rather_than_passed"),
         "because": "an empty range is exactly what `main` produced, so nothing would be read",
+        "expect": "DID NOT RAISE",
     },
     {
         "name": "the relatedness check is removed",
@@ -214,6 +245,7 @@ MUTATIONS = [
         "test": ("tests/test_admission.py::TestTheRangeTheCheckAboveReads"
                  "::test_two_histories_that_never_met_are_refused"),
         "because": "two ids that share no history are not two ends of one range",
+        "expect": "DID NOT RAISE",
     },
     {
         "name": "an unknown event falls back to the branch instead of refusing",
@@ -222,6 +254,7 @@ MUTATIONS = [
         "test": ("tests/test_admission.py::TestTheRangeTheCheckAboveReads"
                  "::test_an_event_that_describes_no_range_is_refused"),
         "because": "guessing a range is how a check ends up reading something nobody chose",
+        "expect": "DID NOT RAISE",
     },
     {
         "name": "the check is allowed to skip itself",
@@ -230,6 +263,7 @@ MUTATIONS = [
         "test": ("tests/test_admission.py::TestTheRangeTheCheckAboveReads"
                  "::test_this_check_has_no_way_to_skip_itself"),
         "because": "this is the repair that was refused: green by reading nothing",
+        "expect": "can skip itself",
     },
     {
         "name": "the shape check on what the forge sent is removed",
@@ -238,6 +272,7 @@ MUTATIONS = [
         "test": ("tests/test_admission.py::TestTheRangeTheCheckAboveReads"
                  "::test_a_malformed_sha_is_refused"),
         "because": "a payload value that is not a commit id should never reach git",
+        "expect": "DID NOT RAISE",
     },
 ]
 
@@ -267,15 +302,23 @@ def mutate(out, only=None) -> bool:
             TARGET.write_bytes(mutated.encode("utf-8"))
             landed = hashlib.sha256(TARGET.read_bytes()).hexdigest()
             done = run_test(spec["test"])
-            red = done.returncode != 0
+            # The exit code alone cannot tell a refusal from a syntax error or a failed import.
+            # So each mutation names the failure it predicts, and the line carrying it is printed.
+            said = _the_line_that_says(done.stdout, spec["expect"])
+            failed_line = _the_line_that_says(done.stdout, "FAILED %s" % spec["test"].split("::")[0])
+            red = done.returncode != 0 and said is not None and failed_line is not None
             out("")
             out("-- %s" % spec["name"])
             out("   why it should go red: %s" % spec["because"])
             out("   the mutation landed:  sha256 %s (was %s)" % (landed[:16], before[:16]))
-            out("   %s" % spec["test"].split("::")[-1])
-            out("   exit %d -> RED AS PREDICTED: %s" % (done.returncode, red))
+            out("   the test that should catch it: %s" % spec["test"].split("::")[-1])
+            out("   exit %d, and what it said, verbatim:" % done.returncode)
+            out("     %s" % (said or "(nothing it printed contained %r)" % spec["expect"]))
+            out("     %s" % (failed_line or "(no FAILED line naming that file)"))
+            out("   RED FOR THE PREDICTED REASON (%r): %s" % (spec["expect"], red))
             if not red:
-                out("   what it said: %s" % _one_line(done.stdout))
+                for line in done.stdout.strip().splitlines()[-10:]:
+                    out("     %s" % line)
             every = every and red
             TARGET.write_bytes(original)
             back = hashlib.sha256(TARGET.read_bytes()).hexdigest()
