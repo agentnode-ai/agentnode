@@ -9,6 +9,26 @@ be measuring a machine that happened to be idle, and would pass against the old 
 Instead the worker's stop is HELD OPEN on an event this test owns: while the stop is provably still
 in progress, the caller's answer must already be back. That is the same claim, established by
 construction rather than by duration, and it fails against a synchronous cancel every time.
+
+WHY THIS FILE FAILED EIGHT TIMES IN CI, AND WHAT WAS WRONG WITH IT
+------------------------------------------------------------------
+Every one of those failures was the same assertion: the worker was never asked to stop. Measured
+on a two-core Linux box under load, with the gateway's own state printed at the moment it
+happened, the run was:
+
+    state 'cancelled'   started_at 0.0   container_name ''
+    refusal 'cancelled by the client before it started'
+
+The run had not started yet. A job still waiting for a slot has no container, so the gateway does
+not ask the worker to stop one -- it takes the job out of the queue and ends it, which is the
+deliberate behaviour `GatewayService.cancel` documents. The product was right; these tests were
+reading a correct refusal as a missing stop, because they cancelled whatever stage the run
+happened to be at. On an idle machine the run always won that race, so the case never showed.
+
+The repair is an ordering the test controls, not a longer wait: `a_running_job` now waits for the
+backend's own `has_started` before returning, so a test that means to cancel a RUNNING job cancels
+one. **No timeout in this file was raised** -- the ten-second waits are left exactly as they were,
+because they are deadlock guards now rather than the thing being relied on.
 """
 from __future__ import annotations
 
@@ -32,14 +52,27 @@ class ABackendThatKeepsRunning(StandInBackend):
     observed, and `status` rightly reported the terminal state rather than `stopping`. That was
     the test racing itself, not the gateway misbehaving, and it only showed up on Linux. A run
     that ends when this test lets it end removes the race by construction.
+
+    The SECOND race was at the other end, and it is the one that made this file fail eight times
+    in CI. A run that has not started yet has no container, so cancelling it is a different case
+    with a different -- and deliberate -- answer: the gateway takes it out of the queue and ends
+    it as `cancelled by the client before it started`, without ever asking the worker to stop
+    anything. On a machine with a spare core the run always reached the backend first and the
+    tests never saw that path; on a loaded two-core runner the cancellation won, and the tests
+    read a correct refusal as a missing stop. `has_started` closes that: a test that means to
+    cancel a RUNNING run now waits until the run really is one.
     """
 
     def __init__(self):
         super().__init__()
         self.may_finish_run = threading.Event()
+        #: Set the moment the run is really executing, before it is held open. This is the
+        #: synchronisation point the cancelling tests wait on; nothing here measures duration.
+        self.has_started = threading.Event()
 
     def run_process(self, spec, input_text=None, timeout=120.0):
         self.specs.append(spec)
+        self.has_started.set()
         self.may_finish_run.wait(timeout=30)
         return 0, "RAN", ""
 
@@ -81,6 +114,7 @@ def sandbox(tmp_path):
     service.CONTAINER_APPEAR_SECONDS = 0.2
     held = AWorkerHeldOpen(service.worker)
     held.run_may_finish = backend.may_finish_run
+    held.run_has_started = backend.has_started
     service._worker = held
     token = state.redeem_pairing(state.start_pairing(), client_name="a laptop")
     try:
@@ -94,7 +128,20 @@ def sandbox(tmp_path):
         state.close()
 
 
-def a_running_job(service, who):
+#: A deadlock guard, and nothing else. Every wait in this file is either an ordering gate that is
+#: already satisfied by the time it is reached, or one of these: a limit that ends a broken test
+#: instead of hanging the suite. No claim here rests on how long anything took.
+A_DEADLOCK_GUARD = 30.0
+
+
+def a_running_job(service, who, really_started=None):
+    """Submit a job and, when asked, do not come back until it is genuinely running.
+
+    `really_started` is the backend's own signal, set from inside the run. Waiting for it is what
+    separates "cancel a running job" from "cancel a job that has not started", which the gateway
+    answers differently on purpose -- and which is the race that made this file fail in CI. A
+    caller that does not pass it is asking for the submitted job whatever stage it is at.
+    """
     # The disclosure is bound to the job it described, so what is prepared and what is
     # submitted have to be the same job. They were not: this prepared for a made-up
     # digest and then submitted real code, which is exactly the substitution the gate
@@ -111,6 +158,10 @@ def a_running_job(service, who):
         "artifact": base64.b64encode(body).decode("ascii"),
         "command": ["python", "-c", code], "wall_clock_s": 60,
         "accepted_disclosure": told["accepted_disclosure"]}, who, service=service)
+    if really_started is not None:
+        assert really_started.wait(timeout=A_DEADLOCK_GUARD), (
+            "the run never reached the backend, so there is no running job to cancel and this "
+            "test would be asking about the wrong case")
     return started["run_id"]
 
 
@@ -119,7 +170,7 @@ class TestTheCallerIsNotHeld:
     def test_the_answer_comes_back_while_the_stop_is_still_in_progress(self, sandbox):
         """The whole claim, without a stopwatch."""
         service, who, held = sandbox
-        run_id = a_running_job(service, who)
+        run_id = a_running_job(service, who, held.run_has_started)
 
         assert held.asked_to_stop.wait(timeout=0) is False, "the stop began before it was asked for"
         answer = dispatch.dispatch("cancel", {"run_id": run_id}, who, service=service)
@@ -141,7 +192,7 @@ class TestTheCallerIsNotHeld:
 
     def test_and_the_run_says_stopping_until_it_is_really_over(self, sandbox):
         service, who, held = sandbox
-        run_id = a_running_job(service, who)
+        run_id = a_running_job(service, who, held.run_has_started)
         dispatch.dispatch("cancel", {"run_id": run_id}, who, service=service)
         assert held.asked_to_stop.wait(timeout=10)
 
@@ -157,7 +208,7 @@ class TestTheCallerIsNotHeld:
     def test_asking_twice_does_not_start_a_second_stop(self, sandbox):
         """Idempotent: the second request joins the first."""
         service, who, held = sandbox
-        run_id = a_running_job(service, who)
+        run_id = a_running_job(service, who, held.run_has_started)
 
         first = dispatch.dispatch("cancel", {"run_id": run_id}, who, service=service)
         assert held.asked_to_stop.wait(timeout=10)
@@ -172,7 +223,7 @@ class TestTheCallerIsNotHeld:
         service, who, held = sandbox
         held.may_finish.set()
         held.run_may_finish.set()
-        run_id = a_running_job(service, who)
+        run_id = a_running_job(service, who, held.run_has_started)
         dispatch.dispatch("cancel", {"run_id": run_id}, who, service=service)
         settled = _poll_until_finished(service, who, run_id)
 
@@ -193,7 +244,7 @@ class TestCleanupIsStillRequired:
         assert "stopping" not in contract.FINISHED_STATES
         assert "stopping" in contract.RUNNING_STATES
 
-        run_id = a_running_job(service, who)
+        run_id = a_running_job(service, who, held.run_has_started)
         dispatch.dispatch("cancel", {"run_id": run_id}, who, service=service)
         assert held.asked_to_stop.wait(timeout=10)
         where = dispatch.dispatch("status", {"run_id": run_id}, who, service=service)
@@ -209,7 +260,7 @@ class TestCleanupIsStillRequired:
             raise OSError("the runtime went away")
 
         held.stop = it_goes_wrong
-        run_id = a_running_job(service, who)
+        run_id = a_running_job(service, who, held.run_has_started)
         dispatch.dispatch("cancel", {"run_id": run_id}, who, service=service)
         assert held.asked_to_stop.wait(timeout=10)
 
@@ -249,7 +300,7 @@ class TestCancellingIsGovernedLikeEverythingElse:
 
     def test_the_operators_stop_refuses_a_cancellation_as_well(self, sandbox):
         service, who, held = sandbox
-        run_id = a_running_job(service, who)
+        run_id = a_running_job(service, who, held.run_has_started)
         import json
         import os
 
@@ -268,7 +319,7 @@ class TestCancellingIsGovernedLikeEverythingElse:
         from agentnode_sdk.access import stopping as poolmod
 
         service.stopping.PER_DEVICE = 3
-        run_id = a_running_job(service, who)
+        run_id = a_running_job(service, who, held.run_has_started)
         first = dispatch.dispatch("cancel", {"run_id": run_id}, who, service=service)
         assert first["accepted"] is True
         for _ in range(50):                       # the same run, over and over: never refused
@@ -300,7 +351,7 @@ class TestARestartDoesNotLoseACancellation:
         first._worker = held
         token = state.redeem_pairing(state.start_pairing(), client_name="a laptop")
         who = dispatch.identify(first, token)
-        run_id = a_running_job(first, who)
+        run_id = a_running_job(first, who, backend.has_started)
         dispatch.dispatch("cancel", {"run_id": run_id}, who, service=first)
         assert held.asked_to_stop.wait(timeout=10)
         assert first.stopping.unfinished() == [run_id], "it was not written down before trying"
