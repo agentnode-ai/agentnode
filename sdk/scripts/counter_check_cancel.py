@@ -107,7 +107,24 @@ MUTATIONS = [
         "expect": "assert",
     },
     {
-        "name": "cleanup is neither done nor recorded",
+        # THE CLEANUP ITSELF, not the note about it. The mutation below this one removes only the
+        # line that records a cleanup for a job that never created anything -- a real mechanism,
+        # but bookkeeping: a gateway that never asked whether a sandbox was still there would
+        # survive it untouched. This one replaces the ASKING with the answer it would have given,
+        # which is the failure worth catching -- not a flag that is missing, but one that is true
+        # because somebody assumed it.
+        "name": "the sandbox is called gone without anybody asking",
+        "file": SERVER,
+        "find": ("                record.cleanup_verified = "
+                 "self.worker.gone(record.container_name).verified\n"),
+        "replace": ("                record.cleanup_verified = True  # MUTATED: nobody asked\n"),
+        "test": CANCEL_TESTS + "::TestCleanupIsStillRequired"
+                "::test_and_the_terminal_state_arrives_with_the_sandbox_CONFIRMED_gone",
+        "because": "a terminal state whose sandbox nobody accounted for is the thing cleanup is for",
+        "expect": "nobody asked the worker",
+    },
+    {
+        "name": "a job that created nothing stops saying nothing was left",
         "file": SERVER,
         "find": "        if not record.container_name:\n            record.cleanup_verified = True\n",
         "replace": "        if False:  # MUTATED: nothing is recorded about cleanup\n"

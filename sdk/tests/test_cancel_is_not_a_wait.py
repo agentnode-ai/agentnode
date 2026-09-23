@@ -96,6 +96,10 @@ class AWorkerHeldOpen:
         #: the event still unset and the test would pass on a technicality. Which came first is
         #: the actual claim, and it cannot be satisfied by waiting longer.
         self.in_order = []
+        #: The container names the gateway ASKED about. `cleanup_verified` being True says the
+        #: gateway believes the sandbox is gone; this says it found that out by asking, which is
+        #: a different claim and the one that can be lost without any flag changing.
+        self.asked_if_gone = []
 
     def __getattr__(self, name):
         return getattr(self._underneath, name)
@@ -106,6 +110,10 @@ class AWorkerHeldOpen:
         self.may_finish.wait(timeout=30)
         self.in_order.append("the stop finished")
         return self._underneath.stop(run_id, container_name, appear_seconds)
+
+    def gone(self, container_name, patiently=True):
+        self.asked_if_gone.append(container_name)
+        return self._underneath.gone(container_name, patiently=patiently)
 
 
 def _descriptors_still_open_on(where):
@@ -481,6 +489,38 @@ class TestCleanupIsStillRequired:
         assert where["state"] not in contract.FINISHED_STATES, (
             "a run was called finished while its sandbox was still being torn down")
         held.may_finish.set()
+
+    def test_and_the_terminal_state_arrives_with_the_sandbox_CONFIRMED_gone(self, sandbox):
+        """The other half of the one above, and the half that was missing.
+
+        That test establishes the terminal state does not arrive EARLY. This one establishes what
+        it arrives WITH: a run that really had a sandbox does not reach its end until somebody
+        has established the sandbox is gone, and the cancellation is not taken out of the
+        journal until that is true. Without this, a gateway that never removed anything and never
+        asked would have passed every test in this file.
+        """
+        service, who, held = sandbox
+        run_id = a_running_job(service, who, held.run_has_started)
+        dispatch.dispatch("cancel", {"run_id": run_id}, who, service=service)
+        assert held.asked_to_stop.wait(timeout=10)
+        held.may_finish.set()
+        held.run_may_finish.set()
+
+        ended = _poll_until_finished(service, who, run_id)
+        record = service.runs[run_id]
+        assert record.container_name, (
+            "this test is about a run that really got as far as having a sandbox")
+        # ASKED, not merely believed. A gateway that set this flag without ever addressing the
+        # worker would satisfy every other assertion here and leave a container running.
+        assert record.container_name in held.asked_if_gone, (
+            "nobody asked the worker whether the sandbox was gone; it was asked about %r"
+            % (held.asked_if_gone,))
+        assert record.cleanup_verified is True, (
+            "the run reached %r with its sandbox unaccounted for: cleanup_verified=%r"
+            % (ended["state"], record.cleanup_verified))
+        assert _eventually(lambda: service.stopping.unfinished() == []), (
+            "the cancellation is still in the journal, so nothing ever confirmed it was done: %r"
+            % (service.stopping.unfinished(),))
 
     def test_a_stop_that_fails_does_not_look_like_one_that_worked(self, sandbox):
         service, who, held = sandbox
