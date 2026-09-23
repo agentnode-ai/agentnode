@@ -145,7 +145,7 @@ MUTATIONS = [
         "test": CANCEL_TESTS + "::TestTheCallerIsNotHeld"
                 "::test_asking_twice_does_not_start_a_second_stop",
         "because": "threads that outlive the gateway are the leak the teardown check exists for",
-        "expect": "did not go back to what they were",
+        "expect": "still alive and were not before",
     },
     {
         "name": "the state directory is never given back",

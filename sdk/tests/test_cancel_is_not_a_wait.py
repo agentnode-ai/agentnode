@@ -35,6 +35,7 @@ because they are deadlock guards now rather than the thing being relied on.
 from __future__ import annotations
 
 import base64
+import collections
 import hashlib
 import os
 import pathlib
@@ -195,9 +196,21 @@ def nothing_was_left(service, backend):
 
 
 def _gateway_threads():
-    """The threads this gateway owns, by the names it gives them."""
-    return sorted(t.name for t in threading.enumerate()
-                  if t.is_alive() and t.name.startswith("agentnode-"))
+    """The gateway threads alive right now, as a multiset of the names gateways give them."""
+    return collections.Counter(t.name for t in threading.enumerate()
+                               if t.is_alive() and t.name.startswith("agentnode-"))
+
+
+def _threads_this_test_added(before):
+    """What is alive now that was not alive before -- nothing else.
+
+    The question is what THIS test failed to give back, and in a lane where one process runs many
+    files the answer cannot be "the thread list is identical". It was written that way at first
+    and CI found the mistake: a gateway from an earlier file finished closing DURING this test, so
+    there was one thread fewer at the end than at the start and the check called that a leak. A
+    thread somebody else let go of is not this test's doing; a thread that appeared and stayed is.
+    """
+    return _gateway_threads() - collections.Counter(before)
 
 
 @pytest.fixture(autouse=True)
@@ -219,9 +232,9 @@ def nothing_is_left_behind(tmp_path):
         "this platform (%s) can be asked neither way whether anything is left open, so this "
         "check would establish nothing" % sys.platform)
     yield
-    assert _eventually(lambda: _gateway_threads() == before_threads), (
-        "the gateway's threads did not go back to what they were: %r, was %r"
-        % (_gateway_threads(), before_threads))
+    assert _eventually(lambda: not _threads_this_test_added(before_threads)), (
+        "these gateway threads are still alive and were not before: %r"
+        % (dict(_threads_this_test_added(before_threads)),))
     still_open = _descriptors_still_open_on(tmp_path)
     assert still_open == [], (
         "the test's own directory is still held open: %r" % (still_open,))
