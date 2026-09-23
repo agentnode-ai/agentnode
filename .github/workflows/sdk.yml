@@ -50,7 +50,13 @@ jobs:
       run:
         working-directory: sdk
     steps:
+      # The whole history, because one test reads the commit messages this event added and
+      # refuses to pass when it cannot reach them. A shallow checkout holds neither a push's
+      # `before` nor a pull request's base, and a check that cannot see what arrived is the
+      # condition that test exists to catch.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
