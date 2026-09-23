@@ -165,6 +165,27 @@ def _how_far_along(reported):
     return contract.RUNNING_STATES.index(reported)
 
 
+def nothing_was_left(service, backend):
+    """Close a gateway and hold it to what closing is supposed to mean.
+
+    `close()` returns what it could NOT get back, so an empty list is the gateway stating that
+    every thread and server it owned has been released; a cancellation that abandoned a run
+    thread would be named here. Then the sandboxes: this backend really does know whether any
+    exists, because it is the thing that would have started one, so it is asked rather than
+    inferred from the absence of a container name.
+
+    A function rather than two lines inside the fixture, because the one test that builds its own
+    gateways does not use the fixture -- and that is exactly the test where this would otherwise
+    have gone unchecked.
+    """
+    could_not_get_back = service.close()
+    assert could_not_get_back == [], (
+        "the gateway could not get these back: %r" % (could_not_get_back,))
+    answered, still_named = backend.containers_named("agentnode-")
+    assert answered and still_named == [], (
+        "the backend still knows of these sandboxes: %r" % (still_named,))
+
+
 def _gateway_threads():
     """The threads this gateway owns, by the names it gives them."""
     return sorted(t.name for t in threading.enumerate()
@@ -221,18 +242,8 @@ def sandbox(tmp_path):
         # whole wait while the fixture tried to tear the state down around it.
         held.run_may_finish.set()
         held.may_finish.set()
-        # `close()` says what it could NOT get back, so an empty list is the gateway stating that
-        # every thread and server it owned has been released -- asserted here rather than taken
-        # on trust, because a cancellation that leaves a run thread behind would leave it here.
-        could_not_get_back = service.close()
+        nothing_was_left(service, backend)
         state.close()
-        assert could_not_get_back == [], (
-            "the gateway could not get these back: %r" % (could_not_get_back,))
-        # And the sandboxes. This backend really does know the answer -- it never started one --
-        # so this asks it rather than assuming from the absence of a container name.
-        answered, still_named = backend.containers_named("agentnode-")
-        assert answered and still_named == [], (
-            "the backend still knows of these sandboxes: %r" % (still_named,))
 
 
 #: A deadlock guard, and nothing else. Every wait in this file is either an ordering gate that is
@@ -562,6 +573,7 @@ class TestARestartDoesNotLoseACancellation:
         """What a restart really is, from the state directory's point of view."""
         state = GatewayState(str(tmp_path / "state"), version="test")
         backend = ABackendThatKeepsRunning()
+        after_the_restart = ABackendThatKeepsRunning()
         first = GatewayService(state, backend=backend)
         _store_measurement(first)
         first.CONTAINER_APPEAR_SECONDS = 0.2
@@ -577,7 +589,7 @@ class TestARestartDoesNotLoseACancellation:
 
         # The process dies here: not closed, not cleaned up, nothing given back.
         try:
-            second = GatewayService(state, backend=ABackendThatKeepsRunning())
+            second = GatewayService(state, backend=after_the_restart)
             _store_measurement(second)
             second.CONTAINER_APPEAR_SECONDS = 0.2
             # Picked up on the way up, by __init__, not by anybody remembering to ask.
@@ -586,9 +598,12 @@ class TestARestartDoesNotLoseACancellation:
         finally:
             held.run_may_finish.set()
             held.may_finish.set()
+            # Both gateways are held to the same account as every other one in this file. This
+            # test does not use the fixture -- it IS about building gateways by hand -- and an
+            # earlier version simply called `close()` here and looked at neither answer.
             try:
-                second.close()
+                nothing_was_left(second, after_the_restart)
             except NameError:
                 pass
-            first.close()
+            nothing_was_left(first, backend)
             state.close()
