@@ -19,13 +19,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import pathlib
 import re
 import subprocess
 import sys
-import tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent
 SDK = HERE.parent
@@ -291,6 +289,23 @@ def mutate(out, only=None) -> bool:
     return every and after == before
 
 
+FORBIDDEN_BLOCK = re.compile(r"FORBIDDEN = \((?:.|\n)*?\)\n")
+
+
+def _the_word_list(rev):
+    """The FORBIDDEN tuple as it stands at `rev`, so the two can be compared byte for byte.
+
+    Grepping the diff for the word FORBIDDEN answers a different question: the new tests mention
+    the list and use one of its phrases as a commit message, and every one of those lines would
+    be counted as a change to it. What matters is whether the tuple itself moved.
+    """
+    shown = git("show", "%s:sdk/tests/test_admission.py" % rev)
+    if shown.returncode != 0:
+        return None
+    found = FORBIDDEN_BLOCK.search(shown.stdout)
+    return found.group(0) if found else None
+
+
 def what_else_changed(out):
     out("")
     out("=" * 96)
@@ -299,11 +314,17 @@ def what_else_changed(out):
     stat = git("diff", "--stat", "%s...HEAD" % THE_MERGE)
     out(stat.stdout.strip() or "(no diff against the merge that is on main)")
     out("")
-    forbidden = git("diff", "%s...HEAD" % THE_MERGE, "--", "sdk/tests/test_admission.py")
-    touched = [line for line in forbidden.stdout.splitlines()
-               if line.startswith(("+", "-")) and "FORBIDDEN" in line]
-    out("lines of the FORBIDDEN list that changed: %d" % len(touched))
-    for line in touched:
+    before, after = _the_word_list(THE_MERGE), _the_word_list("HEAD")
+    out("the FORBIDDEN tuple, compared rather than grepped for:")
+    out("   on %s: sha256 %s" % (THE_MERGE[:12],
+                                 hashlib.sha256((before or b"").encode()).hexdigest()
+                                 if before else "(not found)"))
+    out("   on HEAD      : sha256 %s" % (hashlib.sha256((after or b"").encode()).hexdigest()
+                                         if after else "(not found)"))
+    out("   byte for byte identical: %s" % (before is not None and before == after))
+    out("")
+    out("files this change touches:")
+    for line in git("diff", "--name-only", "%s...HEAD" % THE_MERGE).stdout.split():
         out("   %s" % line)
 
 
@@ -318,7 +339,16 @@ def main() -> int:
             print("%-56s -> %s" % (spec["name"], spec["test"].split("::")[-1]))
         return 0
 
-    dirty = git("status", "--porcelain", "--", str(TARGET.relative_to(REPO)))
+    # Restoring means writing back what was there when this started. If that was already an
+    # uncommitted edit, the digests below would be about something nobody has reviewed, and
+    # "restored byte for byte" would be true of the wrong bytes.
+    dirty = git("status", "--porcelain", "--", str(TARGET.relative_to(REPO))).stdout.strip()
+    if dirty:
+        print("%s has uncommitted changes (%s). Commit or stash them first: these counter-checks "
+              "mutate that file and restore it, and the restore has to land on a known state."
+              % (TARGET.relative_to(REPO), dirty.split()[0]))
+        return 2
+
     lines = []
 
     def out(line=""):
