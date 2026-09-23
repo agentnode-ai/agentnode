@@ -23,8 +23,10 @@ import hashlib
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent
 SDK = HERE.parent
@@ -104,9 +106,71 @@ def measurements(out):
         % len(from_the_event - old_today))
     out("     commits the old one reads that the event range does not: %d"
         % len(old_today - from_the_event))
-    out("   While the pull request was open, `origin/main` pointed at the base, so the old")
-    out("   expression resolved to exactly this set: on a branch nothing is read less than")
-    out("   before, and on `main` a great deal more.")
+    out("   That comparison is made AFTER main absorbed the branch, so on its own it says nothing")
+    out("   about what the old expression read while the pull request was open. The next section")
+    out("   measures that moment instead of describing it.")
+    _while_the_branch_is_open(out)
+
+
+def _while_the_branch_is_open(out):
+    """The old expression and the new range, both enumerated while a branch is still open.
+
+    Measured in a throwaway repository, because the moment being compared -- `origin/main` still
+    pointing at the base -- is gone in this one. The same repository then has `origin/main` moved
+    forward, which is what a merge does, and both expressions are read again.
+    """
+    where = pathlib.Path(tempfile.mkdtemp(prefix="commit-range-"))
+
+    def there(*args):
+        return subprocess.run(["git", *args], cwd=where, capture_output=True, text=True,
+                              timeout=120)
+
+    def commit(message):
+        (where / "a-file").write_text(os.urandom(8).hex(), encoding="utf-8")
+        there("add", "-A")
+        there("commit", "-q", "-m", message)
+        return there("rev-parse", "HEAD").stdout.strip()
+
+    def subject(commit_id):
+        return there("log", "-1", "--format=%s", commit_id).stdout.strip()
+
+    out("")
+    out("4. A pull request measured WHILE IT IS OPEN, in a repository built for it:")
+    there("init", "-q", "-b", "main")
+    there("config", "user.email", "a@example.invalid")
+    there("config", "user.name", "A Test")
+
+    base = commit("the base of the pull request")
+    there("checkout", "-q", "-b", "a-branch")
+    commit("one on the branch")
+    head = commit("two on the branch")
+    there("update-ref", "refs/remotes/origin/main", base)
+
+    old = there("rev-list", "origin/main..HEAD").stdout.split()
+    new = there("rev-list", "%s..%s" % (base, head)).stdout.split()
+    out("     HEAD is           %s  %r" % (head, subject(head)))
+    out("     origin/main is    %s  (the base, where a checkout has it while the branch is open)"
+        % base)
+    out("     the old expression origin/main..HEAD reads %d commits:" % len(old))
+    for commit_id in old:
+        out("         %s  %r" % (commit_id[:12], subject(commit_id)))
+    out("     the event range %s..%s reads %d commits:" % (base[:12], head[:12], len(new)))
+    for commit_id in new:
+        out("         %s  %r" % (commit_id[:12], subject(commit_id)))
+    out("     old minus new: %s" % (sorted(set(old) - set(new)) or "nothing"))
+    out("     new minus old: %s" % (sorted(set(new) - set(old)) or "nothing"))
+
+    there("update-ref", "refs/remotes/origin/main", head)
+    after = there("rev-list", "origin/main..HEAD").stdout.split()
+    again = there("rev-list", "%s..%s" % (base, head)).stdout.split()
+    out("")
+    out("     then origin/main is moved to the branch head, which is what a merge does:")
+    out("     the old expression now reads  %d commits" % len(after))
+    out("     the event range still reads   %d commits" % len(again))
+    out("     A range taken from the event does not move when a ref moves. That is the whole")
+    out("     difference, and it is why the check went quiet on `main` and not on a branch.")
+    shutil.rmtree(where, ignore_errors=True)
+    out("     (the throwaway repository is gone again: %s)" % (not where.exists()))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -272,6 +336,15 @@ MUTATIONS = [
                  "::test_this_check_has_no_way_to_skip_itself"),
         "because": "this is the repair that was refused: green by reading nothing",
         "expect": "can skip itself",
+    },
+    {
+        "name": "a push without `after` is filled in from the environment",
+        "find": '        head = event.get("after")\n',
+        "replace": '        head = event.get("after") or env.get("GITHUB_SHA")  # MUTATED\n',
+        "test": ("tests/test_admission.py::TestTheRangeTheCheckAboveReads"
+                 "::test_a_push_whose_after_is_missing_is_refused_rather_than_guessed"),
+        "because": "an incomplete event is the case to refuse, not the case to repair quietly",
+        "expect": "DID NOT RAISE",
     },
     {
         "name": "the shape check on what the forge sent is removed",

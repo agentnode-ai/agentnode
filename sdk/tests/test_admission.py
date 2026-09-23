@@ -294,10 +294,13 @@ def _from_the_event(env):
             raise _NoRange("the pull_request payload names no base.sha and head.sha")
         return _shaped(base, "base.sha"), _shaped(head, "head.sha")
     if name == "push":
+        # Both ends come from the payload. `GITHUB_SHA` is not accepted as a stand-in for a
+        # missing `after`: substituting one source for another is a quiet repair of an incomplete
+        # event, and an incomplete event is exactly the case this has to refuse.
         base = event.get("before")
-        head = event.get("after") or env.get("GITHUB_SHA")
+        head = event.get("after")
         if not base or not head:
-            raise _NoRange("the push payload names no before and after")
+            raise _NoRange("the push payload names no before (%r) and after (%r)" % (base, head))
         return _shaped(base, "the push's before"), _shaped(head, "the push's after")
     raise _NoRange(
         "the event %r does not describe a range of new commits. A workflow that runs this check "
@@ -587,6 +590,57 @@ class TestTheRangeTheCheckAboveReads:
         with pytest.raises(_NoRange) as refused:
             _commit_range(run, env)
         assert "holds no commits" in str(refused.value)
+
+    def test_a_push_whose_after_is_missing_is_refused_rather_than_guessed(self, tmp_path):
+        """`GITHUB_SHA` is a different source, and a different source is a guess.
+
+        The environment usually carries the same commit the payload would have named, which is
+        what makes substituting it tempting and wrong: a payload that arrives incomplete is the
+        case this check exists to refuse, and quietly filling the hole with something that is
+        usually right turns a refusal into a coin toss.
+        """
+        run = self._repo(tmp_path)
+        before = self._commit(run, "what was there", tmp_path)
+        after = self._commit(run, "what the push added", tmp_path)
+
+        env = self._event(tmp_path, "push", {"before": before})
+        env["GITHUB_SHA"] = after
+        with pytest.raises(_NoRange) as refused:
+            _commit_range(run, env)
+        assert "names no before" in str(refused.value)
+
+    def test_the_event_range_covers_everything_the_old_expression_read(self, tmp_path):
+        """The regression this must not be: reading LESS on a branch than before.
+
+        Measured here rather than argued, and measured while the branch is still open -- which is
+        the only moment the comparison means anything. `origin/main` is put where a checkout
+        would have it during a pull request, both expressions are enumerated, and the old set has
+        to be contained in the new one. Then `origin/main` is moved forward, as a merge moves it,
+        and the old expression collapses to nothing while the event range does not move at all.
+        """
+        run = self._repo(tmp_path)
+        base = self._commit(run, "the base of the pull request", tmp_path)
+        run("checkout", "-q", "-b", "a-branch")
+        first = self._commit(run, "one on the branch", tmp_path)
+        head = self._commit(run, "two on the branch", tmp_path)
+        run("update-ref", "refs/remotes/origin/main", base)      # as it stands while it is open
+
+        old = run("rev-list", "origin/main..HEAD").stdout.split()
+        env = self._event(tmp_path, "pull_request",
+                          {"pull_request": {"base": {"sha": base}, "head": {"sha": head}}})
+        got_base, got_head = _commit_range(run, env)
+        new = run("rev-list", "%s..%s" % (got_base, got_head)).stdout.split()
+
+        assert set(old) == {first, head}, "the old expression read the branch's own commits"
+        assert not set(old) - set(new), (
+            "the event range reads less than the expression it replaces: missing %r"
+            % (set(old) - set(new)))
+
+        run("update-ref", "refs/remotes/origin/main", head)      # as a merge would move it
+        after_the_merge = run("rev-list", "origin/main..HEAD").stdout.split()
+        assert after_the_merge == [], "the old expression is empty once main holds the branch"
+        still = run("rev-list", "%s..%s" % (_commit_range(run, env))).stdout.split()
+        assert still == new, "the event range does not move when a ref moves"
 
     def test_an_all_zero_sha_is_refused(self, tmp_path):
         run = self._repo(tmp_path)
