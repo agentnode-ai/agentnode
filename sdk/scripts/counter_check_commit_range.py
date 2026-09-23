@@ -9,8 +9,9 @@ cannot say what it read. Believing that requires two different things:
   comment. Each one below removes a mechanism, predicts which named test goes red and why, runs
   it, and then restores the file byte for byte and says so with a digest.
 
-    python scripts/counter_check_commit_range.py            # everything
+    python scripts/counter_check_commit_range.py            # everything, to stdout
     python scripts/counter_check_commit_range.py --list     # what it would do
+    python scripts/counter_check_commit_range.py --out t.txt   # and keep the transcript
 
 Run it from `sdk/`. It writes nothing outside a temporary directory except the file it mutates
 and restores, and it refuses to start if that file is not already clean.
@@ -332,6 +333,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--only")
+    parser.add_argument("--out", help="write the transcript here as well as to stdout")
     args = parser.parse_args()
 
     if args.list:
@@ -370,8 +372,9 @@ def main() -> int:
     out("every absent or broken range was refused: %s" % ok_b)
     out("every mutation went red and was restored: %s" % ok_c)
     out("=" * 96)
-    (SDK / "counter-checks-commit-range.txt").write_text("\n".join(lines) + "\n",
-                                                         encoding="utf-8", newline="\n")
+    if args.out:
+        pathlib.Path(args.out).write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+        print("transcript written to %s" % args.out)
     return 0 if (ok_a and ok_b and ok_c) else 1
 
 
