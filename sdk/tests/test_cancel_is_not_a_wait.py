@@ -425,9 +425,16 @@ class TestAWatcherNeverSeesTheRunGoBackwards:
             held.run_may_finish.set()
             _poll_until_finished(service, who, run_id)
         finally:
-            enough.set()
+            # THE WATCHER ENDS ITSELF, when it has seen the run end. The first version of this
+            # test cut it off as soon as the main thread had seen the terminal state, and on a
+            # loaded box the watcher was still in its sleep -- so its last observation was
+            # `stopping` and the test failed for a reason that had nothing to do with the run.
+            # That is the same mistake this whole file was repaired for, made once more in the
+            # repair itself; it is fixed the same way, by waiting for the thing rather than for
+            # the moment. `enough` is only what ends it if the join ran out.
             watcher.join(timeout=A_DEADLOCK_GUARD)
-        assert not watcher.is_alive(), "the watcher never came back"
+            enough.set()
+        assert not watcher.is_alive(), "the watcher never saw the run end"
 
         assert seen, "the watcher saw nothing at all, so it establishes nothing"
         for before, after in zip(seen, seen[1:]):
