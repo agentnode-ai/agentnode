@@ -32,6 +32,7 @@ PYTEST = [sys.executable, "-m", "pytest", "-q", "-p", "no:randomly"]
 DISPATCH = SDK / "agentnode_sdk" / "access" / "dispatch.py"
 SERVER = SDK / "agentnode_sdk" / "gateway" / "server.py"
 POOL = SDK / "agentnode_sdk" / "access" / "stopping.py"
+CONTRACT = SDK / "agentnode_sdk" / "access" / "contract.py"
 
 CANCEL_TESTS = "tests/test_cancel_is_not_a_wait.py"
 
@@ -50,42 +51,59 @@ MUTATIONS = [
     {
         "name": "the run never says it is stopping",
         "file": DISPATCH,
-        # Anchored on the comment above it: this line appears twice in the file, and only this
-        # one is the cancellation path a client walks.
-        "find": ("    # to stop and the stopping beginning.\n"
-                 "    record.cancel_requested.set()\n"),
-        "replace": ("    # to stop and the stopping beginning.\n"
-                    "    pass  # MUTATED: nothing is published about this run being stopped\n"),
+        # What makes the teardown observable is the REPORT, not the flag: removing
+        # `cancel_requested.set()` changes nothing a client can see, because `status` derives
+        # `stopping` from the pool. Measured, not assumed -- the first version of this
+        # counter-check removed the flag and the test went on passing, which said the flag was
+        # the wrong thing to call the mechanism.
+        "find": '    showing = "stopping" if _is_stopping(service, record.run_id) else record.state\n',
+        "replace": "    showing = record.state  # MUTATED: the teardown is never published\n",
         "test": CANCEL_TESTS + "::TestTheCallerIsNotHeld"
                 "::test_and_the_run_says_stopping_until_it_is_really_over",
         "because": "a state nobody can observe is a state the client cannot act on",
         "expect": "assert",
     },
     {
-        "name": "the run is called terminal before its sandbox is gone",
-        "file": SERVER,
-        # Anchored on the comment above it, for the same reason as the one before.
-        "find": ('        # absence of a container name.\n'
-                 '        self.slots.drop(record.run_id, "cancelled")\n'),
-        "replace": ('        # absence of a container name.\n'
-                    '        self.slots.drop(record.run_id, "cancelled")\n'
-                    '        record.move_to("cancelled")  # MUTATED: terminal before cleanup\n'),
+        "name": "a run being torn down counts as finished",
+        "file": CONTRACT,
+        # The other way this property can be lost, and the one the file guards in its first two
+        # lines: not the record moving early, but `stopping` being counted among the states that
+        # mean a run is over. Making the record terminal early is masked by the report, which is
+        # why that mutation is not the one here -- it was tried and the test went on passing.
+        "find": ('FINISHED_STATES = ("finished", "refused", "cancelled", "unverified", '
+                 '"interrupted")\n'),
+        "replace": ('FINISHED_STATES = ("finished", "refused", "cancelled", "unverified", '
+                    '"interrupted", "stopping")  # MUTATED\n'),
         "test": CANCEL_TESTS + "::TestCleanupIsStillRequired"
                 "::test_the_terminal_state_still_waits_for_the_sandbox_to_be_gone",
         "because": "a terminal state that arrives before the teardown is a promise nobody kept",
-        "expect": "while its sandbox was still being torn down",
+        "expect": "assert",
     },
     {
         "name": "an exception in the stop is swallowed and called success",
         "file": POOL,
-        "find": ("        except Exception as exc:                                  # noqa: BLE001\n"),
-        "replace": ("        except Exception:  # MUTATED: the failure is lost\n"
-                    "            settled = True\n"
-                    "            exc = None\n"),
-        "test": CANCEL_TESTS + "::TestCleanupIsStillRequired"
-                "::test_a_stop_that_fails_does_not_look_like_one_that_worked",
+        # The whole block, not only its first line. Replacing just the `except` left
+        # `problem = str(exc) or ...` behind with `exc = None`, so `problem` became the string
+        # 'None', which is truthy, and the cancellation went on being reported as failed. That
+        # version of this counter-check passed while establishing nothing -- measured, not assumed.
+        "find": ("        except Exception as exc:                                  # noqa: BLE001\n"
+                 "            # A cancellation that failed must not look like one that worked. "
+                 "The run keeps\n"
+                 "            # whatever state the gateway gave it, and `status` goes on saying "
+                 "what is true.\n"
+                 "            problem = str(exc) or exc.__class__.__name__\n"),
+        "replace": ("        except Exception:  # MUTATED: the failure is lost and called success\n"
+                    "            settled = True\n"),
+        # The test named here is the pool's own, not one in the cancellation file: what the
+        # cancellation file can see is the run's STATE, and a swallowed exception does not move
+        # it -- the run thread is still inside the worker either way. The mechanism that is
+        # actually lost lives where the exception is caught, so the test that holds it is the one
+        # that reads `settled` and `problem`. Measured: mutating this and running the cancel test
+        # left it green, which would have been a counter-check establishing nothing.
+        "test": "tests/test_stopping.py::TestAFailedStopDoesNotLookLikeOneThatWorked"
+                "::test_a_teardown_that_raises_is_recorded_as_a_problem_and_not_as_settled",
         "because": "work started in the background that loses its exception reports a lie",
-        "expect": "a cancellation that failed was reported as one that worked",
+        "expect": "assert",
     },
     {
         "name": "cleanup is neither done nor recorded",
