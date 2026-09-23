@@ -33,6 +33,7 @@ DISPATCH = SDK / "agentnode_sdk" / "access" / "dispatch.py"
 SERVER = SDK / "agentnode_sdk" / "gateway" / "server.py"
 POOL = SDK / "agentnode_sdk" / "access" / "stopping.py"
 CONTRACT = SDK / "agentnode_sdk" / "access" / "contract.py"
+IDENTITY = SDK / "agentnode_sdk" / "gateway" / "identity.py"
 
 CANCEL_TESTS = "tests/test_cancel_is_not_a_wait.py"
 
@@ -116,6 +117,37 @@ MUTATIONS = [
         "because": "a job that created nothing still has to SAY nothing was left behind",
         "expect": "assert",
     },
+    # The two below are about the resource check the cancellation file now carries. A check of
+    # that kind is decoration unless something can make it fail, so each is made to fail here.
+    {
+        "name": "the gateway stops taking its stopping threads back",
+        "file": SERVER,
+        "find": ('        pool = getattr(self, "stopping", None)\n'
+                 "        left_stopping = list(pool.close() or ()) if pool is not None else []\n"),
+        "replace": ("        left_stopping = []  # MUTATED: the hands are never told to stop\n"),
+        "test": CANCEL_TESTS + "::TestTheCallerIsNotHeld"
+                "::test_asking_twice_does_not_start_a_second_stop",
+        "because": "threads that outlive the gateway are the leak the teardown check exists for",
+        "expect": "did not go back to what they were",
+    },
+    {
+        "name": "the state directory is never given back",
+        "file": IDENTITY,
+        "posix_only": (
+            "the descriptor this removes is one POSIX holds on a directory, and Windows does not "
+            "hold one at all -- so on Windows there is nothing here to take away and a green run "
+            "would say nothing. Run on Linux, where the property exists."),
+        "find": ("        if fd is not None:\n"
+                 "            try:\n"
+                 "                import os as _os\n"),
+        "replace": ("        if False:  # MUTATED: the descriptor is kept for ever\n"
+                    "            try:\n"
+                    "                import os as _os\n"),
+        "test": CANCEL_TESTS + "::TestCleanupIsStillRequired"
+                "::test_the_terminal_state_still_waits_for_the_sandbox_to_be_gone",
+        "because": "a descriptor left open on the test's own directory is what that check asks about",
+        "expect": "still held open",
+    },
 ]
 
 
@@ -181,10 +213,19 @@ def main() -> int:
     out("=" * 96)
 
     every = True
+    not_here = []
     for spec in MUTATIONS:
         if args.only and args.only != spec["name"]:
             continue
         path = spec["file"]
+        if spec.get("posix_only") and sys.platform == "win32":
+            out("")
+            out("-- %s" % spec["name"])
+            out("   in %s" % path.relative_to(REPO))
+            out("   NOT RUN ON THIS PLATFORM, and therefore NOT ESTABLISHED here: %s"
+                % spec["posix_only"])
+            not_here.append(spec["name"])
+            continue
         original = path.read_bytes()
         before = hashlib.sha256(original).hexdigest()
         text = original.decode("utf-8")
@@ -201,7 +242,9 @@ def main() -> int:
             landed = digest(path)
             done = run_test(spec["test"])
             said = the_line_that_says(done.stdout, spec["expect"])
-            failed_line = the_line_that_says(done.stdout, "FAILED " + spec["test"].split("::")[0])
+            named = spec["test"].split("::")[0]
+            failed_line = (the_line_that_says(done.stdout, "FAILED " + named)
+                           or the_line_that_says(done.stdout, "ERROR " + named))
             red = done.returncode != 0 and said is not None and failed_line is not None
             out("   the mutation landed:  sha256 %s (was %s)" % (landed[:16], before[:16]))
             out("   the test that should catch it: %s" % spec["test"].split("::")[-1])
@@ -221,7 +264,10 @@ def main() -> int:
 
     out("")
     out("=" * 96)
-    out("every mechanism was missed by nothing: %s" % every)
+    out("every mechanism that was run was missed by nothing: %s" % every)
+    out("run on: %s" % sys.platform)
+    if not_here:
+        out("NOT ESTABLISHED ON THIS PLATFORM, and not counted above: %s" % ", ".join(not_here))
     out("=" * 96)
     if args.out:
         pathlib.Path(args.out).write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")

@@ -16,14 +16,16 @@ Every one of those failures was the same assertion: the worker was never asked t
 on a two-core Linux box under load, with the gateway's own state printed at the moment it
 happened, the run was:
 
-    state 'cancelled'   started_at 0.0   container_name ''
+    state 'cancelled'   terminal? True   cleanup_verified True
     refusal 'cancelled by the client before it started'
+    stop.state 'settled'   stop.problem ''   asked_to_stop False
 
-The run had not started yet. A job still waiting for a slot has no container, so the gateway does
-not ask the worker to stop one -- it takes the job out of the queue and ends it, which is the
-deliberate behaviour `GatewayService.cancel` documents. The product was right; these tests were
-reading a correct refusal as a missing stop, because they cancelled whatever stage the run
-happened to be at. On an idle machine the run always won that race, so the case never showed.
+The run was already over, and it had never executed. A cancellation that arrives in the window
+between the slot being held and the container being asked for is answered by the run's own thread,
+which raises before the job reaches the worker; nothing was created, so nothing is asked to stop,
+and the record says exactly that. The product was right; these tests were reading a correct
+refusal as a missing stop, because they cancelled whatever stage the run happened to be at. On an
+idle machine the run always won that race, so the case never showed.
 
 The repair is an ordering the test controls, not a longer wait: `a_running_job` now waits for the
 backend's own `has_started` before returning, so a test that means to cancel a RUNNING job cancels
@@ -34,7 +36,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
+import pathlib
+import sys
 import threading
+import time
 
 import pytest
 
@@ -54,13 +60,14 @@ class ABackendThatKeepsRunning(StandInBackend):
     that ends when this test lets it end removes the race by construction.
 
     The SECOND race was at the other end, and it is the one that made this file fail eight times
-    in CI. A run that has not started yet has no container, so cancelling it is a different case
-    with a different -- and deliberate -- answer: the gateway takes it out of the queue and ends
-    it as `cancelled by the client before it started`, without ever asking the worker to stop
-    anything. On a machine with a spare core the run always reached the backend first and the
-    tests never saw that path; on a loaded two-core runner the cancellation won, and the tests
-    read a correct refusal as a missing stop. `has_started` closes that: a test that means to
-    cancel a RUNNING run now waits until the run really is one.
+    in CI. A run that has not reached the worker is cancelled by a different and deliberate path:
+    the run's own thread raises before the container is asked for, and the record ends as
+    `cancelled by the client before it started` with nothing to stop. On a machine with a spare
+    core the run always reached the backend first and the tests never saw that path; on a loaded
+    two-core runner the cancellation won, and the tests read a correct refusal as a missing stop.
+    `has_started` closes that: a test that means to cancel a RUNNING run now waits until the run
+    really is one. The other case is not left untested -- it has a test of its own, below, which
+    reaches it by holding the only slot instead of by hoping.
     """
 
     def __init__(self):
@@ -101,6 +108,96 @@ class AWorkerHeldOpen:
         return self._underneath.stop(run_id, container_name, appear_seconds)
 
 
+def _descriptors_still_open_on(where):
+    """Whatever this process still holds open under `where`, or `None` if it cannot be asked.
+
+    The question is about the files THIS TEST created, not about the process's handle count. A
+    whole-process count was tried first and is not usable: on Windows it counts events, threads
+    and mappings as well, so it wanders upward during a run and a strict comparison fails on a
+    process that has leaked nothing. Counting the wrong thing strictly is not strictness.
+
+    So each platform is asked the question it can answer, and both answers are strict:
+
+    * POSIX lists the open descriptors, and the ones pointing into `where` are named outright;
+    * Windows has no such list without a package this suite does not depend on, so the
+      filesystem is asked instead -- a directory with an open file under it cannot be renamed,
+      so a rename that succeeds IS the answer and one that fails names the file by failing.
+
+    A platform that can do neither returns `None`, and the caller fails rather than passing on a
+    check that measured nothing.
+    """
+    where = pathlib.Path(where)
+    if sys.platform != "win32":
+        try:
+            fds = os.listdir("/proc/self/fd")
+        except OSError:
+            return None
+        held = []
+        for fd in fds:
+            try:
+                target = os.readlink(os.path.join("/proc/self/fd", fd))
+            except OSError:            # it was closed while this was being read
+                continue
+            if target.startswith(str(where)):
+                held.append(target)
+        return held
+    moved = where.with_name(where.name + "-asked-if-anything-is-open")
+    try:
+        os.rename(where, moved)
+    except OSError as why:
+        return ["%s could not be moved, so something under it is open: %s" % (where, why)]
+    os.rename(moved, where)
+    return []
+
+
+def _how_far_along(reported):
+    """Where a REPORTED state sits, in the vocabulary a client is actually written against.
+
+    `protocol.stage_of` ranks the states a RECORD can hold, and `stopping` is deliberately not
+    one of them: no record is ever stored as stopping -- it is derived for the answer while the
+    teardown is in flight. The two lists say different things, so a watcher's states are placed
+    with the list a watcher is shown: `contract.RUNNING_STATES`, then everything finished. A
+    state in neither raises rather than being ranked lowest, which is the same rule `stage_of`
+    keeps for its own vocabulary.
+    """
+    if reported in contract.FINISHED_STATES:
+        return len(contract.RUNNING_STATES)
+    return contract.RUNNING_STATES.index(reported)
+
+
+def _gateway_threads():
+    """The threads this gateway owns, by the names it gives them."""
+    return sorted(t.name for t in threading.enumerate()
+                  if t.is_alive() and t.name.startswith("agentnode-"))
+
+
+@pytest.fixture(autouse=True)
+def nothing_is_left_behind(tmp_path):
+    """Every test in this file gives back what it took, and that is asserted rather than assumed.
+
+    Autouse and declared before anything else, so it is set up first and therefore torn down
+    LAST -- after the gateway has been closed. What it checks is what a cancellation can leak:
+    the pool's hands and the run threads, the descriptors the state directory is held open with,
+    and the sandboxes. A leak here would not fail a single assertion in any test below, which is
+    exactly why it is checked separately.
+
+    The thread check allows the daemons a bounded moment to finish after `close()` and then
+    asserts equality; the limit is a deadlock guard and the assertion is on the final state, not
+    on how quickly it arrived.
+    """
+    before_threads = _gateway_threads()
+    assert _descriptors_still_open_on(tmp_path) is not None, (
+        "this platform (%s) can be asked neither way whether anything is left open, so this "
+        "check would establish nothing" % sys.platform)
+    yield
+    assert _eventually(lambda: _gateway_threads() == before_threads), (
+        "the gateway's threads did not go back to what they were: %r, was %r"
+        % (_gateway_threads(), before_threads))
+    still_open = _descriptors_still_open_on(tmp_path)
+    assert still_open == [], (
+        "the test's own directory is still held open: %r" % (still_open,))
+
+
 @pytest.fixture()
 def sandbox(tmp_path):
     state = GatewayState(str(tmp_path / "state"), version="test")
@@ -124,8 +221,18 @@ def sandbox(tmp_path):
         # whole wait while the fixture tried to tear the state down around it.
         held.run_may_finish.set()
         held.may_finish.set()
-        service.close()
+        # `close()` says what it could NOT get back, so an empty list is the gateway stating that
+        # every thread and server it owned has been released -- asserted here rather than taken
+        # on trust, because a cancellation that leaves a run thread behind would leave it here.
+        could_not_get_back = service.close()
         state.close()
+        assert could_not_get_back == [], (
+            "the gateway could not get these back: %r" % (could_not_get_back,))
+        # And the sandboxes. This backend really does know the answer -- it never started one --
+        # so this asks it rather than assuming from the absence of a container name.
+        answered, still_named = backend.containers_named("agentnode-")
+        assert answered and still_named == [], (
+            "the backend still knows of these sandboxes: %r" % (still_named,))
 
 
 #: A deadlock guard, and nothing else. Every wait in this file is either an ordering gate that is
@@ -134,7 +241,7 @@ def sandbox(tmp_path):
 A_DEADLOCK_GUARD = 30.0
 
 
-def a_running_job(service, who, really_started=None):
+def a_running_job(service, who, really_started=None, run_id="s" * 32):
     """Submit a job and, when asked, do not come back until it is genuinely running.
 
     `really_started` is the backend's own signal, set from inside the run. Waiting for it is what
@@ -154,7 +261,7 @@ def a_running_job(service, who, really_started=None):
         "artifact_bytes": len(body), "wall_clock_s": 60}, who,
         service=service)
     started = dispatch.dispatch("submit", {
-        "run_id": "s" * 32,
+        "run_id": run_id,
         "artifact": base64.b64encode(body).decode("ascii"),
         "command": ["python", "-c", code], "wall_clock_s": 60,
         "accepted_disclosure": told["accepted_disclosure"]}, who, service=service)
@@ -230,6 +337,111 @@ class TestTheCallerIsNotHeld:
         again = dispatch.dispatch("cancel", {"run_id": run_id}, who, service=service)
         assert again["accepted"] is False
         assert again["state"] == settled["state"]
+
+
+class TestAJobThatHasNotStartedIsADifferentCase:
+    """The case this whole repair is about, reached on purpose instead of by accident.
+
+    Every test above cancels a run that is genuinely executing, because that is what they mean to
+    ask about. A run that has not got that far is ended another way -- it never reaches the
+    worker, so no sandbox is ever created and none is asked to stop -- and that is not a lesser
+    case: it is the one that turned up eight times in CI while the tests were asking about the
+    other one. Gating those tests on a real start would have left this path untested, so it is
+    reached here deliberately, by holding the only slot: which stage the run is at is decided by
+    this test rather than by how busy the machine happens to be.
+    """
+
+    def test_a_job_cancelled_while_it_waits_for_a_slot_never_gets_a_sandbox(self, sandbox):
+        import json as _json
+
+        service, who, held = sandbox
+        (service.state.root / "allowance.json").write_text(
+            _json.dumps({"machine_concurrent_runs": 1, "queue_depth": 2}), encoding="utf-8")
+        assert service.allowance().machine_concurrent_runs == 1, (
+            "the ceiling was not picked up, so nothing here would have had to wait")
+
+        holding_the_slot = a_running_job(service, who, held.run_has_started)
+        waiting = a_running_job(service, who, run_id="w" * 32)
+        assert _eventually(lambda: service.slots.waiting() == 1), (
+            "the second job was not made to wait, so this test would be about the other case")
+
+        answer = dispatch.dispatch("cancel", {"run_id": waiting}, who, service=service)
+        assert answer["accepted"] is True
+        assert answer["state"] == "stopping"
+        held.may_finish.set()
+
+        ended = _poll_until_finished(service, who, waiting)
+        assert ended["state"] == "cancelled", ended
+        record = service.runs[waiting]
+        assert record.refusal == "cancelled by the client while it was waiting for a slot", (
+            record.refusal)
+        # The three things that say no sandbox was ever involved. Asserted separately, because
+        # each of them is a different way of getting this case wrong: charging for a job that
+        # never ran, naming a container that was never created, and claiming a cleanup nobody did.
+        assert not record.started_at, "a job that never ran was given a start time"
+        assert record.container_name == "", "a sandbox was named for a job that never started"
+        assert record.cleanup_verified is True, (
+            "a job that created nothing still has to say nothing was left behind")
+
+        # And the run that was holding the slot was not disturbed by any of it.
+        where = dispatch.dispatch("status", {"run_id": holding_the_slot}, who, service=service)
+        assert where["state"] == "running", where
+        held.run_may_finish.set()
+
+
+class TestAWatcherNeverSeesTheRunGoBackwards:
+
+    def test_the_states_a_watcher_is_shown_only_move_forward(self, sandbox):
+        """A second client watching the run while it is cancelled, and what it is allowed to see.
+
+        The states are collected by an actual watcher rather than reasoned about: `status` is
+        asked over and over through the whole cancellation, and what comes back has to be
+        non-decreasing. Which states appear depends on how the two threads interleave; that they
+        never go backwards does not, which is why the assertion is on the order and not on the
+        sequence.
+        """
+        from agentnode_sdk.gateway.protocol import ProtocolError, may_move
+
+        service, who, held = sandbox
+        run_id = a_running_job(service, who, held.run_has_started)
+        seen = []
+        enough = threading.Event()
+
+        def watch():
+            while not enough.is_set():
+                where = dispatch.dispatch("status", {"run_id": run_id}, who, service=service)
+                if not seen or seen[-1] != where["state"]:
+                    seen.append(where["state"])
+                if where["state"] in contract.FINISHED_STATES:
+                    return
+                time.sleep(0.005)
+
+        watcher = threading.Thread(target=watch, name="a-second-client-watching")
+        watcher.start()
+        try:
+            dispatch.dispatch("cancel", {"run_id": run_id}, who, service=service)
+            assert held.asked_to_stop.wait(timeout=10)
+            held.may_finish.set()
+            held.run_may_finish.set()
+            _poll_until_finished(service, who, run_id)
+        finally:
+            enough.set()
+            watcher.join(timeout=A_DEADLOCK_GUARD)
+        assert not watcher.is_alive(), "the watcher never came back"
+
+        assert seen, "the watcher saw nothing at all, so it establishes nothing"
+        for before, after in zip(seen, seen[1:]):
+            assert _how_far_along(after) >= _how_far_along(before), (
+                "a watcher was shown %r after %r: %r" % (after, before, seen))
+        assert "stopping" in seen, (
+            "the teardown was never observable to a watcher: %r" % (seen,))
+        assert seen[-1] in contract.FINISHED_STATES, seen
+
+        # And the rule underneath it, asked of the record itself: a run that has ended cannot be
+        # made to run again, whoever asks.
+        assert may_move("cancelled", "running") is False
+        with pytest.raises(ProtocolError):
+            service.runs[run_id].move_to("running")
 
 
 class TestCleanupIsStillRequired:
