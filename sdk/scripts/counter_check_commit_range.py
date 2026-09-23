@@ -169,7 +169,17 @@ def _while_the_branch_is_open(out):
     out("     the event range still reads   %d commits" % len(again))
     out("     A range taken from the event does not move when a ref moves. That is the whole")
     out("     difference, and it is why the check went quiet on `main` and not on a branch.")
-    shutil.rmtree(where, ignore_errors=True)
+    # git leaves its object files read-only, which rmtree refuses on Windows until the mode is
+    # cleared. Two passes rather than one boolean that quietly says "False".
+    for _ in range(2):
+        shutil.rmtree(where, ignore_errors=True)
+        if not where.exists():
+            break
+        for child in where.rglob("*"):
+            try:
+                os.chmod(child, 0o700)
+            except OSError:
+                pass
     out("     (the throwaway repository is gone again: %s)" % (not where.exists()))
 
 
