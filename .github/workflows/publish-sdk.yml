@@ -12,13 +12,23 @@ jobs:
       run:
         working-directory: sdk
     steps:
+      # The whole history: the suite includes a check that reads the commit messages a change
+      # brought, and it refuses to pass when it cannot reach them.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install build twine
       - run: pip install -e ".[dev]"
+        # A release event says which commit is being published and nothing about what arrived
+        # with it, so the range is named here rather than guessed: the released commit against
+        # its first parent, which on a merge is everything that merge brought.
       - run: pytest -v
+        env:
+          AGENTNODE_COMMIT_RANGE_BASE: ${{ github.sha }}~1
+          AGENTNODE_COMMIT_RANGE_HEAD: ${{ github.sha }}
       - run: python -m build
       - run: twine upload --skip-existing dist/*
         env:
