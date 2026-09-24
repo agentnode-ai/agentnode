@@ -651,21 +651,20 @@ class TestWhenOwnershipCannotBeEstablishedAtAll:
     """A lock that cannot be opened is not a lock somebody holds. Saying so would be false."""
 
     def test_a_worker_refuses_rather_than_serving_a_pathname_it_cannot_claim(self, tmp_path):
-        where = tmp_path / "read-only"
-        where.mkdir()
-        path = str(where / "worker.sock")
-        bench = service.Bench(worker=None, address="unix://" + path, key=b"k" * 32,
-                              only_uid=os.getuid(), remembers_at=str(tmp_path / "floor.json"))
-        os.chmod(where, 0o500)                                # no writing, so no lock file
-        try:
-            if os.getuid() == 0:
-                pytest.skip("root writes where it likes, so this cannot be staged as root")
-            with pytest.raises(service.CannotClaimThePathname) as refused:
-                bench.open()
-            assert "could not be opened" in str(refused.value)
-            assert "a worker is already listening" not in str(refused.value)
-        finally:
-            os.chmod(where, 0o700)
+        """Staged by putting a DIRECTORY where the lock file goes, not by permissions.
+
+        A first version made the enclosing directory read-only, and CI was right to fail it: the
+        worker chmods that directory to its own mode on the way in, so the staging was undone
+        before it could bite -- and as root it would not have bitten anyway. A directory cannot
+        be opened O_RDWR by anybody, root included.
+        """
+        bench, path = a_bench(tmp_path)
+        os.mkdir(path + service.LOCK_SUFFIX)
+        with pytest.raises(service.CannotClaimThePathname) as refused:
+            bench.open()
+        assert "could not be opened" in str(refused.value)
+        assert "a worker is already listening" not in str(refused.value),             "it reported a deployment fault as another worker holding the pathname"
+        assert not os.path.exists(path), "it left a door behind after refusing to start"
 
     def test_tidy_says_what_it_could_not_do_rather_than_inventing_a_holder(self, tmp_path,
                                                                           monkeypatch):
