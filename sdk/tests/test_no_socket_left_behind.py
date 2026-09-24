@@ -581,3 +581,102 @@ class TestTidyingUpAfterAWorkerThatWasKilled:
     def test_an_address_that_is_not_a_socket_is_refused_quietly(self):
         said = service.tidy_away("tcps://127.0.0.1:8443")
         assert "not a unix address" in said, said
+
+
+@a_posix_door
+class TestAWorkerFromBeforeTheLockExisted:
+    """The one thing a lock cannot coordinate: a process that predates it.
+
+    An old worker holds no lock, and between its `bind()` and its `listen()` its brand-new socket
+    refuses connections -- indistinguishable, to a connect probe, from a file a dead worker left.
+    A new worker could take the uncontested lock, read that refusal as staleness and unlink a
+    door that was about to open. An independent review pointed this out across three rounds.
+
+    The kernel tells them apart without being timed: a bound socket is listed in /proc/net/unix
+    whether or not anything is listening, and a file with nothing behind it is not.
+    """
+
+    def a_socket_bound_but_not_listening(self, tmp_path):
+        """Exactly the state an old worker is in for the length of its own startup."""
+        path = str(tmp_path / "worker.sock")
+        old = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        old.bind(path)                                        # bound; listen() not called
+        return old, path
+
+    def test_the_kernel_lists_a_bound_socket_and_not_a_dead_file(self, tmp_path):
+        """The premise, checked here so the two tests below cannot pass for the wrong reason."""
+        if service._is_anything_bound_to("/nowhere-at-all.sock") is None:
+            pytest.skip("this machine does not publish %s" % service.WHAT_IS_BOUND)
+        old, path = self.a_socket_bound_but_not_listening(tmp_path)
+        try:
+            assert service._is_anything_bound_to(path) is True
+        finally:
+            old.close()
+            os.unlink(path)
+        dead = str(tmp_path / "left-behind.sock")
+        open(dead, "w").close()
+        assert service._is_anything_bound_to(dead) is False
+
+    def test_a_new_worker_does_not_take_a_pathname_an_old_one_is_binding(self, tmp_path):
+        if service._is_anything_bound_to("/nowhere-at-all.sock") is None:
+            pytest.skip("this machine does not publish %s" % service.WHAT_IS_BOUND)
+        old, path = self.a_socket_bound_but_not_listening(tmp_path)
+        try:
+            new, _ = a_bench(tmp_path)
+            with pytest.raises(OSError) as refused:
+                new.open()
+            assert "already listening" in str(refused.value)
+            assert os.path.exists(path), "it took the door of a worker that was still opening"
+        finally:
+            old.close()
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_tidy_does_not_take_a_pathname_an_old_one_is_binding(self, tmp_path):
+        if service._is_anything_bound_to("/nowhere-at-all.sock") is None:
+            pytest.skip("this machine does not publish %s" % service.WHAT_IS_BOUND)
+        old, path = self.a_socket_bound_but_not_listening(tmp_path)
+        try:
+            said = service.tidy_away("unix://" + path)
+            assert os.path.exists(path), "tidy removed a door that was still being opened"
+            assert "bound" in said, said
+        finally:
+            old.close()
+            if os.path.exists(path):
+                os.unlink(path)
+
+
+@a_posix_door
+class TestWhenOwnershipCannotBeEstablishedAtAll:
+    """A lock that cannot be opened is not a lock somebody holds. Saying so would be false."""
+
+    def test_a_worker_refuses_rather_than_serving_a_pathname_it_cannot_claim(self, tmp_path):
+        where = tmp_path / "read-only"
+        where.mkdir()
+        path = str(where / "worker.sock")
+        bench = service.Bench(worker=None, address="unix://" + path, key=b"k" * 32,
+                              only_uid=os.getuid(), remembers_at=str(tmp_path / "floor.json"))
+        os.chmod(where, 0o500)                                # no writing, so no lock file
+        try:
+            if os.getuid() == 0:
+                pytest.skip("root writes where it likes, so this cannot be staged as root")
+            with pytest.raises(service.CannotClaimThePathname) as refused:
+                bench.open()
+            assert "could not be opened" in str(refused.value)
+            assert "a worker is already listening" not in str(refused.value)
+        finally:
+            os.chmod(where, 0o700)
+
+    def test_tidy_says_what_it_could_not_do_rather_than_inventing_a_holder(self, tmp_path,
+                                                                          monkeypatch):
+        path = str(tmp_path / "worker.sock")
+        open(path, "w").close()
+
+        def cannot_open(*_rest, **_kw):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(service.os, "open", cannot_open)
+        said = service.tidy_away("unix://" + path)
+        assert os.path.exists(path), "it removed a file it could not establish ownership of"
+        assert "could not be opened" in said, said
+        assert "a worker holds" not in said, said

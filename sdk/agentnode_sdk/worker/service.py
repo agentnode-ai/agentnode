@@ -82,6 +82,47 @@ DIRECTORY_MODE = 0o2750
 LOOK_UP_EVERY_SECONDS = 1.0
 
 
+class CannotClaimThePathname(OSError):
+    """The lock beside a socket could not be opened at all, so ownership cannot be established.
+
+    Deliberately not the same as "another worker holds it". That one is an ordinary, expected
+    answer; this one means the deployment is wrong -- a directory that is not writable, a
+    read-only filesystem -- and saying "a worker holds it" would be telling an operator something
+    false about their own machine.
+    """
+
+
+#: Where the kernel lists every bound unix socket, whether or not anything is listening on it.
+WHAT_IS_BOUND = "/proc/net/unix"
+
+
+def _is_anything_bound_to(path: str):
+    """True, False, or None when this machine cannot say.
+
+    The connect probe cannot tell a dead file from a socket that is BOUND BUT NOT YET LISTENING:
+    both refuse a connection. A worker from before the lock existed is exactly that for the
+    length of its own startup, and taking its brand-new door away is the defect this whole change
+    is about -- an independent review pointed out that the probe alone still allows it across
+    versions, where the lock cannot help because the old worker holds none.
+
+    The kernel distinguishes them and does not need to be timed to do it: a socket that is bound
+    appears here, listening or not, and a file with nothing behind it does not.
+
+    None means the listing could not be read -- not Linux, or a hidden /proc. The caller then has
+    only the probe, which is what it had before this existed.
+    """
+    try:
+        with open(WHAT_IS_BOUND, encoding="utf-8", errors="replace") as listing:
+            for line in listing:
+                fields = line.split()
+                # Num RefCount Protocol Flags Type St Inode Path
+                if len(fields) >= 8 and fields[7] == path:
+                    return True
+    except OSError:                                           # pragma: no cover - not linux
+        return None
+    return False
+
+
 class Bench:
     """One worker, serving one socket, for one account.
 
@@ -135,7 +176,18 @@ class Bench:
             # Then this guarantee cannot be made. The unix door is a posix one anyway -- it is
             # built on SO_PEERCRED -- so this is a platform that will not get this far.
             return
-        held = os.open(path + LOCK_SUFFIX, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            held = os.open(path + LOCK_SUFFIX, os.O_CREAT | os.O_RDWR, 0o600)
+        except OSError as cannot:
+            # Not "somebody holds it" -- this worker cannot even ask the question. Permission,
+            # a read-only filesystem, a missing directory. It is told apart from a clash because
+            # a review pointed out that reporting it as one says something untrue, and the two
+            # want different answers: a clash is somebody else's door, this is a broken
+            # deployment. Refusing to start is the safe end of it either way.
+            raise CannotClaimThePathname(
+                "this worker cannot claim %s: the lock beside it could not be opened (%s). "
+                "It will not serve a pathname it cannot establish ownership of."
+                % (path, cannot)) from cannot
         try:
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as clash:
@@ -208,6 +260,9 @@ class Bench:
                 probe.close()
                 raise OSError("a worker is already listening at " + path)
             except ConnectionRefusedError:
+                # Refused is not the same as dead. Ask the kernel whether anything has it bound.
+                if _is_anything_bound_to(path):
+                    raise OSError("a worker is already listening at " + path) from None
                 os.unlink(path)
             except FileNotFoundError:                         # pragma: no cover - raced away
                 pass
@@ -745,6 +800,8 @@ def tidy_away(address: str) -> str:
     keeper = Bench(None, address, bytes(32), None)
     try:
         keeper._take_the_lock(path)
+    except CannotClaimThePathname as cannot:
+        return "left alone: " + str(cannot)
     except OSError:
         return "left alone: a worker holds " + path
     try:
@@ -756,7 +813,8 @@ def tidy_away(address: str) -> str:
             probe.close()
             return "left alone: something is listening at " + path
         except ConnectionRefusedError:
-            pass
+            if _is_anything_bound_to(path):
+                return "left alone: something has %s bound, though it is not listening yet" % path
         except FileNotFoundError:                             # pragma: no cover - raced away
             return "nothing to tidy: it went while this was looking, " + path
         except OSError as unclear:                            # pragma: no cover - cannot tell
