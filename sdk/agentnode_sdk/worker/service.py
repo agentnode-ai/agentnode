@@ -96,6 +96,13 @@ class Bench:
         #: that does not forget.
         self.floor = wire.Floor(remembers_at)
         self._socket: socket.socket | None = None
+        #: The path this worker actually bound, set by `open()`. Kept so that stopping can take
+        #: the file away again: a closed socket whose file is still lying there is a door to
+        #: anyone reading the machine, with nothing behind it.
+        self._path: str | None = None
+        #: (st_dev, st_ino) of that path as this worker bound it. What tells its own door from
+        #: one another worker has since put in the same place.
+        self._bound_inode: tuple[int, int] | None = None
         #: What this worker calls itself when it holds a certificate: the instance in it.
         #: None when it does not, and then the worker's own label is used as before.
         self.label: str | None = None
@@ -147,6 +154,12 @@ class Bench:
         # is unaffected: accept() hands back a BLOCKING socket when the listener has a timeout.
         listener.settimeout(LOOK_UP_EVERY_SECONDS)
         self._socket = listener
+        self._path = path
+        try:
+            bound = os.stat(path)
+            self._bound_inode = (bound.st_dev, bound.st_ino)
+        except OSError:                                       # pragma: no cover - just created
+            self._bound_inode = None
         return path
 
     def serve_forever(self) -> None:
@@ -172,7 +185,14 @@ class Bench:
             threading.Thread(target=self._one, args=(connection,), daemon=True).start()
 
     def stop_serving(self) -> None:
-        """Told once, stopped for good. Safe to call before serving has begun."""
+        """Told once, stopped for good. Safe to call before serving has begun.
+
+        The file goes as well as the socket. Closing a unix socket leaves its path on disk, and
+        a worker that is later started with a TLS door and no `--socket` does not know that path
+        and cannot clean it up -- so the machine is left showing a socket file that nothing
+        serves. Read as a door it is one door too many; read as a dead file it still has to be
+        told apart from a live one by hand.
+        """
         self._stopped = True
         self._serving = False
         if self._socket is not None:
@@ -180,6 +200,36 @@ class Bench:
                 self._socket.close()
             except OSError:                                   # pragma: no cover
                 pass
+        self._unlink_the_path()
+
+    def _unlink_the_path(self) -> None:
+        """Take away the file this worker bound -- and only while it is still that same file.
+
+        Another worker may have taken the path over since, and removing a live worker's door
+        would be worse than leaving a dead file. What settles it is the inode, recorded when
+        this worker bound: binding creates a new file, so a different inode at the path means
+        the door is somebody else's and is left alone.
+
+        Not a connect probe, which is what this tried first. Closing a listening socket does not
+        wake a thread already blocked in accept() on it -- the comment in `open()` says so and
+        six workers were once found still in there -- so during a normal stop the probe connects
+        to this worker's own draining door, reads it as somebody else's, and leaves the file.
+        A test caught it. The inode does not depend on when the loop notices.
+        """
+        path, bound, self._path = self._path, self._bound_inode, None
+        self._bound_inode = None
+        if not path or bound is None:
+            return
+        try:
+            here = os.stat(path)
+        except OSError:                                       # already gone, or cannot be read
+            return
+        if (here.st_dev, here.st_ino) != bound:
+            return                                            # somebody else's door now
+        try:
+            os.unlink(path)
+        except OSError:                                       # pragma: no cover - raced away
+            pass
 
     # ------------------------------------------------------------------ one connection
 
@@ -453,8 +503,10 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         host, port = listener.open()
         if address:
             threading.Thread(target=listener.serve_forever, daemon=True).start()
-        print("  also listening with mutual TLS at %s:%s, loopback only, as %s"
-              % (host, port, bench.label), flush=True)
+        # "also" only when there is something for it to be also to. A worker whose only door is
+        # this one used to announce itself as though a socket were open beside it.
+        print("  %slistening with mutual TLS at %s:%s, loopback only, as %s"
+              % ("also " if address else "", host, port, bench.label), flush=True)
         print("  it accepts gateway instance(s): " + ", ".join(sorted(tls.accept)), flush=True)
     if address:
         print("  listening at " + path + " for uid " + str(only_uid))
