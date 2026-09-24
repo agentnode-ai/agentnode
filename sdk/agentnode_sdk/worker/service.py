@@ -182,11 +182,18 @@ class Bench:
         # by ceasing to exist, and the next worker then finds the pathname stale and clears it.
         self._take_the_lock(path)
         try:
-            return self._bind_it(path)
+            opened = self._bind_it(path)
         except BaseException:
             # A lock held by a worker that never opened a door is a pathname nobody can use.
             self._let_the_lock_go()
             raise
+        if self._stopped:
+            # A stop arrived while this was opening. Finish undoing it here, in the main thread,
+            # rather than leaving a door open that nothing will ever serve -- and rather than
+            # having had the handler do it, which is what went wrong.
+            self.stop_serving()
+            raise OSError("this worker was stopped while it was opening " + path)
+        return opened
 
     def _bind_it(self, path: str) -> str:
         # A socket file left by a process that is gone is not a worker; a socket file whose
@@ -244,6 +251,18 @@ class Bench:
                     continue
                 return
             threading.Thread(target=self._one, args=(connection,), daemon=True).start()
+
+    def asked_to_stop(self) -> None:
+        """All a signal handler may do: set the flag and return.
+
+        No file is touched and no descriptor is closed. A handler runs in the main thread
+        between bytecodes, so it can land anywhere -- inside `open()` between taking the lock
+        and recording the path, or inside a cleanup that is already half done. Both of those
+        released the pathname lock at a moment when something else was relying on it, which an
+        independent review found. Setting a flag cannot.
+        """
+        self._stopped = True
+        self._serving = False
 
     def stop_serving(self) -> None:
         """Told once, stopped for good. Safe to call before serving has begun.
@@ -641,6 +660,21 @@ class _Doors:
         if door is not None:
             self.doors.append(door)
 
+    def asked_to_stop(self) -> None:
+        """What a signal handler does, and all of it: say so, and return.
+
+        Nothing here opens, closes, unlinks or waits. The loops see the flag within a second and
+        the process leaves through the `finally`, which is where the closing has always been.
+        """
+        for door in self.doors:
+            said = getattr(door, "asked_to_stop", None) or getattr(door, "stop_serving", None)
+            if said is None:                                  # pragma: no cover - not a door
+                continue
+            try:
+                said()
+            except Exception:                                 # pragma: no cover - already going
+                pass
+
     def stop(self) -> None:
         """Close everything open and take the socket file with it. Safe to call repeatedly."""
         for door in self.doors:
@@ -656,7 +690,7 @@ class _Doors:
             if number is None:                                # pragma: no cover - not posix
                 continue
             try:
-                caught[number] = signal.signal(number, lambda _s, _f: self.stop())
+                caught[number] = signal.signal(number, lambda _s, _f: self.asked_to_stop())
             except (ValueError, OSError):
                 # Not the main thread. Then whoever embedded this is the one who stops it.
                 pass

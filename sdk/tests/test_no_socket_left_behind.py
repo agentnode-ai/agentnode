@@ -386,3 +386,101 @@ class TestTheWorkerSaysWhatDoorsItHas:
         said = capsys.readouterr().out
         assert "Before it opens the socket" not in said, \
             "the banner tells every worker it is about to open a socket"
+
+
+@a_posix_door
+class TestASignalThatArrivesAtAnAwkwardMoment:
+    """A handler runs in the main thread between bytecodes, so it can land anywhere.
+
+    Two ways that went wrong, both found by an independent review of the previous version, and
+    both with the same cause: the handler did work. It could release the pathname lock while
+    `open()` was still binding, and it could release it in the middle of a cleanup that another
+    invocation had already started. The handler now sets a flag and returns.
+    """
+
+    def test_the_handler_touches_nothing(self, tmp_path):
+        """It may say stop. It may not close, unlink, or release the lock."""
+        bench, path = a_bench(tmp_path)
+        bench.open()
+        bench.asked_to_stop()
+        assert os.path.exists(path), "being told to stop removed the door by itself"
+        assert bench._socket.fileno() != -1, "being told to stop closed the socket by itself"
+        assert bench._lock is not None, "being told to stop released the pathname lock"
+        bench.stop_serving()
+        assert not os.path.exists(path)
+
+    def test_a_stop_during_open_does_not_leave_a_door_nobody_serves(self, tmp_path, monkeypatch):
+        """The flag arrives while the socket is being bound. It must not end half-open."""
+        bench, path = a_bench(tmp_path)
+        real_bind_it = bench._bind_it
+
+        def stopped_while_binding(where):
+            opened = real_bind_it(where)
+            bench._stopped = True                             # as a handler would set it
+            return opened
+
+        monkeypatch.setattr(bench, "_bind_it", stopped_while_binding)
+        with pytest.raises(OSError) as gave_up:
+            bench.open()
+        assert "stopped while it was opening" in str(gave_up.value)
+        assert not os.path.exists(path), "it left a door open that nothing will serve"
+
+        # And the pathname is free: the lock did not go with the worker that never served.
+        after, _ = a_bench(tmp_path)
+        after.open()
+        assert os.path.exists(path)
+        after.stop_serving()
+        assert not os.path.exists(path)
+
+    def test_being_told_twice_is_not_two_cleanups(self, tmp_path):
+        bench, path = a_bench(tmp_path)
+        bench.open()
+        bench.asked_to_stop()
+        bench.asked_to_stop()
+        bench.stop_serving()
+        bench.stop_serving()
+        assert not os.path.exists(path)
+
+
+@a_posix_door
+class TestWhatNothingInsideTheWorkerCanCover:
+
+    def test_a_worker_that_is_killed_outright_leaves_its_file(self, tmp_path):
+        """Said plainly rather than claimed away: SIGKILL runs nothing.
+
+        No handler, no `finally`, no unlink. What repairs it is the next worker clearing a stale
+        pathname on the way in -- and a worker started with only a TLS door never looks at that
+        pathname, which is how the alpha came to show a dead socket in the first place. Covering
+        that belongs to whatever owns the process across restarts; on the alpha it is the unit's
+        own ExecStopPost, which systemd runs however the process went.
+        """
+        import subprocess
+        import sys
+
+        path = str(tmp_path / "worker.sock")
+        key = tmp_path / "worker.key"
+        key.write_text("ef" * 32, encoding="ascii")
+        environment = dict(os.environ)
+        environment["HOME"] = str(tmp_path)
+        environment["AGENTNODE_ALLOW_UNPINNED"] = "1"
+        started = subprocess.Popen(
+            [sys.executable, "-m", "agentnode_sdk.cli", "worker", "serve",
+             "--socket", "unix://" + path, "--key", str(key), "--for-user", str(os.getuid())],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=environment)
+        for _ in range(240):
+            if os.path.exists(path):
+                break
+            if started.poll() is not None:                    # pragma: no cover - never started
+                said = (started.stdout.read() or b"").decode("utf-8", "replace")
+                raise AssertionError("the worker exited before it opened a door:\n" + said)
+            time.sleep(0.25)
+        started.kill()
+        started.wait(timeout=60)
+        assert os.path.exists(path), \
+            "this test is about SIGKILL leaving the file; if it no longer does, say how"
+
+        # And the next worker clears it, which is the repair that exists inside the product.
+        after, _ = a_bench(tmp_path)
+        after.open()
+        after.stop_serving()
+        assert not os.path.exists(path)
