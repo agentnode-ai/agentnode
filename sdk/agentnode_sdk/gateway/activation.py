@@ -370,6 +370,48 @@ def _write_atomic(path: Path, text: str) -> None:
         raise
 
 
+def _still_running(path) -> bool:
+    """Whether the process named in a lock file is still there.
+
+    Unreadable, empty or not a number is answered as "still running": a lock that cannot be read
+    is not one to break on a guess, and the age rule decides that case. A pid that is not running
+    is an answer, and it is the whole reason the pid is written down.
+    """
+    try:
+        said = Path(path).read_text(encoding="ascii", errors="ignore").strip()
+    except OSError:
+        return True
+    if not said.isdigit():
+        return True
+    pid = int(said)
+    if os.name == "nt":
+        # NOT os.kill(pid, 0) here: on Windows that is not a question, it is TerminateProcess.
+        import ctypes
+
+        QUERY_LIMITED_INFORMATION, STILL_ACTIVE, ACCESS_DENIED = 0x1000, 259, 5
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            # Access denied means it exists and is somebody else's, which is not an answer to
+            # break a lock on; anything else means there is no such process.
+            return kernel32.GetLastError() == ACCESS_DENIED
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # It exists and belongs to somebody else, or the question cannot be asked here.
+        return True
+    return True
+
+
 class ActivationLock:
     """One activation at a time, across processes.
 
@@ -382,6 +424,10 @@ class ActivationLock:
         self.path = Path(state_root) / LOCK_NAME
         self.stale_after = stale_after
         self._fd: int | None = None
+        #: Empty unless this lock was taken over one somebody else left behind, and then it says
+        #: which of the two reasons applied. A caller that reports it tells an operator why a
+        #: change went ahead while a lock file existed.
+        self.broke_a_lock = ""
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -392,10 +438,21 @@ class ActivationLock:
                 age = time.time() - self.path.stat().st_mtime
             except OSError:
                 age = 0.0
-            if age <= self.stale_after:
+            # A LOCK WHOSE HOLDER IS GONE IS NOT A LOCK. Measured on the closed alpha: a
+            # policy change that ended without its `__exit__` -- a kill, a restart at the wrong
+            # moment -- left this file behind, and every later change was refused for the whole
+            # staleness window. On a machine that measures what it enforces after every boot,
+            # that is the difference between coming back by itself and needing somebody to
+            # delete a file. The age rule stays as the backstop for a pid that cannot be read or
+            # has been reused.
+            if _still_running(self.path) and age <= self.stale_after:
                 raise ActivationError(
                     "another change to this gateway's policy is already running. Nothing was "
                     "changed. Wait for it to finish, then try again.") from None
+            self.broke_a_lock = (
+                "a lock was left behind by a process that is no longer running"
+                if age <= self.stale_after else
+                "a lock was left behind more than %d seconds ago" % int(self.stale_after))
             _quiet_unlink(self.path)
             try:
                 self._fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
