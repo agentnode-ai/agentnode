@@ -100,9 +100,6 @@ class Bench:
         #: the file away again: a closed socket whose file is still lying there is a door to
         #: anyone reading the machine, with nothing behind it.
         self._path: str | None = None
-        #: (st_dev, st_ino) of that path as this worker bound it. What tells its own door from
-        #: one another worker has since put in the same place.
-        self._bound_inode: tuple[int, int] | None = None
         #: What this worker calls itself when it holds a certificate: the instance in it.
         #: None when it does not, and then the worker's own label is used as before.
         self.label: str | None = None
@@ -155,11 +152,6 @@ class Bench:
         listener.settimeout(LOOK_UP_EVERY_SECONDS)
         self._socket = listener
         self._path = path
-        try:
-            bound = os.stat(path)
-            self._bound_inode = (bound.st_dev, bound.st_ino)
-        except OSError:                                       # pragma: no cover - just created
-            self._bound_inode = None
         return path
 
     def serve_forever(self) -> None:
@@ -195,37 +187,47 @@ class Bench:
         """
         self._stopped = True
         self._serving = False
+        # Before the close, deliberately. See `_unlink_the_path`.
+        self._unlink_the_path()
         if self._socket is not None:
             try:
                 self._socket.close()
             except OSError:                                   # pragma: no cover
                 pass
-        self._unlink_the_path()
 
     def _unlink_the_path(self) -> None:
-        """Take away the file this worker bound -- and only while it is still that same file.
+        """Take away the file this worker bound, while the socket is still bound to it.
 
-        Another worker may have taken the path over since, and removing a live worker's door
-        would be worse than leaving a dead file. What settles it is the inode, recorded when
-        this worker bound: binding creates a new file, so a different inode at the path means
-        the door is somebody else's and is left alone.
+        The order is the whole answer to "is this still my door". While this worker's listener
+        is bound, nobody else can have taken the path: another worker's `open()` would connect,
+        find somebody listening, and refuse. So the path is ours by construction and needs no
+        test of ownership -- and unlinking a bound unix socket is harmless, since connections
+        already made are unaffected and new ones simply find nothing there, which is what a
+        worker being stopped wants anyway.
 
-        Not a connect probe, which is what this tried first. Closing a listening socket does not
-        wake a thread already blocked in accept() on it -- the comment in `open()` says so and
-        six workers were once found still in there -- so during a normal stop the probe connects
-        to this worker's own draining door, reads it as somebody else's, and leaves the file.
-        A test caught it. The inode does not depend on when the loop notices.
+        Two other ways were tried and are wrong, both caught by tests rather than reasoning:
+
+        * A connect probe after the close. Closing a listening socket does not wake a thread
+          already blocked in `accept()` on it -- the comment in `open()` says so -- so during a
+          normal stop the probe reaches this worker's own draining door, reads it as somebody
+          else's, and leaves the file.
+        * The inode recorded at bind time, compared after the close. Filesystems reuse inode
+          numbers straight after an unlink, so a second worker that cleared the path and bound
+          its own socket can land on the very same number. It passed on one machine and failed
+          on CI, which is the only useful thing it did.
+
+        `getsockname` is what says the listener is still bound: on a socket somebody has closed
+        behind this object's back it raises, and then the path may be another worker's and is
+        left alone.
         """
-        path, bound, self._path = self._path, self._bound_inode, None
-        self._bound_inode = None
-        if not path or bound is None:
+        path, self._path = self._path, None
+        if not path or self._socket is None:
             return
         try:
-            here = os.stat(path)
-        except OSError:                                       # already gone, or cannot be read
+            if self._socket.getsockname() != path:
+                return                                        # not the door we are holding
+        except OSError:                                       # closed already; cannot claim it
             return
-        if (here.st_dev, here.st_ino) != bound:
-            return                                            # somebody else's door now
         try:
             os.unlink(path)
         except OSError:                                       # pragma: no cover - raced away

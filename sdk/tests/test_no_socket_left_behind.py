@@ -59,16 +59,47 @@ class TestTheFileGoesWhenTheWorkerDoes:
         bench.stop_serving()
 
     def test_it_does_not_take_away_a_door_somebody_else_now_holds(self, tmp_path):
-        """Between the close and the unlink, another worker may have bound the same path."""
+        """A worker whose listener was closed behind its back cannot claim the path.
+
+        While a worker's listener is bound, the path is its own by construction: another
+        worker's `open()` would connect, find somebody listening, and refuse. So the only way
+        the path can belong to somebody else is if this worker's socket was closed without
+        going through `stop_serving`. Then it may not remove what it finds there.
+
+        Two earlier versions of the check got this wrong in ways only a machine showed: a
+        connect probe reached the worker's own draining accept loop, and an inode recorded at
+        bind time matched a second worker's socket because the filesystem reused the number.
+        """
         first, path = a_bench(tmp_path)
         first.open()
-        first._socket.close()                      # closed, but the file is still first's
+        first._socket.close()                      # closed behind the Bench's back
         second, _ = a_bench(tmp_path)
-        second.open()                              # second takes the path over
+        second.open()                              # second clears it and binds its own
         assert os.path.exists(path)
         first.stop_serving()                       # must not remove the live one's door
         assert os.path.exists(path), "a worker removed a door another worker was serving"
         second.stop_serving()
+        assert not os.path.exists(path)
+
+    def test_the_file_goes_while_the_socket_is_still_bound(self, tmp_path):
+        """The order is the guarantee, so it is the thing to hold onto.
+
+        Unlinking before the close is what makes the ownership question answerable at all. If
+        this ever went back to close-then-unlink, the two checks above could both pass on one
+        machine and the file would still be left behind on another.
+        """
+        bench, path = a_bench(tmp_path)
+        bench.open()
+        was_bound_when_unlinked = []
+        real = bench._unlink_the_path
+
+        def watch():
+            was_bound_when_unlinked.append(bench._socket.fileno() != -1)
+            real()
+
+        bench._unlink_the_path = watch
+        bench.stop_serving()
+        assert was_bound_when_unlinked == [True],             "the socket was closed before its file was taken away"
         assert not os.path.exists(path)
 
     def test_a_stopped_worker_leaves_nothing_a_later_one_has_to_clear(self, tmp_path):
