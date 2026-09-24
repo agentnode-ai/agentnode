@@ -84,8 +84,8 @@ the honest answer and the one that keeps a sandbox from quietly becoming a shell
 
 ## Only with the mutual-TLS door: the issuer's root run
 
-The unix socket stays the default and needs nothing from this section. A worker that also opens
-the mutual-TLS door on loopback (`agentnode worker serve --listen tcps://127.0.0.1:<port> ...`)
+The unix socket is still the simplest arrangement and needs nothing from this section. A worker
+that opens the mutual-TLS door on loopback (`agentnode worker serve --listen tcps://127.0.0.1:<port> ...`)
 judges every caller by the deployment's signed revocation list and by a time floor, and so does a
 gateway configured with `worker_tls` -- neither starts over TLS without both. Both are root's:
 
@@ -100,6 +100,17 @@ The floors live in `/var/lib/agentnode-floor`, not under `/var/lib/agentnode`: t
 the gateway's own (`StateDirectory=`, 0700), where the gateway could put a floor of its own in
 place of root's, and the worker's unit cannot see into it at all. If the timer stops, the floors
 age and both services stop serving over TLS after the floor's maximum age -- on purpose.
+
+### The TLS door on its own
+
+`--socket` may be left out entirely when the TLS door is configured. Then no socket file is
+created, nothing can reach the worker except a caller that completes mutual TLS, and the group
+that used to be able to open the socket has nothing to open. A worker started with neither door is
+refused rather than left holding a container runtime with nobody able to reach it.
+
+That is the arrangement the closed alpha runs: the gateway's `worker_address` is a `tcps://` one,
+its `worker_tls` block is complete, and `/run/agentnode/worker.sock` does not exist. Going back to
+the socket is putting `--socket` back and pointing `worker_address` at it again.
 
 Revoking (`sudo agentnode pki revoke --serial <hex>`) publishes the list before it returns and says
 whether the revocation is in effect; an open connection of the revoked identity is cut within the
