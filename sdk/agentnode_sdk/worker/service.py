@@ -26,6 +26,7 @@ is a development arrangement and says so.
 from __future__ import annotations
 
 import os
+import signal
 import socket
 import struct
 import threading
@@ -519,6 +520,22 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
     print("  a ceiling was hit here before this door opened, and it held.")
     print("  it can also write down what it accepts, which is what refuses a replay after a "
           "restart.")
+    # A worker under systemd is stopped with SIGTERM, and Python's default for SIGTERM is to end
+    # the process where it stands: no `finally`, no cleanup, nothing. So every tidy-up written
+    # below was unreachable in the one case that matters -- `systemctl stop`, and the restart that
+    # is two of those. Measured rather than reasoned about: a real worker on the alpha, sent a
+    # SIGTERM, left its socket file behind with the unlink already in the code.
+    #
+    # Both loops poll a flag every second, so a handler that tells them to stop is enough; the
+    # process then leaves through the `finally` like any other exit. SIGINT is deliberately left
+    # alone: Ctrl-C raises KeyboardInterrupt, the caller prints "stopped.", and that path also
+    # passes through the `finally`.
+    previously = None
+    try:
+        previously = signal.signal(signal.SIGTERM, lambda _signum, _frame: _stop(bench, listener))
+    except (ValueError, OSError, AttributeError):
+        # Not the main thread, or a platform without it. Then whoever embedded this stops it.
+        pass
     try:
         if address:
             bench.serve_forever()
@@ -528,8 +545,23 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             # to come back to.
             listener.serve_forever()
     finally:
-        if listener is not None:
-            listener.stop_serving()
+        _stop(bench, listener)
+        if previously is not None:
+            try:
+                signal.signal(signal.SIGTERM, previously)
+            except (ValueError, OSError):                     # pragma: no cover - going away
+                pass
+
+
+def _stop(bench, listener) -> None:
+    """Close both doors and take the socket file with them. Safe to call more than once."""
+    for door in (bench, listener):
+        if door is None:
+            continue
+        try:
+            door.stop_serving()
+        except Exception:                                     # pragma: no cover - already going
+            pass
 
 
 def _time_now() -> float:                                     # pragma: no cover - a seam for tests

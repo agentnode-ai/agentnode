@@ -13,8 +13,10 @@ itself as "also listening with mutual TLS", which says a socket is open beside i
 from __future__ import annotations
 
 import os
+import signal
 import socket
 import threading
+import time
 
 import pytest
 
@@ -142,3 +144,59 @@ class TestTheWorkerSaysWhatDoorsItHas:
         assert "Before it opens the socket" not in text, \
             "the banner tells every worker it is about to open a socket"
         assert "Before any door opens" in text
+
+
+@a_posix_door
+class TestTheWayItIsActuallyStopped:
+    """systemd sends SIGTERM. Everything above calls `stop_serving()` by hand.
+
+    That difference hid the whole defect once already: the unlink was in the code, every unit
+    test above was green, and a real worker on the alpha sent a SIGTERM still left its socket
+    file behind -- because Python's default for SIGTERM ends the process where it stands, so no
+    `finally` ran and `stop_serving` was never reached. A test that only calls the method cannot
+    see that. This one spawns a real worker and signals it.
+    """
+
+    def a_worker_serving(self, tmp_path):
+        import subprocess
+        import sys
+
+        path = str(tmp_path / "worker.sock")
+        key = tmp_path / "worker.key"
+        key.write_text("ab" * 32, encoding="ascii")
+        environment = dict(os.environ)
+        environment["HOME"] = str(tmp_path)
+        environment["AGENTNODE_ALLOW_UNPINNED"] = "1"
+        started = subprocess.Popen(
+            [sys.executable, "-m", "agentnode_sdk.cli", "worker", "serve",
+             "--socket", "unix://" + path, "--key", str(key), "--for-user", str(os.getuid())],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=environment)
+        for _ in range(240):
+            if os.path.exists(path):
+                return started, path
+            if started.poll() is not None:
+                said = (started.stdout.read() or b"").decode("utf-8", "replace")
+                raise AssertionError("the worker exited before it opened a door:\n" + said)
+            time.sleep(0.25)
+        started.kill()
+        raise AssertionError("the worker never opened its socket")
+
+    def test_a_sigterm_takes_the_socket_file_with_it(self, tmp_path):
+        started, path = self.a_worker_serving(tmp_path)
+        try:
+            started.send_signal(signal.SIGTERM)
+            started.wait(timeout=60)
+        finally:
+            if started.poll() is None:                        # pragma: no cover - it hung
+                started.kill()
+                started.wait(timeout=30)
+        assert not os.path.exists(path), \
+            "a worker stopped the way systemd stops it left its socket file behind"
+
+    def test_and_it_stops_rather_than_being_killed(self, tmp_path):
+        """If SIGTERM were still the default, the exit code would say the signal killed it."""
+        started, _ = self.a_worker_serving(tmp_path)
+        started.send_signal(signal.SIGTERM)
+        code = started.wait(timeout=60)
+        assert code != -signal.SIGTERM, \
+            "the process was ended by the signal rather than stopping on it"
