@@ -655,10 +655,29 @@ class _Doors:
 
     def __init__(self, bench) -> None:
         self.doors = [bench]
+        #: Whether a stop has been asked for. Remembered, because a door can be added AFTER the
+        #: signal arrives: the TLS listener is built and opened while the handler is already
+        #: installed, so a stop in that interval used to reach the Bench and nothing else, and a
+        #: TLS-only worker then went on serving with nobody left to tell it. A review found that.
+        self.stopped = False
 
     def also(self, door) -> None:
-        if door is not None:
-            self.doors.append(door)
+        if door is None:
+            return
+        self.doors.append(door)
+        if self.stopped:
+            # It missed the news. Tell it now, before it is asked to serve anything.
+            self._say_so_to(door)
+
+    @staticmethod
+    def _say_so_to(door) -> None:
+        said = getattr(door, "asked_to_stop", None) or getattr(door, "stop_serving", None)
+        if said is None:                                      # pragma: no cover - not a door
+            return
+        try:
+            said()
+        except Exception:                                     # pragma: no cover - already going
+            pass
 
     def asked_to_stop(self) -> None:
         """What a signal handler does, and all of it: say so, and return.
@@ -666,14 +685,9 @@ class _Doors:
         Nothing here opens, closes, unlinks or waits. The loops see the flag within a second and
         the process leaves through the `finally`, which is where the closing has always been.
         """
+        self.stopped = True
         for door in self.doors:
-            said = getattr(door, "asked_to_stop", None) or getattr(door, "stop_serving", None)
-            if said is None:                                  # pragma: no cover - not a door
-                continue
-            try:
-                said()
-            except Exception:                                 # pragma: no cover - already going
-                pass
+            self._say_so_to(door)
 
     def stop(self) -> None:
         """Close everything open and take the socket file with it. Safe to call repeatedly."""
@@ -703,6 +717,57 @@ class _Doors:
                 signal.signal(number, handler)
             except (ValueError, OSError):                     # pragma: no cover - going away
                 pass
+
+
+def tidy_away(address: str) -> str:
+    """Remove a socket pathname nobody holds, and say what was found. Never removes a live door.
+
+    Ownership is decided the way `Bench` decides it: by taking the pathname's lock. Holding it
+    means no worker of this build can be using the pathname -- one that is serving, or is in the
+    middle of opening, holds it. Only then is the file removed.
+
+    The connect probe is asked as well, for the same reason `open()` still asks it: a worker from
+    before this build serves without holding any lock, and its door must not be pulled away.
+    """
+    from agentnode_sdk.worker import WorkerUnreachable
+    from agentnode_sdk.worker.remote import _path_of
+
+    try:
+        path = _path_of(address)
+    except WorkerUnreachable:
+        # A tcps:// address, say. There is no file behind one of those to tidy.
+        path = ""
+    if not path:
+        return "that is not a unix address, so there is no socket file to tidy: " + address
+    if not os.path.exists(path):
+        return "nothing to tidy: there is no file at " + path
+
+    keeper = Bench(None, address, bytes(32), None)
+    try:
+        keeper._take_the_lock(path)
+    except OSError:
+        return "left alone: a worker holds " + path
+    try:
+        # A worker from before this build holds no lock, so ask its door as well.
+        try:
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            probe.settimeout(1.0)
+            probe.connect(path)
+            probe.close()
+            return "left alone: something is listening at " + path
+        except ConnectionRefusedError:
+            pass
+        except FileNotFoundError:                             # pragma: no cover - raced away
+            return "nothing to tidy: it went while this was looking, " + path
+        except OSError as unclear:                            # pragma: no cover - cannot tell
+            return "left alone: could not tell whether anything holds %s (%s)" % (path, unclear)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:                             # pragma: no cover - raced away
+            return "nothing to tidy: it went while this was looking, " + path
+        return "removed a socket file nobody was holding: " + path
+    finally:
+        keeper._let_the_lock_go()
 
 
 def _time_now() -> float:                                     # pragma: no cover - a seam for tests

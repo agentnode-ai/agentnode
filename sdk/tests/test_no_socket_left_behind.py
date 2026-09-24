@@ -484,3 +484,100 @@ class TestWhatNothingInsideTheWorkerCanCover:
         after.open()
         after.stop_serving()
         assert not os.path.exists(path)
+
+
+@a_posix_door
+class TestADoorAddedAfterTheStopWasAskedFor:
+    """The TLS listener is built and opened while the handler is already installed.
+
+    A stop arriving in that interval used to reach the Bench and nothing else, so a TLS-only
+    worker went on serving with nobody left to tell it. Found by an independent review: making
+    the handler safe had moved the failure into door registration rather than removing it.
+    """
+
+    def test_a_door_registered_after_a_stop_is_told_at_once(self):
+        from agentnode_sdk.worker import service as under_test
+
+        class ADoor:
+            def __init__(self):
+                self.told = 0
+
+            def asked_to_stop(self):
+                self.told += 1
+
+        first, late = ADoor(), ADoor()
+        doors = under_test._Doors(first)
+        doors.asked_to_stop()
+        assert first.told == 1
+        doors.also(late)
+        assert late.told == 1, "a door added after the stop never heard about it"
+
+    def test_a_door_registered_before_a_stop_is_told_when_it_comes(self):
+        from agentnode_sdk.worker import service as under_test
+
+        class ADoor:
+            def __init__(self):
+                self.told = 0
+
+            def asked_to_stop(self):
+                self.told += 1
+
+        first, second = ADoor(), ADoor()
+        doors = under_test._Doors(first)
+        doors.also(second)
+        assert (first.told, second.told) == (0, 0)
+        doors.asked_to_stop()
+        assert (first.told, second.told) == (1, 1)
+
+
+@a_posix_door
+class TestTidyingUpAfterAWorkerThatWasKilled:
+    """`worker tidy`: remove a pathname nobody holds, and refuse to touch one somebody does.
+
+    The unit used to do this with an unconditional `rm`, and a review refused it: between the
+    process going and the `rm` running, another worker can legitimately take the pathname, and
+    the `rm` would delete a live door. Ownership is decided by the same lock as everywhere else.
+    """
+
+    def test_it_removes_a_pathname_nobody_holds(self, tmp_path):
+        gone, path = a_bench(tmp_path)
+        gone.open()
+        gone._socket.close()                                  # as a killed process leaves it
+        gone._let_the_lock_go()
+        gone._path = None
+        assert os.path.exists(path)
+
+        said = service.tidy_away("unix://" + path)
+        assert not os.path.exists(path), said
+        assert "removed" in said
+
+    def test_it_will_not_touch_a_pathname_a_worker_holds(self, tmp_path):
+        serving, path = a_bench(tmp_path)
+        serving.open()
+        said = service.tidy_away("unix://" + path)
+        assert os.path.exists(path), "it removed a door a worker was holding"
+        assert "left alone" in said, said
+        serving.stop_serving()
+
+    def test_it_will_not_touch_a_pathname_something_is_listening_on(self, tmp_path):
+        """A worker from before this build holds no lock. Its door still may not be taken."""
+        path = str(tmp_path / "worker.sock")
+        old = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        old.bind(path)
+        old.listen(1)
+        try:
+            said = service.tidy_away("unix://" + path)
+            assert os.path.exists(path), "it removed the door of a worker with no lock"
+            assert "listening" in said, said
+        finally:
+            old.close()
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_nothing_there_is_not_an_error(self, tmp_path):
+        said = service.tidy_away("unix://" + str(tmp_path / "never-existed.sock"))
+        assert "nothing to tidy" in said, said
+
+    def test_an_address_that_is_not_a_socket_is_refused_quietly(self):
+        said = service.tidy_away("tcps://127.0.0.1:8443")
+        assert "not a unix address" in said, said

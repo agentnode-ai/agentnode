@@ -189,13 +189,41 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_tidy(args) -> int:
+    """Remove a socket pathname nobody holds. Never one somebody does.
+
+    For the one case no code inside a worker can cover: a process that was killed outright runs
+    no handler and no `finally`, so its socket file is still there. The next SOCKET worker would
+    clear it on the way in -- but a worker started with only a TLS door never looks at that
+    pathname, and then the file sits there looking like a door with nothing behind it.
+
+    Ownership is decided the same way the worker decides it: by taking the pathname's lock. If
+    another worker holds it, this says so and removes nothing. That is what makes this safe to
+    put in `ExecStopPost`, where an unconditional `rm` would not be -- between the process going
+    and this running, somebody else may legitimately have taken the pathname.
+    """
+    from agentnode_sdk.worker.service import tidy_away
+
+    address = str(getattr(args, "socket", "") or "")
+    if not address:
+        print()
+        print("  agentnode worker tidy --socket unix:///run/agentnode/worker.sock")
+        print("  It removes a socket file nobody is holding. It is for after a worker was")
+        print("  killed outright; a worker that stops normally takes its own file with it.")
+        return 2
+    what_happened = tidy_away(address)
+    print("  " + what_happened)
+    return 0
+
+
 def dispatch(args) -> int:
     action = getattr(args, "worker_command", None)
-    handlers = {"key": cmd_key, "serve": cmd_serve}
+    handlers = {"key": cmd_key, "serve": cmd_serve, "tidy": cmd_tidy}
     if action not in handlers:
         print()
         print("  agentnode worker key   --at <path>")
         print("  agentnode worker serve --socket <unix://...> --key <path> --for-user <account>")
+        print("  agentnode worker tidy  --socket <unix://...>")
         return 2
     return handlers[action](args)
 
@@ -242,5 +270,11 @@ def add_parser(subparsers) -> None:
                        default=5.0, metavar="S",
                        help="judge every open TLS connection again this often")
 
+    # Additive, and nothing else changes shape: the CLI's existing surface is settled.
+    tidy = actions.add_parser(
+        "tidy", help="Remove a socket file nobody holds, after a worker was killed outright")
+    tidy.add_argument("--socket", default="", metavar="ADDRESS",
+                      help="unix:///run/agentnode/worker.sock")
 
-__all__ = ["add_parser", "dispatch", "cmd_key", "cmd_serve", "sys"]
+
+__all__ = ["add_parser", "dispatch", "cmd_key", "cmd_serve", "cmd_tidy", "sys"]
