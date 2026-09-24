@@ -98,12 +98,21 @@ def cmd_serve(args) -> int:
     address = str(getattr(args, "socket", "") or "")
     key = str(getattr(args, "key", "") or "")
     for_whom = getattr(args, "for_user", None)
-    if not address or not key or not for_whom:
+    # A door is required, and the socket is no longer the only one that counts as one: a
+    # deployment that has moved to mutual TLS should not have to keep a second way in.
+    a_tls_door = bool(getattr(args, "listen", "") or "")
+    if not (address or a_tls_door) or not key or not for_whom:
         print()
-        print("  A worker needs to know where to listen, what to authenticate messages with,")
-        print("  and which account may speak to it:")
+        print("  A worker needs a door, something to authenticate messages with, and the one")
+        print("  account that may speak to it. The door is a unix socket, mutual TLS, or both:")
         print("    agentnode worker serve --socket unix:///run/agentnode/worker.sock \\")
         print("                           --key /etc/agentnode/worker.key \\")
+        print("                           --for-user agentnode-gateway")
+        print("  or, with no socket at all:")
+        print("    agentnode worker serve --listen tcps://127.0.0.1:8443 --tls-dir <dir> \\")
+        print("                           --trust <ca.pem> --deployment <id> \\")
+        print("                           --accept-gateway <instance> --revocation-list <file> \\")
+        print("                           --floor <file> --key /etc/agentnode/worker.key \\")
         print("                           --for-user agentnode-gateway")
         return 2
     try:
@@ -206,7 +215,8 @@ def add_parser(subparsers) -> None:
     serve.add_argument("--key", default="", metavar="PATH")
     serve.add_argument("--for-user", dest="for_user", default=None, metavar="ACCOUNT",
                        help="the account the gateway runs as; nothing else may speak here")
-    # A second door, mutual TLS on loopback, beside the socket and never instead of it. All of
+    # The mutual-TLS door on loopback. It may stand beside the socket or replace it; what it
+    # may not do is stand half-configured. All of
     # these together or none of them.
     serve.add_argument("--listen", default="", metavar="ADDRESS",
                        help="tcps://127.0.0.1:<port> -- loopback only")

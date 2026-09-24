@@ -364,14 +364,24 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
           tls_address: str = "", tls=None) -> None:
     """Start a worker on this machine and answer until something stops the process.
 
-    `tls_address` and `tls` open a second door, TCP with mutual TLS on loopback (`worker/tls.py`),
-    beside the socket and never instead of it. Both or neither: an address without settings, or
-    settings without an address, is refused rather than half-started.
+    `tls_address` and `tls` open the mutual-TLS door, TCP on loopback (`worker/tls.py`). Both or
+    neither: an address without settings, or settings without an address, is refused rather than
+    half-started.
+
+    EITHER DOOR, OR BOTH, AND NEVER NEITHER. The socket used to be compulsory and the TLS door
+    could only stand beside it, which meant a deployment that wanted mutual TLS had to leave a
+    second way in that nothing was checking against the same rules. A worker asked for the TLS
+    door alone now opens only that one, and no socket file is created; a worker asked for
+    neither is refused, because a worker nobody can reach is not a worker.
     """
     if bool(tls_address) != bool(tls):
         raise ValueError(
             "a TLS listener needs both an address and its certificate settings; one without the "
             "other is refused rather than started without its checks")
+    if not address and not tls:
+        raise ValueError(
+            "a worker needs a door: a unix socket, mutual TLS on loopback, or both. Started with "
+            "neither it would hold a container runtime and answer nobody.")
     from agentnode_sdk.sandbox.container_backend import ContainerBackend
     from agentnode_sdk.worker.local import LocalWorker
 
@@ -433,7 +443,7 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             "this worker cannot keep a record of what it has accepted, so it cannot refuse a "
             "message captured before a restart: " + str(exc),
             {"replay_floor": remembers_at}) from exc
-    path = bench.open()
+    path = bench.open() if address else ""
     listener = None
     if tls:
         from agentnode_sdk.worker.tls import TlsListener, own_instance
@@ -441,18 +451,28 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         bench.label = own_instance(tls)
         listener = TlsListener(bench, tls_address, tls)
         host, port = listener.open()
-        threading.Thread(target=listener.serve_forever, daemon=True).start()
+        if address:
+            threading.Thread(target=listener.serve_forever, daemon=True).start()
         print("  also listening with mutual TLS at %s:%s, loopback only, as %s"
               % (host, port, bench.label), flush=True)
         print("  it accepts gateway instance(s): " + ", ".join(sorted(tls.accept)), flush=True)
-    print("  listening at " + path + " for uid " + str(only_uid))
+    if address:
+        print("  listening at " + path + " for uid " + str(only_uid))
+    else:
+        print("  there is NO unix socket: this worker answers over mutual TLS and nothing else.")
     print("  this worker holds no pairing state, no signing identity and no client's token.")
     print("  On one host, two accounts are not isolation: see ALPHA-BOUNDARY-0001.")
-    print("  a ceiling was hit here before this socket opened, and it held.")
+    print("  a ceiling was hit here before this door opened, and it held.")
     print("  it can also write down what it accepts, which is what refuses a replay after a "
           "restart.")
     try:
-        bench.serve_forever()
+        if address:
+            bench.serve_forever()
+        else:
+            # Nothing is listening on a socket to block in, so the TLS door is served here
+            # rather than in the thread above -- which is only started when there is a socket
+            # to come back to.
+            listener.serve_forever()
     finally:
         if listener is not None:
             listener.stop_serving()
