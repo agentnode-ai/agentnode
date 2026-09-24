@@ -40,6 +40,15 @@ from agentnode_sdk.worker import (
 )
 from agentnode_sdk.worker import protocol as wire
 
+try:
+    import fcntl
+except ImportError:                                           # pragma: no cover - not posix
+    fcntl = None
+
+#: The lock that says who owns a socket pathname, beside the socket itself. Not a door: nothing
+#: connects to it, and it stays on disk between workers the way a lock does.
+LOCK_SUFFIX = ".lock"
+
 #: What a kernel calls the question "who is at the other end of this socket". Named here with
 #: Linux's number rather than read off the socket module, because a platform that does not know
 #: the name is a platform where asking fails -- and a worker that cannot establish who is
@@ -101,6 +110,9 @@ class Bench:
         #: the file away again: a closed socket whose file is still lying there is a door to
         #: anyone reading the machine, with nothing behind it.
         self._path: str | None = None
+        #: The open file descriptor of the lock that says this pathname is this process's. Held
+        #: for as long as the door is, released only once the file is gone.
+        self._lock: int | None = None
         #: What this worker calls itself when it holds a certificate: the instance in it.
         #: None when it does not, and then the worker's own label is used as before.
         self.label: str | None = None
@@ -110,6 +122,36 @@ class Bench:
         self._serving = False
 
     # ------------------------------------------------------------------ the socket
+
+    def _take_the_lock(self, path: str) -> None:
+        """Claim this pathname for this process, or refuse to start.
+
+        A separate file beside the socket, held open for as long as this worker serves. It is not
+        a door and nothing connects to it; it exists so that "who may create or remove this
+        socket" has an answer the kernel keeps, rather than one inferred from what a connect
+        attempt happens to return at a particular instant.
+        """
+        if fcntl is None:                                     # pragma: no cover - not posix
+            # Then this guarantee cannot be made. The unix door is a posix one anyway -- it is
+            # built on SO_PEERCRED -- so this is a platform that will not get this far.
+            return
+        held = os.open(path + LOCK_SUFFIX, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as clash:
+            os.close(held)
+            raise OSError("a worker is already listening at " + path) from clash
+        self._lock = held
+
+    def _let_the_lock_go(self) -> None:
+        """After the file is gone, never before: the lock is what made removing it safe."""
+        held, self._lock = self._lock, None
+        if held is None:
+            return
+        try:
+            os.close(held)                                    # closing releases the flock
+        except OSError:                                       # pragma: no cover
+            pass
 
     def open(self) -> str:
         from agentnode_sdk.worker.remote import _path_of
@@ -123,8 +165,34 @@ class Bench:
             os.chmod(folder, DIRECTORY_MODE)
         except OSError:                                       # pragma: no cover - not ours to fix
             pass
+        # Whoever holds this lock owns this pathname: they alone may create the socket there and
+        # they alone may remove it. Everything below depends on that and nothing below is safe
+        # without it.
+        #
+        # The reason is the window between bind() and listen(). In it the file exists and refuses
+        # connections, which is indistinguishable from a file a dead worker left. So a second
+        # worker starting in that window read the first one's brand-new socket as rubbish,
+        # unlinked it and bound its own -- and the first worker, whose pathname had not changed,
+        # later removed the second one's live door on the way out. An independent review found
+        # that; the argument it replaced ("while I am bound, the path is mine by construction")
+        # was simply wrong, because being bound is not yet being listened to.
+        #
+        # The lock spans the whole of it: taken before the path is touched, released after the
+        # file is gone. A worker killed outright releases it the only way that cannot be skipped,
+        # by ceasing to exist, and the next worker then finds the pathname stale and clears it.
+        self._take_the_lock(path)
+        try:
+            return self._bind_it(path)
+        except BaseException:
+            # A lock held by a worker that never opened a door is a pathname nobody can use.
+            self._let_the_lock_go()
+            raise
+
+    def _bind_it(self, path: str) -> str:
         # A socket file left by a process that is gone is not a worker; a socket file whose
-        # process is alive is. Binding decides which: bind fails on a live one.
+        # process is alive is. The probe stays as a second question, because a worker from before
+        # this change serves without holding any lock, and its door must not be pulled out from
+        # under it during an upgrade.
         if os.path.exists(path):
             try:
                 probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -197,42 +265,41 @@ class Bench:
                 pass
 
     def _unlink_the_path(self) -> None:
-        """Take away the file this worker bound, while the socket is still bound to it.
+        """Take away the file this worker bound. The lock is what makes that safe.
 
-        The order is the whole answer to "is this still my door". While this worker's listener
-        is bound, nobody else can have taken the path: another worker's `open()` would connect,
-        find somebody listening, and refuse. So the path is ours by construction and needs no
-        test of ownership -- and unlinking a bound unix socket is harmless, since connections
-        already made are unaffected and new ones simply find nothing there, which is what a
-        worker being stopped wants anyway.
+        Only the holder of the pathname's lock may create the socket there or remove it, and this
+        worker holds it from before the path is first touched until after the file is gone. So
+        "is this still my door" is not a question asked of the filesystem at cleanup time; it was
+        settled at startup and has been held ever since.
 
-        Two other ways were tried and are wrong, both caught by tests rather than reasoning:
+        Three earlier answers were wrong, and not one of them was caught by thinking about it:
 
         * A connect probe after the close. Closing a listening socket does not wake a thread
           already blocked in `accept()` on it -- the comment in `open()` says so -- so during a
-          normal stop the probe reaches this worker's own draining door, reads it as somebody
-          else's, and leaves the file.
-        * The inode recorded at bind time, compared after the close. Filesystems reuse inode
-          numbers straight after an unlink, so a second worker that cleared the path and bound
-          its own socket can land on the very same number. It passed on one machine and failed
-          on CI, which is the only useful thing it did.
+          normal stop the probe reached this worker's own draining door, read it as somebody
+          else's, and left the file. A test caught it.
+        * The inode recorded at bind time. Filesystems reuse inode numbers straight after an
+          unlink, so a second worker that cleared the path and bound its own socket landed on the
+          very same number. Green on one machine, red on CI.
+        * "While I am bound, the path is mine by construction." It is not: between `bind()` and
+          `listen()` the file exists and refuses connections, which is exactly what a dead
+          worker's leftover looks like. A second worker starting in that window unlinked this
+          one's brand-new socket and bound its own, and this one -- whose pathname had not
+          changed, so no name check could tell -- then removed the second one's live door on the
+          way out. An independent review found that one.
 
-        `getsockname` is what says the listener is still bound: on a socket somebody has closed
-        behind this object's back it raises, and then the path may be another worker's and is
-        left alone.
+        Unlinking while still bound remains right: connections already made are unaffected, new
+        ones find nothing, and that is what a worker being stopped wants. It is just not what
+        makes it safe.
         """
         path, self._path = self._path, None
-        if not path or self._socket is None:
-            return
-        try:
-            if self._socket.getsockname() != path:
-                return                                        # not the door we are holding
-        except OSError:                                       # closed already; cannot claim it
-            return
-        try:
-            os.unlink(path)
-        except OSError:                                       # pragma: no cover - raced away
-            pass
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:                                   # already gone, or never created
+                pass
+        # After the file, never before.
+        self._let_the_lock_go()
 
     # ------------------------------------------------------------------ one connection
 
@@ -484,6 +551,26 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
     bench = Bench(the_worker, address, wire.read_key(key_path), only_uid,
                   remembers_at=remembers_at)
 
+    # Before any door is opened, deliberately.
+    #
+    # A worker under systemd is stopped with a signal, and Python's default for the terminating
+    # ones is to end the process where it stands: no `finally`, no cleanup, nothing. So every
+    # tidy-up below was unreachable in the one case that matters -- `systemctl stop`, and the
+    # restart that is two of those. Measured rather than reasoned about: a real worker on the
+    # alpha, sent a SIGTERM, left its socket file behind with the unlink already in the code.
+    #
+    # An earlier version of this put the handler on AFTER the doors were open, which left a
+    # window during startup -- the socket file already created, the handler not yet installed --
+    # in which a stop was still fatal and still left the file. A review found that. It goes on
+    # here, before the Bench has opened anything, so there is no such window; a signal arriving
+    # now sets the stop flags, `serve_forever` returns at once, and the `finally` cleans up.
+    #
+    # SIGINT is deliberately left alone: Ctrl-C raises KeyboardInterrupt, the caller prints
+    # "stopped.", and that path passes through the same `finally`. SIGKILL cannot be handled by
+    # anybody; what covers it is the next worker finding the pathname stale and clearing it.
+    doors = _Doors(bench)
+    previously = doors.catch_the_stop()
+
     # Before the socket, like the ceiling. What a worker has already accepted is what stops a
     # message captured earlier being replayed after a restart, and a worker that cannot record
     # that has no such protection -- while looking exactly like one that has. Proved by writing,
@@ -520,22 +607,7 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
     print("  a ceiling was hit here before this door opened, and it held.")
     print("  it can also write down what it accepts, which is what refuses a replay after a "
           "restart.")
-    # A worker under systemd is stopped with SIGTERM, and Python's default for SIGTERM is to end
-    # the process where it stands: no `finally`, no cleanup, nothing. So every tidy-up written
-    # below was unreachable in the one case that matters -- `systemctl stop`, and the restart that
-    # is two of those. Measured rather than reasoned about: a real worker on the alpha, sent a
-    # SIGTERM, left its socket file behind with the unlink already in the code.
-    #
-    # Both loops poll a flag every second, so a handler that tells them to stop is enough; the
-    # process then leaves through the `finally` like any other exit. SIGINT is deliberately left
-    # alone: Ctrl-C raises KeyboardInterrupt, the caller prints "stopped.", and that path also
-    # passes through the `finally`.
-    previously = None
-    try:
-        previously = signal.signal(signal.SIGTERM, lambda _signum, _frame: _stop(bench, listener))
-    except (ValueError, OSError, AttributeError):
-        # Not the main thread, or a platform without it. Then whoever embedded this stops it.
-        pass
+    doors.also(listener)
     try:
         if address:
             bench.serve_forever()
@@ -545,23 +617,58 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             # to come back to.
             listener.serve_forever()
     finally:
-        _stop(bench, listener)
-        if previously is not None:
+        doors.stop()
+        doors.stop_catching(previously)
+
+
+#: The signals that end a process by default and that something else may send to this one.
+#: SIGINT is not among them on purpose; SIGKILL cannot be caught.
+THE_STOPPING_SIGNALS = ("SIGTERM", "SIGHUP", "SIGQUIT")
+
+
+class _Doors:
+    """Whatever this worker has opened, so that one signal can close all of it.
+
+    A holder rather than a closure over two variables, because the TLS listener does not exist
+    yet when the handler has to be installed -- and installing the handler later is exactly the
+    window a review found.
+    """
+
+    def __init__(self, bench) -> None:
+        self.doors = [bench]
+
+    def also(self, door) -> None:
+        if door is not None:
+            self.doors.append(door)
+
+    def stop(self) -> None:
+        """Close everything open and take the socket file with it. Safe to call repeatedly."""
+        for door in self.doors:
             try:
-                signal.signal(signal.SIGTERM, previously)
-            except (ValueError, OSError):                     # pragma: no cover - going away
+                door.stop_serving()
+            except Exception:                                 # pragma: no cover - already going
                 pass
 
+    def catch_the_stop(self) -> dict:
+        caught = {}
+        for name in THE_STOPPING_SIGNALS:
+            number = getattr(signal, name, None)
+            if number is None:                                # pragma: no cover - not posix
+                continue
+            try:
+                caught[number] = signal.signal(number, lambda _s, _f: self.stop())
+            except (ValueError, OSError):
+                # Not the main thread. Then whoever embedded this is the one who stops it.
+                pass
+        return caught
 
-def _stop(bench, listener) -> None:
-    """Close both doors and take the socket file with them. Safe to call more than once."""
-    for door in (bench, listener):
-        if door is None:
-            continue
-        try:
-            door.stop_serving()
-        except Exception:                                     # pragma: no cover - already going
-            pass
+    @staticmethod
+    def stop_catching(caught: dict) -> None:
+        for number, handler in (caught or {}).items():
+            try:
+                signal.signal(number, handler)
+            except (ValueError, OSError):                     # pragma: no cover - going away
+                pass
 
 
 def _time_now() -> float:                                     # pragma: no cover - a seam for tests
