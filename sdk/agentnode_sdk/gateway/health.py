@@ -388,16 +388,33 @@ class HealthWatch:
             return self._publish(PROTECTED, OK, was.reason)
 
         if not was.observed:
-            # FIRST PROBE, and it answered. No loss has been observed, so there is nothing for a
-            # re-measurement to establish that is not already established: the stored report is
-            # bound to this boot, this image, this topology and this policy, and `ReadinessGate`
-            # rejects it otherwise. Forcing a fresh measurement here would take the machine out
-            # of service for a minute or two after every restart and buy nothing, and the gate
-            # that decides whether the report is eligible still runs on every admission.
+            # A WATCH THAT WAS NEVER STARTED, whose first probe somebody ran by hand. There is no
+            # worker here that can be lost without this process going with it -- that is what
+            # `starting` means -- so there is nothing for a measurement to establish.
             return self._publish(
                 PROTECTED, OK,
                 "the worker is answering, and what was measured about it still describes this "
                 "boot and this image.")
+
+        if was.code == NOT_YET_PROBED:
+            # THE FIRST PROBE OF A STARTED WATCH, and it answered.
+            #
+            # This measures. `HEALTH-HONESTY-0002` asked for it in those words -- "initialise
+            # conservatively as measuring or unavailable, and take a first successful measurement
+            # before enabling execution" -- and the reason is the same one as after a loss, one
+            # step weaker: this process did not see what happened before it started. The stored
+            # report is bound to a boot, an image, a topology and a policy, and `ReadinessGate`
+            # rejects it if any of those changed; what it cannot notice is the same worker, same
+            # image, same configuration, whose ceilings have quietly stopped binding.
+            #
+            # IT COSTS a minute or two of refusal at every gateway start. That is a real cost and
+            # it is the price of not serving on a report taken before the restart while a fresh
+            # measurement is still in flight -- which is the shape of carrying an old verdict
+            # forward, and the shape this whole file exists to stop.
+            return self._publish(
+                MEASURING, MEASUREMENT_RUNNING,
+                "this gateway has just started and its worker is answering; it is measuring what "
+                "it can enforce before it runs anything.")
 
         # It answers again AFTER A LOSS. That is not permission: between going and coming back
         # it may be a different worker, a different image, or the same one with less of a

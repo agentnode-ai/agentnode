@@ -441,3 +441,27 @@ def test_a_watch_that_is_never_started_still_admits(tmp_path):
 
     assert watch.now().state == H.STARTING
     assert watch.now().may_admit
+
+
+def test_a_started_gateway_measures_before_it_takes_work(tmp_path):
+    """`HEALTH-HONESTY-0002`, in its own words: initialise conservatively, and take a first
+    successful measurement before enabling execution.
+
+    It costs a minute or two of refusal at every gateway start. The alternative is serving on a
+    report taken before the restart while a fresh measurement is still in flight, which is the
+    shape of carrying an old verdict forward.
+    """
+    measured: list = []
+    watch, _clock = _watch(_there, lambda: measured.append(True) or True,
+                           publish_to=tmp_path / H.HEALTH_FILE)
+    watch._publish(*[getattr(watch.what_it_still_owes(), f) for f in
+                     ("state", "code", "reason")])            # as start() would
+
+    watch.consider(watch.probe_once())
+    assert watch.now().state == H.MEASURING
+    assert "just started" in watch.now().reason
+    assert measured == [], "nothing is measured until remeasure runs"
+
+    watch.remeasure_if_needed()
+    assert watch.now().state == H.PROTECTED
+    assert measured == [True], "and it measured exactly once"
