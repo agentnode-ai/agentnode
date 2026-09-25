@@ -357,7 +357,13 @@ def health(service, now: float | None = None) -> dict:
     live = service.published_health()
     if not live.may_admit:
         ready = False
-        because = live.reason
+        # `summary` and not `reason`: this answer is served at `/v1/health`, which is reachable
+        # WITHOUT a credential, and the reason names the worker's address and the errno. The
+        # keys are not widened either -- `test_what_is_reachable_without_a_credential_gives_
+        # nothing_away` pins the set on purpose. What an operator needs in order to tell the
+        # three states apart is in `gateway status`, in `gateway watch`, in the events file and
+        # in the statement in the 0700 state directory; none of those is an anonymous door.
+        because = live.summary
 
     taking_work = False
     try:
@@ -367,8 +373,4 @@ def health(service, now: float | None = None) -> dict:
     except Exception:                                         # noqa: BLE001
         taking_work = False
     return {"serving": True, "measured": ready, "taking_work": taking_work,
-            # Named separately from `measured`, because a machine that has been measured and one
-            # whose worker is answering are two different facts and a check that folds them
-            # together cannot say which went wrong.
-            "worker": live.state, "worker_because": live.code,
             "because": because if not ready else ""}

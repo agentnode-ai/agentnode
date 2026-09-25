@@ -60,7 +60,7 @@ def test_a_measured_gateway_is_ready_until_its_worker_stops_answering(gateway):
 
     verdict = gateway.readiness_now()
     assert not verdict.ready
-    assert "not answering" in verdict.reason
+    assert "not taking work" in verdict.reason
 
 
 def test_the_measurement_itself_is_untouched_by_the_worker_going_away(gateway):
@@ -139,10 +139,14 @@ def test_the_operator_health_check_stops_reporting_a_measured_machine(gateway, t
     now_says = obs.health(gateway)
 
     assert now_says["measured"] is False
-    assert now_says["worker"] == H.UNAVAILABLE
-    assert now_says["worker_because"] == H.WORKER_UNREACHABLE
+    assert now_says["because"]
     # It is still SERVING. The owner's decision was that the gateway must not die for this.
     assert now_says["serving"] is True
+    # WHICH of the three it is does not go on this answer, because `/v1/health` is reached
+    # without a credential. It goes to the surfaces an operator uses, which are not doors.
+    seen = obs.observe(gateway, obs.NowhereSink())
+    assert seen["counts"]["worker"] == H.UNAVAILABLE
+    assert seen["counts"]["worker_because"] == H.WORKER_UNREACHABLE
 
 
 def test_what_a_client_is_told_carries_the_cause(gateway):
@@ -285,7 +289,7 @@ def test_readiness_answers_rather_than_raising_when_the_worker_cannot_be_reached
         verdict = service.readiness_now()
 
         assert verdict.ready is False
-        assert "not answering" in verdict.reason
+        assert "cannot reach what runs code" in verdict.reason
         assert verdict.next_steps                              # something a person can do
     finally:
         state.close()
@@ -312,3 +316,34 @@ def test_the_watch_asks_for_attention_when_the_worker_is_gone(gateway, tmp_path)
     assert "the worker is not there" in [a["rule"] for a in said["alerts"]]
     assert said["counts"]["worker"] == H.UNAVAILABLE
     assert said["counts"]["worker_because"] == H.WORKER_UNREACHABLE
+
+
+# ------------------------------------------------------------------ what a door may say
+
+
+def test_no_anonymous_door_learns_where_this_gateway_s_worker_is(gateway):
+    """`/v1/health` and `/v1/hello` are reached before anybody is anybody.
+
+    The first version of this change put the worker's address and the errno on both, by setting
+    the reason from the probe's exception. Two tests that were already there caught it
+    (`TestHealthGivesNothingAway`, `test_what_is_reachable_without_a_credential_gives_nothing_
+    away`) -- this one says the property in the words of this arc so that it is not re-learnt.
+
+    The detail is not lost. It is in `gateway status`, in `gateway watch`, in the events file and
+    in the statement in the gateway's own 0700 directory, and none of those is a door.
+    """
+    import json as _json
+
+    gateway.worker.transport = "mtls"
+    _the_worker_is_gone(gateway)
+    where = "tcps://127.0.0.1:8443"
+    assert where in gateway.health_now().reason, "the control: the operator's copy has it"
+
+    for door in (_json.dumps(obs.health(gateway)), _json.dumps(gateway.hello()),
+                 _json.dumps(gateway.readiness_now().as_dict())):
+        assert where not in door
+        assert "Errno" not in door
+        assert "8443" not in door
+
+    # And the shape of the anonymous health answer is not widened either.
+    assert set(obs.health(gateway)) == {"serving", "measured", "taking_work", "because"}

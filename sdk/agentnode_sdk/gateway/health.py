@@ -117,6 +117,29 @@ class Health:
         return self.state in (PROTECTED, STARTING)
 
     @property
+    def summary(self) -> str:
+        """The same answer with nothing in it that describes this machine.
+
+        `reason` carries the exception the probe saw, and that names the worker's address and
+        the errno. Those belong to an operator: `gateway status`, `gateway watch`, and the
+        statement in the gateway's own 0700 state directory. They do NOT belong on a door that
+        anybody can reach without a credential, and `/v1/health` and `/v1/hello` are both such
+        doors -- `test_two_accounts_every_door` and `TestHealthGivesNothingAway` are there
+        because somebody already thought about this, and the first version of this change walked
+        straight past them and put `tcps://127.0.0.1:8443` on both.
+
+        So everything that crosses a network door says one of these instead, and each is a fixed
+        phrase rather than anything composed from what went wrong.
+        """
+        return {
+            PROTECTED: "this sandbox is taking work.",
+            MEASURING: "this sandbox is establishing what it can enforce and is not taking work "
+                       "yet.",
+            STARTING: "this sandbox has not finished starting.",
+        }.get(self.state,
+              "this sandbox is not taking work: it cannot currently reach what runs code.")
+
+    @property
     def observed(self) -> bool:
         """Whether a probe has ever returned. False only in `starting`."""
         return self.state != STARTING

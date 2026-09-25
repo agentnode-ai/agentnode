@@ -925,8 +925,12 @@ class GatewayService:
             # told to ask for the thing that is already happening is worse than being told
             # nothing. Neither of these is `measure it again`: while the worker is unreachable
             # nobody can carry that out, and while it is measuring nobody needs to.
+            #
+            # `summary` and not `reason`: this verdict's reason reaches `/v1/hello`, which is
+            # reached before anybody is anybody, and the reason names the worker's address and
+            # the errno. The full sentence is for the operator surfaces, which are not doors.
             return Readiness(
-                False, live.reason, {}, (),
+                False, live.summary, {}, (),
                 ("Wait for the sandbox worker to come back; nothing will run until it has.",)
                 if live.state == health.UNAVAILABLE else
                 ("Wait; this sandbox is measuring what it can enforce and will take work as "
@@ -1037,11 +1041,15 @@ class GatewayService:
             # a readiness ANSWER, not an error to raise at whoever asked. Every caller of this is
             # either admitting work, which must refuse, or reporting, which must be able to say
             # so; raising made three operator commands die with a traceback instead.
+            # Without `str(gone)`, for the same reason as above: this reason reaches an
+            # anonymous door and the exception names the worker's address. What went wrong in
+            # detail is in the published statement, which is not a door.
+            del gone
             return Readiness(
                 False,
-                "what this gateway last measured cannot be judged while its worker is not "
-                "answering, because only the worker can say which runtime and image the "
-                "measurement was about: " + str(gone),
+                "what this gateway last measured cannot be judged while it cannot reach what "
+                "runs code, because only that side can say which runtime and image the "
+                "measurement was about.",
                 {}, tuple(configured.required_properties),
                 ("Wait for the sandbox worker to come back; nothing will run until it has.",),
             )
@@ -1088,11 +1096,14 @@ class GatewayService:
             "unproven": list(readiness.unproven),
             "next_steps": list(readiness.next_steps),
             "measured_at": readiness.measured_at,
-            # The live state, alongside what was measured and never folded into it. A caller
-            # that sees `ready: false` learns from this whether the machine is broken, absent or
-            # busy establishing itself -- and an operator's tooling reads it without opening a
-            # connection to a worker that may be running foreign code.
-            "health": self.health_now().as_dict(),
+            # The live state, alongside what was measured and never folded into it: a caller
+            # that sees `ready: false` learns from this whether waiting will help.
+            #
+            # TWO CLOSED-SET WORDS AND NOTHING ELSE. `/v1/hello` is reached before anybody is
+            # anybody (`access/routes.py`), so the reason -- which names the worker's address and
+            # the errno -- must not be here. It is in `gateway status`, in `gateway watch` and in
+            # the statement in this gateway's own 0700 directory, none of which is a door.
+            "health": {"state": self.health_now().state, "code": self.health_now().code},
             "pairing_open": self.state.pairing_active(),
         }
 
