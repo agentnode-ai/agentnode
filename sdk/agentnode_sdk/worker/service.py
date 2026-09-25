@@ -453,8 +453,11 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         host, port = listener.open()
         if address:
             threading.Thread(target=listener.serve_forever, daemon=True).start()
-        print("  also listening with mutual TLS at %s:%s, loopback only, as %s"
-              % (host, port, bench.label), flush=True)
+        # "also" only when there is something for it to be also to. A worker whose only door is
+        # this one announced itself as though a socket were open beside it -- which on the closed
+        # alpha, where the socket had deliberately been taken away, said the opposite of the truth.
+        print("  %slistening with mutual TLS at %s:%s, loopback only, as %s"
+              % ("also " if address else "", host, port, bench.label), flush=True)
         print("  it accepts gateway instance(s): " + ", ".join(sorted(tls.accept)), flush=True)
     if address:
         print("  listening at " + path + " for uid " + str(only_uid))

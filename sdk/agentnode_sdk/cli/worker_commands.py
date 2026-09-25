@@ -131,8 +131,11 @@ def cmd_serve(args) -> int:
     print()
     print(f"  {bold('AgentNode sandbox worker')}")
     print("  This account is the only one that drives a container runtime. It holds no pairing")
-    print("  Before it opens the socket it hits a memory ceiling, to see whether one binds.")
     print("  state, no signing identity and no client's token.")
+    # Neither half of this assumes a socket any more. The sentence about the ceiling had been
+    # written BETWEEN the two halves of the sentence above, so both read as nonsense; and it
+    # promised a socket to every worker, including one whose only door is mutual TLS.
+    print("  Before any door opens it hits a memory ceiling, to see whether one binds.")
     listen = str(getattr(args, "listen", "") or "")
     tls = None
     tls_parts = [getattr(args, n, None) for n in ("tls_dir", "trust", "deployment",
