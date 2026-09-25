@@ -194,3 +194,50 @@ def test_an_in_process_gateway_is_not_reported_as_broken_for_having_nothing_to_p
     assert gateway.worker.transport == "in-process"
     assert gateway.published_health().may_admit
     assert gateway.readiness_now().ready
+
+
+# ------------------------------------------------------------------ built without reaching out
+
+
+def test_a_service_can_be_built_while_its_worker_is_unreachable(tmp_path):
+    """Because three operator commands do nothing but build one, and then report.
+
+    Found by exercise on the closed alpha's isolated pair, not by reading: with the worker
+    stopped, `gateway status`, `gateway watch` and `gateway doctor` all ended in a traceback out
+    of `GatewayService.__init__`, which asked the worker its name. The handling further down
+    those commands never ran, so an operator could not tell a degraded machine from a broken
+    command -- which is exactly what this arc is about.
+    """
+    from agentnode_sdk.worker.local import LocalWorker
+
+    class ItIsNotThere(LocalWorker):
+        """A real worker object with a door that is shut, rather than a stand-in for one: the
+        thing under test is what the SERVICE does when a reachable-worker call fails."""
+
+        transport = "mtls"
+
+        def instance_label(self):
+            raise WorkerUnreachable("the sandbox worker at tcps://127.0.0.1:8443 could not "
+                                    "be reached: [Errno 111] Connection refused")
+
+    state = GatewayState(str(tmp_path / "state"), version="test")
+    try:
+        service = GatewayService(state, worker=ItIsNotThere(StandInBackend()))
+        _store_measurement(service)
+
+        # Building it works, and so does asking it the things those commands ask.
+        assert service.readiness_now() is not None
+        assert obs.health(service)["serving"] is True
+        assert service.published_health() is not None
+
+        # And the value itself is not invented. Anything that needs it still fails.
+        with pytest.raises(WorkerUnreachable):
+            service.instance
+    finally:
+        state.close()
+
+
+def test_the_instance_is_the_same_every_time_it_is_asked(gateway):
+    """It names a process. Asking twice must not produce two."""
+    assert gateway.instance == gateway.instance
+    assert gateway.instance.endswith(gateway._this_process)

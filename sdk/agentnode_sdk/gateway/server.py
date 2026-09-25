@@ -376,9 +376,10 @@ class GatewayService:
         self._slots = None
         self._slots_for = None
         self._slots_lock = threading.Lock()
-        #: Which gateway process, and which sandbox behind it. A restart is a different instance,
-        #: and a challenge says which one issued it.
-        self.instance = "%s:%s" % (self.worker.instance_label(), secrets.token_hex(8))
+        #: Half of `instance` below. Fixed now, because a restart must be a different instance
+        #: even when the worker behind it is the same one.
+        self._this_process = secrets.token_hex(8)
+        self._instance = ""
         #: The run threads this service has started and not yet seen finish. Held so that close()
         #: can wait for them: a thread nobody is keeping is a thread nobody can give back.
         self._running: set = set()
@@ -929,6 +930,28 @@ class GatewayService:
     #: deliberately flattens both to "no".
     def health_now(self):
         return self.health.now()
+
+    @property
+    def instance(self) -> str:
+        """Which gateway process, and which sandbox behind it. A restart is a different instance,
+        and a challenge says which one issued it.
+
+        Worked out on FIRST USE, not in the constructor, and that is the whole reason it is a
+        property. Asking the worker its name is a round trip over the transport, so doing it
+        while building the service meant that every command which merely BUILDS one --
+        `gateway status`, `gateway watch`, `gateway doctor` -- died with a traceback the moment
+        the worker was unreachable. Those are the commands that exist to report that state, and
+        an operator could not tell a degraded machine from a broken command. Measured on the
+        closed alpha's isolated pair on 2026-09-25, with the worker stopped: all three ended in
+        `ConnectionRefusedError` out of `__init__`.
+
+        It still RAISES for anything that genuinely needs the value. An instance nobody could
+        establish is not one to invent, and every caller here -- the challenge and the record of
+        what ran -- is on a path that has already reached the worker.
+        """
+        if not self._instance:
+            self._instance = "%s:%s" % (self.worker.instance_label(), self._this_process)
+        return self._instance
 
     def published_health(self):
         """The same question, asked from a process that may not be the one serving.
