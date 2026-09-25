@@ -3632,8 +3632,15 @@ def make_server(
     # built to be asked a question in a test has no worker that can be lost without it. Skipped
     # for an in-process worker, where the gateway and the thing it would be probing are the same
     # process, and a probe would only establish that this process is running.
-    if getattr(service.worker, "transport", "in-process") != "in-process":
-        service.health.start()
+    #
+    # Reached through `getattr` rather than attribute access because two tests drive this with a
+    # stand-in for the service: what they are about is the bind, and they supply no worker and no
+    # watch. A stand-in with no worker has no worker that can be lost, which is the same case as
+    # an in-process one -- so it is the same answer, not a special one.
+    watching = getattr(service, "health", None)
+    worker = getattr(service, "worker", None)
+    if watching is not None and getattr(worker, "transport", "in-process") != "in-process":
+        watching.start()
     return server
 
 
