@@ -8,6 +8,8 @@ every one of them holds the other way round on a gateway whose worker is answeri
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from agentnode_sdk.gateway import health as H
@@ -423,3 +425,61 @@ def test_every_cause_gets_its_own_step_and_none_of_them_is_empty():
     assert len(set(steps.values())) == len(steps), "each cause needs its own, not a shared one"
     # Even one nobody has thought of yet gets something rather than nothing.
     assert _server._what_to_do_about("a code from a later build")
+
+
+def test_a_gateway_whose_worker_is_down_still_starts_and_keeps_serving(tmp_path):
+    """It must not die for this, and `make_server` is where it used to.
+
+    `cmd_start` asked the worker whether it could isolate, one line after binding the socket. A
+    gateway coming up while its worker was down therefore raised out of the start command, the
+    CLI printed `That did not work: ... could not be reached`, the process exited 1, and systemd
+    restarted it -- measured on the isolated pair on 2026-09-25, the restart counter climbing
+    while the state machine underneath published `unavailable` correctly to nobody.
+
+    HEALTH-HONESTY-0001 forbids exactly that: a control plane stays up and refuses in a
+    structured way rather than dying because its worker is away.
+    """
+    import urllib.request
+
+    from agentnode_sdk.gateway.server import make_server
+    from agentnode_sdk.worker.local import LocalWorker
+
+    class ItIsNotThere(LocalWorker):
+        transport = "mtls"
+
+        def can_it_isolate(self):
+            raise WorkerUnreachable("the sandbox worker at tcps://127.0.0.1:8443 could not "
+                                    "be reached: [Errno 111] Connection refused")
+
+        def instance_label(self):
+            raise WorkerUnreachable("the same, from the other call that used to be made early")
+
+        def confirm_reachable(self, budget=None):
+            raise WorkerUnreachable("still not there")
+
+    state = GatewayState(str(tmp_path / "state"), version="test")
+    service = GatewayService(state, worker=ItIsNotThere(StandInBackend()))
+    server = None
+    try:
+        # BINDS AND SERVES. This is the line the defect was on.
+        server = make_server(service, host="127.0.0.1", port=0)
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+        import threading as _t
+
+        serving = _t.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+
+        with urllib.request.urlopen(base + "/v1/health", timeout=30) as answer:
+            said = json.loads(answer.read().decode("utf-8"))
+
+        # Still up, still answering, and honest about what it cannot do.
+        assert said["serving"] is True
+        assert said["measured"] is False
+        assert said["taking_work"] is False
+        assert said["because"]
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        service.close()
+        state.close()

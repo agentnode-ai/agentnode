@@ -321,11 +321,25 @@ def cmd_start(args) -> int:
 
     url = public_url_for(host, server.server_address[1], bool(server.agentnode_tls))
     readiness = service.readiness_now()
-    available = service.worker.can_it_isolate().available
+    # A GATEWAY THAT CANNOT REACH ITS WORKER STILL STARTS. This line used to ask the worker
+    # whether it can isolate, so a gateway coming up while its worker was down raised out of
+    # here, the CLI printed `That did not work: ... could not be reached`, the process exited 1,
+    # and systemd restarted it -- for ever, or until the start allowance ran out.
+    #
+    # That is exactly what HEALTH-HONESTY-0001 forbids: a control plane must stay up and refuse
+    # work in a structured way rather than die because its worker is briefly away. Measured on
+    # the isolated pair on 2026-09-25, restart counter climbing, while the state machine
+    # underneath was publishing `unavailable` perfectly correctly to nobody.
+    try:
+        available = service.worker.can_it_isolate().available
+    except Exception:                                         # noqa: BLE001 - any failure to reach
+        # There is a runtime as far as this command knows; whether it can be reached is the
+        # health watch's question, and `_say_protected` reads its answer below.
+        available = True
 
     print()
     print(f"  {bold('Sandbox gateway running')} at {url}")
-    _say_protected(readiness, available)
+    _say_protected(readiness, available, service.health_now())
     print()
     if not readiness.ready:
         print("  It will refuse work until then. Next:")
