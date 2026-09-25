@@ -919,12 +919,18 @@ class GatewayService:
             # runtime and image it has. Doing it here would reach for the worker that has just
             # been established to be absent -- and then this, the one path everything else asks,
             # would raise instead of answering.
+            # A STEP THAT FITS THE SITUATION, and never the default one. "Ask whoever runs this
+            # sandbox to measure it again" is what a caller was told while the gateway was in the
+            # middle of measuring -- measured on the isolated pair on 2026-09-25 -- and being
+            # told to ask for the thing that is already happening is worse than being told
+            # nothing. Neither of these is `measure it again`: while the worker is unreachable
+            # nobody can carry that out, and while it is measuring nobody needs to.
             return Readiness(
                 False, live.reason, {}, (),
-                # No "measure it again" here: while the worker is unreachable that is not a step
-                # anybody can carry out, and a remedy that cannot be followed is worse than none.
                 ("Wait for the sandbox worker to come back; nothing will run until it has.",)
-                if live.state == health.UNAVAILABLE else (),
+                if live.state == health.UNAVAILABLE else
+                ("Wait; this sandbox is measuring what it can enforce and will take work as "
+                 "soon as that succeeds.",),
             )
         return self._what_the_measurement_proves()
 

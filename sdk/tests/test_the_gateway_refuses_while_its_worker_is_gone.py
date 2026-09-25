@@ -183,6 +183,12 @@ def test_execution_stays_blocked_between_the_worker_returning_and_a_new_measurem
     # A refusal that was actually asked for and actually given -- not an absence of a job.
     assert refused.value.refusal == "sandbox_unavailable"
     assert refused.value.cause == H.MEASUREMENT_RUNNING
+    # And something to do that fits. Measured on the isolated pair: a caller in this exact
+    # situation was told to "ask whoever runs this sandbox to measure it again", while the
+    # sandbox was in the middle of measuring. Being told to ask for what is already happening
+    # is worse than being told nothing.
+    assert "measure it again" not in refused.value.what_to_do
+    assert "Wait" in refused.value.what_to_do
 
 
 def test_an_in_process_gateway_is_not_reported_as_broken_for_having_nothing_to_probe(gateway):
