@@ -143,6 +143,27 @@ CHECKS = [
          expect="assert 'starting' == 'unavailable'",
          green=[W + "test_a_reader_in_another_process_sees_the_state_the_gateway_published"]),
 
+    dict(id="a-restart-onto-a-different-worker-measures-again",
+         area="H6 -- the one path MTLS-DEFAULT-R2-0003 refused the criterion on",
+         file="agentnode_sdk/gateway/health.py",
+         # Takes the comparison away, leaving exactly the behaviour the review refused H6 for: a
+         # gateway restarted onto a DIFFERENT worker going straight back to `protected`, because
+         # the stored report's binding can match across a swap.
+         edits=[('            if was_it and now_it_is and now_it_is == was_it:\n', '            if was_it:\n')],
+         test=W + "test_a_gateway_that_restarts_onto_a_different_worker_measures_again",
+         expect="assert 'protected' == 'measuring'",
+         green=[W + "test_but_the_same_worker_after_a_restart_is_not_made_to_measure_again"]),
+
+    dict(id="a-worker-that-will-not-say-who-it-is-is-not-a-match",
+         area="H6 -- empty is not evidence of sameness",
+         file="agentnode_sdk/gateway/health.py",
+         # The tempting shortcut: treat a name that could not be had as a match. That would make
+         # the check disappear exactly when the machine is least well.
+         edits=[('            if was_it and now_it_is and now_it_is == was_it:\n', '            if was_it and (not now_it_is or now_it_is == was_it):\n')],
+         test=W + "test_a_worker_that_cannot_say_who_it_is_counts_as_a_different_one",
+         expect="assert 'protected' == 'measuring'",
+         green=[W + "test_a_gateway_that_restarts_onto_a_different_worker_measures_again"]),
+
     dict(id="before-the-first-probe-it-does-not-claim-protected",
          area="`starting` is not `protected`",
          file="agentnode_sdk/gateway/health.py",
