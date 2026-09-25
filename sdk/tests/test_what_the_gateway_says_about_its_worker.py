@@ -146,9 +146,37 @@ def test_a_measurement_that_raises_is_a_refusal_and_not_a_crash():
 
 
 def test_the_window_it_promises_is_the_window_it_is_built_from():
-    """Not a number in a document. The two parts the schedule is actually made of."""
-    assert H.MAX_DETECTION_SECONDS == H.PROBE_EVERY_SECONDS + H.PROBE_DEADLINE_SECONDS
+    """Not a number in a document. The parts the schedule is actually made of.
+
+    THIS USED TO ASSERT `MAX == EVERY + DEADLINE`, and that arithmetic was the defect. It left
+    nothing for the writing of the statement, so a loss landing the instant after a publication
+    was published at 15.003 s -- measured on the isolated pair on 2026-09-26, three milliseconds
+    past a promise with no "about" in it. The assertion is not relaxed here; it is made stronger.
+    The three parts must still add up to the promise exactly, and the third one must be real.
+    """
+    assert (H.PROBE_EVERY_SECONDS + H.PROBE_DEADLINE_SECONDS
+            + H.PUBLISHING_RESERVE_SECONDS) == H.MAX_DETECTION_SECONDS
+    assert H.PUBLISHING_RESERVE_SECONDS > 0, (
+        "with no room to publish in, the window covers the decision and not the statement")
     assert H.MAX_DETECTION_SECONDS <= 15.0
+    # And the probe's share is what is left, so reserving room can only ever shorten the time a
+    # stalling worker is tolerated -- never lengthen the window a reader is promised.
+    assert H.PROBE_DEADLINE_SECONDS < H.MAX_DETECTION_SECONDS - H.PROBE_EVERY_SECONDS
+
+
+def test_the_window_a_statement_names_covers_the_writing_of_it(tmp_path):
+    """`window_seconds` is what a reader in another process ages the statement by.
+
+    It was `every + deadline`: the cost of the schedule, not what the reader is owed. A statement
+    naming a window that its own writing does not fit inside can be late while looking punctual.
+    """
+    watch = H.HealthWatch(_there, lambda: True, publish_to=tmp_path / "health.json")
+    watch.turn()
+
+    said = json.loads((tmp_path / "health.json").read_text(encoding="utf-8"))
+    assert said["window_seconds"] == H.MAX_DETECTION_SECONDS == 15.0
+    assert said["window_seconds"] >= (H.PROBE_EVERY_SECONDS + H.PROBE_DEADLINE_SECONDS
+                                      + H.PUBLISHING_RESERVE_SECONDS)
 
 
 def test_a_worker_that_accepts_and_then_stalls_counts_as_not_answering():

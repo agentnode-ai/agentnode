@@ -46,6 +46,12 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+#: ALIASED, because this module also defines a function called `health` -- the one the CLI asks
+#: for the four-field indicator -- and a bare `from . import health` is shadowed by it at the
+#: point of use. It failed silently rather than loudly: `Rule.check` swallows anything a rule
+#: raises so that a rule cannot take the gateway down, so the alert simply did not appear.
+from . import health as _health
+
 #: Where events go when nobody has chosen anywhere else.
 EVENTS_NAME = "events.jsonl"
 
@@ -249,8 +255,20 @@ class Rule:
             return None                                       # be able to take the gateway down
         if not why:
             return None
-        return {"kind": "alert", "at": round(counts.at, 3), "rule": self.name,
-                "severity": self.severity, "because": why, "what_it_means": self.says}
+        # A RULE MAY NAME ITS OWN CAUSE. Most have one thing to say and say it, and for those
+        # `fires` returns a sentence. One of them covers several causes that are not the same
+        # thing to be told about, and it returns a dict carrying the heading and the step that
+        # fit the cause it actually found. `MTLS-DEFAULT-R2-0004` refused H4 because that rule
+        # had one heading and one step for all of them.
+        rule, says = self.name, self.says
+        if isinstance(why, dict):
+            rule = why.get("rule") or rule
+            says = why.get("what_it_means") or says
+            why = why.get("because")
+            if not why:
+                return None
+        return {"kind": "alert", "at": round(counts.at, 3), "rule": rule,
+                "severity": self.severity, "because": why, "what_it_means": says}
 
 
 def _a_sandbox_was_not_confirmed_gone(counts: Counts):
@@ -260,15 +278,27 @@ def _a_sandbox_was_not_confirmed_gone(counts: Counts):
     return None
 
 
-def _the_worker_is_not_there(counts: Counts):
+def _the_sandbox_is_not_taking_work(counts: Counts):
     """The one this arc exists for.
 
     Without it `gateway watch` printed "Nothing is asking for attention" while the machine could
     not have run a single job -- the same failure as the measurement unit still saying
     `Protected`, on a different surface. Critical rather than a warning: nothing runs at all.
+
+    IT FIRES ON THE STATE AND SPEAKS FROM THE CODE. Both `worker_unreachable` and
+    `measurement_failed` are `unavailable`, and they are opposite situations for the person
+    reading this at 3am: in the first the worker is gone and waiting is the whole of the answer;
+    in the second the worker is ANSWERING and waiting for it to come back is advice about
+    something that is not happening. This rule used to say "the worker is not there. Nothing can
+    run until it is back... Look at the worker" for both, directly above a reason that said the
+    worker was answering. `MTLS-DEFAULT-R2-0004` refused H4 on exactly that, and it was right:
+    one generic sentence per screen is what the criterion forbids.
     """
     if counts.worker in ("unavailable", "measuring"):
-        return counts.worker_reason or ("the sandbox worker is %s" % counts.worker)
+        return {"because": counts.worker_reason or ("the sandbox worker is %s" % counts.worker),
+                "rule": _health.what_is_wrong(counts.worker_because),
+                "what_it_means": "Nothing runs and nothing is billed while this is true. "
+                                 + _health.what_to_do_about(counts.worker_because)}
     return None
 
 
@@ -300,9 +330,11 @@ def _one_account_is_being_refused_a_lot(counts: Counts):
 
 #: The rules this gateway ships with. An operator can add to them; none of them needs a provider.
 RULES = (
-    Rule("the worker is not there", CRITICAL,
-         "Nothing can run until it is back, and nothing is being billed. Look at the worker.",
-         _the_worker_is_not_there),
+    # The heading and the step are per cause and come from the rule itself; these two are the
+    # fallback for a cause with no entry, and are true of every state this rule fires on.
+    Rule("the sandbox is not taking work", CRITICAL,
+         "Nothing runs and nothing is billed while this is true. Look at the gateway's health.",
+         _the_sandbox_is_not_taking_work),
     Rule("a sandbox was not confirmed gone", CRITICAL,
          "The one property everything else rests on. Look now.",
          _a_sandbox_was_not_confirmed_gone),

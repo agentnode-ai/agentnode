@@ -172,6 +172,61 @@ CHECKS = [
          test=W + "test_before_the_first_probe_the_machine_does_not_claim_to_be_protected",
          expect="assert 'protected' == 'starting'",
          green=[W + "test_a_worker_that_does_not_answer_makes_the_gateway_say_unavailable_and_not_protected"]),
+
+    dict(id="the-window-leaves-room-to-publish-in",
+         area="H2 -- the promise covers the statement reaching disk, not the decision",
+         file="agentnode_sdk/gateway/health.py",
+         # Back to `every + deadline` with nothing left over, which is the arithmetic that put a
+         # measured worst case three milliseconds past an absolute.
+         edits=[("PUBLISHING_RESERVE_SECONDS = 0.25\n", "PUBLISHING_RESERVE_SECONDS = 0.0\n")],
+         test=W + "test_the_window_it_promises_is_the_window_it_is_built_from",
+         expect="with no room to publish in",
+         green=[W + "test_a_worker_that_accepts_and_then_stalls_counts_as_not_answering"]),
+
+    dict(id="the-operator-alert-names-the-cause-it-found",
+         area="H4 -- one heading and one step for every cause is what the criterion forbids",
+         file="agentnode_sdk/gateway/observability.py",
+         # THE WHOLE OF WHAT `MTLS-DEFAULT-R2-0004` REFUSED, restored: the rule's own fixed
+         # heading, its own fixed step, and a `fires` that returns a bare sentence. A first
+         # version of this check reverted only the third, which left the rule wearing the NEW
+         # fallback heading -- so the test failed on an earlier assertion than the one the
+         # property lives in, and the harness reported DID NOT DISCRIMINATE. It was right to: a
+         # partial revert is not the defect, and a check that goes red for the wrong reason has
+         # not shown that the test would catch this coming back.
+         edits=[('        return {"because": counts.worker_reason or '
+                 '("the sandbox worker is %s" % counts.worker),\n'
+                 '                "rule": _health.what_is_wrong(counts.worker_because),\n'
+                 '                "what_it_means": "Nothing runs and nothing is billed while '
+                 'this is true. "\n'
+                 '                                 + _health.what_to_do_about('
+                 'counts.worker_because)}\n',
+                 '        return counts.worker_reason or '
+                 '("the sandbox worker is %s" % counts.worker)\n'),
+                ('    Rule("the sandbox is not taking work", CRITICAL,\n'
+                 '         "Nothing runs and nothing is billed while this is true. Look at the '
+                 'gateway\'s health.",\n',
+                 '    Rule("the worker is not there", CRITICAL,\n'
+                 '         "Nothing can run until it is back, and nothing is being billed. Look '
+                 'at the worker.",\n')],
+         test=G + "test_the_operator_watch_names_the_cause_it_actually_found",
+         expect="two causes, two headings",
+         green=[G + "test_the_watch_asks_for_attention_when_the_worker_is_gone"]),
+
+    dict(id="the-operator-and-the-caller-read-one-table",
+         area="H4 -- two tables drift, and that drift is how the defect got in",
+         file="agentnode_sdk/gateway/observability.py",
+         # ONE SURFACE ONLY. The first version of this check edited the SHARED table, which both
+         # surfaces read -- so they went on agreeing, the test stayed green, and the harness said
+         # DID NOT DISCRIMINATE. It was measuring nothing, and so was the test it named, which
+         # compared two names for one function. Both are rewritten: the drift is introduced where
+         # the drift was, on the operator's side alone, and the test now compares what the two
+         # surfaces actually say rather than what they are both made of.
+         edits=[('                                 + _health.what_to_do_about('
+                 'counts.worker_because)}\n',
+                 '                                 + "Look at the worker."}\n')],
+         test=G + "test_the_operator_and_the_caller_are_told_the_same_thing_to_do",
+         expect="the operator and the caller are looking at one machine in one state",
+         green=[G + "test_the_watch_asks_for_attention_when_the_worker_is_gone"]),
 ]
 
 #: Run pytest in a subprocess whose sys.path does not contain the OTHER checkout.

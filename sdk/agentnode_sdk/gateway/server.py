@@ -89,30 +89,13 @@ _MEASURE = "agentnode gateway doctor --measure"
 #:
 #: A single generic sentence for all of them is what a caller had before this arc, and telling
 #: somebody to ask for a measurement while one is already running is what they had during it.
-_WHAT_TO_DO_ABOUT = {
-    health.WORKER_UNREACHABLE:
-        "Wait for the sandbox worker to come back; nothing will run until it has.",
-    health.NOT_YET_PROBED:
-        "Wait a moment; this sandbox is asking its worker whether it is there.",
-    health.MEASUREMENT_RUNNING:
-        "Wait; this sandbox is measuring what it can enforce and will take work as soon as "
-        "that succeeds.",
-    health.MEASUREMENT_FAILED:
-        "The worker is answering but the sandbox could not show what it enforces. Somebody has "
-        "to look: " + _MEASURE + " says what failed.",
-    health.STALE:
-        "Ask whoever runs this sandbox to look at it: it has stopped saying anything about its "
-        "own health.",
-    health.NO_STATEMENT:
-        "Ask whoever runs this sandbox whether the gateway is running.",
-}
-
-
-def _what_to_do_about(code: str) -> str:
-    """Never an empty step. A refusal with nothing to do about it leaves somebody stuck, and
-    stuck is indistinguishable from broken to the person it happens to -- which is why `Refused`
-    refuses to be built without one."""
-    return _WHAT_TO_DO_ABOUT.get(code, "Ask whoever runs this sandbox to look at it.")
+#:
+#: THE TABLE ITSELF NOW LIVES IN `health.py`, beside the codes it is keyed on, because a caller
+#: is not the only one who needs it: `gateway watch` kept its own single sentence for every
+#: cause, and `MTLS-DEFAULT-R2-0004` refused H4 on the two having drifted apart. This name is
+#: kept so that the call sites here read as they did.
+_WHAT_TO_DO_ABOUT = health._WHAT_TO_DO_ABOUT
+_what_to_do_about = health.what_to_do_about
 
 MAX_BODY_BYTES = 32 * 1024 * 1024
 

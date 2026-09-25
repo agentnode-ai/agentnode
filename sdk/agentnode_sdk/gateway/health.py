@@ -70,17 +70,32 @@ import threading
 import time
 from dataclasses import dataclass
 
+#: THE PROMISE, and now the constant the others are derived FROM rather than an addition of
+#: them. The most that may elapse between the worker becoming unreachable and this saying so --
+#: saying so being the statement reaching disk, not the decision being taken in memory.
+MAX_DETECTION_SECONDS = 15.0
+
 #: How long after the previous scheduled boundary the next probe may start.
 PROBE_EVERY_SECONDS = 10.0
 
-#: And how long one probe may take before it counts as a failure. Connection, mutual-TLS
-#: identity acceptance and the worker's answer all have to fit inside it.
-PROBE_DEADLINE_SECONDS = 5.0
+#: AND THE ROOM LEFT TO PUBLISH. The window used to be `every + deadline` exactly, which left
+#: nothing for the writing of the statement, and a worst case measured on the isolated pair on
+#: 2026-09-26 came out at 15.003 s -- three milliseconds past an absolute promise. The arithmetic
+#: says why: a loss landing the instant after a publication waits a whole interval for the next
+#: probe, that probe is cut at its deadline, and only then is the refusal written. Nothing was
+#: wrong with the schedule; the promise simply had no room in it for its own last step.
+#:
+#: Three milliseconds is not a hazard. An absolute that is missed at all is, because the next
+#: reader of this file has no way to tell which absolutes are meant. So the room is reserved
+#: here, out of the probe's share rather than by moving the promise: a stalling worker is now
+#: given 4.75 s instead of 5, which is strictly tighter, and the published refusal lands inside
+#: the fifteen with a margin two orders of magnitude larger than what was measured.
+PUBLISHING_RESERVE_SECONDS = 0.25
 
-#: The promise: the most that may elapse between the worker becoming unreachable and this
-#: saying so. It is the sum of the two above, and it is stated as its own constant because it is
-#: what the machine is judged against rather than an accident of how the other two are set.
-MAX_DETECTION_SECONDS = PROBE_EVERY_SECONDS + PROBE_DEADLINE_SECONDS
+#: How long one probe may take before it counts as a failure. Connection, mutual-TLS identity
+#: acceptance and the worker's answer all have to fit inside it -- and so, now, does the writing
+#: of what was concluded.
+PROBE_DEADLINE_SECONDS = MAX_DETECTION_SECONDS - PROBE_EVERY_SECONDS - PUBLISHING_RESERVE_SECONDS
 
 #: How long to leave a measurement that failed before trying another. A measurement is a whole
 #: conformance suite -- containers started, an egress proxy built and torn down -- so retrying it
@@ -191,6 +206,55 @@ HEALTH_FILE = "health.json"
 NO_STATEMENT = "no_statement"
 STALE = "stale_statement"
 
+#: WHAT TO DO ABOUT EACH CAUSE, in one place because there is one right answer per cause and
+#: more than one surface has to give it. It lived in `server.py`, where a caller's refusal is
+#: composed; `gateway watch` had its own single sentence for every cause instead, and
+#: `MTLS-DEFAULT-R2-0004` refused H4 on it -- during `measurement_failed` an operator was told
+#: the worker was absent and to wait for it to come back, while the same screen's reason said
+#: the worker was answering. Two tables were always going to drift apart. There is now one.
+_WHAT_TO_DO_ABOUT = {
+    WORKER_UNREACHABLE:
+        "Wait for the sandbox worker to come back; nothing will run until it has.",
+    NOT_YET_PROBED:
+        "Wait a moment; this sandbox is asking its worker whether it is there.",
+    MEASUREMENT_RUNNING:
+        "Wait; this sandbox is measuring what it can enforce and will take work as soon as "
+        "that succeeds.",
+    MEASUREMENT_FAILED:
+        "The worker is answering but the sandbox could not show what it enforces. Somebody has "
+        "to look: agentnode gateway doctor --measure says what failed.",
+    STALE:
+        "Ask whoever runs this sandbox to look at it: it has stopped saying anything about its "
+        "own health.",
+    NO_STATEMENT:
+        "Ask whoever runs this sandbox whether the gateway is running.",
+}
+
+#: And what each cause IS, as a heading. Keyed on the code and not the state, for the same
+#: reason `Health.summary` is: `worker_unreachable` and `measurement_failed` are both
+#: `unavailable`, and calling the second one "the worker is not there" is simply false.
+_WHAT_IS_WRONG = {
+    WORKER_UNREACHABLE: "the worker is not there",
+    MEASUREMENT_FAILED: "the sandbox cannot show what it enforces",
+    MEASUREMENT_RUNNING: "the sandbox is not taking work until it has measured",
+    NOT_YET_PROBED: "the sandbox has not yet asked its worker whether it is there",
+    STALE: "this gateway has stopped saying anything about its own health",
+    NO_STATEMENT: "there is no statement from this gateway at all",
+}
+
+
+def what_to_do_about(code: str) -> str:
+    """Never an empty step. A refusal with nothing to do about it leaves somebody stuck, and
+    stuck is indistinguishable from broken to the person it happens to -- which is why `Refused`
+    refuses to be built without one."""
+    return _WHAT_TO_DO_ABOUT.get(code, "Ask whoever runs this sandbox to look at it.")
+
+
+def what_is_wrong(code: str) -> str:
+    """The heading an operator reads, per cause. An unknown cause gets something true rather
+    than something specific: a wrong specific heading is worse than a vague right one."""
+    return _WHAT_IS_WRONG.get(code, "this sandbox is not taking work")
+
 
 def read_published(path, now: float | None = None) -> Health:
     """What the gateway last said about itself, aged, for a reader in another process.
@@ -292,6 +356,7 @@ class HealthWatch:
 
     def __init__(self, reach, measure, *, every: float = PROBE_EVERY_SECONDS,
                  deadline: float = PROBE_DEADLINE_SECONDS,
+                 reserve: float = PUBLISHING_RESERVE_SECONDS,
                  who=None, retry_after: float = RETRY_A_FAILED_MEASUREMENT_AFTER,
                  clock=time.monotonic, wall=time.time, say=None,
                  publish_to: "os.PathLike[str] | str | None" = None) -> None:
@@ -310,6 +375,10 @@ class HealthWatch:
         self._the_worker_it_last_saw = ""
         self._every = every
         self._deadline = deadline
+        #: The room kept for writing the statement, inside the window rather than beyond it.
+        #: Carried so that a watch built with its own interval and deadline still states a
+        #: window that covers its own last step.
+        self._reserve = reserve
         self._clock = clock
         self._wall = wall
         self._say = say or (lambda _line: None)
@@ -367,7 +436,11 @@ class HealthWatch:
             return
         said = dict(health.as_dict())
         #: What a reader needs to age this file without trusting a clock it does not share.
-        said["window_seconds"] = self._every + self._deadline
+        # THE WHOLE PROMISE, publishing included. It was `every + deadline`, which is what
+        # the schedule costs and not what a reader is owed; a statement that names a window
+        # its own writing does not fit inside is a statement that can be late while looking
+        # punctual. With the defaults this is the same 15.0 it always was.
+        said["window_seconds"] = self._every + self._deadline + self._reserve
         said["pid"] = os.getpid()
         beside = self._publish_to.with_name(self._publish_to.name + ".writing.%d" % os.getpid())
         try:

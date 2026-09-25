@@ -412,6 +412,82 @@ def test_a_measurement_that_failed_is_told_apart_from_the_other_two(gateway):
     assert "did not establish" in gateway.health_now().reason
 
 
+def test_the_operator_watch_names_the_cause_it_actually_found(gateway):
+    """`MTLS-DEFAULT-R2-0004` refused H4 on this, and it was right.
+
+    A caller had three distinct answers by then. An operator did not: `gateway watch` fired one
+    rule, headed "the worker is not there", saying "Nothing can run until it is back... Look at
+    the worker" -- for `measurement_failed` as well, directly above a reason on the same screen
+    saying the worker was ANSWERING. Being told to wait for something that is not away is worse
+    than being told nothing: it sends the person looking in the one place that is fine.
+
+    So the assertion is not that some alert exists. It is that the heading and the step differ
+    between the two causes, and that neither carries the other's advice.
+    """
+    sink = obs.NowhereSink()
+
+    gateway.worker.transport = "mtls"
+    _the_worker_is_gone(gateway)
+    gone = [a for a in obs.observe(gateway, sink)["alerts"] if a["severity"] == obs.CRITICAL]
+
+    gateway.health._measure = lambda: False
+    _the_worker_answers(gateway)
+    gateway.health.remeasure_if_needed()
+    assert gateway.health_now().code == H.MEASUREMENT_FAILED
+    failed = [a for a in obs.observe(gateway, sink)["alerts"] if a["severity"] == obs.CRITICAL]
+
+    assert gone and failed, "both causes stop the machine, so both must ask for attention"
+    assert gone[0]["rule"] == "the worker is not there"
+    assert failed[0]["rule"] != gone[0]["rule"], "two causes, two headings"
+    assert "worker is not there" not in failed[0]["rule"], (
+        "the worker is answering; saying it is absent sends somebody to the wrong place")
+
+    # And the step. Waiting is the whole answer to one of them and useless for the other.
+    assert "Wait for the sandbox worker to come back" in gone[0]["what_it_means"]
+    assert "come back" not in failed[0]["what_it_means"]
+    assert "doctor --measure" in failed[0]["what_it_means"], "somebody has to look, and here"
+
+
+def test_the_operator_and_the_caller_are_told_the_same_thing_to_do(gateway):
+    """One table, because two tables drift -- which is how the defect above got in.
+
+    THE FIRST VERSION OF THIS TEST WAS WORTHLESS, and its own counter-check said so. It asserted
+    `_server._what_to_do_about(code) == H.what_to_do_about(code)`, which are two names for one
+    function: both sides move together, so no amount of drift could ever make it fail. It was
+    green under a mutation that gave `measurement_failed` a different answer entirely.
+
+    What the property is actually about is two SURFACES. So this drives a real gateway into each
+    cause and compares what the operator's alert tells them to do with what the caller is refused
+    with -- which is the pair that disagreed, and the only comparison that can notice it again.
+    """
+    from agentnode_sdk.access.dispatch import Refused
+
+    sink = obs.NowhereSink()
+    someone = _a_customer(gateway, "a customer")
+    gateway.worker.transport = "mtls"
+
+    def what_each_is_told():
+        alerts = [a for a in obs.observe(gateway, sink)["alerts"] if a["severity"] == obs.CRITICAL]
+        with pytest.raises(Refused) as refused:
+            _a_run_by(gateway, someone)
+        return alerts[0], refused.value
+
+    _the_worker_is_gone(gateway)
+    alert, told = what_each_is_told()
+    assert told.cause == H.WORKER_UNREACHABLE
+    assert told.what_to_do in alert["what_it_means"], (
+        "the operator and the caller are looking at one machine in one state")
+
+    gateway.health._measure = lambda: False
+    _the_worker_answers(gateway)
+    gateway.health.remeasure_if_needed()
+    alert, told = what_each_is_told()
+    assert told.cause == H.MEASUREMENT_FAILED
+    assert told.what_to_do in alert["what_it_means"], (
+        "this is the pair that disagreed: the caller was sent to the doctor and the operator was "
+        "told to wait for a worker that was answering")
+
+
 def test_every_cause_gets_its_own_step_and_none_of_them_is_empty():
     """`Refused` will not be built without something to do, so an empty one is a crash waiting
     for the situation that produces it. And three causes with one sentence between them is what
