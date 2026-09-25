@@ -439,6 +439,12 @@ class GatewayService:
             # `.ready` rather than the verdict object: the watch decides one thing, and
             # interpreting a verdict is not its job.
             measure=lambda: self.measure().ready,
+            # WHICH worker is answering, for the statement to name. Both halves come from the
+            # worker itself: the instance is what the mutual-TLS handshake proved, and the digest
+            # is what that worker says it is configured as. Together they are what a restarted
+            # gateway compares against its last `protected` -- see `what_it_still_owes`.
+            who=lambda: "%s/%s" % (self.worker.instance_label(),
+                                   self.worker.configuration_sha256()[:16]),
             say=lambda line: print("gateway: " + line, flush=True),
             # The operator-visible copy. `gateway status` and `gateway watch` run in a different
             # process from the gateway and cannot see the object above, so without this they

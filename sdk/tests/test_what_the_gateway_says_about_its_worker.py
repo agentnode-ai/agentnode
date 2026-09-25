@@ -570,3 +570,77 @@ def test_and_a_cause_from_a_later_build_still_says_something_safe():
     """`.get` with a default, because an unknown code must not render as an empty sentence."""
     summary = H.Health(H.UNAVAILABLE, "a code nobody has written yet", "x").summary
     assert summary and "not taking work" in summary
+
+
+# ------------------------------------------------------------------ a worker swapped in a gap
+
+
+def test_a_gateway_that_restarts_onto_a_different_worker_measures_again(tmp_path):
+    """The one path `MTLS-DEFAULT-R2-0003` refused H6 on, and it was right.
+
+    A gateway restarted soon after publishing `protected` could meet a DIFFERENT worker and go
+    straight back to `protected`: the stored report's binding -- image, configuration digest,
+    runtime version, boot -- can match across a swap, and nothing on that path looked at who was
+    actually answering.
+    """
+    where = tmp_path / H.HEALTH_FILE
+    measured: list = []
+
+    first = H.HealthWatch(_there, lambda: True, publish_to=where, who=lambda: "w1/abc123",
+                          clock=_Clock(), wall=lambda: 1000.0)
+    first.turn()
+    assert first.now().state == H.PROTECTED
+    assert H.read_published(where, now=1000.0).worker == "w1/abc123"
+
+    # A NEW process, and a DIFFERENT worker answering at the same address.
+    second = H.HealthWatch(_there, lambda: measured.append(True) or True, publish_to=where,
+                           who=lambda: "w9/zzz999", clock=_Clock(), wall=lambda: 1000.0)
+    began = second.what_it_still_owes()
+    second._publish(began.state, began.code, began.reason)
+    second.consider(second.probe_once())
+
+    assert second.now().state == H.MEASURING, "a different worker is not the measured one"
+    assert not second.now().may_admit
+    second.remeasure_if_needed()
+    assert measured == [True], "and it measured before it would take work"
+
+
+def test_but_the_same_worker_after_a_restart_is_not_made_to_measure_again(tmp_path):
+    """The counter-check. Otherwise every restart measures, which is the thing CI refused."""
+    where = tmp_path / H.HEALTH_FILE
+    measured: list = []
+
+    first = H.HealthWatch(_there, lambda: True, publish_to=where, who=lambda: "w1/abc123",
+                          clock=_Clock(), wall=lambda: 1000.0)
+    first.turn()
+
+    second = H.HealthWatch(_there, lambda: measured.append(True) or True, publish_to=where,
+                           who=lambda: "w1/abc123", clock=_Clock(), wall=lambda: 1000.0)
+    began = second.what_it_still_owes()
+    second._publish(began.state, began.code, began.reason)
+    second.consider(second.probe_once())
+
+    assert second.now().state == H.PROTECTED
+    assert "it is the one the last measurement was about" in second.now().reason
+    assert measured == []
+
+
+def test_a_worker_that_cannot_say_who_it_is_counts_as_a_different_one(tmp_path):
+    """Empty is not a match. A name that could not be established is not evidence of sameness,
+    and treating it as such would make the check disappear exactly when the machine is unwell."""
+    where = tmp_path / H.HEALTH_FILE
+
+    first = H.HealthWatch(_there, lambda: True, publish_to=where, who=lambda: "w1/abc123",
+                          clock=_Clock(), wall=lambda: 1000.0)
+    first.turn()
+
+    def it_will_not_say():
+        raise WorkerUnreachable("the describe did not come back")
+
+    second = H.HealthWatch(_there, lambda: True, publish_to=where, who=it_will_not_say,
+                           clock=_Clock(), wall=lambda: 1000.0)
+    began = second.what_it_still_owes()
+    second._publish(began.state, began.code, began.reason)
+    second.consider(second.probe_once())
+
+    assert second.now().state == H.MEASURING

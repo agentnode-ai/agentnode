@@ -119,6 +119,12 @@ class Health:
     at: float = 0.0
     #: Monotonic, and what the window is actually measured against.
     since: float = 0.0
+    #: WHICH WORKER this was about -- its instance name and the digest of its configuration,
+    #: taken from the connection that proved them. Carried in the published statement so that a
+    #: gateway starting up can tell whether the worker answering it now is the one its last
+    #: `protected` was about. Empty when it could not be established, which is not the same as
+    #: matching and is not treated as matching.
+    worker: str = ""
 
     @property
     def may_admit(self) -> bool:
@@ -165,7 +171,7 @@ class Health:
 
     def as_dict(self) -> dict:
         return {"state": self.state, "code": self.code, "reason": self.reason,
-                "generation": self.generation, "at": self.at}
+                "generation": self.generation, "at": self.at, "worker": self.worker}
 
 
 #: What is published before the first probe has finished. Not `protected`, and not claimed as
@@ -226,7 +232,7 @@ def read_published(path, now: float | None = None) -> Health:
 
     health = Health(str(said.get("state") or ""), str(said.get("code") or ""),
                     str(said.get("reason") or ""), int(said.get("generation") or 0),
-                    float(said.get("at") or 0.0), 0.0)
+                    float(said.get("at") or 0.0), 0.0, str(said.get("worker") or ""))
     if health.state not in (PROTECTED, UNAVAILABLE, MEASURING, STARTING):
         return Health(UNAVAILABLE, STALE,
                       "this gateway said something about its health that this build does not "
@@ -286,7 +292,7 @@ class HealthWatch:
 
     def __init__(self, reach, measure, *, every: float = PROBE_EVERY_SECONDS,
                  deadline: float = PROBE_DEADLINE_SECONDS,
-                 retry_after: float = RETRY_A_FAILED_MEASUREMENT_AFTER,
+                 who=None, retry_after: float = RETRY_A_FAILED_MEASUREMENT_AFTER,
                  clock=time.monotonic, wall=time.time, say=None,
                  publish_to: "os.PathLike[str] | str | None" = None) -> None:
         #: Called with the deadline in seconds, to establish that the worker answers. Must raise
@@ -295,6 +301,13 @@ class HealthWatch:
         self._reach = reach
         #: Called to take a fresh measurement. Returns something truthy for success.
         self._measure = measure
+        #: Called to say WHICH worker is answering -- its instance and the digest of its
+        #: configuration, from the connection that proved them. Used to tell, after a restart,
+        #: whether the worker there now is the one the last `protected` was about.
+        self._who = who or (lambda: "")
+        #: What the statement this gateway found on disk said it was about. Compared once, on
+        #: the first probe that answers.
+        self._the_worker_it_last_saw = ""
         self._every = every
         self._deadline = deadline
         self._clock = clock
@@ -331,9 +344,10 @@ class HealthWatch:
         with self._lock:
             return list(self._probes[-20:])
 
-    def _publish(self, state: str, code: str, reason: str) -> Health:
+    def _publish(self, state: str, code: str, reason: str, worker: str = "") -> Health:
         with self._lock:
-            health = Health(state, code, reason, self._generation, self._wall(), self._clock())
+            health = Health(state, code, reason, self._generation, self._wall(), self._clock(),
+                            worker)
             self._health = health
         self._write_out(health)
         return health
@@ -407,16 +421,20 @@ class HealthWatch:
         if was.state == PROTECTED:
             # Still fine. Republished so that `at` moves and a reader can tell a live answer
             # from one that stopped being updated.
-            return self._publish(PROTECTED, OK, was.reason)
+            return self._publish(PROTECTED, OK, was.reason, was.worker)
 
         if not was.observed:
             # A WATCH THAT WAS NEVER STARTED, whose first probe somebody ran by hand. There is no
             # worker here that can be lost without this process going with it -- that is what
             # `starting` means -- so there is nothing for a measurement to establish.
+            #
+            # It still records WHICH worker, because every `protected` this file publishes has to
+            # say that: a later process compares against it, and a statement that names nobody
+            # would make the comparison silently pass.
             return self._publish(
                 PROTECTED, OK,
                 "the worker is answering, and what was measured about it still describes this "
-                "boot and this image.")
+                "boot and this image.", self._who_is_answering())
 
         if was.code == NOT_YET_PROBED:
             # THE FIRST PROBE OF A STARTED WATCH, and it answered. Nothing was owed -- a loss
@@ -435,10 +453,35 @@ class HealthWatch:
             #
             # What this state IS for is not admitting before the first probe. That is closed by
             # starting in `unavailable`, and it is closed whatever this branch then decides.
+            #
+            # BUT IS IT THE SAME WORKER? `MTLS-DEFAULT-R2-0003` refused H6 on the one path left
+            # here, and it was right: a gateway restarted soon after publishing `protected` could
+            # meet a DIFFERENT worker and go straight back to `protected`, because the report's
+            # binding -- image, configuration digest, runtime version, boot -- can match across a
+            # swap. Nothing else on this path would have noticed.
+            #
+            # So the statement says which worker it was about, and this is where that is spent:
+            # the handshake has just proved who is answering, and if it is not the one the last
+            # `protected` named, the measurement is about a machine that is no longer there.
+            # An answer that cannot be established counts as different, not as matching.
+            now_it_is = self._who_is_answering()
+            was_it = self._the_worker_it_last_saw
+            if was_it and now_it_is and now_it_is == was_it:
+                return self._publish(
+                    PROTECTED, OK,
+                    "the worker is answering, it is the one the last measurement was about, and "
+                    "what was measured still describes this boot and this image.", now_it_is)
+            if was_it:
+                return self._publish(
+                    MEASURING, MEASUREMENT_RUNNING,
+                    "the worker answering is not the one this gateway last recorded as measured "
+                    "(%s, was %s); it is measuring what this one enforces before running "
+                    "anything." % (now_it_is or "it could not be established", was_it),
+                    now_it_is)
             return self._publish(
                 PROTECTED, OK,
                 "the worker is answering, and what was measured about it still describes this "
-                "boot and this image.")
+                "boot and this image.", now_it_is)
 
         if was.code == MEASUREMENT_FAILED and not self._due_to_try_again():
             # A MEASUREMENT THAT FAILED IS NOT RETRIED ON THE NEXT PROBE. Without this the state
@@ -463,6 +506,14 @@ class HealthWatch:
             MEASURING, MEASUREMENT_RUNNING,
             "the worker is answering again, and this gateway is measuring what it can enforce "
             "before it runs anything. Nothing is admitted until that finishes.")
+
+    def _who_is_answering(self) -> str:
+        """Which worker this is, as the connection just proved it. Never raises: a name that
+        cannot be had is reported as empty, and empty never counts as a match."""
+        try:
+            return str(self._who() or "")
+        except BaseException:                                 # noqa: BLE001 - any failure is one
+            return ""
 
     def _note_the_measurement_failed(self) -> None:
         with self._lock:
@@ -518,7 +569,7 @@ class HealthWatch:
             return self._publish(
                 PROTECTED, OK,
                 "the worker is answering and a fresh measurement of what it enforces has "
-                "succeeded since it came back.")
+                "succeeded since it came back.", self._who_is_answering())
         finally:
             self._measuring.release()
 
@@ -553,6 +604,7 @@ class HealthWatch:
         if self._publish_to is None:
             return starting()
         previous = read_published(self._publish_to, self._wall())
+        self._the_worker_it_last_saw = previous.worker if previous.state == PROTECTED else ""
         if previous.state in (UNAVAILABLE, MEASURING) and previous.code != NO_STATEMENT:
             return Health(
                 MEASURING, MEASUREMENT_RUNNING,
