@@ -913,17 +913,20 @@ class GatewayService:
         the one that changed than by the one that has been true all along.
         """
         live = self.health.now()
-        measured = self._what_the_measurement_proves()
-        if live.may_admit:
-            return measured
-        return Readiness(
-            False, live.reason, {}, tuple(measured.unproven),
-            # No "measure it again" here: while the worker is unreachable that is not a step
-            # anybody can carry out, and a remedy that cannot be followed is worse than none.
-            ("Wait for the sandbox worker to come back; nothing will run until it has.",)
-            if live.state == health.UNAVAILABLE else (),
-            measured.measured_at,
-        )
+        if not live.may_admit:
+            # Answered WITHOUT working out what the measurement proves, and not only to save the
+            # work: establishing that needs the binding, and the binding asks the worker what
+            # runtime and image it has. Doing it here would reach for the worker that has just
+            # been established to be absent -- and then this, the one path everything else asks,
+            # would raise instead of answering.
+            return Readiness(
+                False, live.reason, {}, (),
+                # No "measure it again" here: while the worker is unreachable that is not a step
+                # anybody can carry out, and a remedy that cannot be followed is worse than none.
+                ("Wait for the sandbox worker to come back; nothing will run until it has.",)
+                if live.state == health.UNAVAILABLE else (),
+            )
+        return self._what_the_measurement_proves()
 
     #: The structured live health of this gateway, for anything that reports rather than admits.
     #: A caller that needs to tell `unavailable` from `measuring` reads this; `readiness_now`
@@ -1020,9 +1023,24 @@ class GatewayService:
 
         document = {"measured_at": state.activated_at,
                     "binding": state.binding, "report": state.report}
+        try:
+            binding = self.report_binding(state.policy_digest)
+        except WorkerUnreachable as gone:
+            # The binding says which runtime and which image the report is about, and the worker
+            # is the only thing that knows. With it gone the report cannot be judged -- which is
+            # a readiness ANSWER, not an error to raise at whoever asked. Every caller of this is
+            # either admitting work, which must refuse, or reporting, which must be able to say
+            # so; raising made three operator commands die with a traceback instead.
+            return Readiness(
+                False,
+                "what this gateway last measured cannot be judged while its worker is not "
+                "answering, because only the worker can say which runtime and image the "
+                "measurement was about: " + str(gone),
+                {}, tuple(configured.required_properties),
+                ("Wait for the sandbox worker to come back; nothing will run until it has.",),
+            )
         return self.readiness.evaluate_document(
-            document, self.report_binding(state.policy_digest),
-            state.policy.required_properties)
+            document, binding, state.policy.required_properties)
 
     def measured_properties(self) -> dict[str, bool]:
         """What this gateway has been SHOWN to do -- from measurements, not from its own say-so.

@@ -241,3 +241,45 @@ def test_the_instance_is_the_same_every_time_it_is_asked(gateway):
     """It names a process. Asking twice must not produce two."""
     assert gateway.instance == gateway.instance
     assert gateway.instance.endswith(gateway._this_process)
+
+
+def test_readiness_answers_rather_than_raising_when_the_worker_cannot_be_reached(tmp_path):
+    """`readiness_now` is the one path everything else asks. It must always answer.
+
+    Found by exercise, twice. The binding that says which runtime and image a report is about
+    can only come from the worker, so judging a stored report reaches for it -- and with the
+    worker stopped, `gateway status` died in a traceback out of `report_binding`. A gateway that
+    cannot judge its measurement is not ready; that is an answer, and it is not an exception.
+    """
+    from agentnode_sdk.worker.local import LocalWorker
+
+    class OneThatCanBeShut(LocalWorker):
+        transport = "mtls"
+        shut = False
+
+        def can_it_isolate(self):
+            if self.shut:
+                raise WorkerUnreachable("the sandbox worker at tcps://127.0.0.1:8443 could not "
+                                        "be reached: [Errno 111] Connection refused")
+            return super().can_it_isolate()
+
+    worker = OneThatCanBeShut(StandInBackend())
+    state = GatewayState(str(tmp_path / "state"), version="test")
+    try:
+        service = GatewayService(state, worker=worker)
+        # Measured FIRST, while the door is open, so what is judged below is a real stored
+        # report and not the absence of one.
+        _store_measurement(service)
+        assert service.readiness_now().ready
+        worker.shut = True
+        # The watch in THIS process has never probed, so nothing short-circuits ahead of the
+        # binding -- which is exactly the case a command in its own process is in.
+        assert service.health_now().state == H.STARTING
+
+        verdict = service.readiness_now()
+
+        assert verdict.ready is False
+        assert "not answering" in verdict.reason
+        assert verdict.next_steps                              # something a person can do
+    finally:
+        state.close()
