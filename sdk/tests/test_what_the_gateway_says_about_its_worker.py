@@ -487,3 +487,57 @@ def test_but_a_start_that_owes_a_measurement_still_takes_one(tmp_path):
 
     assert measured == [True]
     assert second.now().state == H.PROTECTED
+
+
+def test_a_measurement_that_keeps_failing_is_not_retried_on_every_probe():
+    """Found on the isolated pair, with a policy the sandbox cannot satisfy.
+
+    The state flickered `measurement_failed` -> `measuring` -> `measurement_failed` every ten
+    seconds, and each of those `measuring`s ran a whole conformance suite: containers started, an
+    egress proxy built and torn down, for ever. Two things wrong with that. A caller asking twice
+    a few seconds apart got two different causes for one unchanging situation, which is the
+    opposite of what H4 is for. And the machine did minutes of work per minute while unwell.
+    """
+    tries: list = []
+    clock = _Clock()
+    watch = H.HealthWatch(_there, lambda: tries.append(clock.t) or False,
+                          clock=clock, wall=lambda: clock.t)
+    watch.turn()
+    watch._reach = _gone
+    watch.turn()
+    watch._reach = _there
+    watch.turn()                                               # -> measuring -> it fails
+    assert watch.now().code == H.MEASUREMENT_FAILED
+    assert len(tries) == 1
+
+    # Every probe that falls inside the wait. None of them may try again.
+    inside = int(H.RETRY_A_FAILED_MEASUREMENT_AFTER // H.PROBE_EVERY_SECONDS) - 1
+    assert inside >= 1, "the wait has to be longer than one probe or this proves nothing"
+    for _ in range(inside):
+        clock.tick(H.PROBE_EVERY_SECONDS)
+        watch.turn()
+        assert watch.now().code == H.MEASUREMENT_FAILED, "and it says the same thing throughout"
+    assert tries == tries[:1], "one attempt, not %d" % (inside + 1)
+
+    # And after the wait, exactly one more.
+    clock.tick(H.RETRY_A_FAILED_MEASUREMENT_AFTER)
+    watch.turn()
+    assert len(tries) == 2
+
+
+def test_and_one_that_starts_working_is_believed_at_once():
+    """The counter-check: the wait must not keep a recovered machine out of service."""
+    answers = iter([False, True, True, True])
+    clock = _Clock()
+    watch = H.HealthWatch(_there, lambda: next(answers), clock=clock, wall=lambda: clock.t)
+    watch.turn()
+    watch._reach = _gone
+    watch.turn()
+    watch._reach = _there
+    watch.turn()
+    assert watch.now().code == H.MEASUREMENT_FAILED
+
+    clock.tick(H.RETRY_A_FAILED_MEASUREMENT_AFTER)
+    watch.turn()
+
+    assert watch.now().state == H.PROTECTED

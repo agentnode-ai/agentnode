@@ -82,6 +82,12 @@ PROBE_DEADLINE_SECONDS = 5.0
 #: what the machine is judged against rather than an accident of how the other two are set.
 MAX_DETECTION_SECONDS = PROBE_EVERY_SECONDS + PROBE_DEADLINE_SECONDS
 
+#: How long to leave a measurement that failed before trying another. A measurement is a whole
+#: conformance suite -- containers started, an egress proxy built and torn down -- so retrying it
+#: on every probe is minutes of work per minute on a machine that is already unwell. Nothing is
+#: admitted in the meantime either way, so waiting costs availability nothing.
+RETRY_A_FAILED_MEASUREMENT_AFTER = 60.0
+
 PROTECTED = "protected"
 UNAVAILABLE = "unavailable"
 MEASURING = "measuring"
@@ -270,6 +276,7 @@ class HealthWatch:
 
     def __init__(self, reach, measure, *, every: float = PROBE_EVERY_SECONDS,
                  deadline: float = PROBE_DEADLINE_SECONDS,
+                 retry_after: float = RETRY_A_FAILED_MEASUREMENT_AFTER,
                  clock=time.monotonic, wall=time.time, say=None,
                  publish_to: "os.PathLike[str] | str | None" = None) -> None:
         #: Called with the deadline in seconds, to establish that the worker answers. Must raise
@@ -292,6 +299,11 @@ class HealthWatch:
         #: Held for the whole of a measurement, so two cannot run at once and a stale one cannot
         #: finish on top of a newer one.
         self._measuring = threading.Lock()
+        #: When the last measurement failed, monotonic, and how long before another is tried.
+        #: Without a wait, a measurement that cannot succeed is retried on every probe -- a whole
+        #: conformance suite every interval, for ever.
+        self._measurement_failed_at: float | None = None
+        self._retry_after = retry_after
         #: Where the operator-visible copy goes. The object in this process stays authoritative
         #: for admission -- nothing is admitted on the strength of a file -- and this is what
         #: `gateway status`, `gateway watch` and whatever operations runs read, because they run
@@ -418,6 +430,22 @@ class HealthWatch:
                 "the worker is answering, and what was measured about it still describes this "
                 "boot and this image.")
 
+        if was.code == MEASUREMENT_FAILED and not self._due_to_try_again():
+            # A MEASUREMENT THAT FAILED IS NOT RETRIED ON THE NEXT PROBE. Without this the state
+            # flickered `measurement_failed` -> `measuring` -> `measurement_failed` every ten
+            # seconds, and each of those `measuring`s ran a whole conformance suite: containers
+            # started, an egress proxy built and torn down, for ever, on a machine whose
+            # measurement was never going to succeed.
+            #
+            # Measured on the isolated pair on 2026-09-25, with a policy the sandbox cannot
+            # satisfy. Two things were wrong with it. A caller asking twice a few seconds apart
+            # got two different causes for one unchanging situation -- which is the opposite of
+            # what H4 is for. And a gateway left in that state would run a conformance suite
+            # every ten seconds until somebody noticed.
+            #
+            # So the state stays what it is, and says how long until the next attempt.
+            return self._publish(UNAVAILABLE, MEASUREMENT_FAILED, was.reason)
+
         # It answers again AFTER A LOSS. That is not permission: between going and coming back
         # it may be a different worker, a different image, or the same one with less of a
         # ceiling, and none of that would show in a report bound before it went.
@@ -425,6 +453,19 @@ class HealthWatch:
             MEASURING, MEASUREMENT_RUNNING,
             "the worker is answering again, and this gateway is measuring what it can enforce "
             "before it runs anything. Nothing is admitted until that finishes.")
+
+    def _note_the_measurement_failed(self) -> None:
+        with self._lock:
+            self._measurement_failed_at = self._clock()
+
+    def _due_to_try_again(self) -> bool:
+        """Whether enough has passed since the last failed measurement to try another.
+
+        Monotonic, like everything else here that is a duration.
+        """
+        with self._lock:
+            last = self._measurement_failed_at
+        return last is None or (self._clock() - last) >= self._retry_after
 
     def remeasure_if_needed(self) -> Health:
         """Take a fresh measurement when the state calls for one, and only publish on success.
@@ -442,6 +483,7 @@ class HealthWatch:
             try:
                 measured = self._measure()
             except BaseException as failed:                   # noqa: BLE001
+                self._note_the_measurement_failed()
                 return self._publish(
                     UNAVAILABLE, MEASUREMENT_FAILED,
                     "the worker is answering, but measuring what it enforces did not finish: "
@@ -451,6 +493,7 @@ class HealthWatch:
                 # machine that no longer exists.
                 return self.now()
             if not measured:
+                self._note_the_measurement_failed()
                 return self._publish(
                     UNAVAILABLE, MEASUREMENT_FAILED,
                     "the worker is answering, but the measurement did not establish what this "
@@ -460,6 +503,8 @@ class HealthWatch:
             final = self.probe_once()
             if not final.reached or self.now().generation != began_under:
                 return self.consider(final)
+            with self._lock:
+                self._measurement_failed_at = None             # it worked; start counting afresh
             return self._publish(
                 PROTECTED, OK,
                 "the worker is answering and a fresh measurement of what it enforces has "
