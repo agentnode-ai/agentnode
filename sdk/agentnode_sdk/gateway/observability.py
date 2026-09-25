@@ -372,5 +372,15 @@ def health(service, now: float | None = None) -> dict:
         taking_work = not (why_it_is_stopped(service.state.root) or "")
     except Exception:                                         # noqa: BLE001
         taking_work = False
+    # AND WHETHER IT CAN, not only whether the operator has allowed it to. This used to mean one
+    # thing -- "nobody has pressed stop" -- and during a worker outage it therefore said `true`
+    # on the same answer whose `because` said the sandbox was not taking work. A surface that
+    # contradicts itself in two adjacent fields is not one an operator can rely on, and saying
+    # `taking_work: true` about a machine that refuses every job is the same kind of untruth as
+    # the `Protected` this whole arc is about. `MTLS-DEFAULT-R2-0001` found it, on H1.
+    #
+    # `ready` already folds in the live state and the measurement, so this is an AND of the two
+    # questions a caller of this actually has: may it, and can it.
+    taking_work = bool(taking_work and ready)
     return {"serving": True, "measured": ready, "taking_work": taking_work,
             "because": because if not ready else ""}

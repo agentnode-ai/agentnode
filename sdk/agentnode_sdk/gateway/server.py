@@ -82,6 +82,38 @@ from agentnode_sdk.gateway.protocol import (
 #: wall, so the remediation is a command that really runs and really changes the answer.
 _MEASURE = "agentnode gateway doctor --measure"
 
+#: ONE STEP PER CAUSE, and they are not interchangeable. Waiting is the right answer when the
+#: worker is away or a measurement is running, and useless when a measurement has come back
+#: saying the sandbox cannot show what it needs to show: that one needs a person, and the
+#: command that will say why is the one a person can actually run.
+#:
+#: A single generic sentence for all of them is what a caller had before this arc, and telling
+#: somebody to ask for a measurement while one is already running is what they had during it.
+_WHAT_TO_DO_ABOUT = {
+    health.WORKER_UNREACHABLE:
+        "Wait for the sandbox worker to come back; nothing will run until it has.",
+    health.NOT_YET_PROBED:
+        "Wait a moment; this sandbox is asking its worker whether it is there.",
+    health.MEASUREMENT_RUNNING:
+        "Wait; this sandbox is measuring what it can enforce and will take work as soon as "
+        "that succeeds.",
+    health.MEASUREMENT_FAILED:
+        "The worker is answering but the sandbox could not show what it enforces. Somebody has "
+        "to look: " + _MEASURE + " says what failed.",
+    health.STALE:
+        "Ask whoever runs this sandbox to look at it: it has stopped saying anything about its "
+        "own health.",
+    health.NO_STATEMENT:
+        "Ask whoever runs this sandbox whether the gateway is running.",
+}
+
+
+def _what_to_do_about(code: str) -> str:
+    """Never an empty step. A refusal with nothing to do about it leaves somebody stuck, and
+    stuck is indistinguishable from broken to the person it happens to -- which is why `Refused`
+    refuses to be built without one."""
+    return _WHAT_TO_DO_ABOUT.get(code, "Ask whoever runs this sandbox to look at it.")
+
 MAX_BODY_BYTES = 32 * 1024 * 1024
 
 
@@ -921,21 +953,14 @@ class GatewayService:
             # would raise instead of answering.
             # A STEP THAT FITS THE SITUATION, and never the default one. "Ask whoever runs this
             # sandbox to measure it again" is what a caller was told while the gateway was in the
-            # middle of measuring -- measured on the isolated pair on 2026-09-25 -- and being
-            # told to ask for the thing that is already happening is worse than being told
-            # nothing. Neither of these is `measure it again`: while the worker is unreachable
-            # nobody can carry that out, and while it is measuring nobody needs to.
+            # middle of measuring -- being told to ask for what is already happening is worse
+            # than being told nothing. There is one step per cause and they are not
+            # interchangeable: waiting helps for two of these and is useless for the third.
             #
             # `summary` and not `reason`: this verdict's reason reaches `/v1/hello`, which is
             # reached before anybody is anybody, and the reason names the worker's address and
             # the errno. The full sentence is for the operator surfaces, which are not doors.
-            return Readiness(
-                False, live.summary, {}, (),
-                ("Wait for the sandbox worker to come back; nothing will run until it has.",)
-                if live.state == health.UNAVAILABLE else
-                ("Wait; this sandbox is measuring what it can enforce and will take work as "
-                 "soon as that succeeds.",),
-            )
+            return Readiness(False, live.summary, {}, (), (_what_to_do_about(live.code),))
         return self._what_the_measurement_proves()
 
     #: The structured live health of this gateway, for anything that reports rather than admits.

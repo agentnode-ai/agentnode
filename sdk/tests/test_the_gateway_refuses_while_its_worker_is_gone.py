@@ -347,3 +347,79 @@ def test_no_anonymous_door_learns_where_this_gateway_s_worker_is(gateway):
 
     # And the shape of the anonymous health answer is not widened either.
     assert set(obs.health(gateway)) == {"serving", "measured", "taking_work", "because"}
+
+
+def test_the_health_answer_does_not_contradict_itself(gateway):
+    """`taking_work` used to mean only "nobody has pressed stop".
+
+    So during a worker outage the same answer said `taking_work: true` beside a `because` that
+    said the sandbox was not taking work. `MTLS-DEFAULT-R2-0001` found it on H1: a surface that
+    contradicts itself in two adjacent fields is not one an operator can rely on, and it is the
+    same kind of untruth as the `Protected` this arc is about.
+    """
+    assert obs.health(gateway)["taking_work"] is True          # the control
+
+    gateway.worker.transport = "mtls"
+    _the_worker_is_gone(gateway)
+
+    said = obs.health(gateway)
+    assert said["measured"] is False
+    assert said["taking_work"] is False
+    assert said["because"]
+
+
+def test_the_operator_stop_still_decides_taking_work_on_its_own(gateway):
+    """The counter-check: folding health in must not have replaced what the field meant."""
+    from agentnode_sdk.gateway.allowance import stop_everything
+
+    assert obs.health(gateway)["taking_work"] is True
+    stop_everything(gateway.state.root, "upgrading the image")
+
+    assert obs.health(gateway)["taking_work"] is False
+
+
+def test_a_measurement_that_failed_is_told_apart_from_the_other_two(gateway):
+    """H4 asks for three situations distinguished, and this is the third.
+
+    `MTLS-DEFAULT-R2-0001` found that only two of them had been exercised. This drives the state
+    machine into the third and asks what a caller and an operator actually get.
+    """
+    from agentnode_sdk.access.dispatch import Refused
+
+    gateway.health._measure = lambda: False                    # a measurement that establishes nothing
+    _the_worker_is_gone(gateway)
+    _the_worker_answers(gateway)
+    gateway.health.remeasure_if_needed()
+
+    assert gateway.health_now().state == H.UNAVAILABLE
+    assert gateway.health_now().code == H.MEASUREMENT_FAILED
+
+    someone = _a_customer(gateway, "a customer")
+    with pytest.raises(Refused) as refused:
+        _a_run_by(gateway, someone)
+
+    # WHICH of the three, without reading the English -- and a different word from both others.
+    assert refused.value.cause == H.MEASUREMENT_FAILED
+    assert refused.value.cause not in (H.WORKER_UNREACHABLE, H.MEASUREMENT_RUNNING)
+    # And a step that fits THIS one. Waiting is the right answer for the other two and useless
+    # here: the worker is answering, and what failed was the measurement.
+    assert "Wait" not in refused.value.what_to_do
+    assert "doctor --measure" in refused.value.what_to_do
+
+    # And the operator is told something an operator can act on, which is not the same sentence.
+    assert "did not establish" in gateway.health_now().reason
+
+
+def test_every_cause_gets_its_own_step_and_none_of_them_is_empty():
+    """`Refused` will not be built without something to do, so an empty one is a crash waiting
+    for the situation that produces it. And three causes with one sentence between them is what
+    H4 exists to prevent."""
+    from agentnode_sdk.gateway import server as _server
+
+    steps = {code: _server._what_to_do_about(code) for code in
+             (H.WORKER_UNREACHABLE, H.NOT_YET_PROBED, H.MEASUREMENT_RUNNING,
+              H.MEASUREMENT_FAILED, H.STALE, H.NO_STATEMENT)}
+    assert all(steps.values()), "a refusal with nothing to do about it leaves somebody stuck"
+    assert len(set(steps.values())) == len(steps), "each cause needs its own, not a shared one"
+    # Even one nobody has thought of yet gets something rather than nothing.
+    assert _server._what_to_do_about("a code from a later build")

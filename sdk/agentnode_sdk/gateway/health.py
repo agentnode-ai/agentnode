@@ -37,15 +37,18 @@ now.
 enforces anything. Between the worker going and coming back it may be a different worker, a
 different image, or the same one with less of a ceiling. So coming back opens nothing by itself.
 
-There is a fourth value, `starting`, and it is deliberately not one of the three: it is what is
-published before the first probe has returned, and it is the only one of the four that is not an
-observation. It admits, and the reason it may is worth being explicit about, because it is the
-one place here that does not block. A gateway that has just started has observed nothing wrong;
-what protects that window is the per-job reachability check that predates all of this
-(`server.py`, before a run id is claimed), and the window is bounded by the first probe -- at
-most one interval. `starting` is never rendered as `protected`, and it can never be returned to:
-every path out of it is an observation. A gateway whose watch is never started -- an in-process
-worker, a test -- stays in it, which is exactly the behaviour those had before this file existed.
+There is a fourth value, `starting`, and it is deliberately not one of the three. It is the state
+of a watch that has never been STARTED -- an in-process worker, a gateway built in a test -- where
+there is no worker that can be lost without this process going with it, and so nothing to watch.
+It admits, and that is the behaviour those had before this file existed.
+
+A watch that IS started does not pass through it. It begins in `unavailable`, with the code
+`not_yet_probed`, because a gateway that has not asked its worker anything does not know, and not
+knowing is not permission. The first version of this arc began in `starting` instead, so a gateway
+that came up with its worker ALREADY unreachable would take work for up to one probe on the
+strength of a stored measurement about a machine that was not answering; `MTLS-DEFAULT-R2-0001`
+found it. It costs almost nothing to close: the loop takes its first turn immediately, so the
+window is one probe rather than one interval.
 
 ## The window
 
@@ -481,16 +484,32 @@ class HealthWatch:
                 MEASURING, MEASUREMENT_RUNNING,
                 "this gateway last recorded that it could not run anything, so it is measuring "
                 "what it can enforce before it takes work again.")
-        return starting()
+        # NOTHING OWED, AND STILL NOT PERMISSION. A watch that is about to start has not asked
+        # its worker anything, and `HEALTH-HONESTY-0002` said to initialise conservatively. The
+        # first version of this did not: it began in `starting`, which admits, so a gateway that
+        # started with its worker ALREADY unreachable would take work for up to one probe on the
+        # strength of a stored measurement about a machine that was not answering.
+        # `MTLS-DEFAULT-R2-0001` found that, on H3.
+        #
+        # It costs almost nothing: `_loop` runs its first turn immediately, so this lasts as long
+        # as one probe takes and not one interval. `starting` survives only for a watch that is
+        # never started at all -- an in-process worker, a test -- where there is no worker that
+        # can be lost without the gateway going with it.
+        return Health(
+            UNAVAILABLE, NOT_YET_PROBED,
+            "this gateway has not yet asked its worker whether it is there, and will not run "
+            "anything until it has.")
 
     def start(self) -> None:
         if self._thread is not None:
             return
         self._stop.clear()
         began = self.what_it_still_owes()
-        if began.state != STARTING:
+        if began.state == MEASURING:
             # An unanswered loss carried across the restart counts as one, so a measurement that
-            # was already running somewhere cannot come back and settle it.
+            # was already running somewhere cannot come back and settle it. Only for a carried
+            # loss: an ordinary start has observed nothing, and calling that a loss would make
+            # the counter mean something other than what its name says.
             with self._lock:
                 self._generation += 1
         # So the statement exists from the moment the gateway serves. Without it a reader in

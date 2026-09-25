@@ -399,7 +399,9 @@ def test_a_healthy_statement_it_just_wrote_is_not_a_loss_to_answer(tmp_path):
     """The counter-check for the one above: it has to be able to NOT fire.
 
     Otherwise every restart would re-measure for a reason nobody established, and "it measures
-    again" would stop meaning "something was wrong".
+    again" would stop meaning "something was wrong". It still does not ADMIT -- a started watch
+    never does before its first probe -- so what this distinguishes is `unavailable` from
+    `measuring`, which is the difference between "ask the worker" and "measure it all again".
     """
     where = tmp_path / H.HEALTH_FILE
     first, clock = _watch(_there, publish_to=where)
@@ -409,4 +411,33 @@ def test_a_healthy_statement_it_just_wrote_is_not_a_loss_to_answer(tmp_path):
     second = H.HealthWatch(_there, lambda: True, publish_to=where,
                            clock=lambda: clock.t, wall=lambda: clock.t)
 
-    assert second.what_it_still_owes().state == H.STARTING
+    owed = second.what_it_still_owes()
+    assert owed.state == H.UNAVAILABLE and owed.code == H.NOT_YET_PROBED
+    assert owed.state != H.MEASURING, "there was no loss to answer, so nothing is owed"
+
+
+def test_a_started_watch_does_not_admit_before_its_first_probe(tmp_path):
+    """A gateway that has not asked its worker anything does not know, and not knowing is not
+    permission.
+
+    The first version of this began in `starting`, which admits, so a gateway that came up with
+    its worker ALREADY unreachable would take work for up to one probe on the strength of a
+    stored measurement about a machine that was not answering. `MTLS-DEFAULT-R2-0001` found it
+    on H3: absent exercise is not a pass, and the state that made it possible was in the source.
+    """
+    watch, _clock = _watch(_gone, publish_to=tmp_path / H.HEALTH_FILE)
+
+    assert watch.now().state == H.STARTING                     # before it is started
+    assert watch.what_it_still_owes().state == H.UNAVAILABLE
+    assert watch.what_it_still_owes().code == H.NOT_YET_PROBED
+    assert not watch.what_it_still_owes().may_admit
+
+
+def test_a_watch_that_is_never_started_still_admits(tmp_path):
+    """The counter-check: an in-process worker cannot be lost without the gateway going with it,
+    and every gateway built in a test is one. Blocking those would say a machine was broken for
+    having nothing to probe."""
+    watch, _clock = _watch(_there)
+
+    assert watch.now().state == H.STARTING
+    assert watch.now().may_admit
