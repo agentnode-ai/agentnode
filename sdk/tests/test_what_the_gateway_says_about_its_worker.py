@@ -443,25 +443,47 @@ def test_a_watch_that_is_never_started_still_admits(tmp_path):
     assert watch.now().may_admit
 
 
-def test_a_started_gateway_measures_before_it_takes_work(tmp_path):
-    """`HEALTH-HONESTY-0002`, in its own words: initialise conservatively, and take a first
-    successful measurement before enabling execution.
+def test_a_started_gateway_does_not_admit_before_its_first_probe_and_then_does(tmp_path):
+    """What the conservative start is for, and what it is not for.
 
-    It costs a minute or two of refusal at every gateway start. The alternative is serving on a
-    report taken before the restart while a fresh measurement is still in flight, which is the
-    shape of carrying an old verdict forward.
+    It is for not admitting before the first probe -- `MTLS-DEFAULT-R2-0001` found that hole on
+    H3. It is NOT for forcing a fresh conformance measurement at every start: a version of this
+    did that, on a misreading of HEALTH-HONESTY-0002's deployment section, and it meant every
+    gateway serving over a transport refused until a suite it may not be responsible for running
+    had succeeded. Where nothing runs that suite, for ever. CI found it across the whole mTLS
+    lane in one go.
     """
     measured: list = []
     watch, _clock = _watch(_there, lambda: measured.append(True) or True,
                            publish_to=tmp_path / H.HEALTH_FILE)
-    watch._publish(*[getattr(watch.what_it_still_owes(), f) for f in
-                     ("state", "code", "reason")])            # as start() would
+    began = watch.what_it_still_owes()
+    watch._publish(began.state, began.code, began.reason)
+
+    assert began.state == H.UNAVAILABLE and began.code == H.NOT_YET_PROBED
+    assert not began.may_admit, "nothing is admitted before the first probe"
 
     watch.consider(watch.probe_once())
-    assert watch.now().state == H.MEASURING
-    assert "just started" in watch.now().reason
-    assert measured == [], "nothing is measured until remeasure runs"
 
-    watch.remeasure_if_needed()
     assert watch.now().state == H.PROTECTED
-    assert measured == [True], "and it measured exactly once"
+    assert watch.now().may_admit
+    assert measured == [], (
+        "a start that was owed nothing must not force a measurement; what decides whether the "
+        "stored report still counts is the readiness gate, which runs on every admission")
+
+
+def test_but_a_start_that_owes_a_measurement_still_takes_one(tmp_path):
+    """The counter-check for the one above: the carried loss must still force it."""
+    measured: list = []
+    where = tmp_path / H.HEALTH_FILE
+    first, _c = _watch(_gone, publish_to=where)
+    first.turn()                                               # publishes the loss
+
+    second, _c2 = _watch(_there, lambda: measured.append(True) or True, publish_to=where)
+    began = second.what_it_still_owes()
+    second._publish(began.state, began.code, began.reason)
+    assert began.state == H.MEASURING
+
+    second.turn()
+
+    assert measured == [True]
+    assert second.now().state == H.PROTECTED

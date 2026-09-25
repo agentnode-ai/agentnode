@@ -397,24 +397,26 @@ class HealthWatch:
                 "boot and this image.")
 
         if was.code == NOT_YET_PROBED:
-            # THE FIRST PROBE OF A STARTED WATCH, and it answered.
+            # THE FIRST PROBE OF A STARTED WATCH, and it answered. Nothing was owed -- a loss
+            # this gateway had not finished answering would have put it in `measuring` before
+            # the first probe ran -- so there is no re-measurement to force here.
             #
-            # This measures. `HEALTH-HONESTY-0002` asked for it in those words -- "initialise
-            # conservatively as measuring or unavailable, and take a first successful measurement
-            # before enabling execution" -- and the reason is the same one as after a loss, one
-            # step weaker: this process did not see what happened before it started. The stored
-            # report is bound to a boot, an image, a topology and a policy, and `ReadinessGate`
-            # rejects it if any of those changed; what it cannot notice is the same worker, same
-            # image, same configuration, whose ceilings have quietly stopped binding.
+            # A version of this DID force one, on the reading that `HEALTH-HONESTY-0002` asks for
+            # "a first successful measurement before enabling execution". That reading was wrong
+            # twice over. It is in that decision's DEPLOYMENT section, and the deployment already
+            # satisfies it: the stored report is bound to a boot, an image, a topology and a
+            # policy, so after a reboot or an image change `ReadinessGate` refuses it and the
+            # measurement unit takes a new one before anything runs. And forcing it here meant
+            # every gateway serving over a transport refused until a conformance suite it may not
+            # be the one responsible for running had succeeded -- which, where nothing runs that
+            # suite, is for ever.
             #
-            # IT COSTS a minute or two of refusal at every gateway start. That is a real cost and
-            # it is the price of not serving on a report taken before the restart while a fresh
-            # measurement is still in flight -- which is the shape of carrying an old verdict
-            # forward, and the shape this whole file exists to stop.
+            # What this state IS for is not admitting before the first probe. That is closed by
+            # starting in `unavailable`, and it is closed whatever this branch then decides.
             return self._publish(
-                MEASURING, MEASUREMENT_RUNNING,
-                "this gateway has just started and its worker is answering; it is measuring what "
-                "it can enforce before it runs anything.")
+                PROTECTED, OK,
+                "the worker is answering, and what was measured about it still describes this "
+                "boot and this image.")
 
         # It answers again AFTER A LOSS. That is not permission: between going and coming back
         # it may be a different worker, a different image, or the same one with less of a
