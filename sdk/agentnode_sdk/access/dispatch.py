@@ -1037,6 +1037,33 @@ def _the_connection_this_is_for(service, principal, params) -> dict:
     return {"device": wanted, "channel": channel, "shown_as": named or wanted}
 
 
+def _it_would_be_refused_outright(service) -> None:
+    """Refuse a disclosure for a machine that would refuse the job.
+
+    The same refusal a submission gets, by the same name and with the same cause, so a caller
+    that branches on one branches on both. `readiness_now` is the single admission path and it
+    always answers -- it does not raise -- so this cannot become a second opinion that drifts
+    from the first.
+    """
+    verdict = service.readiness_now()
+    if verdict.ready:
+        return
+    live = service.health_now()
+    raise Refused(
+        "sandbox_unavailable", verdict.reason,
+        (verdict.next_steps[0] if verdict.next_steps
+         else "Ask whoever runs this sandbox to look at it."),
+        "" if live.may_admit else live.code)
+
+
+def _who_it_would_run_on(service) -> str:
+    """The worker's own name for itself, or a plain statement that it could not be asked."""
+    try:
+        return service.worker.instance_label()
+    except Exception:                                         # noqa: BLE001 - any failure to reach
+        return "(this gateway could not reach its worker to ask)"
+
+
 def _what_would_happen(service, principal, params, *, approved_by=None, will_run_as=None):
     """What this job would actually do, composed server-side so every door shows the same thing.
 
@@ -1053,7 +1080,11 @@ def _what_would_happen(service, principal, params, *, approved_by=None, will_run
     network = params.get("network") or "none"
     domains = tuple(params.get("allowed_domains") or ())
     answer = {
-        "runs_at": "%s (%s)" % (service.worker.instance_label(), service.worker.topology),
+        # A NAME THAT CANNOT BE HAD IS NOT A REASON TO DROP THE CONNECTION. The check above
+        # refuses before this in the ordinary case; this is the second line, for any path that
+        # reaches here with the worker away. What is shown then says so, rather than the request
+        # ending with no answer.
+        "runs_at": "%s (%s)" % (_who_it_would_run_on(service), service.worker.topology),
         "transfers": {
             "artifact_sha256": params.get("artifact_sha256", ""),
             "bytes": int(params.get("artifact_bytes") or 0),
@@ -1296,6 +1327,16 @@ def _prepare(service, principal, params):
     other.
     """
     params = _with_the_digest_worked_out(params)
+    # WOULD IT HAPPEN AT ALL? Asked before composing what would, because showing somebody a plan
+    # for a machine that will not run anything is worse than telling them it will not: they
+    # accept the disclosure, submit against it, and are refused then.
+    #
+    # It also stopped this door DYING. Composing the answer names the worker, the worker's name
+    # comes from the worker, and with the worker unreachable that raised out of the handler and
+    # the connection closed with no response at all -- `Remote end closed connection without
+    # response` is what a client saw, which is indistinguishable from a broken gateway. Measured
+    # on the isolated pair on 2026-09-25, on a gateway started while its worker was down.
+    _it_would_be_refused_outright(service)
     answer = _what_would_happen(service, principal, params)
     nonce = secrets.token_hex(16)
     answer["accepted_disclosure"] = "%s.%s" % (nonce, _what_was_disclosed(answer))
