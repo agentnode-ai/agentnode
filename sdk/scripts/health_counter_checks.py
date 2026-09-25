@@ -34,14 +34,14 @@ CHECKS = [
     dict(id="admission-consults-the-live-state",
          area="H1/H3 -- a valid measurement about an absent worker is not permission",
          file="agentnode_sdk/gateway/server.py",
+         # The anchor MOVED when `readiness_now` was restructured to answer without working out
+         # the measurement first. The harness reported NOT RUN rather than a pass, which is how
+         # that was noticed on a later run -- a check whose anchor has rotted must not look like
+         # a check that discriminated.
          edits=[("        live = self.health.now()\n"
-                 "        measured = self._what_the_measurement_proves()\n"
-                 "        if live.may_admit:\n"
-                 "            return measured\n",
+                 "        if not live.may_admit:\n",
                  "        live = self.health.now()\n"
-                 "        measured = self._what_the_measurement_proves()\n"
-                 "        if True:\n"
-                 "            return measured\n")],
+                 "        if False:\n")],
          test=G + "test_a_measured_gateway_is_ready_until_its_worker_stops_answering",
          expect="assert not True",
          # NOT `test_the_measurement_itself_is_untouched_by_the_worker_going_away`, which the
@@ -113,11 +113,23 @@ CHECKS = [
          # through the in-process object, so the override was redundant for that assertion. What
          # this check is about is the operator's check READING THE PUBLISHED STATEMENT at all,
          # so that is what the mutation takes.
-         edits=[("    live = service.published_health()\n",
-                 "    from agentnode_sdk.gateway import health as _h0\n"
-                 "    live = _h0.starting()\n")],
-         test=G + "test_the_operator_health_check_stops_reporting_a_measured_machine",
-         expect="assert 'starting' == 'unavailable'",
+         #
+         # AT THE CALL SITE WHERE THE PROPERTY SHOWS, which took two goes to get right. The
+         # health answer's own use of it is redundant for any assertion a test can make -- the
+         # in-process object has already made `measured` false by the time it runs -- so removing
+         # it changed nothing and the check silently did not discriminate. What an operator
+         # actually reads is the counts, and the CRITICAL rule that fires off them.
+         #
+         # `published_health()` is read in two places in this file, so the anchor takes the line
+         # after it; an anchor matching both is refused by the harness as ambiguous rather than
+         # applied to whichever came first.
+         edits=[("        live = service.published_health()\n"
+                 "        counts.worker, counts.worker_because = live.state, live.code\n",
+                 "        from agentnode_sdk.gateway import health as _h0\n"
+                 "        live = _h0.starting()\n"
+                 "        counts.worker, counts.worker_because = live.state, live.code\n")],
+         test=G + "test_the_watch_asks_for_attention_when_the_worker_is_gone",
+         expect="assert 'the worker is not there' in []",
          green=[G + "test_hello_says_what_is_measured_and_what_is_live_separately"]),
 
     dict(id="absent-is-not-unreadable",
