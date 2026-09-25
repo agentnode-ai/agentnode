@@ -57,7 +57,8 @@ _OUTCOMES = set(contract.REFUSALS) | {"carried_out", "unknown", "too_old", "bad_
 class Refused(Exception):
     """A refusal that names itself. Adapters render this; none of them composes one."""
 
-    def __init__(self, refusal: str, because: str, what_to_do: str = "") -> None:
+    def __init__(self, refusal: str, because: str, what_to_do: str = "",
+                 cause: str = "") -> None:
         from agentnode_sdk.gateway.redaction import scrub
 
         if refusal not in contract.REFUSALS:
@@ -78,11 +79,21 @@ class Refused(Exception):
         self.refusal = refusal
         self.because = scrub(because)
         self.what_to_do = scrub(what_to_do)
+        #: WHICH of the situations this refusal covers, when one name covers several. The closed
+        #: list above is the contract and does not grow for a distinction inside one of its
+        #: entries -- `sandbox_unavailable` is one HTTP answer and one thing a client does about
+        #: it. But "the worker is gone", "it is back and being measured" and "it is back and the
+        #: measurement failed" are three different situations, and a client that got the same
+        #: word for all three could not tell whether waiting would help. Empty when the refusal's
+        #: own name already says everything.
+        self.cause = scrub(cause) if cause else ""
 
     def as_answer(self) -> dict:
         answer = {"refused": self.refusal, "because": self.because}
         if self.what_to_do:
             answer["what_to_do"] = self.what_to_do
+        if self.cause:
+            answer["cause"] = self.cause
         return answer
 
 
@@ -1026,6 +1037,14 @@ def _the_connection_this_is_for(service, principal, params) -> dict:
     return {"device": wanted, "channel": channel, "shown_as": named or wanted}
 
 
+def _who_it_would_run_on(service) -> str:
+    """The worker's own name for itself, or a plain statement that it could not be asked."""
+    try:
+        return service.worker.instance_label()
+    except Exception:                                         # noqa: BLE001 - any failure to reach
+        return "(this gateway could not reach its worker to ask)"
+
+
 def _what_would_happen(service, principal, params, *, approved_by=None, will_run_as=None):
     """What this job would actually do, composed server-side so every door shows the same thing.
 
@@ -1042,7 +1061,20 @@ def _what_would_happen(service, principal, params, *, approved_by=None, will_run
     network = params.get("network") or "none"
     domains = tuple(params.get("allowed_domains") or ())
     answer = {
-        "runs_at": "%s (%s)" % (service.worker.instance_label(), service.worker.topology),
+        # A NAME THAT CANNOT BE HAD IS NOT A REASON TO DROP THE CONNECTION.
+        #
+        # This composes what WOULD happen; whether it will is `submit`'s to decide, and that
+        # separation is what nine tests in `test_em3c_gateway` are about. So an unmeasured or
+        # unreachable gateway still answers here -- but it used to answer by dying: the name
+        # comes from the worker, the worker was away, and the exception went all the way out of
+        # the request handler. A client saw `Remote end closed connection without response`,
+        # which is indistinguishable from a broken gateway. Measured on the isolated pair on
+        # 2026-09-25, on a gateway started while its worker was down.
+        #
+        # A first fix for that refused here instead, which moved the decision from `submit` to
+        # this door and broke those nine. What was actually wrong was answering by dying, so
+        # what is fixed is that and nothing else.
+        "runs_at": "%s (%s)" % (_who_it_would_run_on(service), service.worker.topology),
         "transfers": {
             "artifact_sha256": params.get("artifact_sha256", ""),
             "bytes": int(params.get("artifact_bytes") or 0),
@@ -1470,7 +1502,8 @@ def _submit(service, principal, params):
         _give_the_disclosure_back(service, presented, spent)
         raise Refused(record.refused_as, record.refusal,
                       getattr(record, "refusal_remedy", "")
-                      or "Ask whoever runs this sandbox.")
+                      or "Ask whoever runs this sandbox.",
+                      getattr(record, "refusal_cause", ""))
 
     _handoff.record = record
     told = record.public()

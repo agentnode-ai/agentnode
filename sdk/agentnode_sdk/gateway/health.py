@@ -1,0 +1,743 @@
+"""Whether this gateway may take work RIGHT NOW, as distinct from what it once measured.
+
+The difference is the whole point of this file, and it was found the hard way. The closed alpha
+was left with its worker stopped for two minutes. The gateway did the right things -- it stayed
+up, refused every job and booked nothing -- but `agentnode-measure`, a oneshot with
+`RemainAfterExit=yes`, went on reporting the verdict of its last successful run:
+
+    Protected -- code sent here runs inside a container, as a user with no privileges, and is
+    cleaned up afterwards. This has been measured, not assumed.
+
+A machine that could not run a job was reporting that it was protecting one. That is the failure
+mode the restart-recovery arc had in view when it asked for visible failure: something broken
+that does not look broken. `HEALTH-HONESTY-0001` decided not to fix it by making the gateway die
+-- that is worse and less available -- but by making the machine stop claiming health it does not
+have. `HEALTH-HONESTY-0002` chose this mechanism and fixed the window.
+
+## What this is, and what it is not
+
+`ReadinessGate` in `readiness.py` decides what a stored measurement PROVES: it binds a report to
+a boot, an image, a schema, a topology and a policy, and it expires by age. That stays
+authoritative and is not touched here. Worker reachability is deliberately NOT another field in
+that binding: boot id and image digest are facts about what was measured, and reachability is a
+changing condition. Binding it would need a new value on every disconnect and would confuse a
+report's identity with a machine's health.
+
+This decides something else: whether a proof that is valid is currently ELIGIBLE. A worker that
+has gone away does not make the old measurement wrong about the past. It makes it irrelevant to
+now.
+
+## Three states, and only three
+
+    protected     the worker answered, and a measurement valid for this state has succeeded
+    unavailable   the worker did not answer; nothing is admitted
+    measuring     the worker answers again, but the new measurement has not finished
+
+`measuring` exists because reachability returning is not evidence that the sandbox still
+enforces anything. Between the worker going and coming back it may be a different worker, a
+different image, or the same one with less of a ceiling. So coming back opens nothing by itself.
+
+There is a fourth value, `starting`, and it is deliberately not one of the three. It is the state
+of a watch that has never been STARTED -- an in-process worker, a gateway built in a test -- where
+there is no worker that can be lost without this process going with it, and so nothing to watch.
+It admits, and that is the behaviour those had before this file existed.
+
+A watch that IS started does not pass through it. It begins in `unavailable`, with the code
+`not_yet_probed`, because a gateway that has not asked its worker anything does not know, and not
+knowing is not permission. The first version of this arc began in `starting` instead, so a gateway
+that came up with its worker ALREADY unreachable would take work for up to one probe on the
+strength of a stored measurement about a machine that was not answering; `MTLS-DEFAULT-R2-0001`
+found it. It costs almost nothing to close: the loop takes its first turn immediately, so the
+window is one probe rather than one interval.
+
+## The window
+
+At most fifteen seconds from the worker actually becoming unreachable to `unavailable` being
+published: a probe starts no more than ten seconds after the previous scheduled boundary, and
+each probe has a hard five-second deadline. Scheduling is on a monotonic clock, because a clock
+that can be set backwards -- and this deployment sets it backwards on purpose to test its floors
+-- must not be able to stretch the window.
+
+The probe is a real authenticated round trip. An open TCP port is not enough: a port that
+accepts and then fails the handshake is exactly the state this exists to catch.
+"""
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import threading
+import time
+from dataclasses import dataclass
+
+#: THE PROMISE, and now the constant the others are derived FROM rather than an addition of
+#: them. The most that may elapse between the worker becoming unreachable and this saying so --
+#: saying so being the statement reaching disk, not the decision being taken in memory.
+MAX_DETECTION_SECONDS = 15.0
+
+#: How long after the previous scheduled boundary the next probe may start.
+PROBE_EVERY_SECONDS = 10.0
+
+#: AND THE ROOM LEFT TO PUBLISH. The window used to be `every + deadline` exactly, which left
+#: nothing for the writing of the statement, and a worst case measured on the isolated pair on
+#: 2026-09-26 came out at 15.003 s -- three milliseconds past an absolute promise. The arithmetic
+#: says why: a loss landing the instant after a publication waits a whole interval for the next
+#: probe, that probe is cut at its deadline, and only then is the refusal written. Nothing was
+#: wrong with the schedule; the promise simply had no room in it for its own last step.
+#:
+#: Three milliseconds is not a hazard. An absolute that is missed at all is, because the next
+#: reader of this file has no way to tell which absolutes are meant. So the room is reserved
+#: here, out of the probe's share rather than by moving the promise: a stalling worker is now
+#: given 4.75 s instead of 5, which is strictly tighter, and the published refusal lands inside
+#: the fifteen with a margin two orders of magnitude larger than what was measured.
+PUBLISHING_RESERVE_SECONDS = 0.25
+
+#: How long one probe may take before it counts as a failure. Connection, mutual-TLS identity
+#: acceptance and the worker's answer all have to fit inside it -- and so, now, does the writing
+#: of what was concluded.
+PROBE_DEADLINE_SECONDS = MAX_DETECTION_SECONDS - PROBE_EVERY_SECONDS - PUBLISHING_RESERVE_SECONDS
+
+#: How long to leave a measurement that failed before trying another. A measurement is a whole
+#: conformance suite -- containers started, an egress proxy built and torn down -- so retrying it
+#: on every probe is minutes of work per minute on a machine that is already unwell. Nothing is
+#: admitted in the meantime either way, so waiting costs availability nothing.
+RETRY_A_FAILED_MEASUREMENT_AFTER = 60.0
+
+PROTECTED = "protected"
+UNAVAILABLE = "unavailable"
+MEASURING = "measuring"
+#: Before the first probe. See the module docstring: not an observation, and not `protected`.
+STARTING = "starting"
+
+#: Stable codes, so that a caller can tell the three apart without reading a sentence. The
+#: friendly sentence stays alongside; what was wrong before was that ONLY the sentence existed,
+#: and it was the same sentence for every cause.
+WORKER_UNREACHABLE = "worker_unreachable"
+MEASUREMENT_RUNNING = "measurement_running"
+MEASUREMENT_FAILED = "measurement_failed"
+NOT_YET_PROBED = "not_yet_probed"
+OK = "ok"
+
+
+@dataclass(frozen=True)
+class Health:
+    """One atomic answer. Never assembled from two reads that could disagree."""
+
+    state: str
+    code: str
+    reason: str
+    #: Bumped on every observed loss. A measurement that started under an older generation may
+    #: not publish `protected`, because the worker it measured may not be the worker that is
+    #: there now.
+    generation: int = 0
+    #: Wall clock, for a reader. Never used to decide anything -- see the monotonic note above.
+    at: float = 0.0
+    #: Monotonic, and what the window is actually measured against.
+    since: float = 0.0
+    #: WHICH WORKER this was about -- its instance name and the digest of its configuration,
+    #: taken from the connection that proved them. Carried in the published statement so that a
+    #: gateway starting up can tell whether the worker answering it now is the one its last
+    #: `protected` was about. Empty when it could not be established, which is not the same as
+    #: matching and is not treated as matching.
+    worker: str = ""
+
+    @property
+    def may_admit(self) -> bool:
+        """`starting` is here for the reason the module docstring gives, and for no other."""
+        return self.state in (PROTECTED, STARTING)
+
+    @property
+    def summary(self) -> str:
+        """The same answer with nothing in it that describes this machine.
+
+        `reason` carries the exception the probe saw, and that names the worker's address and
+        the errno. Those belong to an operator: `gateway status`, `gateway watch`, and the
+        statement in the gateway's own 0700 state directory. They do NOT belong on a door that
+        anybody can reach without a credential, and `/v1/health` and `/v1/hello` are both such
+        doors -- `test_two_accounts_every_door` and `TestHealthGivesNothingAway` are there
+        because somebody already thought about this, and the first version of this change walked
+        straight past them and put `tcps://127.0.0.1:8443` on both.
+
+        So everything that crosses a network door says one of these instead, and each is a fixed
+        phrase rather than anything composed from what went wrong.
+        """
+        # KEYED ON THE CODE, not the state. `worker_unreachable` and `measurement_failed` are
+        # both `unavailable`, and they are not the same thing to be told: in the second the
+        # worker IS answering and what failed was the measurement. Keying on the state told a
+        # caller the sandbox could not reach what runs code while it plainly could -- measured on
+        # the isolated pair on 2026-09-25, in the phase built to exercise that very cause.
+        return {
+            OK: "this sandbox is taking work.",
+            MEASUREMENT_RUNNING: "this sandbox is establishing what it can enforce and is not "
+                                 "taking work yet.",
+            MEASUREMENT_FAILED: "this sandbox could not establish what it enforces, so it is "
+                                "not taking work.",
+            WORKER_UNREACHABLE: "this sandbox is not taking work: it cannot currently reach "
+                                "what runs code.",
+            NOT_YET_PROBED: ("this sandbox has not finished starting."
+                             if self.state == STARTING else
+                             "this sandbox is still working out whether it can take work."),
+        }.get(self.code, "this sandbox is not taking work.")
+
+    @property
+    def observed(self) -> bool:
+        """Whether a probe has ever returned. False only in `starting`."""
+        return self.state != STARTING
+
+    def as_dict(self) -> dict:
+        return {"state": self.state, "code": self.code, "reason": self.reason,
+                "generation": self.generation, "at": self.at, "worker": self.worker}
+
+
+#: What is published before the first probe has finished. Not `protected`, and not claimed as
+#: an observation: a gateway that has not yet asked does not know.
+def starting() -> Health:
+    return Health(STARTING, NOT_YET_PROBED,
+                  "this gateway has not yet asked its worker whether it is there. Each job "
+                  "still reaches the worker before anything is claimed.", 0, 0.0, 0.0)
+
+
+#: How long a published statement may go unrefreshed before a reader stops believing a
+#: PERMISSIVE one. Three turns of the loop: one missed turn is a slow machine, three is a
+#: gateway that is not running.
+STALE_AFTER_SECONDS = 3 * MAX_DETECTION_SECONDS
+
+HEALTH_FILE = "health.json"
+NO_STATEMENT = "no_statement"
+STALE = "stale_statement"
+
+#: WHAT TO DO ABOUT EACH CAUSE, in one place because there is one right answer per cause and
+#: more than one surface has to give it. It lived in `server.py`, where a caller's refusal is
+#: composed; `gateway watch` had its own single sentence for every cause instead, and
+#: `MTLS-DEFAULT-R2-0004` refused H4 on it -- during `measurement_failed` an operator was told
+#: the worker was absent and to wait for it to come back, while the same screen's reason said
+#: the worker was answering. Two tables were always going to drift apart. There is now one.
+_WHAT_TO_DO_ABOUT = {
+    WORKER_UNREACHABLE:
+        "Wait for the sandbox worker to come back; nothing will run until it has.",
+    NOT_YET_PROBED:
+        "Wait a moment; this sandbox is asking its worker whether it is there.",
+    MEASUREMENT_RUNNING:
+        "Wait; this sandbox is measuring what it can enforce and will take work as soon as "
+        "that succeeds.",
+    MEASUREMENT_FAILED:
+        "The worker is answering but the sandbox could not show what it enforces. Somebody has "
+        "to look: agentnode gateway doctor --measure says what failed.",
+    STALE:
+        "Ask whoever runs this sandbox to look at it: it has stopped saying anything about its "
+        "own health.",
+    NO_STATEMENT:
+        "Ask whoever runs this sandbox whether the gateway is running.",
+}
+
+#: And what each cause IS, as a heading. Keyed on the code and not the state, for the same
+#: reason `Health.summary` is: `worker_unreachable` and `measurement_failed` are both
+#: `unavailable`, and calling the second one "the worker is not there" is simply false.
+_WHAT_IS_WRONG = {
+    WORKER_UNREACHABLE: "the worker is not there",
+    MEASUREMENT_FAILED: "the sandbox cannot show what it enforces",
+    MEASUREMENT_RUNNING: "the sandbox is not taking work until it has measured",
+    NOT_YET_PROBED: "the sandbox has not yet asked its worker whether it is there",
+    STALE: "this gateway has stopped saying anything about its own health",
+    NO_STATEMENT: "there is no statement from this gateway at all",
+}
+
+
+def what_to_do_about(code: str) -> str:
+    """Never an empty step. A refusal with nothing to do about it leaves somebody stuck, and
+    stuck is indistinguishable from broken to the person it happens to -- which is why `Refused`
+    refuses to be built without one."""
+    return _WHAT_TO_DO_ABOUT.get(code, "Ask whoever runs this sandbox to look at it.")
+
+
+def what_is_wrong(code: str) -> str:
+    """The heading an operator reads, per cause. An unknown cause gets something true rather
+    than something specific: a wrong specific heading is worse than a vague right one."""
+    return _WHAT_IS_WRONG.get(code, "this sandbox is not taking work")
+
+
+def read_published(path, now: float | None = None) -> Health:
+    """What the gateway last said about itself, aged, for a reader in another process.
+
+    The ageing is ASYMMETRIC, and that asymmetry is the whole lesson of this arc. A statement
+    that has stopped being refreshed may never go on permitting anything: an old `protected`
+    reads as a refusal, because a gateway that is not writing is a gateway that is not probing,
+    and what it last saw is not what is true now. A statement that BLOCKS is carried forward
+    unchanged however old it is -- there is nothing unsafe about continuing to refuse, and
+    downgrading a specific `unavailable` to a vague one would lose the reason.
+
+    That is exactly what the installed `agentnode-measure` oneshot did wrong. It held the verdict
+    of its last successful run for as long as it was loaded, and the verdict it held was the
+    permissive one.
+    """
+    at = time.time() if now is None else now
+    try:
+        said = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+        if not isinstance(said, dict):
+            raise ValueError("not an object")
+    except FileNotFoundError:
+        # NOTHING WAS EVER SAID, which is not the same as something unreadable. No gateway has
+        # served from this directory in a build that can speak, so there is no live statement
+        # to carry forward and nothing has been observed about a worker. Reported as `starting`
+        # -- no opinion -- and NOT as a refusal: turning "no gateway is running here" into
+        # "the worker is down" would be inventing an observation nobody made.
+        return Health(STARTING, NO_STATEMENT,
+                      "this gateway has said nothing about its own health; either nothing is "
+                      "serving from here, or this is a build from before it could say.",
+                      0, 0.0, 0.0)
+    except (OSError, ValueError) as unreadable:
+        # SOMETHING IS THERE AND CANNOT BE READ. Deliberately not folded in with the case above:
+        # absent is not unreadable. A file that exists and does not parse means a writer is
+        # producing something this reader does not understand, or the directory has been
+        # tampered with, and neither is a reason to permit anything.
+        return Health(UNAVAILABLE, STALE,
+                      "this gateway's health statement is there and cannot be read (%s), so it "
+                      "is not being taken as permission." % (unreadable,), 0, 0.0, 0.0)
+
+    health = Health(str(said.get("state") or ""), str(said.get("code") or ""),
+                    str(said.get("reason") or ""), int(said.get("generation") or 0),
+                    float(said.get("at") or 0.0), 0.0, str(said.get("worker") or ""))
+    if health.state not in (PROTECTED, UNAVAILABLE, MEASURING, STARTING):
+        return Health(UNAVAILABLE, STALE,
+                      "this gateway said something about its health that this build does not "
+                      "understand, so it is not being taken as permission.", health.generation,
+                      health.at, 0.0)
+    if not health.may_admit:
+        return health                                         # already a refusal; keep its reason
+
+    allowed = float(said.get("window_seconds") or MAX_DETECTION_SECONDS) * 3
+    age = at - health.at
+    if health.at <= 0.0 or age > allowed:
+        return Health(
+            UNAVAILABLE, STALE,
+            "this gateway last said it was %s %s, and it has not said anything since. A "
+            "statement that is not being refreshed is not a current one, so it is not being "
+            "taken as permission." % (health.state, _ago(age)),
+            health.generation, health.at, 0.0)
+    return health
+
+
+def _ago(seconds: float) -> str:
+    if seconds < 0:
+        # The file is dated in the future. A clock was moved, and that is worth saying plainly
+        # rather than rendering as a negative number of seconds ago.
+        return "at a time later than now, which means a clock here was changed"
+    if seconds < 90:
+        return "%d seconds ago" % int(seconds)
+    return "%d minutes ago" % int(seconds // 60)
+
+
+@dataclass
+class _Probe:
+    """One attempt, and what it cost. Kept so the window can be measured rather than assumed."""
+
+    began: float
+    ended: float = 0.0
+    reached: bool = False
+    said: str = ""
+    deadline: float = PROBE_DEADLINE_SECONDS
+
+    @property
+    def seconds(self) -> float:
+        return max(0.0, self.ended - self.began)
+
+    @property
+    def overran(self) -> bool:
+        return self.seconds > self.deadline
+
+
+class HealthWatch:
+    """Asks the worker, on a schedule, and publishes one state.
+
+    It lives inside the gateway rather than beside it so that health and admission cannot be two
+    authorities racing each other: the same object that notices the loss is the one the
+    admission path reads.
+    """
+
+    def __init__(self, reach, measure, *, every: float = PROBE_EVERY_SECONDS,
+                 deadline: float = PROBE_DEADLINE_SECONDS,
+                 reserve: float = PUBLISHING_RESERVE_SECONDS,
+                 who=None, retry_after: float = RETRY_A_FAILED_MEASUREMENT_AFTER,
+                 clock=time.monotonic, wall=time.time, say=None,
+                 publish_to: "os.PathLike[str] | str | None" = None) -> None:
+        #: Called with the deadline in seconds, to establish that the worker answers. Must raise
+        #: to mean "it did not". The deadline is passed rather than wrapped in a timer because a
+        #: timer around a blocking socket does not end the wait, it only stops watching it.
+        self._reach = reach
+        #: Called to take a fresh measurement. Returns something truthy for success.
+        self._measure = measure
+        #: Called to say WHICH worker is answering -- its instance and the digest of its
+        #: configuration, from the connection that proved them. Used to tell, after a restart,
+        #: whether the worker there now is the one the last `protected` was about.
+        self._who = who or (lambda: "")
+        #: What the statement this gateway found on disk said it was about. Compared once, on
+        #: the first probe that answers.
+        self._the_worker_it_last_saw = ""
+        self._every = every
+        self._deadline = deadline
+        #: The room kept for writing the statement, inside the window rather than beyond it.
+        #: Carried so that a watch built with its own interval and deadline still states a
+        #: window that covers its own last step.
+        self._reserve = reserve
+        self._clock = clock
+        self._wall = wall
+        self._say = say or (lambda _line: None)
+        self._lock = threading.Lock()
+        self._health = starting()
+        self._generation = 0
+        self._probes: list = []
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        #: Held for the whole of a measurement, so two cannot run at once and a stale one cannot
+        #: finish on top of a newer one.
+        self._measuring = threading.Lock()
+        #: When the last measurement failed, monotonic, and how long before another is tried.
+        #: Without a wait, a measurement that cannot succeed is retried on every probe -- a whole
+        #: conformance suite every interval, for ever.
+        self._measurement_failed_at: float | None = None
+        self._retry_after = retry_after
+        #: Where the operator-visible copy goes. The object in this process stays authoritative
+        #: for admission -- nothing is admitted on the strength of a file -- and this is what
+        #: `gateway status`, `gateway watch` and whatever operations runs read, because they run
+        #: in a DIFFERENT process from the gateway and cannot see the object at all. The same
+        #: split as `conformance.json` beside the activation snapshot, for the same reason.
+        self._publish_to = None if publish_to is None else pathlib.Path(publish_to)
+
+    # ------------------------------------------------------------------ what it publishes
+
+    def now(self) -> Health:
+        with self._lock:
+            return self._health
+
+    def probes(self) -> list:
+        with self._lock:
+            return list(self._probes[-20:])
+
+    def _publish(self, state: str, code: str, reason: str, worker: str = "") -> Health:
+        with self._lock:
+            health = Health(state, code, reason, self._generation, self._wall(), self._clock(),
+                            worker)
+            self._health = health
+        self._write_out(health)
+        return health
+
+    def _write_out(self, health: Health) -> None:
+        """The operator-visible copy, replaced atomically or not at all.
+
+        A reader must never see half a state. Written to a neighbouring name and renamed, which
+        on every platform this gateway serves on replaces the file in one step.
+
+        Failures here are deliberately swallowed: a gateway that cannot write a diagnostic file
+        is still a gateway that knows its own health, and turning that into a crash would make
+        an unwritable directory into an outage. What it must not do is leave the OLD file behind
+        looking current -- and it does not, because a reader ages the file (`read_published`).
+        """
+        if self._publish_to is None:
+            return
+        said = dict(health.as_dict())
+        #: What a reader needs to age this file without trusting a clock it does not share.
+        # THE WHOLE PROMISE, publishing included. It was `every + deadline`, which is what
+        # the schedule costs and not what a reader is owed; a statement that names a window
+        # its own writing does not fit inside is a statement that can be late while looking
+        # punctual. With the defaults this is the same 15.0 it always was.
+        said["window_seconds"] = self._every + self._deadline + self._reserve
+        said["pid"] = os.getpid()
+        beside = self._publish_to.with_name(self._publish_to.name + ".writing.%d" % os.getpid())
+        try:
+            self._publish_to.parent.mkdir(parents=True, exist_ok=True)
+            beside.write_text(json.dumps(said, indent=2, sort_keys=True), encoding="utf-8")
+            os.replace(beside, self._publish_to)
+        except OSError:
+            try:
+                beside.unlink()
+            except OSError:
+                pass
+
+    # ------------------------------------------------------------------ one turn of the loop
+
+    def probe_once(self) -> _Probe:
+        """Ask the worker, with a deadline. Never raises."""
+        attempt = _Probe(began=self._clock(), deadline=self._deadline)
+        try:
+            self._reach(self._deadline)
+            attempt.reached = True
+        except BaseException as refused:                      # noqa: BLE001 - any failure is one
+            attempt.said = type(refused).__name__ + ": " + str(refused)[:200]
+        attempt.ended = self._clock()
+        # A probe that answered but took longer than it was given is a failure. Otherwise a
+        # worker that answers in a minute would keep the machine looking healthy for a minute.
+        if attempt.reached and attempt.overran:
+            attempt.reached = False
+            attempt.said = ("the worker answered, but after %.1fs, which is longer than the %.1fs "
+                            "a probe is given" % (attempt.seconds, attempt.deadline))
+        with self._lock:
+            self._probes.append(attempt)
+            del self._probes[:-40]
+        return attempt
+
+    def consider(self, attempt: _Probe) -> Health:
+        """What one probe means for the state. This is the whole state machine."""
+        was = self.now()
+
+        if not attempt.reached:
+            if was.state != UNAVAILABLE or was.code != WORKER_UNREACHABLE:
+                # A loss. Everything measured before it stops being eligible, and anything
+                # already measuring is now measuring a worker that may not be there.
+                with self._lock:
+                    self._generation += 1
+                self._say("the worker stopped answering: " + attempt.said)
+            return self._publish(
+                UNAVAILABLE, WORKER_UNREACHABLE,
+                "the sandbox worker is not answering, so this gateway cannot run anything and "
+                "will not pretend it can. " + attempt.said)
+
+        if was.state == PROTECTED:
+            # Still fine. Republished so that `at` moves and a reader can tell a live answer
+            # from one that stopped being updated.
+            return self._publish(PROTECTED, OK, was.reason, was.worker)
+
+        if not was.observed:
+            # A WATCH THAT WAS NEVER STARTED, whose first probe somebody ran by hand. There is no
+            # worker here that can be lost without this process going with it -- that is what
+            # `starting` means -- so there is nothing for a measurement to establish.
+            #
+            # It still records WHICH worker, because every `protected` this file publishes has to
+            # say that: a later process compares against it, and a statement that names nobody
+            # would make the comparison silently pass.
+            return self._publish(
+                PROTECTED, OK,
+                "the worker is answering, and what was measured about it still describes this "
+                "boot and this image.", self._who_is_answering())
+
+        if was.code == NOT_YET_PROBED:
+            # THE FIRST PROBE OF A STARTED WATCH, and it answered. Nothing was owed -- a loss
+            # this gateway had not finished answering would have put it in `measuring` before
+            # the first probe ran -- so there is no re-measurement to force here.
+            #
+            # A version of this DID force one, on the reading that `HEALTH-HONESTY-0002` asks for
+            # "a first successful measurement before enabling execution". That reading was wrong
+            # twice over. It is in that decision's DEPLOYMENT section, and the deployment already
+            # satisfies it: the stored report is bound to a boot, an image, a topology and a
+            # policy, so after a reboot or an image change `ReadinessGate` refuses it and the
+            # measurement unit takes a new one before anything runs. And forcing it here meant
+            # every gateway serving over a transport refused until a conformance suite it may not
+            # be the one responsible for running had succeeded -- which, where nothing runs that
+            # suite, is for ever.
+            #
+            # What this state IS for is not admitting before the first probe. That is closed by
+            # starting in `unavailable`, and it is closed whatever this branch then decides.
+            #
+            # BUT IS IT THE SAME WORKER? `MTLS-DEFAULT-R2-0003` refused H6 on the one path left
+            # here, and it was right: a gateway restarted soon after publishing `protected` could
+            # meet a DIFFERENT worker and go straight back to `protected`, because the report's
+            # binding -- image, configuration digest, runtime version, boot -- can match across a
+            # swap. Nothing else on this path would have noticed.
+            #
+            # So the statement says which worker it was about, and this is where that is spent:
+            # the handshake has just proved who is answering, and if it is not the one the last
+            # `protected` named, the measurement is about a machine that is no longer there.
+            # An answer that cannot be established counts as different, not as matching.
+            now_it_is = self._who_is_answering()
+            was_it = self._the_worker_it_last_saw
+            if was_it and now_it_is and now_it_is == was_it:
+                return self._publish(
+                    PROTECTED, OK,
+                    "the worker is answering, it is the one the last measurement was about, and "
+                    "what was measured still describes this boot and this image.", now_it_is)
+            if was_it:
+                return self._publish(
+                    MEASURING, MEASUREMENT_RUNNING,
+                    "the worker answering is not the one this gateway last recorded as measured "
+                    "(%s, was %s); it is measuring what this one enforces before running "
+                    "anything." % (now_it_is or "it could not be established", was_it),
+                    now_it_is)
+            return self._publish(
+                PROTECTED, OK,
+                "the worker is answering, and what was measured about it still describes this "
+                "boot and this image.", now_it_is)
+
+        if was.code == MEASUREMENT_FAILED and not self._due_to_try_again():
+            # A MEASUREMENT THAT FAILED IS NOT RETRIED ON THE NEXT PROBE. Without this the state
+            # flickered `measurement_failed` -> `measuring` -> `measurement_failed` every ten
+            # seconds, and each of those `measuring`s ran a whole conformance suite: containers
+            # started, an egress proxy built and torn down, for ever, on a machine whose
+            # measurement was never going to succeed.
+            #
+            # Measured on the isolated pair on 2026-09-25, with a policy the sandbox cannot
+            # satisfy. Two things were wrong with it. A caller asking twice a few seconds apart
+            # got two different causes for one unchanging situation -- which is the opposite of
+            # what H4 is for. And a gateway left in that state would run a conformance suite
+            # every ten seconds until somebody noticed.
+            #
+            # So the state stays what it is, and says how long until the next attempt.
+            return self._publish(UNAVAILABLE, MEASUREMENT_FAILED, was.reason)
+
+        # It answers again AFTER A LOSS. That is not permission: between going and coming back
+        # it may be a different worker, a different image, or the same one with less of a
+        # ceiling, and none of that would show in a report bound before it went.
+        return self._publish(
+            MEASURING, MEASUREMENT_RUNNING,
+            "the worker is answering again, and this gateway is measuring what it can enforce "
+            "before it runs anything. Nothing is admitted until that finishes.")
+
+    def _who_is_answering(self) -> str:
+        """Which worker this is, as the connection just proved it. Never raises: a name that
+        cannot be had is reported as empty, and empty never counts as a match."""
+        try:
+            return str(self._who() or "")
+        except BaseException:                                 # noqa: BLE001 - any failure is one
+            return ""
+
+    def _note_the_measurement_failed(self) -> None:
+        with self._lock:
+            self._measurement_failed_at = self._clock()
+
+    def _due_to_try_again(self) -> bool:
+        """Whether enough has passed since the last failed measurement to try another.
+
+        Monotonic, like everything else here that is a duration.
+        """
+        with self._lock:
+            last = self._measurement_failed_at
+        return last is None or (self._clock() - last) >= self._retry_after
+
+    def remeasure_if_needed(self) -> Health:
+        """Take a fresh measurement when the state calls for one, and only publish on success.
+
+        Serialized, and checked against the generation twice: once before, once after. A
+        measurement that began before a loss may not decide anything about after it.
+        """
+        health = self.now()
+        if health.state != MEASURING:
+            return health
+        if not self._measuring.acquire(blocking=False):
+            return health                                     # one is already running
+        try:
+            began_under = self.now().generation
+            try:
+                measured = self._measure()
+            except BaseException as failed:                   # noqa: BLE001
+                self._note_the_measurement_failed()
+                return self._publish(
+                    UNAVAILABLE, MEASUREMENT_FAILED,
+                    "the worker is answering, but measuring what it enforces did not finish: "
+                    + type(failed).__name__ + ": " + str(failed)[:200])
+            if self.now().generation != began_under:
+                # The worker went away while this was running. What it measured is about a
+                # machine that no longer exists.
+                return self.now()
+            if not measured:
+                self._note_the_measurement_failed()
+                return self._publish(
+                    UNAVAILABLE, MEASUREMENT_FAILED,
+                    "the worker is answering, but the measurement did not establish what this "
+                    "gateway needs to enforce, so nothing will be run.")
+            # One last authenticated round trip, so that `protected` is never published about a
+            # worker that vanished between the measurement finishing and this line.
+            final = self.probe_once()
+            if not final.reached or self.now().generation != began_under:
+                return self.consider(final)
+            with self._lock:
+                self._measurement_failed_at = None             # it worked; start counting afresh
+            return self._publish(
+                PROTECTED, OK,
+                "the worker is answering and a fresh measurement of what it enforces has "
+                "succeeded since it came back.", self._who_is_answering())
+        finally:
+            self._measuring.release()
+
+    def turn(self) -> Health:
+        """One probe, what it means, and any measurement it calls for."""
+        self.consider(self.probe_once())
+        return self.remeasure_if_needed()
+
+    # ------------------------------------------------------------------ lifecycle
+
+    def what_it_still_owes(self) -> Health:
+        """The state a starting watch should begin in, given what this gateway last wrote.
+
+        The re-measurement gate is tied to an OBSERVED loss, and a loss is observed by a process.
+        So a gateway that restarts while its worker is away would otherwise come back with no
+        memory of it: first probe succeeds, `protected`, no fresh measurement. The binding
+        catches a worker that CHANGED in the gap -- image, configuration, runtime version, boot
+        -- but not the same one whose ceilings quietly stopped binding, which is the case the
+        gate exists for.
+
+        So the statement this gateway wrote before it stopped is read back, and a loss it had not
+        finished answering is carried across the restart as one still to answer. It costs one
+        measurement on a gateway that went down unwell, and nothing on one that did not. It is
+        not aged: an old unanswered loss is still unanswered -- and a `protected` statement that
+        has gone stale reads as a refusal anyway, so a gateway that was down long enough for that
+        also re-measures, which is the safe direction.
+
+        Separate from `start` so that it can be asked without a thread running, which is the only
+        way a test can see the decision rather than whatever the first turn has already done to
+        it.
+        """
+        if self._publish_to is None:
+            return starting()
+        previous = read_published(self._publish_to, self._wall())
+        self._the_worker_it_last_saw = previous.worker if previous.state == PROTECTED else ""
+        if previous.state in (UNAVAILABLE, MEASURING) and previous.code != NO_STATEMENT:
+            return Health(
+                MEASURING, MEASUREMENT_RUNNING,
+                "this gateway last recorded that it could not run anything, so it is measuring "
+                "what it can enforce before it takes work again.")
+        # NOTHING OWED, AND STILL NOT PERMISSION. A watch that is about to start has not asked
+        # its worker anything, and `HEALTH-HONESTY-0002` said to initialise conservatively. The
+        # first version of this did not: it began in `starting`, which admits, so a gateway that
+        # started with its worker ALREADY unreachable would take work for up to one probe on the
+        # strength of a stored measurement about a machine that was not answering.
+        # `MTLS-DEFAULT-R2-0001` found that, on H3.
+        #
+        # It costs almost nothing: `_loop` runs its first turn immediately, so this lasts as long
+        # as one probe takes and not one interval. `starting` survives only for a watch that is
+        # never started at all -- an in-process worker, a test -- where there is no worker that
+        # can be lost without the gateway going with it.
+        return Health(
+            UNAVAILABLE, NOT_YET_PROBED,
+            "this gateway has not yet asked its worker whether it is there, and will not run "
+            "anything until it has.")
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        began = self.what_it_still_owes()
+        if began.state == MEASURING:
+            # An unanswered loss carried across the restart counts as one, so a measurement that
+            # was already running somewhere cannot come back and settle it. Only for a carried
+            # loss: an ordinary start has observed nothing, and calling that a loss would make
+            # the counter mean something other than what its name says.
+            with self._lock:
+                self._generation += 1
+        # So the statement exists from the moment the gateway serves. Without it a reader in
+        # another process cannot tell a gateway that started a second ago from one that is not
+        # running, and would report the second thing about the first. Published through the
+        # ordinary path rather than written out directly, so it carries a real timestamp and
+        # ages like everything else: a `starting` that is never followed by a probe is a watch
+        # that is not working, and that must stop being believed like any other stale statement.
+        self._publish(began.state, began.code, began.reason)
+        self._thread = threading.Thread(target=self._loop, name="health-watch", daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            began = self._clock()
+            try:
+                self.turn()
+            except BaseException as broke:                    # noqa: BLE001 - never die quietly
+                self._say("the health watch itself failed: %r" % (broke,))
+                self._publish(UNAVAILABLE, WORKER_UNREACHABLE,
+                              "this gateway cannot establish whether its worker is reachable: "
+                              "%r. Nothing will be run until it can." % (broke,))
+            # From the BOUNDARY, not from when the work finished, so a slow probe does not push
+            # the next one out and stretch the window past what was promised.
+            waiting = self._every - (self._clock() - began)
+            self._stop.wait(max(0.0, waiting))
+
+    def stop(self) -> None:
+        self._stop.set()
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout=PROBE_DEADLINE_SECONDS + self._every + 5.0)

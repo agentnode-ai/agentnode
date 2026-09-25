@@ -46,6 +46,12 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+#: ALIASED, because this module also defines a function called `health` -- the one the CLI asks
+#: for the four-field indicator -- and a bare `from . import health` is shadowed by it at the
+#: point of use. It failed silently rather than loudly: `Rule.check` swallows anything a rule
+#: raises so that a rule cannot take the gateway down, so the alert simply did not appear.
+from . import health as _health
+
 #: Where events go when nobody has chosen anywhere else.
 EVENTS_NAME = "events.jsonl"
 
@@ -127,6 +133,12 @@ class Counts:
     accounts: int = 0
     devices: int = 0
     stopped_because: str = ""
+    #: WHAT THE WORKER IS DOING, from the running gateway's published statement. Counted here
+    #: rather than worked out in the command, so the file a collector reads carries it too: a
+    #: machine whose worker has gone must not be legible only to somebody typing a command.
+    worker: str = ""
+    worker_because: str = ""
+    worker_reason: str = ""
 
     def as_event(self) -> dict:
         return {"kind": "counts", "at": round(self.at, 3),
@@ -137,7 +149,8 @@ class Counts:
                 "probes": self.probes,
                 "cleanups_not_confirmed": self.cleanups_not_confirmed,
                 "accounts": self.accounts, "devices": self.devices,
-                "stopped_because": self.stopped_because}
+                "stopped_because": self.stopped_because,
+                "worker": self.worker, "worker_because": self.worker_because}
 
 
 #: How far back the refusal counts look. Short enough that a burst is visible as a burst.
@@ -193,6 +206,15 @@ def look(service, now: float | None = None, since: float = RECENT_SECONDS) -> Co
         counts.stopped_because = why_it_is_stopped(service.state.root) or ""
     except Exception as exc:                                  # noqa: BLE001
         counts.stopped_because = "cannot tell (%s)" % str(exc)[:80]
+    try:
+        live = service.published_health()
+        counts.worker, counts.worker_because = live.state, live.code
+        counts.worker_reason = live.reason
+    except Exception as exc:                                  # noqa: BLE001
+        # Not left empty. A statement that cannot be read is itself a reason to look, and empty
+        # would make the rule below decide there was nothing wrong.
+        counts.worker, counts.worker_because = "unavailable", "cannot_tell"
+        counts.worker_reason = "this gateway's own health could not be read (%s)" % str(exc)[:120]
     return counts
 
 
@@ -233,14 +255,50 @@ class Rule:
             return None                                       # be able to take the gateway down
         if not why:
             return None
-        return {"kind": "alert", "at": round(counts.at, 3), "rule": self.name,
-                "severity": self.severity, "because": why, "what_it_means": self.says}
+        # A RULE MAY NAME ITS OWN CAUSE. Most have one thing to say and say it, and for those
+        # `fires` returns a sentence. One of them covers several causes that are not the same
+        # thing to be told about, and it returns a dict carrying the heading and the step that
+        # fit the cause it actually found. `MTLS-DEFAULT-R2-0004` refused H4 because that rule
+        # had one heading and one step for all of them.
+        rule, says = self.name, self.says
+        if isinstance(why, dict):
+            rule = why.get("rule") or rule
+            says = why.get("what_it_means") or says
+            why = why.get("because")
+            if not why:
+                return None
+        return {"kind": "alert", "at": round(counts.at, 3), "rule": rule,
+                "severity": self.severity, "because": why, "what_it_means": says}
 
 
 def _a_sandbox_was_not_confirmed_gone(counts: Counts):
     if counts.cleanups_not_confirmed:
         return "%d finished run(s) whose sandbox was not confirmed gone" % (
             counts.cleanups_not_confirmed)
+    return None
+
+
+def _the_sandbox_is_not_taking_work(counts: Counts):
+    """The one this arc exists for.
+
+    Without it `gateway watch` printed "Nothing is asking for attention" while the machine could
+    not have run a single job -- the same failure as the measurement unit still saying
+    `Protected`, on a different surface. Critical rather than a warning: nothing runs at all.
+
+    IT FIRES ON THE STATE AND SPEAKS FROM THE CODE. Both `worker_unreachable` and
+    `measurement_failed` are `unavailable`, and they are opposite situations for the person
+    reading this at 3am: in the first the worker is gone and waiting is the whole of the answer;
+    in the second the worker is ANSWERING and waiting for it to come back is advice about
+    something that is not happening. This rule used to say "the worker is not there. Nothing can
+    run until it is back... Look at the worker" for both, directly above a reason that said the
+    worker was answering. `MTLS-DEFAULT-R2-0004` refused H4 on exactly that, and it was right:
+    one generic sentence per screen is what the criterion forbids.
+    """
+    if counts.worker in ("unavailable", "measuring"):
+        return {"because": counts.worker_reason or ("the sandbox worker is %s" % counts.worker),
+                "rule": _health.what_is_wrong(counts.worker_because),
+                "what_it_means": "Nothing runs and nothing is billed while this is true. "
+                                 + _health.what_to_do_about(counts.worker_because)}
     return None
 
 
@@ -272,6 +330,11 @@ def _one_account_is_being_refused_a_lot(counts: Counts):
 
 #: The rules this gateway ships with. An operator can add to them; none of them needs a provider.
 RULES = (
+    # The heading and the step are per cause and come from the rule itself; these two are the
+    # fallback for a cause with no entry, and are true of every state this rule fires on.
+    Rule("the sandbox is not taking work", CRITICAL,
+         "Nothing runs and nothing is billed while this is true. Look at the gateway's health.",
+         _the_sandbox_is_not_taking_work),
     Rule("a sandbox was not confirmed gone", CRITICAL,
          "The one property everything else rests on. Look now.",
          _a_sandbox_was_not_confirmed_gone),
@@ -318,6 +381,22 @@ def health(service, now: float | None = None) -> dict:
     except Exception as exc:                                  # noqa: BLE001
         because = "could not be determined (%s)" % type(exc).__name__
 
+    # Whether the worker is THERE, read from what the running gateway published rather than
+    # recomputed here. This is called both inside the gateway and from a command in another
+    # process, and only the published statement is true in both. Without it an operator's check
+    # ran in a process that had never probed anything, and reported a measured, healthy machine
+    # whose worker had been gone for two minutes -- the defect this whole arc is about.
+    live = service.published_health()
+    if not live.may_admit:
+        ready = False
+        # `summary` and not `reason`: this answer is served at `/v1/health`, which is reachable
+        # WITHOUT a credential, and the reason names the worker's address and the errno. The
+        # keys are not widened either -- `test_what_is_reachable_without_a_credential_gives_
+        # nothing_away` pins the set on purpose. What an operator needs in order to tell the
+        # three states apart is in `gateway status`, in `gateway watch`, in the events file and
+        # in the statement in the 0700 state directory; none of those is an anonymous door.
+        because = live.summary
+
     taking_work = False
     try:
         from agentnode_sdk.gateway.allowance import why_it_is_stopped
@@ -325,5 +404,15 @@ def health(service, now: float | None = None) -> dict:
         taking_work = not (why_it_is_stopped(service.state.root) or "")
     except Exception:                                         # noqa: BLE001
         taking_work = False
+    # AND WHETHER IT CAN, not only whether the operator has allowed it to. This used to mean one
+    # thing -- "nobody has pressed stop" -- and during a worker outage it therefore said `true`
+    # on the same answer whose `because` said the sandbox was not taking work. A surface that
+    # contradicts itself in two adjacent fields is not one an operator can rely on, and saying
+    # `taking_work: true` about a machine that refuses every job is the same kind of untruth as
+    # the `Protected` this whole arc is about. `MTLS-DEFAULT-R2-0001` found it, on H1.
+    #
+    # `ready` already folds in the live state and the measurement, so this is an AND of the two
+    # questions a caller of this actually has: may it, and can it.
+    taking_work = bool(taking_work and ready)
     return {"serving": True, "measured": ready, "taking_work": taking_work,
             "because": because if not ready else ""}
