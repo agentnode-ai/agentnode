@@ -670,7 +670,7 @@ class TestWhoMayConnect:
 class TestTheSocketIsNarrowedBeforeAnythingCanReachIt:
     """There is no instant in which the socket exists and anyone may connect to it."""
 
-    def test_the_mode_goes_on_before_it_listens(self, monkeypatch, tmp_path):
+    def test_the_mode_goes_on_before_it_listens(self, monkeypatch):
         import agentnode_sdk.worker.service as service_mod
 
         happened = []
@@ -695,18 +695,9 @@ class TestTheSocketIsNarrowedBeforeAnythingCanReachIt:
                             lambda path, mode: happened.append(("chmod", oct(mode))))
         monkeypatch.setattr(service_mod.os.path, "exists", lambda _p: False)
         monkeypatch.setattr(service_mod.os, "makedirs", lambda *a, **k: None)
-        # A real directory rather than an imaginary one. The socket itself is still a stand-in --
-        # the order of chmod and listen is what this is about -- but claiming the pathname is
-        # done for real, and that needs somewhere to put the lock. Stubbing that out instead
-        # would mean this test could no longer see it if it broke.
-        where = tmp_path / "sock"
-        where.mkdir()
-        bench = Bench(AWorkerThatAnswers(), "unix://" + str(where / "worker.sock"), KEY,
+        bench = Bench(AWorkerThatAnswers(), "unix:///somewhere/sock/worker.sock", KEY,
                       only_uid=1000)
-        try:
-            bench.open()
-        finally:
-            bench.stop_serving()
+        bench.open()
 
         what = [step for step, _ in happened]
         assert what.index("chmod") < what.index("listen"), happened

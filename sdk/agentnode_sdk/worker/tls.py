@@ -419,15 +419,6 @@ class TlsListener:
                 continue
             threading.Thread(target=self._one, args=(raw,), daemon=True).start()
 
-    def asked_to_stop(self) -> None:
-        """All a signal handler may do here: set the flag and return.
-
-        The accept loop looks at it within a second and the closing happens afterwards, in the
-        main thread. A handler that closed sockets and stopped the watch would be doing that
-        wherever the main thread happened to be, including halfway through opening.
-        """
-        self._stopped = True
-
     def stop_serving(self) -> None:
         self._stopped = True
         self.watch.stop()
