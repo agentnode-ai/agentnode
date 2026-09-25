@@ -334,7 +334,7 @@ class Worker(ABC):
     #: How the gateway reaches it: "in-process" here, "unix" or "mtls" for a worker elsewhere.
     transport = "in-process"
 
-    def confirm_reachable(self) -> None:
+    def confirm_reachable(self, budget: float | None = None) -> None:
         """Reach the worker through its transport, with that transport's checks, and let go.
 
         Called by the gateway after a job is admitted and BEFORE its run id is claimed, so a
@@ -342,6 +342,11 @@ class Worker(ABC):
         -- turns the submission into a refusal with nothing in the ledger and nothing in the
         signed log, instead of an accepted job that then has to be closed as lost. In this
         process there is nothing to reach.
+
+        `budget` is a hard end-to-end ceiling in seconds for a caller that has a deadline --
+        the health watch has one, because the window it promises is only as good as the time a
+        single probe can take. A worker in this process answers instantly, so it is ignored
+        here; over a transport it bounds connect, handshake and identity check together.
         """
 
     def who_ran(self, run_id: str) -> tuple[str, str, str]:

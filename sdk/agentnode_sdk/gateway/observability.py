@@ -318,6 +318,16 @@ def health(service, now: float | None = None) -> dict:
     except Exception as exc:                                  # noqa: BLE001
         because = "could not be determined (%s)" % type(exc).__name__
 
+    # Whether the worker is THERE, read from what the running gateway published rather than
+    # recomputed here. This is called both inside the gateway and from a command in another
+    # process, and only the published statement is true in both. Without it an operator's check
+    # ran in a process that had never probed anything, and reported a measured, healthy machine
+    # whose worker had been gone for two minutes -- the defect this whole arc is about.
+    live = service.published_health()
+    if not live.may_admit:
+        ready = False
+        because = live.reason
+
     taking_work = False
     try:
         from agentnode_sdk.gateway.allowance import why_it_is_stopped
@@ -326,4 +336,8 @@ def health(service, now: float | None = None) -> dict:
     except Exception:                                         # noqa: BLE001
         taking_work = False
     return {"serving": True, "measured": ready, "taking_work": taking_work,
+            # Named separately from `measured`, because a machine that has been measured and one
+            # whose worker is answering are two different facts and a check that folds them
+            # together cannot say which went wrong.
+            "worker": live.state, "worker_because": live.code,
             "because": because if not ready else ""}

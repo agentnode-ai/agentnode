@@ -57,7 +57,8 @@ _OUTCOMES = set(contract.REFUSALS) | {"carried_out", "unknown", "too_old", "bad_
 class Refused(Exception):
     """A refusal that names itself. Adapters render this; none of them composes one."""
 
-    def __init__(self, refusal: str, because: str, what_to_do: str = "") -> None:
+    def __init__(self, refusal: str, because: str, what_to_do: str = "",
+                 cause: str = "") -> None:
         from agentnode_sdk.gateway.redaction import scrub
 
         if refusal not in contract.REFUSALS:
@@ -78,11 +79,21 @@ class Refused(Exception):
         self.refusal = refusal
         self.because = scrub(because)
         self.what_to_do = scrub(what_to_do)
+        #: WHICH of the situations this refusal covers, when one name covers several. The closed
+        #: list above is the contract and does not grow for a distinction inside one of its
+        #: entries -- `sandbox_unavailable` is one HTTP answer and one thing a client does about
+        #: it. But "the worker is gone", "it is back and being measured" and "it is back and the
+        #: measurement failed" are three different situations, and a client that got the same
+        #: word for all three could not tell whether waiting would help. Empty when the refusal's
+        #: own name already says everything.
+        self.cause = scrub(cause) if cause else ""
 
     def as_answer(self) -> dict:
         answer = {"refused": self.refusal, "because": self.because}
         if self.what_to_do:
             answer["what_to_do"] = self.what_to_do
+        if self.cause:
+            answer["cause"] = self.cause
         return answer
 
 
@@ -1470,7 +1481,8 @@ def _submit(service, principal, params):
         _give_the_disclosure_back(service, presented, spent)
         raise Refused(record.refused_as, record.refusal,
                       getattr(record, "refusal_remedy", "")
-                      or "Ask whoever runs this sandbox.")
+                      or "Ask whoever runs this sandbox.",
+                      getattr(record, "refusal_cause", ""))
 
     _handoff.record = record
     told = record.public()

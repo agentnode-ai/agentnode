@@ -48,6 +48,7 @@ from agentnode_sdk.access.stopping import Stopping
 from agentnode_sdk.access import dispatch as _dispatch
 from agentnode_sdk.gateway import client as _gc
 from agentnode_sdk.gateway.identity import GatewayState, PairingError
+from agentnode_sdk.gateway import health
 from agentnode_sdk.gateway import challenge as ch
 from agentnode_sdk.gateway.ledger import Ledger
 from agentnode_sdk.gateway.runs import Runs
@@ -153,6 +154,9 @@ class RunRecord:
     refused_as: str = ""
     #: What the refused party can actually do. Empty for a record that is not a refusal.
     refusal_remedy: str = ""
+    #: WHICH situation, inside a refusal name that covers more than one. See `Refused.cause` in
+    #: `access/dispatch.py`. Empty when the name already says everything.
+    refusal_cause: str = ""
     container_name: str = ""
     cleanup_verified: bool | None = None
     #: WHEN THIS JOB ARRIVED. Not when it started: a job may wait for a slot, and the wait is
@@ -389,6 +393,26 @@ class GatewayService:
 
         _contract.check_classifications()
         self.readiness = ReadinessGate(self.state.root)
+        #: Whether the worker is there NOW, as opposed to what was once measured about it.
+        #: `gateway/health.py` says why those are different questions and why the difference
+        #: needed an object of its own. Built for every gateway and STARTED only by the service
+        #: that serves requests: a gateway built in a test, or one around an in-process worker,
+        #: has no worker that can be lost independently of itself, so it stays in `starting`,
+        #: which is what those did before this existed.
+        self.health = health.HealthWatch(
+            reach=lambda budget: self.worker.confirm_reachable(budget),
+            # `measure` and not `_transact` directly, so the watch takes the same lock, writes
+            # the same activation and is judged by the same gate as an operator's measurement.
+            # `.ready` rather than the verdict object: the watch decides one thing, and
+            # interpreting a verdict is not its job.
+            measure=lambda: self.measure().ready,
+            say=lambda line: print("gateway: " + line, flush=True),
+            # The operator-visible copy. `gateway status` and `gateway watch` run in a different
+            # process from the gateway and cannot see the object above, so without this they
+            # would have to open their own connection to a worker that may be running foreign
+            # code -- which is how the present command turns an unreachable worker into a
+            # command that errors, indistinguishable from a broken command.
+            publish_to=self.state.root / health.HEALTH_FILE)
         #: Who carries out cancellations. Bounded, owned, and durable across a restart -- see
         #: `access/stopping.py`. Nothing is started until the first cancellation is asked for,
         #: so a gateway that never cancels anything has no threads for it.
@@ -840,7 +864,10 @@ class GatewayService:
                 self._restore_config(previous)
                 store.clear_pending()
                 raise
-        return self.readiness_now()
+        # What the measurement proved, not whether the gateway may take work. The health watch
+        # calls this to decide whether the worker it just measured is good again, and a gated
+        # answer would tell it "no" because the gate is held by this very measurement.
+        return self._what_the_measurement_proves()
 
     def _egress_matrix_for(self, envelope):
         """Measure the allowlist this policy actually names, or return nothing measured.
@@ -874,9 +901,65 @@ class GatewayService:
     def readiness_now(self):
         """The current answer to whether this gateway may take work, with its reason.
 
+        Two questions, and both have to hold. What the last measurement PROVES -- recomputed
+        below, never remembered from when the process started -- and whether the worker it was
+        about is reachable NOW. The second used to be missing, and that is how the closed alpha
+        came to report that it was protecting a job it could not have run: the proof was valid
+        and the machine it described was not answering.
+
+        The live answer is checked first when it is bad, because it is the more recent fact. A
+        stale report and an absent worker are both refusals, and a reader is better served by
+        the one that changed than by the one that has been true all along.
+        """
+        live = self.health.now()
+        measured = self._what_the_measurement_proves()
+        if live.may_admit:
+            return measured
+        return Readiness(
+            False, live.reason, {}, tuple(measured.unproven),
+            # No "measure it again" here: while the worker is unreachable that is not a step
+            # anybody can carry out, and a remedy that cannot be followed is worse than none.
+            ("Wait for the sandbox worker to come back; nothing will run until it has.",)
+            if live.state == health.UNAVAILABLE else (),
+            measured.measured_at,
+        )
+
+    #: The structured live health of this gateway, for anything that reports rather than admits.
+    #: A caller that needs to tell `unavailable` from `measuring` reads this; `readiness_now`
+    #: deliberately flattens both to "no".
+    def health_now(self):
+        return self.health.now()
+
+    def published_health(self):
+        """The same question, asked from a process that may not be the one serving.
+
+        `gateway status`, `gateway watch` and an operator's own check each run in their own
+        process, where the watch above has never probed anything: asking it there would get
+        `starting` for a machine whose worker has been gone for two minutes. They read what the
+        serving gateway wrote instead, aged, so an old permissive statement cannot be carried
+        forward -- `health.read_published` is where that ageing lives and why.
+
+        Nothing is ADMITTED on the strength of this. Admission reads the object in the process
+        that is doing the admitting; this is what is reported.
+        """
+        if getattr(self.worker, "transport", "in-process") == "in-process":
+            # There is no worker here that can be lost without this process going with it, so
+            # there is nothing published and nothing to age. Saying "no statement, assume the
+            # worst" about that would report every in-process gateway as broken.
+            return health.starting()
+        return health.read_published(self.state.root / health.HEALTH_FILE)
+
+    def _what_the_measurement_proves(self):
+        """What the last measurement establishes, with no regard for whether the worker is there.
+
         Every part of this is recomputed: the policy is re-read and re-digested, and the report
         is judged against the properties THAT policy requires. Nothing here is remembered from
         when the process started.
+
+        Separate from `readiness_now` so that the health watch's own measurement can be judged
+        without consulting the state that measurement is about to settle -- during it the live
+        state is `measuring`, and asking the gated answer would have it conclude that its own
+        measurement had failed.
         """
         from agentnode_sdk.gateway.activation import SnapshotUnusable
         from agentnode_sdk.gateway.operator_policy import OperatorPolicyError
@@ -958,6 +1041,11 @@ class GatewayService:
             "unproven": list(readiness.unproven),
             "next_steps": list(readiness.next_steps),
             "measured_at": readiness.measured_at,
+            # The live state, alongside what was measured and never folded into it. A caller
+            # that sees `ready: false` learns from this whether the machine is broken, absent or
+            # busy establishing itself -- and an operator's tooling reads it without opening a
+            # connection to a worker that may be running foreign code.
+            "health": self.health_now().as_dict(),
             "pairing_open": self.state.pairing_active(),
         }
 
@@ -1960,6 +2048,14 @@ class GatewayService:
                 (" Next: " + readiness.next_steps[0]) if readiness.next_steps else ""
             )
             blocked.refused_as = "sandbox_unavailable"
+            # WHICH kind of unavailable. The name above stays what the contract declares -- it
+            # is one HTTP answer and one thing a client does about it -- but one word for every
+            # cause is what a client got before, and it could not tell "the worker is gone" from
+            # "it is back and being measured" from "it is back and the measurement failed".
+            # Those call for three different things from whoever reads them, and waiting helps
+            # in only two of them.
+            live = self.health_now()
+            blocked.refusal_cause = "" if live.may_admit else live.code
             blocked.refusal_remedy = (readiness.next_steps[0] if readiness.next_steps else
                                       "Ask whoever runs this sandbox to measure it again.")
             blocked.finished_at = time.time()
@@ -2808,6 +2904,13 @@ class GatewayService:
         # ONE LAST ATTEMPT AT WHAT IS OWED, before the thread that keeps trying is told to
         # stop. A gateway that is going away is the last one that will hold these in memory.
         self._closing.set()
+        # Stopped before anything else is torn down, so a probe cannot open a connection to a
+        # worker while the thing that owns the connection is going away. It is idempotent and
+        # a no-op when it was never started.
+        try:
+            self.health.stop()
+        except Exception:                                      # noqa: BLE001
+            pass
         try:
             self.pay_what_is_owed()
         except Exception:                                      # noqa: BLE001
@@ -3524,6 +3627,13 @@ def make_server(
     ]
     for watcher in server.agentnode_watchers:
         watcher.start()
+    # The health watch starts HERE and not in the service's constructor. A gateway that is
+    # serving requests is the one that has to answer for whether its worker is there; a gateway
+    # built to be asked a question in a test has no worker that can be lost without it. Skipped
+    # for an in-process worker, where the gateway and the thing it would be probing are the same
+    # process, and a probe would only establish that this process is running.
+    if getattr(service.worker, "transport", "in-process") != "in-process":
+        service.health.start()
     return server
 
 

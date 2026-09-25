@@ -142,11 +142,25 @@ def _tls_from(config: dict, args):
     return None
 
 
-def _say_protected(readiness, runtime_available: bool) -> None:
-    """The one thing an operator most needs to know, in one line."""
+def _say_protected(readiness, runtime_available: bool, live=None) -> None:
+    """The one thing an operator most needs to know, in one line.
+
+    `live` is what the running gateway last said about whether its worker is THERE -- a separate
+    question from what was once measured about it, and the one this line used to get wrong. With
+    the worker stopped, a machine that could not have run a job went on printing `Protected`,
+    because the measurement it was reading was perfectly valid and about a worker that had gone.
+    It is checked before the measurement, because it is the more recent fact.
+    """
+    from agentnode_sdk.gateway import health as _health
+
     if not runtime_available:
         print(f"  {bold('Not protecting anything yet')} -- there is no container runtime here, so")
         print("  no code can be isolated and none will be run.")
+        return
+    if live is not None and not live.may_admit:
+        headline = ("Measuring" if live.state == _health.MEASURING
+                    else "Not protecting anything")
+        print(f"  {bold(headline)} -- {live.reason}")
         return
     if readiness.ready:
         print(f"  {bold('Protected')} -- code sent here runs inside a container, as a user with no")
@@ -522,14 +536,33 @@ def cmd_status(args) -> int:
     if not _config_path(root).is_file() and not (root / "identity.json").is_file():
         print("  No gateway is set up here. Run: agentnode gateway init")
         return 1
+    from agentnode_sdk.gateway import health as _health
+    from agentnode_sdk.worker import WorkerUnreachable
+
     state, service = _service(root)
-    availability = service.worker.can_it_isolate()
+    # What the RUNNING gateway last said about itself, read from its published statement rather
+    # than by opening a connection of this command's own. This command runs in a different
+    # process from the gateway, so the object in there is not visible here -- and asking the
+    # worker directly is what used to make this command FAIL, with `That did not work: the
+    # sandbox worker ... could not be reached`, when the honest answer was available and simply
+    # was not being read. An operator's tooling could not tell that from a broken command.
+    live = service.published_health()
+    try:
+        availability = service.worker.can_it_isolate()
+        available = availability.available
+    except WorkerUnreachable as gone:
+        # A worker that cannot be reached is a state to REPORT, not an error to raise. The
+        # published statement above already says so; this only keeps the command from dying
+        # before it can print it.
+        available, availability = True, None
+        if live.may_admit:
+            live = _health.Health(_health.UNAVAILABLE, _health.WORKER_UNREACHABLE, str(gone))
     readiness = service.readiness_now()
     clients = state.paired_clients()
 
     print()
     print(f"  {bold('Sandbox gateway')} {dim(state.identity.gateway_id[:12])}")
-    _say_protected(readiness, availability.available)
+    _say_protected(readiness, available, live)
     print()
     print(f"  Connected clients: {len(clients)}")
     for entry in clients:
@@ -542,6 +575,10 @@ def cmd_status(args) -> int:
             print(f"    {step}")
     if getattr(args, "verbose", False):
         print()
+        # Named, so a script can branch on WHICH of them it is without reading English, and so
+        # that an operator can tell "the worker is gone" from "it is back and being measured".
+        print(dim(f"  worker: {live.state} ({live.code})"))
+        print()
         print(dim("  measured properties:"))
         for name, held in sorted(readiness.properties.items()):
             print(dim(f"    {name:<28} {held}"))
@@ -550,13 +587,29 @@ def cmd_status(args) -> int:
 
 
 def cmd_doctor(args) -> int:
+    from agentnode_sdk.worker import WorkerUnreachable
+
     root = _root(args)
     state, service = _service(root)
-    availability = service.worker.can_it_isolate()
 
     print()
     print(f"  {bold('Checking this machine')}")
     print()
+    try:
+        availability = service.worker.can_it_isolate()
+    except WorkerUnreachable as gone:
+        # A worker that is not answering is a FINDING for a command whose job is to find things,
+        # not an exception for it to die of. This is also what `agentnode gateway doctor
+        # --measure` runs as, which on the closed alpha was the operational health indicator --
+        # so an unreachable worker turning it into a traceback was the difference between "this
+        # machine is degraded" and "this check is broken".
+        print("  The sandbox worker is not answering, so nothing can be measured and nothing")
+        print("  will be run.")
+        print(f"  {gone}")
+        print()
+        print("  Start the worker on its machine, then run this again. Until then this gateway")
+        print("  refuses work rather than running it unmeasured.")
+        return 1
     if not availability.available:
         print("  There is no usable container runtime for this gateway to send work to,")
         print("  so nothing can be isolated.")
@@ -580,7 +633,7 @@ def cmd_doctor(args) -> int:
         readiness = service.readiness_now()
 
     print()
-    _say_protected(readiness, availability.available)
+    _say_protected(readiness, availability.available, service.published_health())
     if readiness.unproven:
         from agentnode_sdk.gateway.readiness import describe_missing
 
