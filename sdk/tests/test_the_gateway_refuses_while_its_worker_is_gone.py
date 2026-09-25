@@ -485,7 +485,7 @@ def test_a_gateway_whose_worker_is_down_still_starts_and_keeps_serving(tmp_path)
         state.close()
 
 
-def test_asking_what_would_happen_is_refused_rather_than_dropped(gateway):
+def test_asking_what_would_happen_answers_instead_of_dropping_the_connection(gateway):
     """Composing the answer names the worker, and the name comes from the worker.
 
     With the worker away that raised out of the request handler and the connection closed with
@@ -493,9 +493,13 @@ def test_asking_what_would_happen_is_refused_rather_than_dropped(gateway):
     indistinguishable from a broken gateway. Measured on the isolated pair on 2026-09-25, on a
     gateway that had been started while its worker was down -- so the defect was reachable only
     in the case the first review pointed at.
+
+    What this door does is say what WOULD happen; whether it will is `submit`'s to decide. A
+    first fix refused here instead, which moved that decision and broke nine tests in
+    `test_em3c_gateway` that are about exactly this separation. So the fix is that it answers,
+    and nothing else changed.
     """
     from agentnode_sdk.access import dispatch
-    from agentnode_sdk.access.dispatch import Refused
 
     someone = _a_customer(gateway, "a customer")
     asking = {"artifact_sha256": "0" * 64, "artifact_bytes": 4, "wall_clock_s": 30}
@@ -504,12 +508,18 @@ def test_asking_what_would_happen_is_refused_rather_than_dropped(gateway):
     gateway.worker.transport = "mtls"
     _the_worker_is_gone(gateway)
 
-    with pytest.raises(Refused) as refused:
-        dispatch.dispatch("prepare", asking, someone, service=gateway)
+    said = dispatch.dispatch("prepare", asking, someone, service=gateway)
 
-    assert refused.value.refusal == "sandbox_unavailable"
+    assert said["accepted_disclosure"], "it answers"
+    # What it says about the worker when it genuinely cannot name one is the next test; this
+    # worker can still name itself, and the point here is that the request got an answer.
+
+    # And the refusal still happens, where it is supposed to: at the submission.
+    from agentnode_sdk.access.dispatch import Refused
+
+    with pytest.raises(Refused) as refused:
+        _a_run_by(gateway, someone)
     assert refused.value.cause == H.WORKER_UNREACHABLE
-    assert refused.value.what_to_do
 
 
 def test_and_the_disclosure_itself_survives_a_worker_it_cannot_name(gateway):
