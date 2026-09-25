@@ -127,6 +127,12 @@ class Counts:
     accounts: int = 0
     devices: int = 0
     stopped_because: str = ""
+    #: WHAT THE WORKER IS DOING, from the running gateway's published statement. Counted here
+    #: rather than worked out in the command, so the file a collector reads carries it too: a
+    #: machine whose worker has gone must not be legible only to somebody typing a command.
+    worker: str = ""
+    worker_because: str = ""
+    worker_reason: str = ""
 
     def as_event(self) -> dict:
         return {"kind": "counts", "at": round(self.at, 3),
@@ -137,7 +143,8 @@ class Counts:
                 "probes": self.probes,
                 "cleanups_not_confirmed": self.cleanups_not_confirmed,
                 "accounts": self.accounts, "devices": self.devices,
-                "stopped_because": self.stopped_because}
+                "stopped_because": self.stopped_because,
+                "worker": self.worker, "worker_because": self.worker_because}
 
 
 #: How far back the refusal counts look. Short enough that a burst is visible as a burst.
@@ -193,6 +200,15 @@ def look(service, now: float | None = None, since: float = RECENT_SECONDS) -> Co
         counts.stopped_because = why_it_is_stopped(service.state.root) or ""
     except Exception as exc:                                  # noqa: BLE001
         counts.stopped_because = "cannot tell (%s)" % str(exc)[:80]
+    try:
+        live = service.published_health()
+        counts.worker, counts.worker_because = live.state, live.code
+        counts.worker_reason = live.reason
+    except Exception as exc:                                  # noqa: BLE001
+        # Not left empty. A statement that cannot be read is itself a reason to look, and empty
+        # would make the rule below decide there was nothing wrong.
+        counts.worker, counts.worker_because = "unavailable", "cannot_tell"
+        counts.worker_reason = "this gateway's own health could not be read (%s)" % str(exc)[:120]
     return counts
 
 
@@ -244,6 +260,18 @@ def _a_sandbox_was_not_confirmed_gone(counts: Counts):
     return None
 
 
+def _the_worker_is_not_there(counts: Counts):
+    """The one this arc exists for.
+
+    Without it `gateway watch` printed "Nothing is asking for attention" while the machine could
+    not have run a single job -- the same failure as the measurement unit still saying
+    `Protected`, on a different surface. Critical rather than a warning: nothing runs at all.
+    """
+    if counts.worker in ("unavailable", "measuring"):
+        return counts.worker_reason or ("the sandbox worker is %s" % counts.worker)
+    return None
+
+
 def _the_gateway_is_stopped(counts: Counts):
     return ("this gateway is not taking work: " + counts.stopped_because
             if counts.stopped_because else None)
@@ -272,6 +300,9 @@ def _one_account_is_being_refused_a_lot(counts: Counts):
 
 #: The rules this gateway ships with. An operator can add to them; none of them needs a provider.
 RULES = (
+    Rule("the worker is not there", CRITICAL,
+         "Nothing can run until it is back, and nothing is being billed. Look at the worker.",
+         _the_worker_is_not_there),
     Rule("a sandbox was not confirmed gone", CRITICAL,
          "The one property everything else rests on. Look now.",
          _a_sandbox_was_not_confirmed_gone),

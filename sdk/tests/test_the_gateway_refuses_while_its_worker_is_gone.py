@@ -283,3 +283,26 @@ def test_readiness_answers_rather_than_raising_when_the_worker_cannot_be_reached
         assert verdict.next_steps                              # something a person can do
     finally:
         state.close()
+
+
+def test_the_watch_asks_for_attention_when_the_worker_is_gone(gateway, tmp_path):
+    """Found on the isolated pair: `gateway watch` printed "Nothing is asking for attention"
+    while the machine could not have run a single job.
+
+    Same failure as the measurement unit still saying `Protected`, on a different surface. The
+    run counts look identical on a quiet machine and on a broken one, so the absence of alerts
+    read as health.
+    """
+    sink = obs.NowhereSink()
+
+    quiet = obs.observe(gateway, sink)
+    assert [a["rule"] for a in quiet["alerts"]] == [], "the control: nothing is wrong yet"
+
+    gateway.worker.transport = "mtls"
+    _the_worker_is_gone(gateway)
+
+    said = obs.observe(gateway, sink)
+
+    assert "the worker is not there" in [a["rule"] for a in said["alerts"]]
+    assert said["counts"]["worker"] == H.UNAVAILABLE
+    assert said["counts"]["worker_because"] == H.WORKER_UNREACHABLE

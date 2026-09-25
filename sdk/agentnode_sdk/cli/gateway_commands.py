@@ -1459,6 +1459,12 @@ def cmd_watch(args) -> int:
             for name, (used, ceiling) in sorted(counts["capacity"].items())))
     print(f"    customers       : {counts['accounts']} ({counts['devices']} device(s))")
     print(f"    cleanups unconfirmed: {counts['cleanups_not_confirmed']}")
+    # The first line an operator should read when nothing is running. Printed here and not only
+    # as an alert, because "runs: (nothing) 0" looks the same on a quiet machine and on one whose
+    # worker has gone.
+    worker = str(counts.get("worker") or "")
+    if worker and worker != "protected":
+        print(f"    {bold('worker')}          : {worker} ({counts.get('worker_because') or ''})")
     if counts["stopped_because"]:
         print(f"    {bold('not taking work')}: {counts['stopped_because']}")
 
