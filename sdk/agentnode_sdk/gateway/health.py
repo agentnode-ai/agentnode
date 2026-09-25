@@ -140,13 +140,23 @@ class Health:
         So everything that crosses a network door says one of these instead, and each is a fixed
         phrase rather than anything composed from what went wrong.
         """
+        # KEYED ON THE CODE, not the state. `worker_unreachable` and `measurement_failed` are
+        # both `unavailable`, and they are not the same thing to be told: in the second the
+        # worker IS answering and what failed was the measurement. Keying on the state told a
+        # caller the sandbox could not reach what runs code while it plainly could -- measured on
+        # the isolated pair on 2026-09-25, in the phase built to exercise that very cause.
         return {
-            PROTECTED: "this sandbox is taking work.",
-            MEASURING: "this sandbox is establishing what it can enforce and is not taking work "
-                       "yet.",
-            STARTING: "this sandbox has not finished starting.",
-        }.get(self.state,
-              "this sandbox is not taking work: it cannot currently reach what runs code.")
+            OK: "this sandbox is taking work.",
+            MEASUREMENT_RUNNING: "this sandbox is establishing what it can enforce and is not "
+                                 "taking work yet.",
+            MEASUREMENT_FAILED: "this sandbox could not establish what it enforces, so it is "
+                                "not taking work.",
+            WORKER_UNREACHABLE: "this sandbox is not taking work: it cannot currently reach "
+                                "what runs code.",
+            NOT_YET_PROBED: ("this sandbox has not finished starting."
+                             if self.state == STARTING else
+                             "this sandbox is still working out whether it can take work."),
+        }.get(self.code, "this sandbox is not taking work.")
 
     @property
     def observed(self) -> bool:

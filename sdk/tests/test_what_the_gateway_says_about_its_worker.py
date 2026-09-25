@@ -541,3 +541,32 @@ def test_and_one_that_starts_working_is_believed_at_once():
     watch.turn()
 
     assert watch.now().state == H.PROTECTED
+
+
+def test_what_crosses_a_door_says_which_cause_without_saying_where_the_worker_is():
+    """Two causes share the state `unavailable`, and they are not the same thing to be told.
+
+    The summary keyed on the state, so a caller refused because a MEASUREMENT failed was told the
+    sandbox could not reach what runs code -- while the worker was plainly answering. Measured on
+    the isolated pair on 2026-09-25, in the phase built to exercise that very cause.
+    """
+    said = {code: H.Health(state, code, "the worker at tcps://127.0.0.1:8543, [Errno 111]").summary
+            for state, code in ((H.PROTECTED, H.OK),
+                                (H.MEASURING, H.MEASUREMENT_RUNNING),
+                                (H.UNAVAILABLE, H.MEASUREMENT_FAILED),
+                                (H.UNAVAILABLE, H.WORKER_UNREACHABLE),
+                                (H.STARTING, H.NOT_YET_PROBED))}
+
+    assert len(set(said.values())) == len(said), "each cause needs its own sentence"
+    assert "cannot currently reach" in said[H.WORKER_UNREACHABLE]
+    assert "cannot currently reach" not in said[H.MEASUREMENT_FAILED], (
+        "the worker is answering in this one; what failed was the measurement")
+    # And none of them carries anything that describes this machine.
+    for sentence in said.values():
+        assert "8543" not in sentence and "Errno" not in sentence and "tcps" not in sentence
+
+
+def test_and_a_cause_from_a_later_build_still_says_something_safe():
+    """`.get` with a default, because an unknown code must not render as an empty sentence."""
+    summary = H.Health(H.UNAVAILABLE, "a code nobody has written yet", "x").summary
+    assert summary and "not taking work" in summary
