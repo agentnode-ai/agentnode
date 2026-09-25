@@ -452,17 +452,53 @@ class HealthWatch:
 
     # ------------------------------------------------------------------ lifecycle
 
+    def what_it_still_owes(self) -> Health:
+        """The state a starting watch should begin in, given what this gateway last wrote.
+
+        The re-measurement gate is tied to an OBSERVED loss, and a loss is observed by a process.
+        So a gateway that restarts while its worker is away would otherwise come back with no
+        memory of it: first probe succeeds, `protected`, no fresh measurement. The binding
+        catches a worker that CHANGED in the gap -- image, configuration, runtime version, boot
+        -- but not the same one whose ceilings quietly stopped binding, which is the case the
+        gate exists for.
+
+        So the statement this gateway wrote before it stopped is read back, and a loss it had not
+        finished answering is carried across the restart as one still to answer. It costs one
+        measurement on a gateway that went down unwell, and nothing on one that did not. It is
+        not aged: an old unanswered loss is still unanswered -- and a `protected` statement that
+        has gone stale reads as a refusal anyway, so a gateway that was down long enough for that
+        also re-measures, which is the safe direction.
+
+        Separate from `start` so that it can be asked without a thread running, which is the only
+        way a test can see the decision rather than whatever the first turn has already done to
+        it.
+        """
+        if self._publish_to is None:
+            return starting()
+        previous = read_published(self._publish_to, self._wall())
+        if previous.state in (UNAVAILABLE, MEASURING) and previous.code != NO_STATEMENT:
+            return Health(
+                MEASURING, MEASUREMENT_RUNNING,
+                "this gateway last recorded that it could not run anything, so it is measuring "
+                "what it can enforce before it takes work again.")
+        return starting()
+
     def start(self) -> None:
         if self._thread is not None:
             return
         self._stop.clear()
+        began = self.what_it_still_owes()
+        if began.state != STARTING:
+            # An unanswered loss carried across the restart counts as one, so a measurement that
+            # was already running somewhere cannot come back and settle it.
+            with self._lock:
+                self._generation += 1
         # So the statement exists from the moment the gateway serves. Without it a reader in
         # another process cannot tell a gateway that started a second ago from one that is not
         # running, and would report the second thing about the first. Published through the
         # ordinary path rather than written out directly, so it carries a real timestamp and
         # ages like everything else: a `starting` that is never followed by a probe is a watch
         # that is not working, and that must stop being believed like any other stale statement.
-        began = self.now()
         self._publish(began.state, began.code, began.reason)
         self._thread = threading.Thread(target=self._loop, name="health-watch", daemon=True)
         self._thread.start()

@@ -366,3 +366,47 @@ def test_a_first_probe_that_answers_does_not_force_a_re_measurement():
 
     assert watch.now().state == H.PROTECTED
     assert measured == []
+
+
+# ------------------------------------------------------------------ across the gateway's own restart
+
+
+def test_a_loss_it_had_not_answered_survives_the_gateway_restarting(tmp_path):
+    """The gate is tied to an OBSERVED loss, and a loss is observed by a process.
+
+    Without this, a gateway that restarted while its worker was away came back with no memory of
+    it: first probe succeeds, `protected`, no fresh measurement. The binding catches a worker
+    that CHANGED in the gap; it does not catch the same one whose ceilings quietly stopped
+    binding, which is the case the gate exists for.
+    """
+    where = tmp_path / H.HEALTH_FILE
+    first, clock = _watch(_gone, publish_to=where)
+    first.turn()
+    assert H.read_published(where, now=clock.t).state == H.UNAVAILABLE
+
+    # A NEW watch, as a restarted gateway has -- and its worker is answering again. Asked
+    # WITHOUT starting the thread, so what is seen is the decision and not whatever a first turn
+    # has already done to it.
+    second, _clock = _watch(_there, publish_to=where)
+    owed = second.what_it_still_owes()
+
+    assert owed.state == H.MEASURING, (
+        "a restarted gateway must not skip the measurement its predecessor still owed")
+    assert not owed.may_admit
+
+
+def test_a_healthy_statement_it_just_wrote_is_not_a_loss_to_answer(tmp_path):
+    """The counter-check for the one above: it has to be able to NOT fire.
+
+    Otherwise every restart would re-measure for a reason nobody established, and "it measures
+    again" would stop meaning "something was wrong".
+    """
+    where = tmp_path / H.HEALTH_FILE
+    first, clock = _watch(_there, publish_to=where)
+    first.turn()
+    assert H.read_published(where, now=clock.t).state == H.PROTECTED
+
+    second = H.HealthWatch(_there, lambda: True, publish_to=where,
+                           clock=lambda: clock.t, wall=lambda: clock.t)
+
+    assert second.what_it_still_owes().state == H.STARTING
