@@ -552,15 +552,54 @@ class GatewayService:
                 from agentnode_sdk.worker import topology as _topology
                 from agentnode_sdk.worker.remote import from_address
 
+                declared = str(self.config.get(_topology.DECLARED_KEY) or "")
+                tls = self._worker_tls()
+                keyring, mine = self._pair_keys(declared, tls)
                 self._worker = from_address(
-                    address, wire.read_key(str(self.config.get("worker_key") or "")),
-                    tls=self._worker_tls(),
-                    topology=str(self.config.get(_topology.DECLARED_KEY) or ""))
+                    address,
+                    None if keyring is not None
+                    else wire.read_key(str(self.config.get("worker_key") or "")),
+                    tls=tls, topology=declared, keyring=keyring, own_instance=mine)
             else:
                 from agentnode_sdk.worker.local import LocalWorker
 
                 self._worker = LocalWorker(self.backend)
         return self._worker
+
+    def _pair_keys(self, declared: str, tls):
+        """The per-pair keys, and the name this gateway answers to. `(None, "")` on the local
+        topology, where one key on one machine is worth what the machine is worth.
+
+        A KEYRING IS REQUIRED ONCE THE BOUNDARY IS CROSSED. The single `worker_key` is one
+        secret, identical on both sides, covering every job and every customer; on a machine
+        whose whole purpose is running other people's code that is the one credential that
+        contradicts "the worker gets only what one job needs". So under `separate-worker-host`
+        it is not merely discouraged -- it is refused, and the refusal says what to make.
+        """
+        from agentnode_sdk.worker import pairkeys as _pairkeys
+        from agentnode_sdk.worker import topology as _topology
+
+        at = str(self.config.get("worker_keyring") or "")
+        if declared != _topology.SEPARATE_WORKER_HOST:
+            if not at:
+                return None, ""
+            # Allowed locally too, for anyone who wants it, but never required there.
+            from agentnode_sdk.worker.tls import own_instance
+            return _pairkeys.Keyring.read(at), (own_instance(tls) if tls else "")
+        if not at:
+            raise _pairkeys.KeyringRefused(
+                _pairkeys.NO_FILE,
+                "this gateway is configured for a worker on another machine, and a worker on "
+                "another machine is not reached with a key shared by everything. `worker_key` "
+                "is one secret covering every job and every customer; it does not cross a "
+                "machine boundary.",
+                'Set "worker_keyring" to a per-pair keyring and enrol the pair with: '
+                "agentnode worker key --pair <gateway>:<worker> --at <path>")
+        if tls is None:                                       # pragma: no cover - refused earlier
+            raise _pairkeys.KeyringRefused(
+                _pairkeys.NO_FILE, "a remote worker needs worker_tls", "Configure worker_tls.")
+        from agentnode_sdk.worker.tls import own_instance
+        return _pairkeys.Keyring.read(at), own_instance(tls)
 
     def _who_ran(self, run_id: str) -> tuple[str, str, str]:
         """(transport, identity, worker id) for the line about this run.

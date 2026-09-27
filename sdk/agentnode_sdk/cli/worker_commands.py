@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pathlib
 
+import base64
 import os
 import sys
 from pathlib import Path
@@ -33,6 +34,10 @@ def cmd_key(args) -> int:
     makes the protocol the same when the worker moves to a machine where that is not true.
     """
     from agentnode_sdk.worker import protocol as wire
+
+    pair = str(getattr(args, "pair", "") or "").strip()
+    if pair:
+        return _pair_key(args, pair)
 
     # The string, not the path: `Path("")` is the current directory, which exists -- so asking
     # the path whether it is empty would answer a different question than the one being asked.
@@ -58,6 +63,74 @@ def cmd_key(args) -> int:
     print(f"  A key for this gateway and its worker is at {at}.")
     print("  Give it to both accounts and to nobody else:")
     print(f"    chown <worker-account>:<shared-group> {at} && chmod 640 {at}")
+    return 0
+
+
+def _pair_key(args, pair: str) -> int:
+    """Add or rotate the key for ONE gateway-and-worker pair.
+
+    Separate from the shared key above rather than replacing it, because the shared key is
+    still the right thing on one machine and the wrong thing across two. A rotation keeps the
+    previous key alongside the new one so that work already in flight stays readable; ending
+    that overlap is `--retire-overlap`, a second command, so it is something an operator does
+    on purpose.
+    """
+    from agentnode_sdk.worker import pairkeys as _pairkeys
+    from agentnode_sdk.worker import protocol as wire
+
+    if pair.count(":") != 1 or not all(pair.split(":")):
+        print()
+        print("  A pair is <gateway-instance>:<worker-instance>, for example  g1:w1")
+        return 2
+    gateway, worker = pair.split(":")
+    named = str(getattr(args, "at", "") or "").strip()
+    if not named:
+        print()
+        print("  Where should it go? Pass --at <path>.")
+        return 2
+    at = Path(named)
+    at.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        ring = _pairkeys.Keyring.read(at) if at.exists() else _pairkeys.empty()
+    except _pairkeys.KeyringRefused as refused:
+        print()
+        print("  " + refused.because)
+        print("  " + refused.what_to_do)
+        return 1
+
+    held = (gateway, worker) in ring.pairs()
+    if getattr(args, "retire_overlap", False):
+        if not held:
+            print()
+            print(f"  There is no key for {gateway}<->{worker} at {at}.")
+            return 1
+        ring = ring.retire_overlap(gateway=gateway, worker=worker)
+        ring.write(at)
+        print()
+        print(f"  The overlap for {gateway}<->{worker} has ended. Only the current key is")
+        print("  accepted from now on; anything still sealed with the previous one is refused.")
+        return 0
+
+    fresh = base64.urlsafe_b64decode(wire.new_key())
+    if held and not getattr(args, "force", False):
+        ring = ring.rotate(gateway=gateway, worker=worker, key=fresh)
+        now = ring.for_pair(gateway=gateway, worker=worker)
+        ring.write(at)
+        print()
+        print(f"  Rotated the key for {gateway}<->{worker} at {at} (generation {now.generation}).")
+        print("  The previous key is still accepted, so work already in flight is not lost.")
+        print("  When both sides hold the new one, end the overlap:")
+        print(f"    agentnode worker key --pair {pair} --at {at} --retire-overlap")
+        return 0
+
+    ring = ring.add(gateway=gateway, worker=worker, key=fresh)
+    ring.write(at)
+    print()
+    print(f"  A key for {gateway}<->{worker} only is at {at}.")
+    print("  It authenticates that one pair. It is not shared with any other worker, and a")
+    print("  worker holding it cannot use it to speak as, or to, a different one.")
+    print("  Copy this file to BOTH sides of that pair and to nowhere else.")
     return 0
 
 
@@ -159,7 +232,8 @@ def cmd_serve(args) -> int:
                           reevaluate_seconds=float(args.reevaluate_seconds))
     try:
         serve(address, key, uid, tls_address=listen, tls=tls,
-              topology=str(getattr(args, "topology", "") or SINGLE_HOST_DEVELOPMENT))
+              topology=str(getattr(args, "topology", "") or SINGLE_HOST_DEVELOPMENT),
+              keyring_path=str(getattr(args, "keyring", "") or ""))
     except KeyboardInterrupt:                                 # pragma: no cover - operator
         print("\n  stopped.")
         return 0
@@ -210,6 +284,11 @@ def add_parser(subparsers) -> None:
 
     key = actions.add_parser("key", help="Make the key the gateway and this worker share")
     key.add_argument("--at", default="", metavar="PATH")
+    key.add_argument("--pair", default="", metavar="GATEWAY:WORKER",
+                     help="make a key for ONE pair instead of a key shared with everything; "
+                          "required once the worker is on another machine")
+    key.add_argument("--retire-overlap", dest="retire_overlap", action="store_true",
+                     help="with --pair: stop accepting the previous key after a rotation")
     key.add_argument("--force", action="store_true",
                      help="Replace a key that is already there, and stop every gateway holding "
                           "the old one from reaching this worker")
@@ -230,6 +309,9 @@ def add_parser(subparsers) -> None:
     # worker judges its own address against this and refuses a disagreement on its own, so a
     # worker placed on its own machine will not quietly bind a loopback address because
     # whoever dials it believes it is local.
+    serve.add_argument("--keyring", default="", metavar="FILE",
+                       help="per-pair keys; required with --topology %s"
+                            % SEPARATE_WORKER_HOST)
     serve.add_argument("--topology", default=SINGLE_HOST_DEVELOPMENT, metavar="NAME",
                        choices=list(TOPOLOGIES),
                        help="%s (default) or %s -- must agree with --listen"

@@ -218,9 +218,12 @@ class Door:
         self.bytes_in = 0
         through = self.bench.converse
 
-        def counted(connection, noted=None):
+        def counted(connection, noted=None, key=None):
+            # `key` mirrors the real signature: the listener now chooses the caller's pair key
+            # and passes it in. The double forwards it unchanged rather than dropping it, so
+            # what this fixture exercises is the same call the product makes.
             self.conversations += 1
-            return through(_CountingConnection(connection, self), noted=noted)
+            return through(_CountingConnection(connection, self), noted=noted, key=key)
 
         self.bench.converse = counted
         self.said: list[str] = []

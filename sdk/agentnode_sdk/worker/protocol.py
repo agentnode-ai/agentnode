@@ -152,14 +152,30 @@ def seal(body: dict[str, Any], key: bytes) -> bytes:
     return struct.pack(">I", len(payload)) + mac + payload
 
 
-def unseal(payload: bytes, mac: bytes, key: bytes) -> dict[str, Any]:
+def _keys(key: "bytes | tuple[bytes, ...] | list[bytes]") -> tuple[bytes, ...]:
+    """One key, or the two a rotation's overlap allows. Always a tuple from here on."""
+    return (key,) if isinstance(key, (bytes, bytearray)) else tuple(key)
+
+
+def unseal(payload: bytes, mac: bytes,
+           key: "bytes | tuple[bytes, ...] | list[bytes]") -> dict[str, Any]:
     """The message these bytes are, once they have been shown to be ours.
 
     In this order and no other: the MAC first, over the bytes as they arrived, and only then the
     parser. A comparison in constant time, because a MAC compared byte by byte tells whoever is
     guessing how far they got.
+
+    MORE THAN ONE KEY IS ALLOWED, and it is the rotation overlap and nothing else: while a pair
+    is changing its key, a frame may legitimately carry either the new one or the one it is
+    replacing. EVERY candidate is compared, and compared in constant time, rather than stopping
+    at the first that matches -- so the number of comparisons does not depend on which key was
+    used, and a caller cannot learn from the timing whether the old key is still live.
     """
-    if not hmac.compare_digest(mac, hmac.new(key, payload, hashlib.sha256).digest()):
+    matched = False
+    for candidate in _keys(key):
+        if hmac.compare_digest(mac, hmac.new(candidate, payload, hashlib.sha256).digest()):
+            matched = True
+    if not matched:
         raise ProtocolError(UNAUTHENTICATED,
                             "this message was not written by something holding the key")
     try:
@@ -171,7 +187,7 @@ def unseal(payload: bytes, mac: bytes, key: bytes) -> dict[str, Any]:
     return body
 
 
-def read_frame(stream, key: bytes) -> dict[str, Any]:
+def read_frame(stream, key: "bytes | tuple[bytes, ...] | list[bytes]") -> dict[str, Any]:
     """One frame off a stream, bounded before it is allocated for.
 
     `stream` is anything with `recv`-like `read`. A short read is not a small message: it is a

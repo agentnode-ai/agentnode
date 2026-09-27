@@ -73,6 +73,15 @@ DIRECTORY_MODE = 0o2750
 LOOK_UP_EVERY_SECONDS = 1.0
 
 
+def _sealing(chosen, fallback) -> bytes:
+    """Which key an ANSWER is sealed with. During a rotation overlap a request may arrive under
+    either key; the answer always goes back under the current one, which is the first of them.
+    Sealing with the retired key would keep the overlap alive from this side."""
+    if chosen is None:
+        return fallback
+    return chosen if isinstance(chosen, (bytes, bytearray)) else tuple(chosen)[0]
+
+
 class Bench:
     """One worker, serving one socket, for one account.
 
@@ -208,7 +217,7 @@ class Bench:
                 return
         self.converse(connection)
 
-    def converse(self, connection, noted=None) -> None:
+    def converse(self, connection, noted=None, key=None) -> None:
         """Everything after the door: MAC, nonce, floor, the closed list, the answer.
 
         The same for both doors. The unix socket reaches it after the kernel has named the
@@ -225,24 +234,25 @@ class Bench:
         try:
             connection.settimeout(wire.FRESHNESS_SECONDS)
             with connection.makefile("rb") as stream:
-                body = wire.read_frame(stream, self.key)
+                body = wire.read_frame(stream, key if key is not None else self.key)
             asked = str(body.get("request_id") or "")
             wire.check(body, self.seen, floor=self.floor)
             if noted is not None:
                 noted(str(body["method"]), dict(body["params"]))
             result = self.answer(str(body["method"]), dict(body["params"]))
-            connection.sendall(wire.seal(wire.answer(asked, result), self.key))
+            connection.sendall(wire.seal(wire.answer(asked, result), _sealing(key, self.key)))
         except wire.ProtocolError as exc:
-            self._refuse(connection, asked, exc.code, exc.detail)
+            self._refuse(connection, asked, exc.code, exc.detail, key=key)
         except CouldNotRestrictTheNetwork as exc:
-            self._refuse(connection, asked, wire.NETWORK_UNAVAILABLE, str(exc))
+            self._refuse(connection, asked, wire.NETWORK_UNAVAILABLE, str(exc), key=key)
         except JobFailed as exc:
-            self._refuse(connection, asked, wire.JOB_FAILED, str(exc),
+            self._refuse(connection, asked, wire.JOB_FAILED, str(exc), key=key,
                          egress_gone=exc.egress_gone)
         except Exception as exc:                              # noqa: BLE001
             # Something here broke. Saying so is the point: a worker that hung instead would make
             # the control plane wait out its deadline for a failure it could have been told about.
-            self._refuse(connection, asked, wire.INTERNAL, type(exc).__name__ + ": " + str(exc))
+            self._refuse(connection, asked, wire.INTERNAL,
+                         type(exc).__name__ + ": " + str(exc), key=key)
         finally:
             try:
                 connection.close()
@@ -250,7 +260,7 @@ class Bench:
                 pass
 
     def _refuse(self, connection, asked: str, code: str, detail: str = "",
-                egress_gone=None) -> None:
+                egress_gone=None, key=None) -> None:
         # A message that could not be authenticated or read is not answered at all. Replying to
         # one would tell whoever sent it which part of the shape was right, and there is no
         # request id to answer about anyway.
@@ -260,7 +270,7 @@ class Bench:
         if egress_gone is not None:
             body["egress_gone"] = egress_gone
         try:
-            connection.sendall(wire.seal(body, self.key))
+            connection.sendall(wire.seal(body, _sealing(key, self.key)))
         except OSError:                                       # pragma: no cover
             pass
 
@@ -363,7 +373,7 @@ class CannotHoldItsLimits(RuntimeError):
 
 def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
           tls_address: str = "", tls=None,
-          topology: str = _topology.SINGLE_HOST_DEVELOPMENT) -> None:
+          topology: str = _topology.SINGLE_HOST_DEVELOPMENT, keyring_path: str = "") -> None:
     """Start a worker on this machine and answer until something stops the process.
 
     `tls_address` and `tls` open the mutual-TLS door, TCP on loopback (`worker/tls.py`). Both or
@@ -384,10 +394,29 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         raise ValueError(
             "a worker needs a door: a unix socket, mutual TLS on loopback, or both. Started with "
             "neither it would hold a container runtime and answer nobody.")
+    # BEFORE A RUNTIME IS TOUCHED. A worker for another machine that holds no per-pair key is
+    # misconfigured, and finding that out after proving a memory ceiling wastes a minute and
+    # buries the reason under other output.
+    if topology == _topology.SEPARATE_WORKER_HOST and not keyring_path:
+        from agentnode_sdk.worker import pairkeys as _pairkeys
+
+        raise _pairkeys.KeyringRefused(
+            _pairkeys.NO_FILE,
+            "this worker was started for its own machine, and a worker on its own machine does "
+            "not authenticate its control plane with a key shared by everything.",
+            "Start it with --keyring <path>, holding the key for this pair only.")
     from agentnode_sdk.sandbox.container_backend import ContainerBackend
     from agentnode_sdk.worker.local import LocalWorker
 
-    if only_uid is None:
+    # WHICH ACCOUNT MAY SPEAK -- and only where that question has an answer. `only_uid` is
+    # checked with SO_PEERCRED, which reads the account at the other end of a UNIX SOCKET. A
+    # worker whose only door is mutual TLS has no such peer: the caller is on another machine
+    # and there is no local account to name. Requiring one there would be asking an operator to
+    # invent an answer to a question nobody asks, and the thing that actually decides who may
+    # speak on that door is the certificate, which is checked before a byte is read.
+    #
+    # So it is required exactly where it does something: when there is a unix socket.
+    if address and only_uid is None:
         raise ValueError(
             "a worker is started for one account. Without one, anything that can reach the "
             "socket could ask it to run code, which is the thing the socket's permissions and "
@@ -452,6 +481,11 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
 
         bench.label = own_instance(tls)
         listener = TlsListener(bench, tls_address, tls, topology=topology)
+        if keyring_path:
+            from agentnode_sdk.worker import pairkeys as _pairkeys
+            from agentnode_sdk.worker.tls import own_instance
+
+            listener.use_keyring(_pairkeys.Keyring.read(keyring_path), own_instance(tls))
         host, port = listener.open()
         if address:
             threading.Thread(target=listener.serve_forever, daemon=True).start()

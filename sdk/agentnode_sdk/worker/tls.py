@@ -420,6 +420,10 @@ class TlsListener:
         #: own machine and a gateway that thinks it is local are exactly the disagreement worth
         #: refusing -- and only one of the two would notice if only one of them looked.
         self.topology = topology
+        #: Per-pair keys, when this worker has them. Set by `use_keyring`, because the key for a
+        #: connection can only be chosen once the handshake has proved who is on it.
+        self._keyring = None
+        self._own_instance = ""
         #: Where a refusal is said. Flushed line by line: under systemd stdout is a pipe, and a
         #: refusal that waits in a buffer for the next few kilobytes -- or for the process to
         #: exit -- is not a log anybody can read when it matters. The first alpha run found
@@ -429,6 +433,22 @@ class TlsListener:
         self.watch = Watch(settings, _identity.WORKER, say=self.say)
         self._socket: socket.socket | None = None
         self._stopped = False
+
+    def use_keyring(self, keyring, own_instance: str) -> None:
+        """Authenticate each caller's frames with the key belonging to that caller and this
+        worker, instead of one key shared with everybody."""
+        self._keyring = keyring
+        self._own_instance = str(own_instance)
+
+    def _keys_for(self, gateway_identity):
+        """The pair's keys, or a refusal. The gateway's name comes from the certificate the
+        handshake proved -- never from anything the caller sent."""
+        if self._keyring is None:
+            return None
+        pair = self._keyring.for_pair(
+            gateway=str(getattr(gateway_identity, "instance", "") or ""),
+            worker=self._own_instance)
+        return pair.accepted()
 
     def open(self) -> tuple[str, int]:
         # INDEPENDENTLY, not because the gateway said so. Each side is told which arrangement it
@@ -515,8 +535,12 @@ class TlsListener:
 
         handle = self.watch.add(connection, connection.gateway_der, connection.gateway, on_cut)
         try:
-            # From here it is the socket's code, unchanged: MAC, nonce, floor, the closed list.
-            self.bench.converse(connection, noted=noted)
+            # From here it is the socket's code, unchanged: MAC, nonce, floor, the closed list
+            # -- with the key chosen for the caller the handshake proved, when this worker holds
+            # per-pair keys. A caller it holds no key for is refused here rather than
+            # authenticated with somebody else's.
+            self.bench.converse(connection, noted=noted,
+                                key=self._keys_for(connection.gateway))
         finally:
             self.watch.remove(handle)
 

@@ -186,7 +186,7 @@ class TestBothSidesJudgeIndependently:
     dials it believes otherwise. Each side checks its own configuration, with real certificate
     settings, so what is being tested is the listener and not a missing argument."""
 
-    def _a_listener(self, world, at, topology):
+    def _a_listener(self, world, at, topology):  # noqa: F811  (a pytest fixture, imported)
         from agentnode_sdk.worker.service import Bench
         from agentnode_sdk.worker.tls import TlsListener
         from tests.test_mtls_transport import DEPLOYMENT
@@ -198,20 +198,20 @@ class TestBothSidesJudgeIndependently:
                                                      deployment=DEPLOYMENT),
                            topology=topology)
 
-    def test_the_listener_refuses_an_address_its_own_declaration_forbids(self, world):
+    def test_the_listener_refuses_an_address_its_own_declaration_forbids(self, world):  # noqa: F811  (a pytest fixture, imported)
         # Declared local, told to listen somewhere that is not local.
         listener = self._a_listener(world, A_REMOTE_ADDRESS, SINGLE_HOST_DEVELOPMENT)
         with pytest.raises(NotLoopback) as refused:
             listener.open()
         assert refused.value.cause == T.DISAGREES
 
-    def test_and_refuses_a_wildcard_even_when_it_is_declared_remote(self, world):
+    def test_and_refuses_a_wildcard_even_when_it_is_declared_remote(self, world):  # noqa: F811  (a pytest fixture, imported)
         listener = self._a_listener(world, "tcps://0.0.0.0:0", SEPARATE_WORKER_HOST)
         with pytest.raises(NotLoopback) as refused:
             listener.open()
         assert refused.value.cause == T.WILDCARD
 
-    def test_and_a_remote_declaration_lets_it_bind_a_real_address(self, world):
+    def test_and_a_remote_declaration_lets_it_bind_a_real_address(self, world):  # noqa: F811  (a pytest fixture, imported)
         """The other half: the gate does open. Bound to a loopback alias so nothing leaves this
         machine -- which is exactly why this is a transport test and not an isolation one."""
         listener = self._a_listener(world, "tcps://127.0.0.2:0", SINGLE_HOST_DEVELOPMENT)

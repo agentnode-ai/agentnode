@@ -100,6 +100,10 @@ class SocketWorker(Worker):
         self._topology = topology
         self.address = address
         self._key = key
+        #: Set by a caller that has one. When it is set, the single key above is never used:
+        #: every frame is sealed with the key belonging to the pair the handshake proved.
+        self._keyring = None
+        self._own_instance = ""
         self.connect_timeout = connect_timeout
         #: How long past a job's OWN wall clock this gateway keeps waiting before it decides the
         #: worker has said nothing. It cannot be small: a worker running a job legitimately says
@@ -166,11 +170,14 @@ class SocketWorker(Worker):
                 self._note_who_ran(run_id, who)
             if method == "describe":
                 self._described_by = who
+        # WHICH KEY, decided by who answered rather than by anything on the wire. On a socket
+        # there is no proved identity and no keyring, and the single key is what there is.
+        seal_with, accept = self._keys_for(who)
         try:
             connection.settimeout(wait)
-            connection.sendall(wire.seal(body, self._key))
+            connection.sendall(wire.seal(body, seal_with))
             with connection.makefile("rb") as stream:
-                answered = wire.read_frame(stream, self._key)
+                answered = wire.read_frame(stream, accept)
         except (OSError, wire.ProtocolError) as exc:
             # An answer that cannot be believed is not an answer. Every one of these is the
             # worker not having said anything, and none of them is a job that failed.
@@ -188,6 +195,16 @@ class SocketWorker(Worker):
                 "the sandbox worker answered about a different request, so nothing it said is "
                 "about this one")
         return self._interpret(answered)
+
+    def _keys_for(self, who):
+        """(the key to seal with, the keys an answer may carry). One key unless a keyring says
+        otherwise; a keyring is required only where a boundary is crossed, and `GatewayService`
+        is what decides that."""
+        if self._keyring is None:
+            return self._key, self._key
+        pair = self._keyring.for_pair(gateway=self._own_instance,
+                                      worker=str(getattr(who, "instance", "") or ""))
+        return pair.current, pair.accepted()
 
     def _interpret(self, answered: dict):
         """What an answer MEANS. Named, because the meaning is the thing worth testing.
@@ -367,6 +384,15 @@ class TlsWorker(SocketWorker):
         self.watch.add(connection, der, who)
         return connection, who
 
+    def use_keyring(self, keyring, own_instance: str) -> None:
+        """Authenticate frames with this pair's key instead of one key for everybody.
+
+        Named rather than passed to `__init__` because it applies to the TLS transport only:
+        selection needs an identity the handshake proved, and a unix socket has none.
+        """
+        self._keyring = keyring
+        self._own_instance = str(own_instance)
+
     def instance_label(self) -> str:
         """The instance the worker's CERTIFICATE names, from the connection that answered the
         describe -- not the name it gave for itself in the answer."""
@@ -383,8 +409,9 @@ class TlsWorker(SocketWorker):
         return self.transport, who.uri(), who.instance
 
 
-def from_address(address: str, key: bytes, tls=None, *,
-                 topology: str = SINGLE_HOST_DEVELOPMENT) -> Worker:
+def from_address(address: str, key: bytes | None, tls=None, *,
+                 topology: str = SINGLE_HOST_DEVELOPMENT,
+                 keyring=None, own_instance: str = "") -> Worker:
     """The worker at this address. The only place that decides which transport is used.
 
     THE DECLARATION IS CHECKED FIRST, before any transport is chosen, so that a mismatch is a
@@ -406,15 +433,26 @@ def from_address(address: str, key: bytes, tls=None, *,
         unreachable.what_to_do = refused.what_to_do
         raise unreachable from refused
 
+    # A KEYRING REPLACES THE GLOBAL KEY; it does not sit beside it. Where one is supplied the
+    # single shared key is never read and never used, which is the point of supplying it.
+    if keyring is not None and not own_instance:
+        raise WorkerUnreachable(
+            "a keyring was given without the name this side answers to, and a pair key cannot "
+            "be chosen without both names. This is a programming error, not a configuration "
+            "one.")
+
     parsed = urlparse(address or "")
     if parsed.scheme in ("unix", "unix+stream"):
-        return SocketWorker(address, key, topology=topology)
+        return SocketWorker(address, key or b"", topology=topology)
     if parsed.scheme == "tcps":
         if tls is None:
             raise WorkerUnreachable(
                 "%r asks for mutual TLS, and this gateway has no certificate settings for it. "
                 "It is refused, not reached another way." % address[:60])
-        return TlsWorker(address, key, tls, topology=topology)
+        worker = TlsWorker(address, key or b"", tls, topology=topology)
+        if keyring is not None:
+            worker.use_keyring(keyring, own_instance)
+        return worker
     raise WorkerUnreachable(
         "this build reaches a worker over a unix socket or over mutual TLS, and "
         + repr(address[:60]) + " is neither.")
