@@ -115,16 +115,20 @@ class SocketWorker(Worker):
     #: How this gateway reaches the worker, for the record to say. `worker/tls.py` overrides it.
     transport = "unix"
 
-    def _open(self):
+    def _open(self, budget: float | None = None):
         """A connected stream to the worker, and who it proved to be -- None on a socket, where
-        the kernel's account check on the worker's side is what stands in for an identity."""
+        the kernel's account check on the worker's side is what stands in for an identity.
+
+        `budget` caps the whole of it for a caller that has a deadline of its own. None keeps
+        the allowance a job has always had.
+        """
         if not hasattr(socket, "AF_UNIX"):
             raise WorkerUnreachable(
                 "this machine has no unix sockets, so it cannot reach a worker over one. The "
                 "gateway and its worker run on Linux; a client does not need either.")
         try:
             connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            connection.settimeout(self.connect_timeout)
+            connection.settimeout(self.connect_timeout if budget is None else budget)
             connection.connect(_path_of(self.address))
         except OSError as exc:
             raise WorkerUnreachable(
@@ -132,11 +136,11 @@ class SocketWorker(Worker):
             ) from exc
         return connection, None
 
-    def confirm_reachable(self) -> None:
+    def confirm_reachable(self, budget: float | None = None) -> None:
         """Open the connection a run would use -- over TLS that is the handshake and the identity
         checks -- and close it without sending anything. Raises `WorkerUnreachable` as a run
         would, which the gateway turns into a refusal before it claims anything."""
-        connection, _who = self._open()
+        connection, _who = self._open(budget)
         try:
             connection.close()
         except OSError:                                       # pragma: no cover
@@ -341,11 +345,11 @@ class TlsWorker(SocketWorker):
         #: exactly one line -- the path an aborted run already takes.
         self.watch = Watch(tls, _identity.GATEWAY, say=self.say)
 
-    def _open(self):
+    def _open(self, budget: float | None = None):
         from agentnode_sdk.worker.tls import open_to_worker
 
         connection, who, der = open_to_worker(self.address, self.tls, self._contexts,
-                                              self.connect_timeout)
+                                              self.connect_timeout, budget)
         # Watched until it is closed; a closed one is dropped at the next pass.
         self.watch.add(connection, der, who)
         return connection, who

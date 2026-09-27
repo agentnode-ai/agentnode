@@ -338,18 +338,35 @@ class Watch:
 # ---------------------------------------------------------------------- the gateway's end
 
 def open_to_worker(address: str, settings: TlsSettings, contexts: Contexts,
-                   connect_timeout: float):
+                   connect_timeout: float, budget: float | None = None):
     """Connect, shake hands, check the worker. Returns (connection, identity, der). Raises
-    `WorkerUnreachable` with the failed check named, and never falls back to anything."""
+    `WorkerUnreachable` with the failed check named, and never falls back to anything.
+
+    `budget`, when given, is a hard end-to-end ceiling on all of it together -- connect,
+    handshake and identity check -- rather than a fresh allowance for each stage. The health
+    watch needs that: two ten-second allowances in sequence would let a worker that accepts a
+    connection and then stalls in the handshake keep the machine looking healthy for twenty
+    seconds, which is longer than the detection window the machine promises. Without a budget
+    nothing changes and a job keeps the allowances it has always had.
+    """
     host, port = endpoint(address)
     context = contexts.current()
+    ends = None if budget is None else time.monotonic() + budget
+
+    def left(allowance: float) -> float:
+        if ends is None:
+            return allowance
+        # Never zero: a zero timeout is a non-blocking socket, which fails differently from
+        # running out of time and would say the wrong thing about the worker.
+        return max(0.001, min(allowance, ends - time.monotonic()))
+
     try:
-        raw = socket.create_connection((host, port), timeout=connect_timeout)
+        raw = socket.create_connection((host, port), timeout=left(connect_timeout))
     except OSError as exc:
         raise WorkerUnreachable("the sandbox worker at %s could not be reached: %s"
                                 % (address, exc)) from exc
     try:
-        raw.settimeout(HANDSHAKE_SECONDS)
+        raw.settimeout(left(HANDSHAKE_SECONDS))
         connection = context.wrap_socket(raw, server_side=False)
     except (ssl.SSLError, OSError) as exc:
         raw.close()
