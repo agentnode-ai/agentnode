@@ -38,6 +38,7 @@ from agentnode_sdk.worker import (
     Limits,
 )
 from agentnode_sdk.worker import protocol as wire
+from agentnode_sdk.worker import topology as _topology
 
 #: What a kernel calls the question "who is at the other end of this socket". Named here with
 #: Linux's number rather than read off the socket module, because a platform that does not know
@@ -361,7 +362,8 @@ class CannotHoldItsLimits(RuntimeError):
 
 
 def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
-          tls_address: str = "", tls=None) -> None:
+          tls_address: str = "", tls=None,
+          topology: str = _topology.SINGLE_HOST_DEVELOPMENT) -> None:
     """Start a worker on this machine and answer until something stops the process.
 
     `tls_address` and `tls` open the mutual-TLS door, TCP on loopback (`worker/tls.py`). Both or
@@ -449,7 +451,7 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         from agentnode_sdk.worker.tls import TlsListener, own_instance
 
         bench.label = own_instance(tls)
-        listener = TlsListener(bench, tls_address, tls)
+        listener = TlsListener(bench, tls_address, tls, topology=topology)
         host, port = listener.open()
         if address:
             threading.Thread(target=listener.serve_forever, daemon=True).start()

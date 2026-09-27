@@ -63,6 +63,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from agentnode_sdk.pki import identity as _identity
+from agentnode_sdk.worker import topology as _topology
 from agentnode_sdk.pki.trust import TrustView
 from agentnode_sdk.worker import WorkerUnreachable
 
@@ -85,6 +86,11 @@ STOP_APPEAR_SECONDS = 10.0
 
 
 class NotLoopback(ValueError):
+    #: Set when the refusal came from the topology rule, so a caller can distinguish "you asked
+    #: for another machine without declaring one" from "that is not an address at all".
+    cause = _topology.DISAGREES
+    what_to_do = ""
+
     """An address this transport will not use, because it could leave the machine."""
 
 
@@ -124,26 +130,30 @@ class TlsSettings:
         return float(self.reload_seconds) + float(self.reevaluate_seconds)
 
 
-def endpoint(address: str) -> tuple[str, int]:
-    """Host and port of a `tcps://` address, or `NotLoopback` for anything that is not a literal
-    loopback address. A name is refused too: a name resolves to wherever its owner points it."""
-    parsed = urlparse(address or "")
-    if parsed.scheme != SCHEME:
-        raise NotLoopback("not a %s:// address: %r" % (SCHEME, (address or "")[:60]))
-    host = (parsed.hostname or "").strip("[]")
+def endpoint(address: str, *, topology: str = _topology.SINGLE_HOST_DEVELOPMENT
+             ) -> tuple[str, int]:
+    """Host and port of a `tcps://` address, judged against the DECLARED topology.
+
+    The judgement moved to `worker/topology.py`; this is the place that applies it to a socket.
+    The default is the strict one this transport has always had -- a literal loopback address or
+    nothing -- so a caller that does not pass a topology gets exactly the old behaviour, and
+    reaching another machine requires the caller to have been told, in as many words, that the
+    machine is where the worker is meant to be.
+
+    `NotLoopback` is still what is raised, because that is what callers and tests catch, and it
+    now carries `cause` and `what_to_do` from the underlying refusal so a caller can tell the
+    kinds apart without reading the sentence.
+    """
     try:
-        literal = ipaddress.ip_address(host)
-    except ValueError as exc:
-        raise NotLoopback(
-            "this transport is loopback only, and %r is not a literal loopback address. Crossing "
-            "a machine boundary is a separate decision, not a setting." % host) from exc
-    if not literal.is_loopback:
-        raise NotLoopback(
-            "this transport is loopback only, and %s is not a loopback address. Crossing a "
-            "machine boundary is a separate decision, not a setting." % host)
-    if parsed.port is None:
-        raise NotLoopback("a %s:// address names its port" % SCHEME)
-    return str(literal), int(parsed.port)
+        _topology.check(topology, address, where="this transport")
+    except _topology.TopologyRefused as refused:
+        raised = NotLoopback(refused.because)
+        raised.cause = refused.cause
+        raised.what_to_do = refused.what_to_do
+        raise raised from refused
+    parsed = urlparse(address or "")
+    host = (parsed.hostname or "").strip("[]")
+    return str(ipaddress.ip_address(host)), int(parsed.port)
 
 
 def _context(side: int, settings: TlsSettings) -> ssl.SSLContext:
@@ -338,7 +348,8 @@ class Watch:
 # ---------------------------------------------------------------------- the gateway's end
 
 def open_to_worker(address: str, settings: TlsSettings, contexts: Contexts,
-                   connect_timeout: float, budget: float | None = None):
+                   connect_timeout: float, budget: float | None = None, *,
+                   topology: str = _topology.SINGLE_HOST_DEVELOPMENT):
     """Connect, shake hands, check the worker. Returns (connection, identity, der). Raises
     `WorkerUnreachable` with the failed check named, and never falls back to anything.
 
@@ -349,7 +360,7 @@ def open_to_worker(address: str, settings: TlsSettings, contexts: Contexts,
     seconds, which is longer than the detection window the machine promises. Without a budget
     nothing changes and a job keeps the allowances it has always had.
     """
-    host, port = endpoint(address)
+    host, port = endpoint(address, topology=topology)
     context = contexts.current()
     ends = None if budget is None else time.monotonic() + budget
 
@@ -399,10 +410,16 @@ class TlsListener:
     """The worker's second door. Shares the worker, the nonce memory and the replay floor with
     the socket's `Bench`, so a message accepted through one door is a replay at the other."""
 
-    def __init__(self, bench, address: str, settings: TlsSettings, say=None) -> None:
+    def __init__(self, bench, address: str, settings: TlsSettings, say=None,
+                 topology: str = _topology.SINGLE_HOST_DEVELOPMENT) -> None:
         self.bench = bench
         self.address = address
         self.settings = settings
+        #: Which arrangement this worker was STARTED for. Checked against the address it was
+        #: given, here and not only on the gateway, because a worker that has been placed on its
+        #: own machine and a gateway that thinks it is local are exactly the disagreement worth
+        #: refusing -- and only one of the two would notice if only one of them looked.
+        self.topology = topology
         #: Where a refusal is said. Flushed line by line: under systemd stdout is a pipe, and a
         #: refusal that waits in a buffer for the next few kilobytes -- or for the process to
         #: exit -- is not a log anybody can read when it matters. The first alpha run found
@@ -414,7 +431,10 @@ class TlsListener:
         self._stopped = False
 
     def open(self) -> tuple[str, int]:
-        host, port = endpoint(self.address)
+        # INDEPENDENTLY, not because the gateway said so. Each side is told which arrangement it
+        # is in and each refuses on its own; a worker that has been told it is on its own machine
+        # will not bind a loopback address just because whoever dialled it thinks otherwise.
+        host, port = endpoint(self.address, topology=self.topology)
         family = socket.AF_INET6 if ":" in host else socket.AF_INET
         listener = socket.socket(family, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

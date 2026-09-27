@@ -49,6 +49,7 @@ from agentnode_sdk.worker import (
     WorkerUnreachable,
 )
 from agentnode_sdk.worker import protocol as wire
+from agentnode_sdk.worker import topology as _topology
 
 #: How long to wait for the answer to a question that is not a job. Connecting, describing,
 #: stopping and looking are all quick or they are not happening.
@@ -69,9 +70,10 @@ def topology_of(address: str) -> str:
     parsed = urlparse(address or "")
     if parsed.scheme in ("unix", "unix+stream"):
         return SINGLE_HOST_DEVELOPMENT
-    from agentnode_sdk.gateway.transport import is_loopback
-
-    if is_loopback(parsed.hostname or ""):
+    # `worker/topology.py` rather than `gateway/transport.py`: the worker package has to be
+    # installable on a machine with no control plane on it, and this was the import that stopped
+    # that being true.
+    if _topology.is_loopback(parsed.hostname or ""):
         return SINGLE_HOST_DEVELOPMENT
     return SEPARATE_WORKER_HOST
 
@@ -89,7 +91,13 @@ class SocketWorker(Worker):
     """The control plane's end of the line."""
 
     def __init__(self, address: str, key: bytes, connect_timeout: float = 10.0,
-                 run_margin: float = RUN_MARGIN_SECONDS) -> None:
+                 run_margin: float = RUN_MARGIN_SECONDS,
+                 topology: str = SINGLE_HOST_DEVELOPMENT) -> None:
+        #: WHAT SOMEBODY DECLARED, not what the address looks like. `topology_of` is still here
+        #: and still right about what an address IS, but a record should say what arrangement
+        #: was CHOSEN -- and `worker/topology.py` has already refused the pair if the two
+        #: disagree, so by the time this runs there is nothing to choose between.
+        self._topology = topology
         self.address = address
         self._key = key
         self.connect_timeout = connect_timeout
@@ -110,7 +118,7 @@ class SocketWorker(Worker):
 
     @property
     def topology(self) -> str:                                # type: ignore[override]
-        return topology_of(self.address)
+        return self._topology
 
     #: How this gateway reaches the worker, for the record to say. `worker/tls.py` overrides it.
     transport = "unix"
@@ -327,14 +335,18 @@ class TlsWorker(SocketWorker):
     transport = "mtls"
 
     def __init__(self, address: str, key: bytes, tls, connect_timeout: float = 10.0,
-                 run_margin: float = RUN_MARGIN_SECONDS, say=None) -> None:
+                 run_margin: float = RUN_MARGIN_SECONDS, say=None,
+                 topology: str = SINGLE_HOST_DEVELOPMENT) -> None:
         import ssl
 
         from agentnode_sdk.pki import identity as _identity
         from agentnode_sdk.worker.tls import Contexts, Watch, endpoint
 
-        endpoint(address)                                     # loopback, or refused here
-        super().__init__(address, key, connect_timeout=connect_timeout, run_margin=run_margin)
+        # THE GATE, with the declaration it is judged against. A caller that names no topology
+        # gets the loopback-only rule this transport has always had.
+        endpoint(address, topology=topology)
+        super().__init__(address, key, connect_timeout=connect_timeout, run_margin=run_margin,
+                         topology=topology)
         self.tls = tls
         #: Where the gateway says what its TLS side did -- a renewed certificate taken up, an
         #: open connection cut. Flushed, for the same reason as the worker's (`worker/tls.py`).
@@ -349,7 +361,8 @@ class TlsWorker(SocketWorker):
         from agentnode_sdk.worker.tls import open_to_worker
 
         connection, who, der = open_to_worker(self.address, self.tls, self._contexts,
-                                              self.connect_timeout, budget)
+                                              self.connect_timeout, budget,
+                                              topology=self._topology)
         # Watched until it is closed; a closed one is dropped at the next pass.
         self.watch.add(connection, der, who)
         return connection, who
@@ -370,24 +383,40 @@ class TlsWorker(SocketWorker):
         return self.transport, who.uri(), who.instance
 
 
-def from_address(address: str, key: bytes, tls=None) -> Worker:
+def from_address(address: str, key: bytes, tls=None, *,
+                 topology: str = SINGLE_HOST_DEVELOPMENT) -> Worker:
     """The worker at this address. The only place that decides which transport is used.
 
-    `unix://` is the socket, as before, and stays the default. `tcps://` is mutual TLS on
-    loopback and needs `tls`; without it the address is refused rather than reached some other
-    way. Nothing here ever tries a second transport after the first one failed.
+    THE DECLARATION IS CHECKED FIRST, before any transport is chosen, so that a mismatch is a
+    refusal rather than a connection to the wrong kind of place. Under `separate-worker-host`
+    there is no unix socket and no in-process worker among the permitted address classes, which
+    is what makes "no silent fallback" a fact about the code rather than a promise: there is
+    nothing to fall back to, and a failure to reach the remote worker stays a failure.
     """
+    # THE CALLER'S CONTRACT IS KEPT. Everything in the control plane that reaches a worker
+    # catches `WorkerUnreachable`, and a refusal that arrived as a different type would escape
+    # handling that is already written and already tested -- failing open in the one place that
+    # must not. So a topology refusal is re-raised as one, carrying its cause and its step so
+    # nothing is lost by the translation.
+    try:
+        _topology.check(topology, address, where="this gateway")
+    except _topology.TopologyRefused as refused:
+        unreachable = WorkerUnreachable(refused.because)
+        unreachable.cause = refused.cause
+        unreachable.what_to_do = refused.what_to_do
+        raise unreachable from refused
+
     parsed = urlparse(address or "")
     if parsed.scheme in ("unix", "unix+stream"):
-        return SocketWorker(address, key)
+        return SocketWorker(address, key, topology=topology)
     if parsed.scheme == "tcps":
         if tls is None:
             raise WorkerUnreachable(
                 "%r asks for mutual TLS, and this gateway has no certificate settings for it. "
                 "It is refused, not reached another way." % address[:60])
-        return TlsWorker(address, key, tls)
+        return TlsWorker(address, key, tls, topology=topology)
     raise WorkerUnreachable(
-        "this build reaches a worker over a unix socket or over mutual TLS on loopback, and "
+        "this build reaches a worker over a unix socket or over mutual TLS, and "
         + repr(address[:60]) + " is neither.")
 
 

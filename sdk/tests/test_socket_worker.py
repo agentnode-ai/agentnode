@@ -586,14 +586,32 @@ class TestWhereTheWorkerIs:
 
     def test_the_client_does_not_ask_the_worker_where_it_is(self):
         """A worker's answer about its own location is a self-report, and a record carrying one
-        would be carrying something nobody can check."""
+        would be carrying something nobody can check.
+
+        THIS USED TO ASSERT THE LINE `topology_of(self.address)`, which was the implementation at
+        the time and is no longer: the topology is now what the operator DECLARED, checked
+        against the address before the worker is built. That is a stronger source than the
+        address, not a weaker one -- an address can be mistyped, a declaration is a sentence
+        somebody wrote. The property being protected never changed, so it is asserted directly
+        here instead of through the line that happened to provide it.
+        """
         import inspect
 
         from agentnode_sdk.worker import remote
 
         source = inspect.getsource(remote.SocketWorker.topology.fget)
-        assert "topology_of(self.address)" in source
-        assert "_describe" not in source
+        assert "_describe" not in source, "the worker's own claim must never be the source"
+        assert "_described" not in source
+
+        # And the value really is the declaration, not something derived on the spot.
+        worker = remote.SocketWorker("unix:///nowhere.sock", b"k" * 32,
+                                     topology=remote.SINGLE_HOST_DEVELOPMENT)
+        assert worker.topology == remote.SINGLE_HOST_DEVELOPMENT
+        declared_remote = remote.SocketWorker("unix:///nowhere.sock", b"k" * 32,
+                                              topology=remote.SEPARATE_WORKER_HOST)
+        assert declared_remote.topology == remote.SEPARATE_WORKER_HOST, (
+            "the object reports what it was told, so a record cannot disagree with the "
+            "arrangement the operator declared")
 
 
 class AConnectionFrom:

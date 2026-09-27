@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 from agentnode_sdk.cli.output import bold
+from agentnode_sdk.worker import (SEPARATE_WORKER_HOST, SINGLE_HOST_DEVELOPMENT, TOPOLOGIES)
 
 
 def cmd_key(args) -> int:
@@ -157,7 +158,8 @@ def cmd_serve(args) -> int:
                           reload_seconds=float(args.trust_reload_seconds),
                           reevaluate_seconds=float(args.reevaluate_seconds))
     try:
-        serve(address, key, uid, tls_address=listen, tls=tls)
+        serve(address, key, uid, tls_address=listen, tls=tls,
+              topology=str(getattr(args, "topology", "") or SINGLE_HOST_DEVELOPMENT))
     except KeyboardInterrupt:                                 # pragma: no cover - operator
         print("\n  stopped.")
         return 0
@@ -222,7 +224,16 @@ def add_parser(subparsers) -> None:
     # may not do is stand half-configured. All of
     # these together or none of them.
     serve.add_argument("--listen", default="", metavar="ADDRESS",
-                       help="tcps://127.0.0.1:<port> -- loopback only")
+                       help="tcps://<literal-ip>:<port> -- loopback unless --topology says "
+                            "otherwise")
+    # WHICH ARRANGEMENT THIS WORKER IS IN, in its own words rather than the gateway's. The
+    # worker judges its own address against this and refuses a disagreement on its own, so a
+    # worker placed on its own machine will not quietly bind a loopback address because
+    # whoever dials it believes it is local.
+    serve.add_argument("--topology", default=SINGLE_HOST_DEVELOPMENT, metavar="NAME",
+                       choices=list(TOPOLOGIES),
+                       help="%s (default) or %s -- must agree with --listen"
+                            % (SINGLE_HOST_DEVELOPMENT, SEPARATE_WORKER_HOST))
     serve.add_argument("--tls-dir", dest="tls_dir", default="", metavar="DIR",
                        help="where this worker's cert.pem and key.pem are")
     serve.add_argument("--trust", default="", metavar="FILE",

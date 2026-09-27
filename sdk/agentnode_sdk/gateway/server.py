@@ -528,23 +528,34 @@ class GatewayService:
         where the worker is. Nothing else in the product names a socket, a path, an account or a
         host.
 
-        That is not the same as saying the worker can be moved, and this docstring used to say it
-        was. The address this reads is handed to `from_address`, which speaks unix sockets and
-        mutual TLS on loopback (`worker/tls.py`) and refuses everything else. A `tcps://` address
-        takes its certificate settings from `worker_tls` in the same configuration; an address
-        of that kind without them is refused there, not reached some other way. A worker on
-        another machine is therefore still a change to the product, not to a deployment: the
-        transport refuses every address that is not loopback, in code.
+        THE WORKER MAY NOW BE ELSEWHERE, and saying so takes two things that have to agree:
+        `worker_topology`, which is a sentence somebody wrote, and `worker_address`, which is
+        where to look. `worker/topology.py` refuses the pair if they disagree, and refuses an
+        address with no declaration at all. Neither alone can move the boundary: an address is
+        something that can be mistyped, and a declaration with no matching address reaches
+        nothing.
+
+        Under `separate-worker-host` there is no unix socket and no in-process worker among the
+        permitted arrangements, so there is nothing for a failed connection to fall back TO.
+        That matters more than it sounds: falling back would run foreign code on the control
+        plane's own kernel at exactly the moment the machine meant to run it could not be
+        reached.
+
+        A `tcps://` address takes its certificate settings from `worker_tls` in the same
+        configuration; an address of that kind without them is refused, not reached some other
+        way.
         """
         if self._worker is None:
             address = str(self.config.get("worker_address") or "")
             if address:
                 from agentnode_sdk.worker import protocol as wire
+                from agentnode_sdk.worker import topology as _topology
                 from agentnode_sdk.worker.remote import from_address
 
                 self._worker = from_address(
                     address, wire.read_key(str(self.config.get("worker_key") or "")),
-                    tls=self._worker_tls())
+                    tls=self._worker_tls(),
+                    topology=str(self.config.get(_topology.DECLARED_KEY) or ""))
             else:
                 from agentnode_sdk.worker.local import LocalWorker
 
