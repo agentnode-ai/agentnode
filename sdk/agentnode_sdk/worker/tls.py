@@ -539,6 +539,10 @@ class TlsListener:
             # -- with the key chosen for the caller the handshake proved, when this worker holds
             # per-pair keys. A caller it holds no key for is refused here rather than
             # authenticated with somebody else's.
+            # WHO IS CALLING, from the certificate the handshake proved and from nothing the
+            # caller sent. The lease is held by a named gateway, so the name has to come from
+            # the same place the key does.
+            self.bench._caller = str(getattr(connection.gateway, "instance", "") or "")
             self.bench.converse(connection, noted=noted,
                                 key=self._keys_for(connection.gateway))
         finally:

@@ -117,6 +117,16 @@ class SocketWorker(Worker):
         self._described: dict | None = None
         #: The wire version both sides were shown to speak. Empty until `describe` has run.
         self._agreed = ""
+        #: The fencing token this gateway holds, and the machinery that keeps it alive. Only
+        #: used where a worker issues them, which is where there is a takeover to fence against.
+        import threading as _threading
+
+        self._leasing = False
+        self._lease_epoch: int | None = None
+        self._renew_within = 5.0
+        self._lease_lock = _threading.Lock()
+        self._heartbeat = None
+        self._stop_beating = None
         #: Who answered the describe, when the transport proves it. None on a socket.
         self._described_by = None
         #: run_id -> the identity the connection carrying that run proved. Bounded, oldest out.
@@ -169,6 +179,9 @@ class SocketWorker(Worker):
         # sent rather than after one has been half-processed.
         if method in self.JOB_BEARING and not self._agreed:
             self._describe()
+        if method in self.JOB_BEARING and self._leasing:
+            params = dict(params)
+            params["lease_epoch"] = self._hold_a_lease()
         deadline = time.time() + wait
         body = wire.request(method, params, deadline=deadline)
         connection, who = self._open()
@@ -302,6 +315,58 @@ class SocketWorker(Worker):
                 % (", ".join(wire.SUPPORTED), self.address, ", ".join(theirs) or "nothing",
                    _build_identity(), str(described.get("build") or "an unnamed build")))
         return both[0]
+
+    def lease_from_the_worker(self) -> int:
+        """Take a lease and keep it alive. Returns the epoch this gateway now holds.
+
+        Idempotent: taking one again would fence THIS gateway off from its own work, because
+        the epoch only ever goes up and the old one stops counting the moment a new one is
+        issued.
+        """
+        self._leasing = True
+        return self._hold_a_lease()
+
+    def _hold_a_lease(self) -> int:
+        with self._lease_lock:
+            if self._lease_epoch is None:
+                said = self._ask("take_lease", {}, wait=QUICK_SECONDS)
+                self._lease_epoch = int((said or {}).get("epoch") or 0)
+                self._renew_within = float((said or {}).get("renew_within") or 5.0)
+                self._start_the_heartbeat()
+            return self._lease_epoch
+
+    def _start_the_heartbeat(self) -> None:
+        """Renew in the background, because a long job sends nothing for minutes and a lease
+        that lapsed under a running container would have the worker stop it."""
+        if self._heartbeat is not None:
+            return
+        import threading
+
+        self._stop_beating = threading.Event()
+
+        def beat():
+            while not self._stop_beating.wait(max(0.5, self._renew_within)):
+                try:
+                    with self._lease_lock:
+                        epoch = self._lease_epoch
+                    if epoch is None:
+                        return
+                    self._ask("renew_lease", {"lease_epoch": epoch}, wait=QUICK_SECONDS)
+                except Exception:                             # noqa: BLE001
+                    # A missed beat is a busy machine or a blip. Several missed beats are what
+                    # the worker acts on, and it acts on them by its own clock -- this side
+                    # does not get to decide that its lease is still good.
+                    pass
+
+        self._heartbeat = threading.Thread(target=beat, name="worker-lease", daemon=True)
+        self._heartbeat.start()
+
+    def stop_leasing(self) -> None:
+        """End the heartbeat. The lease lapses on the worker's own clock afterwards."""
+        if self._stop_beating is not None:
+            self._stop_beating.set()
+        self._heartbeat = None
+        self._leasing = False
 
     def agreed_protocol(self) -> str:
         """Which version the two sides settled on. Empty before they have spoken."""

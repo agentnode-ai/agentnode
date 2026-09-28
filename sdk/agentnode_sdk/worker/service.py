@@ -38,6 +38,7 @@ from agentnode_sdk.worker import (
     Limits,
 )
 from agentnode_sdk.worker import protocol as wire
+from agentnode_sdk.worker import lease as _lease
 from agentnode_sdk.worker import topology as _topology
 
 #: What a kernel calls the question "who is at the other end of this socket". Named here with
@@ -114,6 +115,14 @@ class Bench:
     #: Where this worker writes down what it has been asked to do. `None` on the single-host
     #: arrangement, where one gateway opens one connection per request and never retries.
     journal = None
+
+    #: Who may give this worker work, and under which epoch. `None` on the single-host
+    #: arrangement, where there is one control plane and nothing to fence against.
+    leases = None
+
+    #: The caller the current connection proved itself to be. Set by the TLS door before the
+    #: conversation; empty on the socket, where the kernel's account check stands in for it.
+    _caller = ""
 
     def __init__(self, worker, address: str, key: bytes, only_uid: int | None,
                  remembers_at=None) -> None:
@@ -326,11 +335,29 @@ class Bench:
                 # two different facts, and only this one is about the measurement.
                 "boot_id": _own_boot_id(),
             }
+        if method == "take_lease":
+            held = self.leases.take(self._caller)
+            return {"holder": held.holder, "epoch": held.epoch,
+                    "renew_within": _lease.HEARTBEAT_EVERY_SECONDS,
+                    "lapses_after": _lease.LEASE_SECONDS}
+        if method == "renew_lease":
+            held = self._with_lease(params)
+            return {"holder": held.holder, "epoch": held.epoch,
+                    "renew_within": _lease.HEARTBEAT_EVERY_SECONDS,
+                    "lapses_after": _lease.LEASE_SECONDS}
         if method == "run":
-            return self._run_at_most_once(self._job(params.get("job")))
+            job = self._job(params.get("job"))
+            # IMMEDIATELY BEFORE THE CONTAINER, not only when the request arrived. A lease that
+            # was alive when this message landed may have lapsed while the job was being read,
+            # and starting foreign code for a control plane that has since gone is the thing
+            # the lease exists to prevent.
+            self._with_lease(params)
+            return self._run_at_most_once(job)
         if method == "result":
             return self._result(str(params.get("run_id") or ""),
                                 acknowledge=bool(params.get("acknowledge")))
+        if method in ("stop", "gone", "measure", "measure_egress"):
+            self._with_lease(params)
         if method == "stop":
             return bool(self.worker.stop(
                 str(params.get("run_id") or ""), str(params.get("container_name") or ""),
@@ -352,6 +379,21 @@ class Bench:
             return self.worker.measure_egress(allowed=params.get("allowed"),
                                               denied=params.get("denied"))
         raise wire.ProtocolError(wire.UNKNOWN_METHOD, method)  # pragma: no cover - `check` first
+
+    def _with_lease(self, params: dict):
+        """The lease this instruction is covered by, or a refusal naming which way it failed.
+
+        Only enforced where a lease exists to enforce: the single-host arrangement has one
+        control plane, one connection per request and no takeover to fence against, and giving
+        it a lease would be ceremony rather than protection.
+        """
+        if self.leases is None:
+            return None
+        try:
+            return self.leases.check(self._caller, params.get("lease_epoch"))
+        except _lease.LeaseRefused as refused:
+            raise wire.ProtocolError(
+                wire.NO_LEASE, refused.because + " " + refused.what_to_do) from refused
 
     # ------------------------------------------------------------------ at most once
 
@@ -605,6 +647,9 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         from agentnode_sdk.worker.journal import Journal
 
         bench.journal = Journal(journal_at)
+        # The lease counter lives beside the journal: both are this worker's durable memory of
+        # what it has been asked to do and by whom.
+        bench.leases = _lease.Leases(os.path.join(journal_at, _lease.COUNTER_NAME))
 
     # Before the socket, like the ceiling. What a worker has already accepted is what stops a
     # message captured earlier being replayed after a restart, and a worker that cannot record

@@ -85,7 +85,8 @@ NONCE_MEMORY_SECONDS = FRESHNESS_SECONDS * 4
 #: field, so that adding one is a decision somebody makes in a place a reviewer reads.
 FIELDS = ("protocol", "request_id", "nonce", "method", "issued_at", "deadline", "params")
 
-METHODS = ("describe", "run", "result", "stop", "gone", "measure", "measure_egress")
+METHODS = ("describe", "take_lease", "renew_lease", "run", "result", "stop", "gone",
+           "measure", "measure_egress")
 
 #: Every way this can go wrong, named. A caller gets one of these and never a sentence to parse.
 #: `EM3C-EVIDENCE-0002`: the difference between "the answer is no" and "there was no answer" is
@@ -103,6 +104,7 @@ RUNTIME_ABSENT = "runtime-absent"            # there is nothing here that can is
 JOB_FAILED = "job-failed"                    # it was run and it did not work
 NETWORK_UNAVAILABLE = "network-unavailable"  # the restricted network could not be built
 NO_COMMON_PROTOCOL = "no-common-protocol"    # the two sides share no tested wire version
+NO_LEASE = "no-lease"                        # nothing entitles this caller to give work
 INTERNAL = "internal"                        # the worker broke, and says so rather than hanging
 # A RUN ID IS AN IDENTITY, and these are what the worker's journal says about one. They are
 # separate codes rather than one "refused", because they send a caller to three different
