@@ -215,8 +215,6 @@ class TestWhenTheControlPlaneGoes:
     the CONTROL PLANE acts on, and it is the control plane that has gone."""
 
     def _bench(self, tmp_path, stopper):
-        from types import SimpleNamespace
-
         from agentnode_sdk.worker.service import Bench, LeaseWatch
 
         bench = Bench(stopper, "unix:///nowhere.sock", b"k" * 32, only_uid=None)
