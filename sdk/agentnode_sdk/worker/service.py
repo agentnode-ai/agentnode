@@ -85,6 +85,83 @@ def _own_boot_id() -> str:
         return ""
 
 
+class LeaseWatch:
+    """Ends foreign code when the control plane that asked for it has gone.
+
+    The lease stops NEW work by itself: nothing without a live lease is accepted. That leaves
+    the case this exists for -- work that was already running when the lease lapsed. Without
+    this, a worker that lost its control plane would keep running somebody's code until the
+    job's own wall clock, which may be an hour, with nothing able to stop it: the operator's
+    kill switch, an account suspension and a revoked device are all things the CONTROL PLANE
+    acts on, and it is the control plane that is gone.
+
+    So the bound is the lease, and it is the worker's own clock that enforces it.
+
+    What happens on a lapse is decided rather than left to chance: the run is stopped, cleanup
+    is attempted, and whether cleanup could be ESTABLISHED is written down as itself. "I could
+    not prove the sandbox is gone" is not "the sandbox is gone", and it is not "it is still
+    there" either.
+    """
+
+    def __init__(self, bench, *, every: float = 1.0, say=None) -> None:
+        self.bench = bench
+        self.every = float(every)
+        self.say = say or (lambda text: None)
+        self._stop = None
+        self._thread = None
+
+    def start(self) -> None:
+        import threading
+
+        if self._thread is not None or self.bench.leases is None:
+            return
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, name="lease-watch", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._stop is not None:
+            self._stop.set()
+        self._thread = None
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.every):
+            try:
+                self.once()
+            except Exception as broke:                        # noqa: BLE001 - never die quietly
+                self.say("  the lease watch itself failed: %r" % (broke,))
+
+    def once(self) -> int:
+        """One pass. Returns how many runs were ended. Separate from the loop so a test can
+        see the decision rather than whatever the loop has already done to it."""
+        leases = self.bench.leases
+        if leases is None or leases.lapsed() is None:
+            return 0
+        ended = 0
+        for run_id, container in self.bench.in_flight():
+            ended += 1
+            self.say("  the lease lapsed; ending run %s" % run_id)
+            try:
+                self.bench.worker.stop(run_id, container, _lease.STOP_APPEAR_SECONDS)
+            except Exception:                                 # noqa: BLE001
+                pass
+            verified = None
+            try:
+                verified = self.bench.worker.gone(container, patiently=False).verified
+            except Exception:                                 # noqa: BLE001
+                verified = None
+            if self.bench.journal is not None:
+                try:
+                    self.bench.journal.note_cleanup(run_id, verified)
+                except Exception:                             # noqa: BLE001
+                    pass
+            self.bench.forget_in_flight(run_id)
+        # The lease is given up only after the work it covered has been dealt with, so a
+        # takeover cannot find the worker idle while a container is still going.
+        leases.release()
+        return ended
+
+
 def _build_identity() -> str:
     """Which code this is. Diagnostic only: it never decides whether two sides may speak."""
     try:
@@ -147,6 +224,13 @@ class Bench:
         #: a loop that starts afterwards.
         self._stopped = False
         self._serving = False
+        #: run_id -> container name, for work this worker has STARTED and not
+        #: finished. The lease watch ends these when the control plane that asked
+        #: for them stops being able to.
+        self._in_flight: dict[str, str] = {}
+        import threading as _threading
+
+        self._in_flight_lock = _threading.Lock()
 
     # ------------------------------------------------------------------ the socket
 
@@ -380,6 +464,16 @@ class Bench:
                                               denied=params.get("denied"))
         raise wire.ProtocolError(wire.UNKNOWN_METHOD, method)  # pragma: no cover - `check` first
 
+    def in_flight(self):
+        """(run_id, container_name) for every run this worker has started and not finished.
+        A copy, because the caller ends them and that changes the registry."""
+        with self._in_flight_lock:
+            return list(self._in_flight.items())
+
+    def forget_in_flight(self, run_id: str) -> None:
+        with self._in_flight_lock:
+            self._in_flight.pop(str(run_id), None)
+
     def _with_lease(self, params: dict):
         """The lease this instruction is covered by, or a refusal naming which way it failed.
 
@@ -441,12 +535,16 @@ class Bench:
 
         # From here exactly one caller is running exactly this job.
         self.journal.note_started(job.run_id)
+        with self._in_flight_lock:
+            self._in_flight[str(job.run_id)] = str(job.container_name)
         try:
             outcome = self.worker.run(job).as_message()
         except BaseException:
             # It began and it did not produce an outcome. The record stays at `started`, which
             # is what `unknown` looks like from outside, and is not a licence to run it again.
             raise
+        finally:
+            self.forget_in_flight(job.run_id)
         self.journal.note_finished(job.run_id, outcome)
         return outcome
 
@@ -650,6 +748,10 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         # The lease counter lives beside the journal: both are this worker's durable memory of
         # what it has been asked to do and by whom.
         bench.leases = _lease.Leases(os.path.join(journal_at, _lease.COUNTER_NAME))
+        # And the thing that ends work when the control plane that asked for it stops being
+        # entitled to have asked. Started here rather than inside `Leases` so that a test can
+        # drive one pass of it without a thread.
+        LeaseWatch(bench, say=print).start()
 
     # Before the socket, like the ceiling. What a worker has already accepted is what stops a
     # message captured earlier being replayed after a restart, and a worker that cannot record

@@ -207,3 +207,109 @@ class TestWhatTheWorkerDoesWithIt:
 
         source = inspect.getsource(tls.TlsListener._one)
         assert "connection.gateway" in source and "_caller" in source
+
+
+class TestWhenTheControlPlaneGoes:
+    """R9 and the decision's Q6: new work stops by itself, but work already running needs
+    something to end it -- the kill switch, a suspension and a revoked device are all things
+    the CONTROL PLANE acts on, and it is the control plane that has gone."""
+
+    def _bench(self, tmp_path, stopper):
+        from types import SimpleNamespace
+
+        from agentnode_sdk.worker.service import Bench, LeaseWatch
+
+        bench = Bench(stopper, "unix:///nowhere.sock", b"k" * 32, only_uid=None)
+        bench.leases = L.Leases(tmp_path / "e.json", clock=Clock(), ttl=1.0)
+        bench.journal = None
+        return bench, LeaseWatch(bench, every=0.01)
+
+    class Stopper:
+        def __init__(self, verified=True):
+            self.stopped = []
+            self.asked = []
+            self._verified = verified
+
+        def stop(self, run_id, container, appear):
+            self.stopped.append((run_id, container))
+            return True
+
+        def gone(self, container, patiently=True):
+            from agentnode_sdk.worker import Gone
+
+            self.asked.append(container)
+            # `verified` is DERIVED, not a field: answered-and-nothing-left is True,
+            # answered-with-something-left is False, and not answered at all is None. Building
+            # it with `verified=` raised, the watch swallowed it, and every case looked
+            # unproven -- which is the honest direction, and was the double being wrong.
+            if self._verified is None:
+                return Gone(answered=False)
+            return Gone(answered=True, left=() if self._verified else ("c",))
+
+    def test_a_live_lease_ends_nothing(self, tmp_path):
+        stopper = self.Stopper()
+        bench, watch = self._bench(tmp_path, stopper)
+        bench.leases.take("g1")
+        bench._in_flight["r1"] = "c-r1"
+        assert watch.once() == 0
+        assert stopper.stopped == []
+
+    def test_a_lapsed_lease_ends_the_work_it_covered(self, tmp_path):
+        stopper = self.Stopper()
+        bench, watch = self._bench(tmp_path, stopper)
+        bench.leases.take("g1")
+        bench._in_flight["r1"] = "c-r1"
+        bench.leases._clock.tick(2.0)
+
+        assert watch.once() == 1
+        assert stopper.stopped == [("r1", "c-r1")]
+        assert stopper.asked == ["c-r1"], "and cleanup is attempted, not assumed"
+
+    def test_the_bound_is_the_lease_and_not_the_jobs_own_wall_clock(self, tmp_path):
+        """Without this the bound would be the job's wall clock, which may be an hour, with
+        nothing able to shorten it once the control plane is gone."""
+        stopper = self.Stopper()
+        bench, watch = self._bench(tmp_path, stopper)
+        bench.leases.take("g1")
+        bench._in_flight["long"] = "c-long"
+        bench.leases._clock.tick(L.LEASE_SECONDS + 1)
+        assert watch.once() == 1
+
+    def test_cleanup_that_cannot_be_proven_is_recorded_as_that(self, tmp_path):
+        from agentnode_sdk.worker import journal as J
+
+        stopper = self.Stopper(verified=None)
+        bench, watch = self._bench(tmp_path, stopper)
+        bench.journal = J.Journal(tmp_path / "journal")
+        bench.journal.claim("r1", "d" * 64)
+        bench.journal.note_started("r1")
+        bench.leases.take("g1")
+        bench._in_flight["r1"] = "c-r1"
+        bench.leases._clock.tick(2.0)
+
+        watch.once()
+        assert bench.journal.look("r1").state == J.CLEANUP_UNPROVEN
+
+    def test_and_cleanup_that_is_proven_says_so(self, tmp_path):
+        from agentnode_sdk.worker import journal as J
+
+        bench, watch = self._bench(tmp_path, self.Stopper(verified=True))
+        bench.journal = J.Journal(tmp_path / "journal")
+        bench.journal.claim("r1", "d" * 64)
+        bench.journal.note_started("r1")
+        bench.leases.take("g1")
+        bench._in_flight["r1"] = "c-r1"
+        bench.leases._clock.tick(2.0)
+
+        watch.once()
+        assert bench.journal.look("r1").state == J.CLEANED
+
+    def test_the_lease_is_released_only_after_the_work_is_dealt_with(self, tmp_path):
+        """So a takeover cannot find the worker idle while a container is still going."""
+        bench, watch = self._bench(tmp_path, self.Stopper())
+        bench.leases.take("g1")
+        bench._in_flight["r1"] = "c-r1"
+        bench.leases._clock.tick(2.0)
+        watch.once()
+        assert bench.leases.current() is None
+        assert bench.in_flight() == []

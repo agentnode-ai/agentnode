@@ -51,6 +51,12 @@ LEASE_SECONDS = 20.0
 
 #: Where the epoch counter lives, under the worker's own state.
 COUNTER_NAME = "lease-epoch.json"
+
+#: How long to wait for a container to appear before giving up on stopping it, when a
+#: lapsed lease is what is ending the run. The same allowance the TLS door uses when a
+#: revoked caller's connection is cut: the two are the same situation -- work whose
+#: principal is no longer entitled to have asked for it.
+STOP_APPEAR_SECONDS = 10.0
 FILE_MODE = 0o600
 
 
@@ -221,5 +227,5 @@ class Leases:
         self._held = None
 
 
-__all__ = ["EXPIRED", "HEARTBEAT_EVERY_SECONDS", "Held", "LEASE_SECONDS", "Leases",
+__all__ = ["EXPIRED", "STOP_APPEAR_SECONDS", "HEARTBEAT_EVERY_SECONDS", "Held", "LEASE_SECONDS", "Leases",
            "LeaseRefused", "NOT_THE_HOLDER", "NO_LEASE", "STALE_EPOCH"]
