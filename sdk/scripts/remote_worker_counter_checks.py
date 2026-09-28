@@ -236,8 +236,8 @@ CHECKS = [
          area="R7 -- two machines do not share a clock, so their timestamps are not "
               "subtractable; what crosses is how long it ran",
          file="agentnode_sdk/worker/service.py",
-         edits=[('        return {"known": True, "state": known.state,\n',
-                 '        return {"known": True, "state": known.state,\n'
+         edits=[('        return {"known": True, "keeps_a_record": True, "state": known.state,\n',
+                 '        return {"known": True, "keeps_a_record": True, "state": known.state,\n'
                  '                "started_at": 1.0, "finished_at": 2.0,\n')],
          test=LOST + "TestWhatIsBilledForARecoveredRun::"
                      "test_a_duration_crosses_and_not_two_timestamps",
