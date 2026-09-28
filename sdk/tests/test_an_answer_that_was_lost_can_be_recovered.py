@@ -210,15 +210,26 @@ class TestWhatIsBilledForARecoveredRun:
         assert book.look("midway").ran_for is None
 
     def test_the_end_time_of_a_recovered_run_is_not_when_the_gateway_gave_up(self):
-        """The arithmetic, directly. A run that took 2 seconds and was recovered 3600 seconds
-        later is billed 2 seconds, not 3602."""
-        began = 1_000_000.0
-        ran_for = 2.0
-        gave_up_at = began + 3600.0
+        """A run that took 2 seconds and was recovered 3600 seconds later is billed 2 seconds,
+        not 3602.
 
-        ends_at = began + ran_for
-        assert ends_at - began == 2.0
-        assert gave_up_at - began == 3600.0, "what it would have been without this"
+        THIS TEST USED TO DO THE ARITHMETIC ITSELF -- `began + ran_for` asserted against 2.0 --
+        which tests Python's addition and could not fail whatever the product did. It now names
+        the product's own line, so moving that line moves this test.
+        """
+        import inspect
+
+        from agentnode_sdk.gateway import server as _server
+
+        source = inspect.getsource(_server.GatewayService)
+        assert "record.finished_at = float(record.started_at) + float(settled.ran_for)" in source, (
+            "the recovered end time is this gateway's start plus the duration the WORKER "
+            "measured; if that line moved, this test has to follow it")
+        assert "record.billed_from_the_workers_clock = True" in source
+
+        began, ran_for, outage = 1_000_000.0, 2.0, 3600.0
+        assert (began + ran_for) - began == ran_for
+        assert (began + outage) - began != ran_for, "what it would have been without that line"
 
     def test_the_record_says_which_clock_decided(self):
         """A reader comparing the line against this gateway's own clock would otherwise find
@@ -278,3 +289,80 @@ class TestRecoveringAfterTheGatewayItselfRestarted:
         assert "never_ran" in source
         assert "started = 0.0" in source, (
             "a run that never started has no billed clock to have begun")
+
+
+class TestARunThatNeverReachedTheWorkerIsNotBilledForTheOutage:
+    """The defect producing the usage records found, and it was a real invoice.
+
+    `scripts/the_usage_records.py` case 5: a run interrupted by a restart, which the worker has
+    no record of at all, was written into the signed log with `seconds` equal to the WHOLE
+    OUTAGE -- an hour, in the exercise. The transport-lost branch in `_run` had this right and
+    said so in as many words; the restart path had only the `never_ran` case, which is the
+    DIFFERENT one where the worker claimed the run and never started it.
+
+    There are two ways nothing ran, and a bill must survive both.
+    """
+
+    def _a_gateway(self, tmp_path):
+        import json as _json
+
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.server import GatewayService
+        from tests.test_em3c_gateway import StandInBackend, _store_measurement
+
+        root = tmp_path / "state"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "allowance.json").write_text(
+            _json.dumps({"machine_concurrent_runs": 1, "queue_depth": 2}), encoding="utf-8")
+        state = GatewayState(str(root), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        return service, state
+
+    def _closed(self, tmp_path, answer, *, outage):
+        import json as _json
+        import pathlib
+        import time as _time
+
+        from agentnode_sdk.gateway import meter
+        from agentnode_sdk.gateway.server import GatewayService, RunRecord
+        from tests.test_two_accounts import _a_customer
+
+        service, state = self._a_gateway(tmp_path)
+        try:
+            who = _a_customer(service, "somebody-real")
+            record = RunRecord(run_id="lost", job_id="j", owner_client_id=who.client_id,
+                               owner_account_id=who.account_id)
+            service._worker = SimpleNamespace(
+                result=lambda _id: answer,
+                who_ran=lambda _id: ("stood-in", "", "a-stood-in-worker"))
+            GatewayService._close_an_interrupted_run(
+                service, record,
+                {"first_seen": _time.time() - outage - 5.0,
+                 "started_at": _time.time() - outage, "admitted": {}},
+                reason="the connection was lost")
+            written = pathlib.Path(state.root) / meter.METER_NAME
+            lines = [_json.loads(x) for x in written.read_text(encoding="utf-8").splitlines()
+                     if x.strip()]
+            return next(x for x in lines if x["run_id"] == "lost")
+        finally:
+            service.close()
+            state.close()
+
+    def test_a_run_the_worker_has_no_record_of_is_billed_nothing(self, tmp_path):
+        line = self._closed(tmp_path, Recovered(known=False), outage=3600.0)
+        assert line["seconds"] == 0.0, (
+            "billed %s seconds for a run that never reached the worker" % line["seconds"])
+
+    def test_a_run_it_claimed_and_never_started_is_billed_nothing_either(self, tmp_path):
+        line = self._closed(tmp_path, Recovered(known=True, state=J.NEVER_STARTED,
+                                                never_ran=True), outage=3600.0)
+        assert line["seconds"] == 0.0
+
+    def test_and_one_that_did_run_is_billed_what_it_ran(self, tmp_path):
+        """The control: the same path, with a worker that has an outcome, still bills the
+        duration -- so the two above are not passing because nothing is ever billed here."""
+        line = self._closed(tmp_path, Recovered(known=True, state=J.FINISHED,
+                                                outcome={"exit_code": 0}, ran_for=2.0),
+                            outage=3600.0)
+        assert line["seconds"] == 2.0

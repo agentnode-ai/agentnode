@@ -1430,9 +1430,20 @@ class GatewayService:
         # finished, or that it never started at all. Those are three different lines and three
         # different bills.
         settled = self._what_the_worker_says_became_of(record)
-        if settled is not None and getattr(settled, "never_ran", False):
-            # It was claimed and never started. Nothing ran, so the billed clock never began,
-            # and saying "interrupted while running" about it would be a false statement.
+        if settled is not None and (getattr(settled, "never_ran", False) or not settled.known):
+            # NOTHING RAN, in either of the two ways that can be true -- and the second was
+            # missing. `never_ran` is a run the worker CLAIMED and never started. `not known` is
+            # a run it has no record of at all: it never reached that machine.
+            #
+            # Found by producing the usage records rather than by reading this code.
+            # `scripts/the_usage_records.py` case 5 came out billed 3600 seconds -- the whole
+            # outage -- for a job that never reached the worker. The transport-lost branch in
+            # `_run` had this right ("it did not run, and nothing was charged for running it");
+            # this path, the one a RESTART takes, did not, and would have invoiced somebody for
+            # an hour of a broken connection.
+            #
+            # Nothing ran, so the billed clock never began, and saying "interrupted while
+            # running" about it would be a false statement.
             started = 0.0
             record.cleanup_verified = True
         elif settled is not None and settled.outcome:

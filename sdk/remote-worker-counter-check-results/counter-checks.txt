@@ -1,0 +1,164 @@
+Counter-checks for `remote-worker-r1`, criterion R15.
+One process, one kernel: this establishes nothing about host isolation.
+
+RED AS PREDICTED  [remote-permits-only-mutual-tls]  R1 -- with a unix socket back in the permitted set there is something to fall back to, which is the whole property
+    file agentnode_sdk/worker/topology.py  before c62d4e053d86b8b7
+    mutated 01cf96bb2a4b9a0a  landed=True
+    named test tests/test_the_worker_may_be_on_another_host.py::TestThereIsNothingToFallBackTo::test_and_asking_for_one_under_a_remote_declaration_is_refused
+    exit=1  predicted reason 'DID NOT RAISE' present=True
+    others stayed green=True
+    restored c62d4e053d86b8b7  byte-exact=True
+RED AS PREDICTED  [every-interface-is-not-an-address]  R1 -- the one bind that would undo the arrangement: reachable from wherever the machine is, which on a cloud host is the internet
+    file agentnode_sdk/worker/topology.py  before c62d4e053d86b8b7
+    mutated e59713849c67e4ad  landed=True
+    named test tests/test_the_worker_may_be_on_another_host.py::TestTheAddressItself::test_every_interface_is_refused_in_both_arrangements
+    exit=1  predicted reason 'DID NOT RAISE' present=True
+    others stayed green=True
+    restored c62d4e053d86b8b7  byte-exact=True
+RED AS PREDICTED  [a-key-belongs-to-one-pair]  R2/R5 -- a keyring that answers with SOME key is a shared key with extra steps
+    file agentnode_sdk/worker/pairkeys.py  before c92e694f83ea4769
+    mutated 9a2a5e74b263d4bd  landed=True
+    named test tests/test_one_key_per_pair.py::TestTheKeyBelongsToAPair::test_a_record_needs_both_names_to_be_found
+    exit=1  predicted reason 'DID NOT RAISE' present=True
+    others stayed green=True
+    restored c92e694f83ea4769  byte-exact=True
+RED AS PREDICTED  [no-shared-key-across-the-boundary]  R2/R5 -- the worker refuses to serve its own machine without a per-pair keyring
+    file agentnode_sdk/worker/service.py  before 15df488731904f88
+    mutated 5a7c88635918e22c  landed=True
+    named test tests/test_one_key_per_pair.py::TestTheGlobalKeyDoesNotCrossTheBoundary::test_a_remote_worker_without_a_keyring_refuses_to_serve
+    exit=1  predicted reason 'prove_its_ceilings' present=True
+    others stayed green=True
+    restored 15df488731904f88  byte-exact=True
+RED AS PREDICTED  [a-caller-with-no-key-learns-nothing]  R11 -- the refusal handed back the index of every pair the worker DOES hold
+    file agentnode_sdk/worker/tls.py  before 7e70640b3426287e
+    mutated 3b0a99b9e3dc087f  landed=True
+    named test tests/test_one_key_per_pair.py::TestOverTheRealTransport::test_and_the_refusal_does_not_hand_back_the_keyrings_index
+    exit=1  predicted reason 'and nothing else this worker holds is' present=True
+    others stayed green=True
+    restored 7e70640b3426287e  byte-exact=True
+RED AS PREDICTED  [exactly-one-delivery-may-run]  R6 -- the link() IS the irreversible decision; a rename silently overwrites
+    file agentnode_sdk/worker/journal.py  before 21bc7ccadd9d5075
+    mutated 44cc612ff135d95f  landed=True
+    named test tests/test_the_worker_remembers_what_it_ran.py::TestTwoDeliveriesAtOnce::test_only_one_of_many_simultaneous_identical_deliveries_may_run
+    exit=1  predicted reason 'verdicts.count(J.FRESH) == 1' present=True
+    others stayed green=True
+    restored 21bc7ccadd9d5075  byte-exact=True
+RED AS PREDICTED  [the-same-name-for-different-work-is-refused]  R6 -- resolving a conflict either way runs work nobody asked for under a name somebody else's answer will be read from
+    file agentnode_sdk/worker/journal.py  before 21bc7ccadd9d5075
+    mutated f0a5db14efd46994  landed=True
+    named test tests/test_the_worker_remembers_what_it_ran.py::TestTheSameNameForDifferentWork::test_it_is_refused_rather_than_resolved
+    exit=1  predicted reason 'DID NOT RAISE' present=True
+    others stayed green=True
+    restored 21bc7ccadd9d5075  byte-exact=True
+RED AS PREDICTED  [an-unknown-outcome-is-never-a-success]  R6 -- a run that began and cannot be accounted for must not settle anything
+    file agentnode_sdk/worker/__init__.py  before 71812479caf002e3
+    mutated 09f1861f2c07d494  landed=True
+    named test tests/test_an_answer_that_was_lost_can_be_recovered.py::TestWhatTheRecoveredAnswerMeans::test_an_unknown_outcome_does_not_settle_anything
+    exit=1  predicted reason 'assert not True' present=True
+    others stayed green=True
+    restored 71812479caf002e3  byte-exact=True
+RED AS PREDICTED  [an-old-epoch-stops-counting]  R6/R9 -- without the fence two control planes both hold a heartbeat and both are obeyed
+    file agentnode_sdk/worker/lease.py  before ea6530cc8a8cd48a
+    mutated 9b4a8db61b652719  landed=True
+    named test tests/test_only_one_control_plane_owns_a_worker.py::TestFencing::test_an_old_epoch_from_the_same_gateway_is_refused
+    exit=1  predicted reason 'DID NOT RAISE' present=True
+    others stayed green=True
+    restored ea6530cc8a8cd48a  byte-exact=True
+RED AS PREDICTED  [a-restarted-worker-never-reissues-an-epoch]  R6 -- reissuing a number makes a control plane from before the restart valid again
+    file agentnode_sdk/worker/lease.py  before ea6530cc8a8cd48a
+    mutated 2ce7803e77f8df68  landed=True
+    named test tests/test_only_one_control_plane_owns_a_worker.py::TestARestartedWorker::test_and_never_issues_an_epoch_twice
+    exit=1  predicted reason 're-issuing a number' present=True
+    others stayed green=True
+    restored ea6530cc8a8cd48a  byte-exact=True
+RED AS PREDICTED  [a-withdrawn-identity-stays-withdrawn]  R4 -- revocation is by SERIAL, so a new certificate for the same name comes straight back and every other check passes
+    file agentnode_sdk/pki/identity.py  before 7cead7274fc686ce
+    mutated 114ccef2196ac2b1  landed=True
+    named test tests/test_a_withdrawn_identity_stays_withdrawn.py::TestWhatAVerifierDoesWithIt::test_a_real_certificate_of_a_withdrawn_identity_is_refused
+    exit=1  predicted reason 'DID NOT RAISE' present=True
+    others stayed green=True
+    restored 7cead7274fc686ce  byte-exact=True
+RED AS PREDICTED  [an-unreadable-list-is-a-refusal-not-an-empty-one]  R4 -- "I could not read who is banned" is not "nobody is banned"
+    file agentnode_sdk/pki/trust.py  before e9cb72d26fa948b9
+    mutated 4746558d1e6886f7  landed=True
+    named test tests/test_a_withdrawn_identity_stays_withdrawn.py::TestWhatAVerifierDoesWithIt::test_a_missing_list_where_one_is_required_is_a_refusal
+    exit=1  predicted reason 'DID NOT RAISE' present=True
+    others stayed green=True
+    restored e9cb72d26fa948b9  byte-exact=True
+RED AS PREDICTED  [the-binding-names-the-workers-own-machine]  R3/R10 -- a boot id filled in from the asker describes the wrong kernel
+    file agentnode_sdk/gateway/readiness.py  before a3e0147726754b75
+    mutated 222e41a83f34d26a  landed=True
+    named test tests/test_the_binding_describes_the_right_machine.py::TestBothMachinesAreNamed::test_there_is_no_unqualified_boot_field_left
+    exit=1  predicted reason 'worker_boot_id' present=True
+    others stayed green=True
+    restored a3e0147726754b75  byte-exact=True
+RED AS PREDICTED  [a-suspension-reaches-work-that-has-not-started]  R9 -- the hole the gateway had documented against itself
+    file agentnode_sdk/gateway/server.py  before e1409139368090ec
+    mutated 1dd2899652a23f09  landed=True
+    named test tests/test_a_stop_reaches_work_that_has_not_started.py::TestASuspensionReachesTheQueue::test_a_waiting_job_for_a_suspended_account_is_dropped
+    exit=1  predicted reason "assert [] == ['run-0']" present=True
+    others stayed green=True
+    restored e1409139368090ec  byte-exact=True
+RED AS PREDICTED  [the-worker-does-not-need-the-control-plane]  R14 -- the import-graph ratchet itself: it must notice a crossing coming back
+    file agentnode_sdk/worker/service.py  before 15df488731904f88
+    mutated b184d132b1417b44  landed=True
+    named test tests/test_the_two_roles_are_separable.py::TestTheImportGraph::test_the_boot_identity_is_nobodys_role
+    exit=1  predicted reason "assert 'agentnode_sdk.gateway.boot' not in" present=True
+    others stayed green=True
+    restored 15df488731904f88  byte-exact=True
+RED AS PREDICTED  [a-duration-crosses-and-not-two-timestamps]  R7 -- two machines do not share a clock, so their timestamps are not subtractable; what crosses is how long it ran
+    file agentnode_sdk/worker/service.py  before 15df488731904f88
+    mutated ef5c297d31318782  landed=True
+    named test tests/test_an_answer_that_was_lost_can_be_recovered.py::TestWhatIsBilledForARecoveredRun::test_a_duration_crosses_and_not_two_timestamps
+    exit=1  predicted reason "'started_at' not in" present=True
+    others stayed green=True
+    restored 15df488731904f88  byte-exact=True
+RED AS PREDICTED  [a-recovered-run-is-billed-for-what-it-ran]  R7 -- otherwise an outage is charged to the customer as compute
+    file agentnode_sdk/gateway/server.py  before e1409139368090ec
+    mutated 10653dbb2d3f29d7  landed=True
+    named test tests/test_an_answer_that_was_lost_can_be_recovered.py::TestWhatIsBilledForARecoveredRun::test_the_end_time_of_a_recovered_run_is_not_when_the_gateway_gave_up
+    exit=1  predicted reason 'if that line moved, this test has to follow it' present=True
+    others stayed green=True
+    restored e1409139368090ec  byte-exact=True
+RED AS PREDICTED  [a-run-that-never-reached-the-worker-is-billed-nothing]  R7 -- the defect producing the records found: an hour of outage on somebody's invoice for a run that never reached the machine
+    file agentnode_sdk/gateway/server.py  before e1409139368090ec
+    mutated 7a0c6ca767bf6c5f  landed=True
+    named test tests/test_an_answer_that_was_lost_can_be_recovered.py::TestARunThatNeverReachedTheWorkerIsNotBilledForTheOutage::test_a_run_the_worker_has_no_record_of_is_billed_nothing
+    exit=1  predicted reason 'for a run that never reached the worker' present=True
+    others stayed green=True
+    restored e1409139368090ec  byte-exact=True
+RED AS PREDICTED  [cleanup-that-cannot-be-proven-says-so]  R8 -- "nobody could establish it" collapsed into "it is gone" is the one answer that must not be given
+    file agentnode_sdk/worker/journal.py  before 21bc7ccadd9d5075
+    mutated 2ff0ae02d25b53ef  landed=True
+    named test tests/test_only_one_control_plane_owns_a_worker.py::TestWhenTheControlPlaneGoes::test_cleanup_that_cannot_be_proven_is_recorded_as_that
+    exit=1  predicted reason "assert 'cleaned' == 'cleanup_unproven'" present=True
+    others stayed green=True
+    restored 21bc7ccadd9d5075  byte-exact=True
+RED AS PREDICTED  [a-refusal-carries-a-step]  R12 -- a cause with nothing to do about it is an obstacle, not a refusal
+    file agentnode_sdk/worker/topology.py  before c62d4e053d86b8b7
+    mutated 02d698599db1f679  landed=True
+    named test tests/test_the_worker_may_be_on_another_host.py::TestTheGateStaysShutUnlessItIsOpened::test_the_refusal_carries_its_cause_and_a_step
+    exit=1  predicted reason "assert ''" present=True
+    others stayed green=True
+    restored c62d4e053d86b8b7  byte-exact=True
+RED AS PREDICTED  [the-worker-unit-declares-its-topology]  R14 -- the artefacts had no mutation of their own; a unit that stopped declaring the arrangement would bind loopback on a machine of its own
+    file deploy/separate-worker-host/worker-host.service  before 8a08b4c50ba4075c
+    mutated b68be18a68fa95c7  landed=True
+    named test tests/test_the_two_roles_are_separable.py::TestTheArtefacts::test_the_worker_unit_declares_its_topology_and_opens_no_socket
+    exit=1  predicted reason 'the command that SERVES must declare it' present=True
+    others stayed green=True
+    restored 8a08b4c50ba4075c  byte-exact=True
+RED AS PREDICTED  [the-enrolment-secret-does-not-outlive-it]  R11 -- 0400 is a permission, not a lifetime
+    file agentnode_sdk/pki/enrolment.py  before fb228ef9291f0a76
+    mutated 5e899d267ddedc58  landed=True
+    named test tests/test_a_secret_does_not_outlive_its_use.py::TestTheIssuerDoesItOnDelivery::test_enrolling_a_service_leaves_nothing_behind
+    exit=1  predicted reason 'the one-shot secret did not survive it' present=True
+    others stayed green=True
+    restored fb228ef9291f0a76  byte-exact=True
+RED AS PREDICTED  [the-worker-does-not-put-its-exception-on-the-wire]  R11 -- an arbitrary string from the worker's process, crossing to a client, past a scrubber the worker cannot reach
+    file agentnode_sdk/worker/service.py  before 15df488731904f88
+    mutated ec729bd4af444d22  landed=True
+    named test tests/test_a_secret_does_not_outlive_its_use.py::TestTheWorkerSaysWhatBrokeWithoutSayingWhatItHeld::test_the_refusal_a_caller_sees
+    exit=1  predicted reason 'hunter2' present=True
+    others stayed green=True
+    restored 15df488731904f88  byte-exact=True

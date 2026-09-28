@@ -79,6 +79,7 @@ import time
 import uuid
 from pathlib import Path
 
+from agentnode_sdk.pki import enrolment as _enrolment
 from agentnode_sdk.pki import files as _files
 from agentnode_sdk.pki import floor as _floor
 from agentnode_sdk.pki import identity as _identity
@@ -367,6 +368,12 @@ class Issuer:
         if self.files.exists(leftover):
             self.files.remove(leftover)
         _files.durable_replace(self.files, target, pem, mode=0o644, label="deliver")
+        # AND THE ENROLMENT IS OVER. Once the certificate is where the service reads it, the
+        # one-shot secret and the request that carries it IN CLEAR are of no use to anybody but
+        # an attacker. They were left on disk indefinitely, 0400 and 0600 -- which is a
+        # permission, not a lifetime. Removing them here rather than documenting the removal is
+        # the difference between a procedure somebody may follow and a property the product has.
+        _enrolment.forget_the_enrolment(target.parent)
 
     def enroll(self, csr_pem: bytes, secret: str) -> bytes:
         """First issuance, against the entry the secret belongs to. Returns the certificate."""

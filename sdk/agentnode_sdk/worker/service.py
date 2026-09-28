@@ -432,8 +432,14 @@ class Bench:
         except Exception as exc:                              # noqa: BLE001
             # Something here broke. Saying so is the point: a worker that hung instead would make
             # the control plane wait out its deadline for a failure it could have been told about.
-            self._refuse(connection, asked, wire.INTERNAL,
-                         type(exc).__name__ + ": " + str(exc), key=key)
+            #
+            # THE CLASS NAME AND NOTHING ELSE goes on the wire. It used to carry `str(exc)` as
+            # well -- an arbitrary string, from anywhere in this process, crossing to the gateway
+            # and on to a client, and not passing the gateway's scrubber, which lives on the
+            # other side of a boundary the worker deliberately cannot import across. The full
+            # text stays here, where the operator of THIS machine can read it.
+            print("  internal error while answering: %r" % (exc,), flush=True)
+            self._refuse(connection, asked, wire.INTERNAL, type(exc).__name__, key=key)
         finally:
             try:
                 connection.close()
@@ -857,8 +863,15 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
     path = bench.open() if address else ""
     listener = None
     if tls:
+        from agentnode_sdk.pki.enrolment import forget_the_enrolment
         from agentnode_sdk.worker.tls import TlsListener, own_instance
 
+        # BEFORE THE DOOR OPENS. Enrolment leaves a one-shot secret and a request that carries it
+        # in clear; on two machines the certificate is delivered on the OTHER one, so the copy
+        # carried by hand is still lying here. A worker never serves with them on disk.
+        gone = forget_the_enrolment(os.path.dirname(tls.certificate))
+        if gone:
+            print("  removed what enrolment left behind: " + ", ".join(gone), flush=True)
         bench.label = own_instance(tls)
         listener = TlsListener(bench, tls_address, tls, topology=topology)
         if keyring_path:

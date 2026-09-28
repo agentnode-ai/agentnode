@@ -226,6 +226,107 @@ CHECKS = [
          test=ROLES + "TestTheImportGraph::test_the_boot_identity_is_nobodys_role",
          expect="assert 'agentnode_sdk.gateway.boot' not in",
          green=[ROLES + "TestTheImportGraph::test_and_the_old_name_still_works"]),
+
+    # ---------------------------------------------------------------- added after round 1
+    # An independent review reported four properties as having no counter-check -- R7, R8, R12
+    # and the R14 artefacts -- and was right that naming a gap is not closing it. These six
+    # close those four and cover the two R11 fixes that round found.
+
+    dict(id="a-duration-crosses-and-not-two-timestamps",
+         area="R7 -- two machines do not share a clock, so their timestamps are not "
+              "subtractable; what crosses is how long it ran",
+         file="agentnode_sdk/worker/service.py",
+         edits=[('        return {"known": True, "state": known.state,\n',
+                 '        return {"known": True, "state": known.state,\n'
+                 '                "started_at": 1.0, "finished_at": 2.0,\n')],
+         test=LOST + "TestWhatIsBilledForARecoveredRun::"
+                     "test_a_duration_crosses_and_not_two_timestamps",
+         expect="'started_at' not in",
+         green=[LOST + "TestWhatIsBilledForARecoveredRun::"
+                       "test_the_worker_reports_how_long_it_actually_ran"]),
+
+    dict(id="a-recovered-run-is-billed-for-what-it-ran",
+         area="R7 -- otherwise an outage is charged to the customer as compute",
+         file="agentnode_sdk/gateway/server.py",
+         edits=[("                    record.finished_at = float(record.started_at) + float(settled.ran_for)\n",
+                 "                    record.finished_at = _now()\n")],
+         test=LOST + "TestWhatIsBilledForARecoveredRun::"
+                     "test_the_end_time_of_a_recovered_run_is_not_when_the_gateway_gave_up",
+         expect="if that line moved, this test has to follow it",
+         green=[LOST + "TestWhatIsBilledForARecoveredRun::"
+                       "test_the_record_says_which_clock_decided"]),
+
+    dict(id="a-run-that-never-reached-the-worker-is-billed-nothing",
+         area="R7 -- the defect producing the records found: an hour of outage on somebody's "
+              "invoice for a run that never reached the machine",
+         file="agentnode_sdk/gateway/server.py",
+         edits=[('        if settled is not None and (getattr(settled, "never_ran", False) '
+                 'or not settled.known):\n',
+                 '        if settled is not None and getattr(settled, "never_ran", False):\n')],
+         test=LOST + "TestARunThatNeverReachedTheWorkerIsNotBilledForTheOutage::"
+                     "test_a_run_the_worker_has_no_record_of_is_billed_nothing",
+         expect="for a run that never reached the worker",
+         green=[LOST + "TestARunThatNeverReachedTheWorkerIsNotBilledForTheOutage::"
+                       "test_and_one_that_did_run_is_billed_what_it_ran"]),
+
+    dict(id="cleanup-that-cannot-be-proven-says-so",
+         area="R8 -- \"nobody could establish it\" collapsed into \"it is gone\" is the one "
+              "answer that must not be given",
+         file="agentnode_sdk/worker/journal.py",
+         edits=[("        state = (CLEANED if verified is True\n"
+                 "                 else CLEANUP_UNPROVEN if verified is None else CLEANUP_PENDING)\n",
+                 "        state = CLEANED\n")],
+         test=LEASE + "TestWhenTheControlPlaneGoes::"
+                      "test_cleanup_that_cannot_be_proven_is_recorded_as_that",
+         expect="assert 'cleaned' == 'cleanup_unproven'",
+         green=[LEASE + "TestWhenTheControlPlaneGoes::test_and_cleanup_that_is_proven_says_so"]),
+
+    dict(id="a-refusal-carries-a-step",
+         area="R12 -- a cause with nothing to do about it is an obstacle, not a refusal",
+         file="agentnode_sdk/worker/topology.py",
+         edits=[("            _what_to_do(declared, kind))\n", '            "")\n')],
+         test=HOST + "TestTheGateStaysShutUnlessItIsOpened::"
+                     "test_the_refusal_carries_its_cause_and_a_step",
+         expect="assert ''",
+         green=[HOST + "TestTheDeclarationAndTheAddressMustAgree::"
+                       "test_a_remote_address_declared_local_is_refused"]),
+
+    dict(id="the-worker-unit-declares-its-topology",
+         area="R14 -- the artefacts had no mutation of their own; a unit that stopped declaring "
+              "the arrangement would bind loopback on a machine of its own",
+         file="deploy/separate-worker-host/worker-host.service",
+         edits=[("ExecStart=/opt/agentnode/venv/bin/agentnode worker serve \\\n"
+                 "    --topology separate-worker-host \\\n",
+                 "ExecStart=/opt/agentnode/venv/bin/agentnode worker serve \\\n")],
+         test=ROLES + "TestTheArtefacts::"
+                      "test_the_worker_unit_declares_its_topology_and_opens_no_socket",
+         expect="the command that SERVES must declare it",
+         green=[ROLES + "TestTheArtefacts::test_the_control_plane_unit_has_no_worker_on_it"]),
+
+    dict(id="the-enrolment-secret-does-not-outlive-it",
+         area="R11 -- 0400 is a permission, not a lifetime",
+         file="agentnode_sdk/pki/enrolment.py",
+         edits=[("    gone = []\n", "    return []\n    gone = []\n")],
+         test="tests/test_a_secret_does_not_outlive_its_use.py::TestTheIssuerDoesItOnDelivery::"
+              "test_enrolling_a_service_leaves_nothing_behind",
+         expect="the one-shot secret did not survive it",
+         green=["tests/test_a_secret_does_not_outlive_its_use.py::TestTheResiduesGo::"
+                "test_and_nothing_is_touched_before_it_is"]),
+
+    dict(id="the-worker-does-not-put-its-exception-on-the-wire",
+         area="R11 -- an arbitrary string from the worker's process, crossing to a client, "
+              "past a scrubber the worker cannot reach",
+         file="agentnode_sdk/worker/service.py",
+         edits=[("            self._refuse(connection, asked, wire.INTERNAL, "
+                 "type(exc).__name__, key=key)\n",
+                 "            self._refuse(connection, asked, wire.INTERNAL,\n"
+                 "                         type(exc).__name__ + \": \" + str(exc), key=key)\n")],
+         test="tests/test_a_secret_does_not_outlive_its_use.py::"
+              "TestTheWorkerSaysWhatBrokeWithoutSayingWhatItHeld::test_the_refusal_a_caller_sees",
+         expect="hunter2",
+         green=["tests/test_a_secret_does_not_outlive_its_use.py::"
+                "TestTheWorkerSaysWhatBrokeWithoutSayingWhatItHeld::"
+                "test_the_operator_of_this_machine_still_gets_the_whole_thing"]),
 ]
 
 #: Run pytest in a subprocess whose sys.path does not contain the OTHER checkout.

@@ -322,6 +322,19 @@ def cmd_preflight(args) -> int:
         except OSError as exc:
             refuse("a TLS file cannot be read: %s" % exc)
 
+        # WHAT ENROLMENT LEFT. Reported, not removed: a check that changes what it is checking
+        # is not a check, and this one runs as ExecStartPre where a surprise deletion would be
+        # the last thing anybody expects. `serve` removes them, and says so.
+        from agentnode_sdk.pki.enrolment import ENROLMENT_RESIDUES
+
+        here = pathlib.Path(str(getattr(args, "tls_dir", "") or ""))
+        left = [n for n in ENROLMENT_RESIDUES if (here / n).is_file()]
+        if left:
+            say.append("  note    enrolment left %s here; the worker removes %s when it starts"
+                       % (", ".join(left), "them" if len(left) > 1 else "it"))
+        else:
+            good("nothing is left of the enrolment")
+
         # The floor, named separately, because it is the one thing that is written by root on
         # THIS machine and is the step most often forgotten -- a floor copied from the control
         # plane is keyed to that kernel's boot and is unusable here.

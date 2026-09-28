@@ -192,9 +192,25 @@ class TestTheArtefacts:
         return "\n".join(line for line in self._unit(name).splitlines()
                          if not line.strip().startswith("#"))
 
+    def _the_command(self, name, directive):
+        """One directive's command line, joined. Asserting over the whole file would let a
+        flag present in ExecStartPre stand in for one missing from ExecStart -- which is how
+        the counter-check for this found the first version of it saying nothing."""
+        does = self._what_it_does(name)
+        body = does.split(directive, 1)[1]
+        out = []
+        for line in body.splitlines():
+            out.append(line.rstrip("\\").strip())
+            if not line.rstrip().endswith("\\"):
+                break
+        return " ".join(out)
+
     def test_the_worker_unit_declares_its_topology_and_opens_no_socket(self):
         does = self._what_it_does("worker-host.service")
-        assert "--topology separate-worker-host" in does
+        assert "--topology separate-worker-host" in self._the_command(
+            "worker-host.service", "ExecStart="), "the command that SERVES must declare it"
+        assert "--topology separate-worker-host" in self._the_command(
+            "worker-host.service", "ExecStartPre="), "and so must the one that checks it"
         assert "--socket" not in does, "there is no local caller on a worker host to open one"
         assert "agentnode-bridge" not in does, "that group exists to share a socket"
         assert "--for-user" not in does, "it names a local uid, and the caller is elsewhere"
