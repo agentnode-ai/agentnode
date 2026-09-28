@@ -53,6 +53,19 @@ from typing import Any
 #: something it did not mean to.
 PROTOCOL = "agentnode-worker/1"
 
+#: EVERY WIRE VERSION THIS BUILD HAS BEEN TESTED AGAINST, and the one it speaks is the first.
+#:
+#: A singleton today, deliberately. Compatibility is earned by a test that exercises the pair,
+#: not inferred from version numbers being close together, so a version appears here when
+#: something proves it works and not before. An empty intersection between two sides is a
+#: refusal, never a downgrade to whatever both happen to understand.
+#:
+#: This is NOT the build. Two hosts running different builds of the same wire version are
+#: compatible and must stay that way: requiring identical builds would mean a security update
+#: could not be applied to one host without the other, which is a worse failure than the one it
+#: would be preventing.
+SUPPORTED = (PROTOCOL,)
+
 #: The most a single frame may be. Read before anything is allocated, so a length nobody meant is
 #: refused rather than reserved. Large enough for an artefact and a job's whole output; a job that
 #: produces more than this is a job whose output was never going to be read by a person.
@@ -89,6 +102,7 @@ DEADLINE_PASSED = "deadline-passed"          # it was already too late when it a
 RUNTIME_ABSENT = "runtime-absent"            # there is nothing here that can isolate anything
 JOB_FAILED = "job-failed"                    # it was run and it did not work
 NETWORK_UNAVAILABLE = "network-unavailable"  # the restricted network could not be built
+NO_COMMON_PROTOCOL = "no-common-protocol"    # the two sides share no tested wire version
 INTERNAL = "internal"                        # the worker broke, and says so rather than hanging
 # A RUN ID IS AN IDENTITY, and these are what the worker's journal says about one. They are
 # separate codes rather than one "refused", because they send a caller to three different
@@ -407,11 +421,15 @@ def check(body: dict[str, Any], seen: Seen, now: float | None = None,
           floor: "Floor | None" = None) -> None:
     """Everything about a request that is true before its method is even looked up."""
     at = time.time() if now is None else now
-    if body.get("protocol") != PROTOCOL:
+    if body.get("protocol") not in SUPPORTED:
+        # NAMED ON BOTH SIDES, because an operator holding one half of a mismatch cannot act on
+        # "it did not match". No downgrade is attempted: a receiver that fell back to whatever
+        # both sides happened to understand would be choosing a version nobody tested.
         raise ProtocolError(
-            MALFORMED,
+            NO_COMMON_PROTOCOL,
             "this message says it speaks " + repr(str(body.get("protocol"))[:40]) + " and this "
-            "build speaks " + PROTOCOL + ". A receiver that guessed would one day guess wrong")
+            "build has been tested against " + ", ".join(SUPPORTED) + ". A receiver that "
+            "guessed would one day guess wrong")
     for field in ("request_id", "nonce", "method"):
         if not isinstance(body.get(field), str) or not body.get(field):
             raise ProtocolError(MALFORMED, "a message has a " + field)

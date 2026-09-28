@@ -187,12 +187,17 @@ class TestAMessageIsAuthenticatedBeforeItIsRead:
         assert "ended after" in caught.value.detail
 
     def test_a_version_this_build_does_not_speak(self):
+        """The code used to be the general `malformed`. It is now its own cause: a wire version
+        neither side has been tested against is a different problem from a bad frame, and it
+        sends an operator somewhere else. The refusal also names BOTH ranges, because whoever
+        is holding one half of a mismatch cannot act on "it did not match"."""
         body = wire.request("describe", {}, deadline=time.time() + 30)
         body["protocol"] = "agentnode-worker/99"
         with pytest.raises(wire.ProtocolError) as caught:
             wire.check(body, wire.Seen())
-        assert caught.value.code == wire.MALFORMED
+        assert caught.value.code == wire.NO_COMMON_PROTOCOL
         assert "guessed" in str(caught.value)
+        assert wire.PROTOCOL in str(caught.value) and "agentnode-worker/99" in str(caught.value)
 
 
 class TestTheSameMessageTwiceIsRefused:

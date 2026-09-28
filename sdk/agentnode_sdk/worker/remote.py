@@ -51,6 +51,7 @@ from agentnode_sdk.worker import (
 )
 from agentnode_sdk.worker import protocol as wire
 from agentnode_sdk.worker import topology as _topology
+from agentnode_sdk.worker.service import _build_identity
 
 #: How long to wait for the answer to a question that is not a job. Connecting, describing,
 #: stopping and looking are all quick or they are not happening.
@@ -114,6 +115,8 @@ class SocketWorker(Worker):
         #: without waiting out the default.
         self.run_margin = run_margin
         self._described: dict | None = None
+        #: The wire version both sides were shown to speak. Empty until `describe` has run.
+        self._agreed = ""
         #: Who answered the describe, when the transport proves it. None on a socket.
         self._described_by = None
         #: run_id -> the identity the connection carrying that run proved. Bounded, oldest out.
@@ -161,6 +164,11 @@ class SocketWorker(Worker):
 
     def _ask(self, method: str, params: dict, *, wait: float, run_id: str = "") -> object:
         """One question and its answer, or a refusal that says which kind it is."""
+        # BEFORE ANY WORK CROSSES. `describe` negotiates; everything that carries or acts on
+        # work waits for that to have happened. A mismatch therefore refuses before a job is
+        # sent rather than after one has been half-processed.
+        if method in self.JOB_BEARING and not self._agreed:
+            self._describe()
         deadline = time.time() + wait
         body = wire.request(method, params, deadline=deadline)
         connection, who = self._open()
@@ -260,13 +268,44 @@ class SocketWorker(Worker):
 
     # ------------------------------------------------------------------ what it is
 
+    #: Methods that carry or act on work. None of them is sent before the two sides have been
+    #: shown to speak a wire version both have been tested against.
+    JOB_BEARING = ("run", "stop", "gone", "measure", "measure_egress")
+
     def _describe(self) -> dict:
         if self._described is None:
             got = self._ask("describe", {}, wait=QUICK_SECONDS)
             if not isinstance(got, dict):
                 raise WorkerUnreachable("the sandbox worker did not describe itself")
+            self._agreed = self._agree_on_a_version(got)
             self._described = got
         return self._described
+
+    def _agree_on_a_version(self, described: dict) -> str:
+        """The newest version both sides have been TESTED against, or a refusal naming both.
+
+        No downgrade and no guessing. A worker that names no range at all is one from before
+        ranges existed; it is taken to speak the one version there was, which is the only
+        reading that is not an assumption.
+        """
+        theirs = described.get("protocol_versions")
+        theirs = tuple(str(v) for v in theirs) if isinstance(theirs, (list, tuple)) else (
+            wire.PROTOCOL,)
+        both = [v for v in wire.SUPPORTED if v in theirs]
+        if not both:
+            raise WorkerUnreachable(
+                "this gateway has been tested against %s and the worker at %s reports %s. They "
+                "share none, so nothing is sent: a version neither side has been tested against "
+                "is not a version to fall back to. The gateway is %s and the worker is %s -- "
+                "which build each side runs is a separate question from which wire version they "
+                "speak, and it is not the reason for this refusal."
+                % (", ".join(wire.SUPPORTED), self.address, ", ".join(theirs) or "nothing",
+                   _build_identity(), str(described.get("build") or "an unnamed build")))
+        return both[0]
+
+    def agreed_protocol(self) -> str:
+        """Which version the two sides settled on. Empty before they have spoken."""
+        return self._agreed
 
     def instance_label(self) -> str:
         return str(self._describe().get("instance_label") or "")

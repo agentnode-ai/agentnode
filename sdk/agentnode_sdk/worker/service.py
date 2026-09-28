@@ -73,6 +73,16 @@ DIRECTORY_MODE = 0o2750
 LOOK_UP_EVERY_SECONDS = 1.0
 
 
+def _build_identity() -> str:
+    """Which code this is. Diagnostic only: it never decides whether two sides may speak."""
+    try:
+        from agentnode_sdk import __version__
+
+        return "agentnode-sdk/%s" % __version__
+    except Exception:                                         # noqa: BLE001 - never worth failing
+        return "agentnode-sdk/unknown"
+
+
 def _sealing(chosen, fallback) -> bytes:
     """Which key an ANSWER is sealed with. During a rotation overlap a request may arrive under
     either key; the answer always goes back under the current one, which is the first of them.
@@ -293,6 +303,12 @@ class Bench:
                 "instance_label": self.label or self.worker.instance_label(),
                 "image_digest": self.worker.image_digest(),
                 "configuration_sha256": self.worker.configuration_sha256(),
+                # TWO SEPARATE FACTS. The range is what this worker has been TESTED to speak;
+                # the build is which code it is. A gateway refuses on the first and reports the
+                # second, so that a security update to one host does not need the other to be
+                # updated in lockstep to keep working.
+                "protocol_versions": list(wire.SUPPORTED),
+                "build": _build_identity(),
             }
         if method == "run":
             return self._run_at_most_once(self._job(params.get("job")))

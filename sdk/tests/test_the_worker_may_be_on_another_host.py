@@ -220,3 +220,51 @@ class TestBothSidesJudgeIndependently:
             assert host == "127.0.0.2"
         finally:
             listener.stop_serving()
+
+
+class TestTheTwoSidesAgreeOnAWireVersionFirst:
+    """R1/R12 and the decision's Q10: an untested version is refused, never fallen back to,
+    and the build each side runs is a separate fact from the version they speak."""
+
+    def test_the_supported_range_is_a_range_and_starts_as_one_version(self):
+        from agentnode_sdk.worker import protocol as wire
+
+        assert isinstance(wire.SUPPORTED, tuple) and len(wire.SUPPORTED) >= 1
+        assert wire.SUPPORTED[0] == wire.PROTOCOL
+
+    def test_a_worker_sharing_no_version_is_refused_before_any_work(self):
+        from agentnode_sdk.worker.remote import SocketWorker
+
+        client = SocketWorker(A_SOCKET, KEY)
+        with pytest.raises(WorkerUnreachable) as refused:
+            client._agree_on_a_version({"protocol_versions": ["agentnode-worker/99"],
+                                        "build": "agentnode-sdk/9.9.9"})
+        said = str(refused.value)
+        assert "agentnode-worker/99" in said, "the worker's range is named"
+        assert "agentnode-worker/1" in said, "and so is this side's"
+        assert "separate question" in said, "a build difference is not the reason"
+
+    def test_a_shared_version_is_agreed_and_not_downgraded(self):
+        from agentnode_sdk.worker.remote import SocketWorker
+        from agentnode_sdk.worker import protocol as wire
+
+        client = SocketWorker(A_SOCKET, KEY)
+        agreed = client._agree_on_a_version(
+            {"protocol_versions": ["agentnode-worker/99", wire.PROTOCOL]})
+        assert agreed == wire.PROTOCOL
+
+    def test_a_worker_from_before_ranges_existed_is_read_as_the_one_version_there_was(self):
+        from agentnode_sdk.worker.remote import SocketWorker
+        from agentnode_sdk.worker import protocol as wire
+
+        client = SocketWorker(A_SOCKET, KEY)
+        assert client._agree_on_a_version({}) == wire.PROTOCOL
+
+    def test_work_is_not_sent_before_a_version_is_agreed(self):
+        """The list is what makes this true, so the list is what is asserted: a method that
+        carries or acts on work waits for `describe`."""
+        from agentnode_sdk.worker.remote import SocketWorker
+
+        for method in ("run", "stop", "gone", "measure", "measure_egress"):
+            assert method in SocketWorker.JOB_BEARING
+        assert "describe" not in SocketWorker.JOB_BEARING
