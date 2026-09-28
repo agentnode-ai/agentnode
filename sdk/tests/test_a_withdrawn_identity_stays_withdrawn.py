@@ -22,8 +22,8 @@ import json
 import pytest
 
 from agentnode_sdk.pki import tombstones as T
+from tests.test_mtls_transport import DEPLOYMENT, _one_boot, world  # noqa: F401  (fixtures)
 
-DEPLOYMENT = "alpha"
 A_WORKER = "agentnode://alpha/worker/w1"
 
 
@@ -130,6 +130,45 @@ class TestWhatAVerifierDoesWithIt:
         view = TrustView(anchor=None, revocation_list=None, floor=None, floor_problem="",
                          role="gateway", identity_tombstones=None, tombstones_required=False)
         assert view.withdrawn(1000.0, A_WORKER) == frozenset()
+
+    def test_a_real_certificate_of_a_withdrawn_identity_is_refused(self, world):  # noqa: F811  (a pytest fixture, imported)
+        """The behavioural half, and the one that was missing. Everything else in this file is
+        about the list; the test below only reads the source of `check_peer`. This takes a
+        certificate this deployment's CA really issued, which is valid, has the right usage, the
+        right name and is NOT revoked -- exactly what a re-issued certificate for a withdrawn
+        name looks like -- and requires check 7 to refuse it on its own.
+        """
+        from agentnode_sdk.pki import identity as _identity
+        from agentnode_sdk.pki.trust import TrustView
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        folder = world.service("worker", "w1")
+        der = x509.load_pem_x509_certificate(
+            (folder / "cert.pem").read_bytes()).public_bytes(serialization.Encoding.DER)
+        uri = "agentnode://%s/worker/w1" % DEPLOYMENT
+        ca_key, _ca_cert = world._ca()
+        listed = world.root / "trust" / T.LIST_NAME
+        listed.write_bytes(T.publish(
+            DEPLOYMENT, [uri], now=__import__("time").time(),
+            signer=lambda body: ca_key.sign(body, ec.ECDSA(hashes.SHA256()))))
+
+        def view(with_the_list):
+            return TrustView.read(
+                anchor=world.anchor, revocation_list=world.revocation_list,
+                floor=world.floor_dir / "gateway.floor", role="gateway",
+                identity_tombstones=str(listed) if with_the_list else None,
+                tombstones_required=False)
+
+        # Without the list it passes every other check -- so the refusal below is check 7 and
+        # nothing else.
+        _identity.check_peer(der, deployment=DEPLOYMENT, expected_role="worker",
+                             accept_instances={"w1"}, trust=view(False))
+        with pytest.raises(_identity.PeerRefused) as refused:
+            _identity.check_peer(der, deployment=DEPLOYMENT, expected_role="worker",
+                                 accept_instances={"w1"}, trust=view(True))
+        assert "withdrawn" in str(refused.value)
 
     def test_the_check_is_part_of_checking_a_peer(self):
         import inspect

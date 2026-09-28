@@ -181,8 +181,11 @@ class TestOverTheRealTransport:
         settle()
 
         whole = " ".join(said)
-        assert "no_key_for_this_pair" in whole, "the cause is named, once"
+        # The leak first, deliberately. With both orders the test goes red when the exception's
+        # own message comes back -- but only this order goes red ON THE LEAK, and a counter-check
+        # that fails on the line above it has shown nothing about the property it names.
         assert "w9" not in whole, "and nothing else this worker holds is"
+        assert "no_key_for_this_pair" in whole, "the cause is named, once"
 
     def test_another_pairs_key_does_not_authenticate(self, pair):  # noqa: F811  (a pytest fixture, imported)
         """Two valid keyrings, for two different pairs. The frames do not verify."""
