@@ -287,3 +287,87 @@ class TestTheArtefacts:
         for claim in ("proves isolation", "isolated from each other",
                       "has been measured on two machines"):
             assert claim not in said
+
+
+class TestEachHostGetsItsOwnArtefact:
+    """R14 asks that both sides be installed, upgraded and rolled back BY A NAMED ARTEFACT.
+
+    Two independent reviews read the deploy directory and answered the same way: a directory of
+    scripts is not an artefact. `build_artefacts.py` produces one per role -- named, digested,
+    self-contained, and holding only that role's unit and scripts.
+
+    What it does NOT produce is two WHEELS. The same distribution is inside both, because there
+    is one, and `WHAT-THIS-IS.txt` says so to whoever unpacks it rather than leaving them to
+    find out. The property that makes that tolerable is the import graph above, not a promise.
+    """
+
+    def _built(self, tmp_path):
+        import subprocess
+        import sys
+
+        wheel = tmp_path / "agentnode_sdk-9.9.9-py3-none-any.whl"
+        wheel.write_bytes(b"a stand-in for the distribution; this test is about the artefact")
+        done = subprocess.run(
+            [sys.executable, str(DEPLOY / "build_artefacts.py"), "--wheel", str(wheel),
+             "--out", str(tmp_path / "out")],
+            capture_output=True, text=True, timeout=300)
+        assert done.returncode == 0, done.stdout + done.stderr
+        return tmp_path / "out", wheel
+
+    def _inside(self, artefact):
+        import tarfile
+
+        with tarfile.open(artefact) as tar:
+            return {m.name.split("/", 1)[1]: tar.extractfile(m).read()
+                    for m in tar.getmembers() if m.isfile() and "/" in m.name}
+
+    def test_there_is_one_per_role_and_each_is_named(self, tmp_path):
+        out, _ = self._built(tmp_path)
+        made = sorted(p.name for p in out.glob("*.tar.gz"))
+        assert made == ["agentnode-control-plane-9.9.9.tar.gz", "agentnode-worker-9.9.9.tar.gz"]
+
+    def test_neither_carries_the_others_unit(self, tmp_path):
+        """The one that would matter on a real machine: a worker host with the control plane's
+        unit on it is one `systemctl enable` away from being a single-host deployment nobody
+        decided on."""
+        out, _ = self._built(tmp_path)
+        worker = self._inside(out / "agentnode-worker-9.9.9.tar.gz")
+        control = self._inside(out / "agentnode-control-plane-9.9.9.tar.gz")
+
+        assert not [n for n in worker if "gateway.service" in n]
+        assert not [n for n in control if "worker.service" in n]
+        assert [n for n in worker if "worker.service" in n]
+        assert [n for n in control if "gateway.service" in n]
+
+    def test_each_holds_the_wheel_and_a_manifest_that_covers_everything(self, tmp_path):
+        import hashlib
+
+        out, wheel = self._built(tmp_path)
+        for name in ("agentnode-worker-9.9.9.tar.gz", "agentnode-control-plane-9.9.9.tar.gz"):
+            inside = self._inside(out / name)
+            assert inside["wheel/" + wheel.name] == wheel.read_bytes()
+
+            listed = {}
+            for line in inside["MANIFEST.sha256"].decode("utf-8").splitlines():
+                digest, path = line.split("  ", 1)
+                listed[path] = digest
+            for path, body in inside.items():
+                if path == "MANIFEST.sha256":
+                    continue
+                if path == "WHAT-THIS-IS.txt":
+                    continue          # written after the manifest; it is the label, not payload
+                assert listed.get(path) == hashlib.sha256(body).hexdigest(), path
+
+    def test_and_says_plainly_that_the_wheel_is_the_same_wheel(self, tmp_path):
+        out, _ = self._built(tmp_path)
+        said = self._inside(out / "agentnode-worker-9.9.9.tar.gz")["WHAT-THIS-IS.txt"].decode()
+        assert "THE WHEEL IS THE SAME WHEEL IN BOTH ARTEFACTS" in said
+        assert "splitting the" in said
+
+    def test_the_install_script_in_each_is_that_role_s(self, tmp_path):
+        out, _ = self._built(tmp_path)
+        worker = self._inside(out / "agentnode-worker-9.9.9.tar.gz")["install.sh"].decode()
+        control = self._inside(
+            out / "agentnode-control-plane-9.9.9.tar.gz")["install.sh"].decode()
+        assert "The worker half" in worker
+        assert "The control-plane half" in control

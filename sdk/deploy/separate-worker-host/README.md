@@ -27,6 +27,25 @@ host has the control-plane code on disk even though nothing starts it.
 | container runtime | none, and its account may not reach one | rootless podman, as itself |
 | listens on | the client port, deliberately opened | the private address only |
 
+## The two artefacts
+
+    python build_artefacts.py --wheel dist/agentnode_sdk-<v>-py3-none-any.whl
+
+writes one per role into `../artefacts/`:
+
+    agentnode-control-plane-<v>.tar.gz
+    agentnode-worker-<v>.tar.gz
+
+Each holds the wheel, that role's unit, that role's install, upgrade, rollback and diagnose
+scripts, and a `MANIFEST.sha256` over all of it. The build FAILS if either one contains the
+other's unit. Unpack the right one on each host, check the manifest, and run `./install.sh`.
+
+THE WHEEL INSIDE BOTH IS THE SAME WHEEL, and `WHAT-THIS-IS.txt` in each artefact says so to
+whoever unpacks it. There is one Python distribution containing both roles' modules, so a worker
+host has the control plane's code on disk with nothing starting it. What keeps that from being a
+quiet lie is the import graph, above: this role's start path reaches nothing of the other's, and
+a new crossing fails the suite.
+
 ## Installing
 
 On the control plane first, because it is the CA and the worker cannot be enrolled before one
