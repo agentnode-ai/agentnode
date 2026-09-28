@@ -90,9 +90,16 @@ def _monotonic() -> float:
 
 
 def _boot() -> str:
-    from agentnode_sdk.gateway.lifecycle import this_boot
+    """The kernel's boot id, or "" where the machine offers none.
 
-    return this_boot()
+    Read from `machine.py` rather than through `gateway.lifecycle`, which is where this used to
+    go: a floor is written and read on BOTH hosts, and a worker on its own machine has no
+    control-plane package to ask. Same value, same "" for a machine that cannot answer.
+    """
+    from agentnode_sdk import machine
+
+    value, method = machine.boot_identity()
+    return value if method == "kernel-boot-id" else ""
 
 
 class FloorUnusable(Exception):

@@ -63,6 +63,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from agentnode_sdk.pki import identity as _identity
+from agentnode_sdk.worker import pairkeys as _pairkeys
 from agentnode_sdk.worker import topology as _topology
 from agentnode_sdk.pki.trust import TrustView
 from agentnode_sdk.worker import WorkerUnreachable
@@ -552,8 +553,21 @@ class TlsListener:
             # caller sent. The lease is held by a named gateway, so the name has to come from
             # the same place the key does.
             self.bench._caller = str(getattr(connection.gateway, "instance", "") or "")
-            self.bench.converse(connection, noted=noted,
-                                key=self._keys_for(connection.gateway))
+            try:
+                for_this_caller = self._keys_for(connection.gateway)
+            except _pairkeys.KeyringRefused as refused:
+                # Closed without a word, as the wrong account on the socket is -- and the thread
+                # ENDS here rather than letting the refusal out of it. It used to escape into
+                # the connection thread, where Python printed a traceback naming every pair this
+                # worker does hold. A caller it holds no key for should learn nothing at all,
+                # and whoever reads the log should not be handed the keyring's index either.
+                self.say("  a caller this worker holds no key for was closed: " + refused.cause)
+                try:
+                    connection.close()
+                except OSError:                               # pragma: no cover
+                    pass
+                return
+            self.bench.converse(connection, noted=noted, key=for_this_caller)
         finally:
             self.watch.remove(handle)
 

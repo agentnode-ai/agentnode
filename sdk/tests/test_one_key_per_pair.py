@@ -164,6 +164,26 @@ class TestOverTheRealTransport:
         settle()
         assert door.stub.ran == [], "nothing ran for a pair the worker holds no key for"
 
+    def test_and_the_refusal_does_not_hand_back_the_keyrings_index(self, pair):  # noqa: F811  (a pytest fixture, imported)
+        """Found by the suite's own warning rather than by a test: the refusal escaped into the
+        connection thread, where Python printed a traceback listing every pair this worker DOES
+        hold ("This side holds keys for: g1<->w9"). A caller the worker has no key for should
+        learn nothing at all, and the log should not be handed the index either."""
+        world, gateway, _worker, door = pair  # noqa: F811  (a pytest fixture, imported)
+        door.listener.use_keyring(self._ring(worker_name="w9"), "w1")
+        said = []
+        door.listener.say = said.append
+
+        client = TlsWorker(door.address, b"", world.settings(gateway, {"w1"}))
+        client.use_keyring(self._ring(worker_name="w9"), "g1")
+        with pytest.raises(Exception):
+            client.run(a_job("unpaired"))
+        settle()
+
+        whole = " ".join(said)
+        assert "no_key_for_this_pair" in whole, "the cause is named, once"
+        assert "w9" not in whole, "and nothing else this worker holds is"
+
     def test_another_pairs_key_does_not_authenticate(self, pair):  # noqa: F811  (a pytest fixture, imported)
         """Two valid keyrings, for two different pairs. The frames do not verify."""
         world, gateway, _worker, door = pair  # noqa: F811  (a pytest fixture, imported)

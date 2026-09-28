@@ -1,0 +1,75 @@
+[Unit]
+# THE CONTROL PLANE, ALONE ON ITS MACHINE. It holds the CA, this gateway's signing identity,
+# every paired client's token material, the accounts, the queue and the ledger -- and there is
+# no container runtime on this host for it to reach even by mistake.
+#
+# Differences from `deploy/agentnode-gateway.service`, all of them consequences of the worker
+# being elsewhere:
+#
+#   * no `agentnode-bridge` supplementary group and no `After=agentnode-worker.service`. The
+#     worker is not a unit on this machine and nothing here can wait for it;
+#   * the worker is reached over mutual TLS at a private address, configured in
+#     `worker_address` + `worker_tls` in the gateway's own config.json. A gateway whose worker is
+#     unreachable does not run the job here instead: it says nobody established what happened.
+Description=AgentNode gateway (control plane, separate worker host)
+Documentation=https://agentnode.ai/docs/sandbox
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agentnode-gateway
+Group=agentnode-gateway
+
+EnvironmentFile=/etc/agentnode/gateway.env
+
+ExecStart=/opt/agentnode/venv/bin/agentnode gateway start \
+    --dir /var/lib/agentnode/state \
+    --host ${AGENTNODE_HOST} \
+    --port ${AGENTNODE_PORT}
+
+Restart=always
+RestartSec=2
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# It serves clients and it dials one private address. AF_UNIX stays because the interpreter and
+# the resolver use it; what it no longer needs is a worker socket, and there is not one.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+StateDirectory=agentnode
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/agentnode
+
+# Root writes the time floor this gateway judges certificate validity against, and this account
+# reads it. It is deliberately NOT under /var/lib/agentnode: that directory is this account's
+# own, and a floor it could write would be a floor it could move.
+ReadOnlyPaths=/var/lib/agentnode-floor
+ReadOnlyPaths=/etc/agentnode/trust
+
+# There is no container runtime on this machine. If one is ever installed here, diagnose.sh
+# reports it: the worker being elsewhere is the arrangement, and a runtime on the control plane
+# is the beginning of it quietly not being.
+
+[Install]
+WantedBy=multi-user.target

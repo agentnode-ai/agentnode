@@ -1,0 +1,109 @@
+[Unit]
+# THE WORKER, ON ITS OWN MACHINE. Everything this unit differs from `deploy/agentnode-worker.service`
+# in follows from one fact: the control plane is not here.
+#
+#   * no `agentnode-bridge` group, because there is no socket on this host for anybody to share.
+#     The gateway arrives over mutual TLS on the private network or it does not arrive;
+#   * no `--socket`, for the same reason. A unix socket on this machine could only be opened by
+#     something already on this machine, and nothing on this machine is entitled to give work;
+#   * `--topology separate-worker-host`, declared rather than inferred from the address. The
+#     worker checks the declaration against what it is about to bind and refuses a disagreement
+#     on its own, so it will not quietly bind a loopback address because whoever dials it
+#     believes it is local;
+#   * `--keyring` and `--journal`, both required under that topology and both refused-if-absent
+#     before a runtime is touched.
+#
+# What this unit still does NOT claim: that two machines isolate anything. That is measured on
+# two machines or not at all, and it has not been measured.
+Description=AgentNode sandbox worker (separate worker host)
+Documentation=https://agentnode.ai/docs/sandbox
+After=network-online.target
+Wants=network-online.target
+
+# The account's user manager owns the cgroups that hold this worker's ceilings. Written by
+# install-worker-host.sh into a drop-in, because the uid is a fact about the machine and %U in a
+# system unit resolves to the manager's uid rather than to the account in User=.
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+Type=simple
+User=agentnode-worker
+# Its OWN group and nothing else. Rootless podman maps subordinate ids through newuidmap, which
+# refuses when the process's gid is not the one in the account's passwd entry. There is no
+# supplementary group here at all: on this host there is nothing to share with.
+Group=agentnode-worker
+
+EnvironmentFile=/etc/agentnode/worker.env
+
+# Checked before anything is started, and checked again by the worker itself as it starts. The
+# same code, so the two cannot drift: a unit that validated its configuration with a second
+# implementation would eventually permit something the product refuses, or refuse something it
+# permits. Preflight opens nothing, binds nothing and prints no key material.
+ExecStartPre=/opt/agentnode/venv/bin/agentnode worker preflight \
+    --topology separate-worker-host \
+    --listen ${AGENTNODE_LISTEN} \
+    --keyring /etc/agentnode/pair-keys.json \
+    --journal /var/lib/agentnode-worker/journal \
+    --tls-dir /var/lib/agentnode-worker/tls \
+    --trust /etc/agentnode/trust/ca.pem \
+    --deployment ${AGENTNODE_DEPLOYMENT} \
+    --accept-gateway ${AGENTNODE_GATEWAY_INSTANCE} \
+    --revocation-list /etc/agentnode/trust/revoked.crl \
+    --tombstones /etc/agentnode/trust/withdrawn.json \
+    --floor /var/lib/agentnode-floor/worker.floor \
+    --key /etc/agentnode/worker.key
+
+ExecStart=/opt/agentnode/venv/bin/agentnode worker serve \
+    --topology separate-worker-host \
+    --listen ${AGENTNODE_LISTEN} \
+    --keyring /etc/agentnode/pair-keys.json \
+    --journal /var/lib/agentnode-worker/journal \
+    --tls-dir /var/lib/agentnode-worker/tls \
+    --trust /etc/agentnode/trust/ca.pem \
+    --deployment ${AGENTNODE_DEPLOYMENT} \
+    --accept-gateway ${AGENTNODE_GATEWAY_INSTANCE} \
+    --revocation-list /etc/agentnode/trust/revoked.crl \
+    --tombstones /etc/agentnode/trust/withdrawn.json \
+    --floor /var/lib/agentnode-floor/worker.floor \
+    --key /etc/agentnode/worker.key
+
+# There is no --for-user, and that is not an omission. It names the ONE LOCAL ACCOUNT allowed to
+# open the unix socket, and there is no socket here. Who may give this worker work is decided by
+# the certificate the caller presents and by the lease it holds, neither of which is a uid on
+# this machine.
+
+Restart=always
+RestartSec=10
+
+# The same deliberate trade as on one host, for the same reason: rootless podman creates its user
+# namespace through newuidmap, which is setuid-root, and NoNewPrivileges makes the uid_map write
+# fail. The alternative -- this account in the docker group -- is root-equivalent, which is
+# worse by a wide margin. The comment in deploy/agentnode-worker.service has the full argument.
+NoNewPrivileges=no
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=no
+ProtectClock=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+ProtectHome=no
+InaccessiblePaths=-/home
+InaccessiblePaths=-/root
+
+ReadWritePaths=/var/lib/agentnode-worker
+ReadWritePaths=/run/user
+
+# ONE difference from the single-host unit that is worth stating on its own: there is no
+# `InaccessiblePaths=-/var/lib/agentnode` here, because on this machine that directory does not
+# exist. If it ever does, something has put control-plane state on the worker host, and
+# diagnose.sh reports it as a finding rather than tidying it away.
+
+[Install]
+WantedBy=multi-user.target

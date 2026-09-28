@@ -710,6 +710,7 @@ class GatewayService:
         said = self.config.get("worker_tls")
         if not said:
             return None
+        from agentnode_sdk.worker import topology as _topology
         from agentnode_sdk.worker.tls import (DEFAULT_REEVALUATE_SECONDS, DEFAULT_RELOAD_SECONDS,
                                               TlsSettings)
 
@@ -718,6 +719,16 @@ class GatewayService:
         # right time. The two intervals have defaults, and their sum is the promised delay.
         needed = ("certificate", "key", "anchor", "deployment", "accept", "revocation_list",
                   "floor")
+        # AND THE WITHDRAWN IDENTITIES, once the worker is on another machine. Revocation is by
+        # SERIAL: issue a new certificate for the same instance name and it carries a new serial,
+        # which is not in the revocation list, while every other check passes because the
+        # certificate is perfectly genuine. On one host the issuer's inventory is right here to
+        # consult; across the boundary it is not, and the signed list of names is the only thing
+        # that makes a withdrawal stick. It was built in stage 9 and NOTHING READ IT -- a check
+        # that is only configured sometimes is not a check.
+        remote = str(self.config.get("worker_topology") or "") == _topology.SEPARATE_WORKER_HOST
+        if remote:
+            needed = needed + ("identity_tombstones",)
         missing = [k for k in needed if not said.get(k)]
         if missing:
             raise ValueError("worker_tls is missing %s; it is used whole or not at all"
@@ -727,6 +738,8 @@ class GatewayService:
                            accept=frozenset(str(a) for a in said["accept"]),
                            revocation_list=str(said["revocation_list"]),
                            floor=str(said["floor"]),
+                           identity_tombstones=str(said.get("identity_tombstones") or ""),
+                           tombstones_required=remote,
                            reload_seconds=float(said.get("reload_seconds")
                                                 or DEFAULT_RELOAD_SECONDS),
                            reevaluate_seconds=float(said.get("reevaluate_seconds")

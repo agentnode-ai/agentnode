@@ -449,9 +449,12 @@ class Worker(ABC):
 
     def boot_id(self) -> str:
         """Which boot of the machine THIS WORKER is on. The measurement describes that machine,
-        so the binding has to carry that machine's boot and not the asker's."""
+        so the binding has to carry that machine's boot and not the asker's.
+
+        From `machine.py`: which boot a machine is on belongs to neither role, and a worker on
+        its own host must not need the control plane's package to answer it about itself."""
         try:
-            from agentnode_sdk.gateway.boot import boot_identity
+            from agentnode_sdk.machine import boot_identity
 
             value, _how = boot_identity()
             return str(value or "")

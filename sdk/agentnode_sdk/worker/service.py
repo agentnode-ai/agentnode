@@ -76,9 +76,15 @@ LOOK_UP_EVERY_SECONDS = 1.0
 
 
 def _own_boot_id() -> str:
-    """This machine's boot identity, or empty when it has none to give."""
+    """This machine's boot identity, or empty when it has none to give.
+
+    From `machine.py`, which is nobody's role. This used to reach into the CONTROL PLANE's
+    package to ask which boot of the WORKER's own kernel it was on -- harmless while both are on
+    one host, and exactly the kind of dependency that makes a worker host need the control
+    plane's code.
+    """
     try:
-        from agentnode_sdk.gateway.boot import boot_identity
+        from agentnode_sdk.machine import boot_identity
 
         value, _how = boot_identity()
         return str(value or "")
@@ -392,6 +398,17 @@ class Bench:
         check here, before it is answered -- the TLS door uses it to know which run a connection
         carries, so that a connection cut because its caller was revoked also stops that run.
         """
+        # NOTHING IS READ WITHOUT A KEY TO READ IT WITH. On a worker that keeps one key per
+        # pair, `self.key` is None, and `key` is what the identity the handshake proved selected
+        # from the keyring. Both None means no key belongs to this caller -- and the answer is
+        # the same as for the wrong account on the socket: closed, without a word. Saying which
+        # part was wrong would tell whoever is asking that there is a right answer.
+        if key is None and self.key is None:
+            try:
+                connection.close()
+            except OSError:                                   # pragma: no cover
+                pass
+            return
         # Per connection and never on `self`: a field would be one thread's request id answered
         # to another thread's caller.
         asked = ""
@@ -797,7 +814,16 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
     # refuse one that spans a restart, so a failure here is a narrowing and not an opening.
     remembers_at = os.path.join(
         os.environ.get("HOME", "") or os.path.expanduser("~"), "replay-floor.json")
-    bench = Bench(the_worker, address, wire.read_key(key_path), only_uid,
+    # NO SHARED KEY ACROSS THE BOUNDARY. On one host the gateway and the worker authenticate
+    # their messages with one key in a file both accounts read. A worker on its own machine does
+    # not: it holds a key per (gateway, worker) pair, selected by the identity the handshake
+    # proved. This used to read the shared key unconditionally, so `Bench.key` stayed there as a
+    # FALLBACK -- and a fallback that is never supposed to be used is one nobody notices being
+    # used. It is None in that arrangement, and `converse` answers nothing without a pair key.
+    shared_key = None
+    if not (topology == _topology.SEPARATE_WORKER_HOST and keyring_path):
+        shared_key = wire.read_key(key_path)
+    bench = Bench(the_worker, address, shared_key, only_uid,
                   remembers_at=remembers_at)
     if journal_at:
         from agentnode_sdk.worker.journal import Journal
@@ -846,15 +872,26 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         # "also" only when there is something for it to be also to. A worker whose only door is
         # this one announced itself as though a socket were open beside it -- which on the closed
         # alpha, where the socket had deliberately been taken away, said the opposite of the truth.
-        print("  %slistening with mutual TLS at %s:%s, loopback only, as %s"
-              % ("also " if address else "", host, port, bench.label), flush=True)
+        # "loopback only" used to be printed whatever the address was, so a worker on its own
+        # machine announced itself as unreachable from anywhere else while listening on a
+        # private network address. What it says now is what it is in.
+        print("  %slistening with mutual TLS at %s:%s, %s, as %s"
+              % ("also " if address else "", host, port,
+                 "loopback only" if topology == _topology.SINGLE_HOST_DEVELOPMENT
+                 else "topology " + topology, bench.label), flush=True)
         print("  it accepts gateway instance(s): " + ", ".join(sorted(tls.accept)), flush=True)
     if address:
         print("  listening at " + path + " for uid " + str(only_uid))
     else:
         print("  there is NO unix socket: this worker answers over mutual TLS and nothing else.")
     print("  this worker holds no pairing state, no signing identity and no client's token.")
-    print("  On one host, two accounts are not isolation: see ALPHA-BOUNDARY-0001.")
+    if topology == _topology.SINGLE_HOST_DEVELOPMENT:
+        print("  On one host, two accounts are not isolation: see ALPHA-BOUNDARY-0001.")
+    else:
+        # And no claim in the other direction either. This process cannot establish where it is
+        # running; it can only say what it was told and what it did about it.
+        print("  This worker was started for its own machine. That two machines isolate")
+        print("  anything is measured from outside, on two kernels, and not by this process.")
     print("  a ceiling was hit here before this door opened, and it held.")
     print("  it can also write down what it accepts, which is what refuses a replay after a "
           "restart.")
