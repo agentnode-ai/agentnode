@@ -96,11 +96,16 @@ CLEANED = "cleaned"
 #: Cleanup could not be established, and that is recorded as itself rather than as either
 #: of the other two.
 CLEANUP_UNPROVEN = "cleanup_unproven"
+#: Claimed and never started -- the crash happened between the claim and the container. Settled,
+#: because nothing ran and nothing will: separate from `unknown`, which is a run that DID begin
+#: and whose end nobody can establish. Conflating the two would bill one of them.
+NEVER_STARTED = "never_started"
 
-STATES = (ACCEPTED, STARTED, FINISHED, CLEANUP_PENDING, CLEANED, CLEANUP_UNPROVEN)
+STATES = (ACCEPTED, STARTED, FINISHED, CLEANUP_PENDING, CLEANED, CLEANUP_UNPROVEN,
+          NEVER_STARTED)
 
 #: States from which nothing more will happen on its own.
-SETTLED = (FINISHED, CLEANED, CLEANUP_UNPROVEN)
+SETTLED = (FINISHED, CLEANED, CLEANUP_UNPROVEN, NEVER_STARTED)
 
 # ------------------------------------------------------------- what a claim comes back as
 
@@ -116,6 +121,8 @@ UNKNOWN = "unknown"
 CONFLICT = "conflict"
 #: A record that exists and cannot be believed. Refuses, like every other unreadable thing here.
 UNREADABLE = "unreadable"
+#: Claimed, never started, and now settled that way.
+DID_NOT_RUN = "did_not_run"
 
 
 class JournalRefused(Exception):
@@ -299,7 +306,7 @@ class Journal:
 
     # ------------------------------------------------------------------ the decision
 
-    def claim(self, run_id: str, request_digest: str) -> Claim:
+    def claim(self, run_id: str, request_digest: str, container: str = "") -> Claim:
         """May this delivery execute? The ONLY place that answer is produced.
 
         Creating the record and deciding to run are the same act -- they are not two steps with
@@ -315,6 +322,10 @@ class Journal:
             "format": FORMAT,
             "run_id": run_id,
             "request_digest": str(request_digest),
+            # The container's NAME, so that a restarted worker can correlate what the runtime
+            # still holds with what it was asked to do. A name the gateway derived from the run
+            # id -- not the work, which stays out of here.
+            "container": str(container),
             "state": ACCEPTED,
             "accepted_at": self._now(),
             "started_at": None,
@@ -360,6 +371,8 @@ class Journal:
                 "thing to fix -- this worker will not choose between them.")
 
         state = str(record.get("state") or "")
+        if state == NEVER_STARTED:
+            return Claim(DID_NOT_RUN, run_id, state=state, recorded_digest=recorded)
         if state in (FINISHED, CLEANUP_PENDING, CLEANED, CLEANUP_UNPROVEN):
             began, ended = record.get("started_at"), record.get("finished_at")
             return Claim(DONE, run_id, state=state, outcome=record.get("outcome"),
@@ -406,6 +419,27 @@ class Journal:
         state = (CLEANED if verified is True
                  else CLEANUP_UNPROVEN if verified is None else CLEANUP_PENDING)
         self._amend(run_id, state=state, cleanup=verified)
+
+    def note_never_started(self, run_id: str) -> None:
+        """Settle a claim whose container was never started. Nothing ran; nothing is owed."""
+        self._amend(run_id, state=NEVER_STARTED, finished_at=self._now())
+
+    def unsettled(self) -> list:
+        """(run_id, state, container) for everything still in flight, for a worker that has
+        just started and has to find out what it left behind."""
+        out = []
+        for name in sorted(os.listdir(self.at)):
+            if not name.endswith(".json") or ".new." in name:
+                continue
+            try:
+                record = json.loads(open(os.path.join(self.at, name), "rb").read().decode())
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue                                      # damaged: never guessed at
+            if str(record.get("state")) in SETTLED:
+                continue
+            out.append((str(record.get("run_id") or ""), str(record.get("state") or ""),
+                        str(record.get("container") or "")))
+        return out
 
     def acknowledge(self, run_id: str) -> None:
         """The control plane has the outcome and has written its own line. After this the
@@ -461,7 +495,7 @@ class Journal:
                     if n.endswith(".json") and ".new." not in n])
 
 
-__all__ = ["ACCEPTED", "CLEANED", "CLEANUP_PENDING", "CLEANUP_UNPROVEN", "CONFLICT", "Claim",
+__all__ = ["ACCEPTED", "CLEANED", "DID_NOT_RUN", "NEVER_STARTED", "CLEANUP_PENDING", "CLEANUP_UNPROVEN", "CONFLICT", "Claim",
            "DONE", "FINISHED", "FORMAT", "FRESH", "IN_FLIGHT", "Journal", "JournalRefused",
            "KEEP_AT_MOST", "KEEP_UNACKNOWLEDGED_SECONDS", "MOST_TEXT", "SETTLED", "STARTED",
            "STATES", "UNKNOWN", "UNREADABLE", "digest_of_job"]

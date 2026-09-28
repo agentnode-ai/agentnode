@@ -38,6 +38,7 @@ from agentnode_sdk.worker import (
     Limits,
 )
 from agentnode_sdk.worker import protocol as wire
+from agentnode_sdk.worker import journal as _journal
 from agentnode_sdk.worker import lease as _lease
 from agentnode_sdk.worker import topology as _topology
 
@@ -83,6 +84,51 @@ def _own_boot_id() -> str:
         return str(value or "")
     except Exception:                                         # noqa: BLE001 - never worth failing
         return ""
+
+
+def reconcile_what_was_left(bench, *, say=None) -> dict:
+    """What this worker left behind when it stopped, correlated with what it was asked to do.
+
+    The sweep it replaces removed every container carrying one of this SDK's prefixes and
+    reported three lists of NAMES. That is the right action and the wrong record: a name is not
+    a run, so the gateway could not be told which run had been cleaned up, and the distinction
+    between "cleaned", "could not be cleaned" and "nothing was there" was lost at the moment it
+    mattered most.
+
+    This correlates them. For every journal record that is not settled:
+
+      * `accepted` -- claimed and never started, so nothing ran and nothing is to be cleaned.
+        Settled as `never_started`, which is a DIFFERENT answer from `unknown` and costs the
+        customer a different amount.
+      * `started` -- it began. Its outcome stays unknown forever, and what can still be settled
+        is the container: removed and proven gone, or not proven, recorded as itself.
+    """
+    said = say or (lambda text: None)
+    if bench.journal is None:
+        return {"considered": 0}
+    settled = {"never_started": 0, "cleaned": 0, "unproven": 0, "considered": 0}
+    for run_id, state, container in bench.journal.unsettled():
+        settled["considered"] += 1
+        if state == _journal.ACCEPTED:
+            bench.journal.note_never_started(run_id)
+            settled["never_started"] += 1
+            said("  run %s was claimed and never started" % run_id)
+            continue
+        verified = None
+        if container:
+            try:
+                bench.worker.stop(run_id, container, 0.0)
+            except Exception:                                 # noqa: BLE001
+                pass
+            try:
+                verified = bench.worker.gone(container, patiently=False).verified
+            except Exception:                                 # noqa: BLE001
+                verified = None
+        bench.journal.note_cleanup(run_id, verified)
+        settled["cleaned" if verified is True else "unproven"] += 1
+        said("  run %s was interrupted; its sandbox is %s"
+             % (run_id, "gone" if verified is True else "not provably gone"))
+    return settled
 
 
 class LeaseWatch:
@@ -506,7 +552,8 @@ class Bench:
         from agentnode_sdk.worker import journal as _journal
 
         try:
-            claim = self.journal.claim(job.run_id, _journal.digest_of_job(job))
+            claim = self.journal.claim(job.run_id, _journal.digest_of_job(job),
+                                       container=job.container_name)
         except _journal.JournalRefused as refused:
             # FAIL CLOSED. A worker that cannot write down what it is about to do could do it
             # again, so it does not do it at all.
@@ -515,6 +562,14 @@ class Bench:
                 else wire.JOURNAL_REFUSED,
                 refused.because + " " + refused.what_to_do) from refused
 
+        if claim.verdict == _journal.DID_NOT_RUN:
+            # Claimed once and never started -- the worker died between the two. Settled, and
+            # settled as "it did not run", which is not the same as "nobody knows": that
+            # distinction is the difference between billing it and not.
+            raise wire.ProtocolError(
+                wire.OUTCOME_UNKNOWN,
+                "run %s was claimed on this worker and never started, and it has been settled "
+                "that way. It is not started now: the run id has been used." % job.run_id)
         if claim.verdict == _journal.DONE:
             # Already run. The recorded outcome IS the answer -- re-running it to produce a
             # fresh one would be running foreign code twice to avoid reading a file.
@@ -571,8 +626,11 @@ class Bench:
         known = self.journal.look(run_id)
         if known is None:
             return {"known": False, "state": "", "outcome": None, "cleanup": None,
-                    "ran_for": None}
+                    "ran_for": None, "never_ran": False}
         return {"known": True, "state": known.state,
+                # SETTLED AS NOT HAVING RUN. Reported separately from an unknown outcome
+                # because the two cost different amounts: one is billed and one is not.
+                "never_ran": known.verdict == _journal.DID_NOT_RUN,
                 "outcome": known.outcome if known.verdict == _journal.DONE else None,
                 "cleanup": known.cleanup,
                 "unknown_outcome": known.verdict == _journal.UNKNOWN,
@@ -752,6 +810,11 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         # entitled to have asked. Started here rather than inside `Leases` so that a test can
         # drive one pass of it without a thread.
         LeaseWatch(bench, say=print).start()
+        # BEFORE THE DOOR OPENS. What this worker left behind last time is settled while
+        # nothing new can arrive, so a gateway asking about an interrupted run gets an answer
+        # rather than a record that is still being written.
+        print("  reconciling what the previous worker left: %r"
+              % (reconcile_what_was_left(bench, say=print),))
 
     # Before the socket, like the ceiling. What a worker has already accepted is what stops a
     # message captured earlier being replayed after a restart, and a worker that cannot record

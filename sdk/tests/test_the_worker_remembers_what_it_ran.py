@@ -327,3 +327,110 @@ class TestAcrossTheBoundaryAJournalIsRequired:
         from agentnode_sdk.worker.service import Bench
 
         assert Bench.journal is None
+
+
+class TestWhatAWorkerFindsWhenItStartsAgain:
+    """R8 and Codex's note: startup sweeping must correlate containers with journalled run ids
+    and record cleaned / cleanup-failed / cleanup-unproven, rather than erasing the
+    distinction. The sweep it replaces removed containers and reported three lists of NAMES --
+    the right action, the wrong record."""
+
+    class Runtime:
+        def __init__(self, verified=True):
+            self.stopped, self.asked = [], []
+            self._verified = verified
+
+        def stop(self, run_id, container, appear):
+            self.stopped.append(container)
+            return True
+
+        def gone(self, container, patiently=True):
+            from agentnode_sdk.worker import Gone
+
+            self.asked.append(container)
+            if self._verified is None:
+                return Gone(answered=False)
+            return Gone(answered=True, left=() if self._verified else ("c",))
+
+    def _bench(self, tmp_path, runtime):
+        from agentnode_sdk.worker.service import Bench
+
+        bench = Bench(runtime, "unix:///nowhere.sock", b"k" * 32, only_uid=None)
+        bench.journal = J.Journal(tmp_path / "journal")
+        return bench
+
+    def test_a_claim_that_never_started_is_settled_as_not_having_run(self, tmp_path):
+        """Different from `unknown`, and the difference is what it costs: one is billed."""
+        from agentnode_sdk.worker.service import reconcile_what_was_left
+
+        bench = self._bench(tmp_path, self.Runtime())
+        job = a_job(run_id="claimed-only")
+        bench.journal.claim(job.run_id, J.digest_of_job(job), container=job.container_name)
+
+        got = reconcile_what_was_left(bench)
+        assert got["never_started"] == 1
+        after = bench.journal.look("claimed-only")
+        assert after.state == J.NEVER_STARTED
+        assert after.verdict == J.DID_NOT_RUN
+        assert bench.worker.stopped == [], "nothing was started, so nothing is stopped"
+
+    def test_an_interrupted_run_has_its_sandbox_settled(self, tmp_path):
+        from agentnode_sdk.worker.service import reconcile_what_was_left
+
+        bench = self._bench(tmp_path, self.Runtime(verified=True))
+        job = a_job(run_id="was-running")
+        bench.journal.claim(job.run_id, J.digest_of_job(job), container=job.container_name)
+        bench.journal.note_started(job.run_id)
+
+        got = reconcile_what_was_left(bench)
+        assert got["cleaned"] == 1
+        assert bench.worker.asked == [job.container_name]
+        assert bench.journal.look("was-running").state == J.CLEANED
+
+    def test_and_a_sandbox_that_cannot_be_proven_gone_says_so(self, tmp_path):
+        from agentnode_sdk.worker.service import reconcile_what_was_left
+
+        bench = self._bench(tmp_path, self.Runtime(verified=None))
+        job = a_job(run_id="unsure")
+        bench.journal.claim(job.run_id, J.digest_of_job(job), container=job.container_name)
+        bench.journal.note_started(job.run_id)
+
+        got = reconcile_what_was_left(bench)
+        assert got["unproven"] == 1
+        assert bench.journal.look("unsure").state == J.CLEANUP_UNPROVEN
+
+    def test_an_interrupted_runs_OUTCOME_is_still_unknown_afterwards(self, tmp_path):
+        """Settling the container settles the container. It does not invent an outcome, and it
+        must not make the run look like one that completed."""
+        from agentnode_sdk.worker.service import reconcile_what_was_left
+
+        bench = self._bench(tmp_path, self.Runtime())
+        job = a_job(run_id="no-outcome")
+        bench.journal.claim(job.run_id, J.digest_of_job(job), container=job.container_name)
+        bench.journal.note_started(job.run_id)
+        reconcile_what_was_left(bench)
+
+        assert bench.journal.look("no-outcome").outcome is None
+
+    def test_a_settled_run_is_left_alone(self, tmp_path):
+        from agentnode_sdk.worker.service import reconcile_what_was_left
+
+        bench = self._bench(tmp_path, self.Runtime())
+        job = a_job(run_id="done")
+        bench.journal.claim(job.run_id, J.digest_of_job(job), container=job.container_name)
+        bench.journal.note_started(job.run_id)
+        bench.journal.note_finished(job.run_id, {"exit_code": 0})
+
+        assert reconcile_what_was_left(bench)["considered"] == 0
+        assert bench.worker.stopped == []
+
+    def test_a_settled_claim_cannot_be_run_afterwards(self, tmp_path):
+        """The run id has been used. Re-delivering it is not a retry of something in flight."""
+        from agentnode_sdk.worker.service import reconcile_what_was_left
+
+        bench = self._bench(tmp_path, self.Runtime())
+        job = a_job(run_id="spent")
+        bench.journal.claim(job.run_id, J.digest_of_job(job), container=job.container_name)
+        reconcile_what_was_left(bench)
+
+        assert not bench.journal.claim(job.run_id, J.digest_of_job(job)).may_execute

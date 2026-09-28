@@ -43,7 +43,7 @@ class TestTheWorkerCanBeAsked:
     def test_a_run_it_never_heard_of(self, tmp_path):
         said = self._bench(tmp_path)._result("never-asked")
         assert said == {"known": False, "state": "", "outcome": None, "cleanup": None,
-                        "ran_for": None}
+                        "ran_for": None, "never_ran": False}
 
     def test_a_run_it_finished(self, tmp_path):
         bench = self._bench(tmp_path)
