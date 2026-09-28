@@ -492,6 +492,14 @@ class Worker(ABC):
         """
         return Recovered(known=False, keeps_a_record=False)
 
+    def close(self) -> None:
+        """Let go of whatever this client holds. Nothing, for a worker that holds nothing.
+
+        Here so that a caller can close ANY worker without asking which kind it has. The
+        socket and TLS clients override it: they hold a lease heartbeat and, over TLS, a watch
+        thread that re-reads the trust files for as long as it lives.
+        """
+
     def acknowledge(self, run_id: str) -> None:
         """Tell the worker this gateway has the outcome and has written its own line, so the
         record may be let go. Best-effort: retention has a window that does not depend on it."""

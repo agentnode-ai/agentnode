@@ -3230,6 +3230,19 @@ class GatewayService:
         except Exception:                                      # noqa: BLE001
             pass
 
+        # AND THE WORKER CLIENT, which holds a lease heartbeat and -- over TLS -- a watch thread
+        # that re-reads the anchor, the revocation list and the floor for as long as it lives.
+        # Nothing used to stop either: a gateway that went away left them running, which is
+        # invisible while the gateway IS the process and is a leak in anything that makes one
+        # and finishes with it.
+        worker = getattr(self, "_worker", None)
+        if worker is not None:
+            try:
+                worker.close()
+            except Exception:                                  # noqa: BLE001 - going away anyway
+                pass
+            self._worker = None
+
         pool = getattr(self, "stopping", None)
         left_stopping = list(pool.close() or ()) if pool is not None else []
 

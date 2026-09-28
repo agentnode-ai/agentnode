@@ -260,6 +260,70 @@ class TestTheTwoSidesAgreeOnAWireVersionFirst:
         client = SocketWorker(A_SOCKET, KEY)
         assert client._agree_on_a_version({}) == wire.PROTOCOL
 
+    def test_the_handshake_a_job_triggers_is_bounded_by_that_job(self):
+        """CI found this and the local suite could not have.
+
+        A job carries its own bound -- its wall clock plus the margin -- and the handshake that
+        has to happen before it crosses used to wait a flat `QUICK_SECONDS` instead. So a worker
+        that accepted the connection and then said nothing held the gateway for SIXTY SECONDS
+        before a job allowed ONE was given up on, and the wait stopped being the job's.
+
+        `test_socket_worker.py::TestAWorkerThatTakesTheCallAndSaysNothing` defends that property
+        over a real unix socket, and it is skipped on Windows, where there are no unix sockets.
+        This one asks the same question of the arithmetic, so it runs everywhere.
+        """
+        from agentnode_sdk.sandbox.contract import Limits
+        from agentnode_sdk.worker import Job
+        from agentnode_sdk.worker import protocol as wire
+        from agentnode_sdk.worker.remote import QUICK_SECONDS, SocketWorker
+
+        client = SocketWorker(A_SOCKET, KEY, run_margin=3.0)
+        seen = {}
+
+        # `wait` is DEFAULTED, so that a build which stopped passing one records the flat
+        # allowance and fails this test on the property rather than on a TypeError. A
+        # counter-check that goes red on the double's signature has shown nothing.
+        def described(*, wait=QUICK_SECONDS):
+            # The REAL `_ask` decides this budget; only the handshake itself is stood in for,
+            # so that nothing here needs a socket.
+            seen["describe"] = wait
+            client._agreed = wire.PROTOCOL
+            return {"protocol_versions": [wire.PROTOCOL]}
+
+        def nothing_is_listening(budget=None):
+            raise WorkerUnreachable("nothing is listening in this test")
+
+        client._describe = described
+        client._open = nothing_is_listening
+
+        with pytest.raises(WorkerUnreachable):
+            client.run(Job(run_id="r" * 32, container_name="agentnode-bound-1",
+                           command=("python", "-c", "print(1)"), artifact=b"print(1)",
+                           stdin="", network="none", allowed_domains=(),
+                           limits=Limits(wall_clock_s=1)))
+
+        assert "describe" in seen, "a job that crosses first triggers the handshake"
+        assert seen["describe"] <= 1 + client.run_margin, (
+            "the handshake was given %ss for a job allowed 1s plus a %ss margin"
+            % (seen["describe"], client.run_margin))
+
+    def test_and_a_handshake_nobody_asked_for_keeps_the_ordinary_allowance(self):
+        """The bound is the CALLER'S, not a new smaller constant: `describe` asked for in its
+        own right is not a job and has no job's clock to borrow."""
+        from agentnode_sdk.worker import protocol as wire
+        from agentnode_sdk.worker.remote import QUICK_SECONDS, SocketWorker
+
+        client = SocketWorker(A_SOCKET, KEY)
+        asked = []
+
+        def instead(method, params, *, wait, run_id=""):
+            asked.append((method, wait))
+            return {"protocol_versions": [wire.PROTOCOL]}
+
+        client._ask = instead
+        client._describe()
+        assert asked == [("describe", QUICK_SECONDS)]
+
     def test_work_is_not_sent_before_a_version_is_agreed(self):
         """The list is what makes this true, so the list is what is asserted: a method that
         carries or acts on work waits for `describe`."""
@@ -268,3 +332,69 @@ class TestTheTwoSidesAgreeOnAWireVersionFirst:
         for method in ("run", "stop", "gone", "measure", "measure_egress"):
             assert method in SocketWorker.JOB_BEARING
         assert "describe" not in SocketWorker.JOB_BEARING
+
+
+class TestAWatchWithNothingToWatch:
+    """The thread that re-reads the trust files stops when there is nothing left to re-evaluate.
+
+    It used to run until `stop()`, and on the CLIENT side nothing ever called that: a gateway
+    that finished with a worker left a thread re-reading the anchor, the revocation list and the
+    floor every few seconds for the life of the process. Invisible in production, where the
+    gateway IS the process -- and CI found it, as file descriptors appearing and disappearing
+    underneath `test_lifecycle_release.py`, a test about a gateway giving everything back.
+
+    That file counts descriptors, which it can only do where the platform can be asked; on
+    Windows it skips, so the local suite could not have found this. These tests ask the same
+    question of the thread instead, so they run everywhere.
+    """
+
+    def _a_watch(self, world):  # noqa: F811  (a pytest fixture, imported)
+        from agentnode_sdk.pki import identity as _identity
+        from agentnode_sdk.worker.tls import Watch
+
+        return Watch(world.settings(world.service("gateway", "g-watch"), {"w1"}),
+                     _identity.GATEWAY, say=lambda _text: None)
+
+    def _quiet(self, watch, seconds=10.0):
+        import time as _time
+
+        until = _time.time() + seconds
+        while _time.time() < until and watch._thread is not None:
+            _time.sleep(0.05)
+        return watch._thread
+
+    def test_it_ends_once_the_last_connection_is_gone(self, world):  # noqa: F811  (a pytest fixture, imported)
+        from types import SimpleNamespace
+
+        watch = self._a_watch(world)
+        handle = watch.add(SimpleNamespace(fileno=lambda: -1), b"", None)
+        assert watch._thread is not None, "a connection to watch starts the watcher"
+
+        watch.remove(handle)
+        assert self._quiet(watch) is None, (
+            "the watcher went on re-reading the trust files with nothing to watch")
+
+    def test_and_the_next_connection_starts_a_fresh_one(self, world):  # noqa: F811  (a pytest fixture, imported)
+        """Stopping when idle is only safe if it comes back. This is the half that makes it so."""
+        from types import SimpleNamespace
+
+        watch = self._a_watch(world)
+        watch.remove(watch.add(SimpleNamespace(fileno=lambda: -1), b"", None))
+        assert self._quiet(watch) is None
+
+        watch.add(SimpleNamespace(fileno=lambda: -1), b"", None)
+        try:
+            assert watch._thread is not None
+        finally:
+            watch.stop()
+
+    def test_a_client_can_be_closed_and_says_nothing_afterwards(self, world):  # noqa: F811  (a pytest fixture, imported)
+        """And the explicit half: a caller that is finished with a worker can say so. The
+        gateway does, in `close()`; before this there was nothing to call."""
+        from agentnode_sdk.worker.remote import TlsWorker
+
+        gateway = world.service("gateway", "g-close")
+        client = TlsWorker("tcps://127.0.0.1:1", KEY, world.settings(gateway, {"w1"}))
+        client.close()
+        client.close()                                        # idempotent, by design
+        assert client.watch._stopped

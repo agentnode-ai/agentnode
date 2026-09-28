@@ -312,6 +312,19 @@ class Watch:
     def _loop(self) -> None:
         while not self._stopped:
             time.sleep(float(self.settings.reevaluate_seconds))
+            # NOTHING LEFT TO WATCH, SO IT STOPS WATCHING. `add` starts a fresh one when a
+            # connection next needs watching, which is the same code path as the first time.
+            #
+            # It used to run until `stop()`, and on the CLIENT side nothing ever called that:
+            # a gateway that finished with a worker left a thread re-reading the anchor, the
+            # revocation list and the floor every few seconds, for the life of the process.
+            # Invisible in production, where the gateway IS the process -- and CI found it as
+            # file descriptors appearing and disappearing underneath a test about a gateway
+            # giving everything back. A watch with nothing to watch is only reading files.
+            with self._lock:
+                if not self._open:
+                    self._thread = None
+                    return
             try:
                 self.pass_once()
             except Exception as exc:                          # noqa: BLE001 - keep watching

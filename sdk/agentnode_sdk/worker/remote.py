@@ -177,11 +177,19 @@ class SocketWorker(Worker):
         # BEFORE ANY WORK CROSSES. `describe` negotiates; everything that carries or acts on
         # work waits for that to have happened. A mismatch therefore refuses before a job is
         # sent rather than after one has been half-processed.
+        #
+        # AND BOUNDED BY THE CALLER'S OWN BUDGET. The handshake used to wait `QUICK_SECONDS`
+        # flat, so a worker that accepted the connection and then said nothing held the gateway
+        # for a minute before a job allowed one second was given up on -- the wait stopped being
+        # the job's, which is the property `test_socket_worker.py::
+        # TestAWorkerThatTakesTheCallAndSaysNothing` exists to defend. It caught this on Linux
+        # in CI; the whole file is skipped on Windows, where there are no unix sockets, so the
+        # local suite could not have.
         if method in self.JOB_BEARING and not self._agreed:
-            self._describe()
+            self._describe(wait=min(wait, QUICK_SECONDS))
         if method in self.JOB_BEARING and self._leasing:
             params = dict(params)
-            params["lease_epoch"] = self._hold_a_lease()
+            params["lease_epoch"] = self._hold_a_lease(wait=min(wait, QUICK_SECONDS))
         deadline = time.time() + wait
         body = wire.request(method, params, deadline=deadline)
         connection, who = self._open()
@@ -297,9 +305,12 @@ class SocketWorker(Worker):
     #: shown to speak a wire version both have been tested against.
     JOB_BEARING = ("run", "stop", "gone", "measure", "measure_egress")
 
-    def _describe(self) -> dict:
+    def _describe(self, *, wait: float = QUICK_SECONDS) -> dict:
+        # `wait` is the CALLER'S budget when a job triggered this, and QUICK_SECONDS when
+        # somebody asked for a description in its own right. A handshake that outlasts the job
+        # that needed it turns the job's own bound into a fiction.
         if self._described is None:
-            got = self._ask("describe", {}, wait=QUICK_SECONDS)
+            got = self._ask("describe", {}, wait=wait)
             if not isinstance(got, dict):
                 raise WorkerUnreachable("the sandbox worker did not describe itself")
             self._agreed = self._agree_on_a_version(got)
@@ -338,10 +349,12 @@ class SocketWorker(Worker):
         self._leasing = True
         return self._hold_a_lease()
 
-    def _hold_a_lease(self) -> int:
+    def _hold_a_lease(self, *, wait: float = QUICK_SECONDS) -> int:
+        # Bounded the same way and for the same reason: taking a lease is something a job made
+        # this side do, so it may not outlast what that job was allowed.
         with self._lease_lock:
             if self._lease_epoch is None:
-                said = self._ask("take_lease", {}, wait=QUICK_SECONDS)
+                said = self._ask("take_lease", {}, wait=wait)
                 self._lease_epoch = int((said or {}).get("epoch") or 0)
                 self._renew_within = float((said or {}).get("renew_within") or 5.0)
                 self._start_the_heartbeat()
@@ -379,6 +392,17 @@ class SocketWorker(Worker):
             self._stop_beating.set()
         self._heartbeat = None
         self._leasing = False
+
+    def close(self) -> None:
+        """Let go of what this client holds. Idempotent, and never raises.
+
+        On a socket that is the lease heartbeat and nothing else. `TlsWorker` extends it,
+        because the TLS client also keeps a watch thread that re-reads the trust files.
+        """
+        try:
+            self.stop_leasing()
+        except Exception:                                     # noqa: BLE001 - going away anyway
+            pass
 
     def agreed_protocol(self) -> str:
         """Which version the two sides settled on. Empty before they have spoken."""
@@ -525,6 +549,22 @@ class TlsWorker(SocketWorker):
         # Watched until it is closed; a closed one is dropped at the next pass.
         self.watch.add(connection, der, who)
         return connection, who
+
+    def close(self) -> None:
+        """The lease heartbeat, and THE WATCH THREAD, which nothing used to stop.
+
+        `Watch` starts on the first connection and re-reads the anchor, the revocation list and
+        the floor every `reevaluate_seconds` for as long as it lives. In production the gateway
+        IS the process, so a thread that outlives its client is invisible; in anything that
+        makes a client and finishes with it -- a test, an embedded caller -- it goes on opening
+        those three files forever. CI found it as file descriptors appearing and disappearing
+        under a test about a gateway giving everything back.
+        """
+        super().close()
+        try:
+            self.watch.stop()
+        except Exception:                                     # noqa: BLE001 - going away anyway
+            pass
 
     def use_keyring(self, keyring, own_instance: str) -> None:
         """Authenticate frames with this pair's key instead of one key for everybody.

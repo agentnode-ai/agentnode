@@ -232,6 +232,34 @@ CHECKS = [
     # and the R14 artefacts -- and was right that naming a gap is not closing it. These six
     # close those four and cover the two R11 fixes that round found.
 
+    dict(id="a-handshake-a-job-triggered-is-the-jobs-wait",
+         area="R1/R6 -- a worker that accepts and then says nothing held the gateway for a flat "
+              "minute before a job allowed one second was given up on. CI found it; the local "
+              "suite could not, because the socket lane is skipped where there are no unix "
+              "sockets",
+         file="agentnode_sdk/worker/remote.py",
+         edits=[("            self._describe(wait=min(wait, QUICK_SECONDS))\n",
+                 "            self._describe()\n")],
+         test=HOST + "TestTheTwoSidesAgreeOnAWireVersionFirst::"
+                     "test_the_handshake_a_job_triggers_is_bounded_by_that_job",
+         expect="the handshake was given",
+         green=[HOST + "TestTheTwoSidesAgreeOnAWireVersionFirst::"
+                       "test_and_a_handshake_nobody_asked_for_keeps_the_ordinary_allowance"]),
+
+    dict(id="a-watch-with-nothing-to-watch-stops",
+         area="R14 hygiene, found by CI: the client's watch thread re-read the trust files "
+              "forever, because nothing on that side ever called stop()",
+         file="agentnode_sdk/worker/tls.py",
+         edits=[("            with self._lock:\n"
+                 "                if not self._open:\n"
+                 "                    self._thread = None\n"
+                 "                    return\n", "            pass\n")],
+         test=HOST + "TestAWatchWithNothingToWatch::"
+                     "test_it_ends_once_the_last_connection_is_gone",
+         expect="went on re-reading the trust files",
+         green=[HOST + "TestAWatchWithNothingToWatch::"
+                       "test_a_client_can_be_closed_and_says_nothing_afterwards"]),
+
     dict(id="a-duration-crosses-and-not-two-timestamps",
          area="R7 -- two machines do not share a clock, so their timestamps are not "
               "subtractable; what crosses is how long it ran",
