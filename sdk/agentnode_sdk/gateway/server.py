@@ -1430,7 +1430,12 @@ class GatewayService:
         # finished, or that it never started at all. Those are three different lines and three
         # different bills.
         settled = self._what_the_worker_says_became_of(record)
-        if settled is not None and (getattr(settled, "never_ran", False) or not settled.known):
+        # A WORKER THAT KEEPS NO JOURNAL SETTLES NOTHING, and everything below has to check that
+        # first. Its answer is "I cannot say", not "it did not run" -- see `Recovered`, where the
+        # two used to be the same value. Acting on the second meaning while a journal-less worker
+        # was returning the first billed nine tests' runs as zero, correctly and wrongly.
+        it_can_say = settled is not None and getattr(settled, "keeps_a_record", True)
+        if it_can_say and (getattr(settled, "never_ran", False) or not settled.known):
             # NOTHING RAN, in either of the two ways that can be true -- and the second was
             # missing. `never_ran` is a run the worker CLAIMED and never started. `not known` is
             # a run it has no record of at all: it never reached that machine.
@@ -2758,9 +2763,15 @@ class GatewayService:
                 if settled.ran_for is not None and record.started_at:
                     record.finished_at = float(record.started_at) + float(settled.ran_for)
                     record.billed_from_the_workers_clock = True
-            elif settled is not None and not settled.known:
+            elif (settled is not None and not settled.known
+                  and getattr(settled, "keeps_a_record", True)):
                 # It never reached the worker. Nothing ran, and that is a FACT rather than an
                 # absence of one -- so it is not billed as an execution.
+                #
+                # `keeps_a_record` is what makes it a fact. A worker with no journal answers
+                # `known=False` for every run there has ever been, and this branch would then
+                # tell a client "the worker has no record of it, so it did not run" about a job
+                # that may well have run. That is the same conflation `Recovered` now separates.
                 terminal = "refused"
                 record.termination_reason = TRANSPORT_LOST
                 record.refusal = (

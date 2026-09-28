@@ -260,9 +260,9 @@ CHECKS = [
          area="R7 -- the defect producing the records found: an hour of outage on somebody's "
               "invoice for a run that never reached the machine",
          file="agentnode_sdk/gateway/server.py",
-         edits=[('        if settled is not None and (getattr(settled, "never_ran", False) '
-                 'or not settled.known):\n',
-                 '        if settled is not None and getattr(settled, "never_ran", False):\n')],
+         edits=[("        if it_can_say and (getattr(settled, \"never_ran\", False) "
+                 "or not settled.known):\n",
+                 "        if it_can_say and getattr(settled, \"never_ran\", False):\n")],
          test=LOST + "TestARunThatNeverReachedTheWorkerIsNotBilledForTheOutage::"
                      "test_a_run_the_worker_has_no_record_of_is_billed_nothing",
          expect="for a run that never reached the worker",

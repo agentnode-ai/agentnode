@@ -100,15 +100,28 @@ def what_it_does_not_establish(topology: str) -> str:
 class Recovered:
     """What a worker says became of a run, asked after the fact.
 
-    Four shapes, and they are not interchangeable:
+    FIVE shapes, and they are not interchangeable:
 
-      known=False                     this worker never heard of that run. It did not run here.
+      keeps_a_record=False            this worker keeps no journal. It cannot say ANYTHING about
+                                      any run, and this answer settles nothing.
+      known=False                     this worker keeps a journal and has no record of that run.
+                                      It did not run here.
       known=True, outcome=<...>       it ran and this is what happened.
       known=True, unknown_outcome     it was started and how it ended cannot be established.
       known=True, still_running       it is running now.
+
+    THE FIRST TWO USED TO BE ONE. `known=False` meant both "I have a journal and this run is not
+    in it" and "I have no journal", and the base `result()` returned it for the second while this
+    docstring described the first. The difference is a customer's invoice: the first means nothing
+    ran and nothing is owed; the second means nobody established anything, and billing it as
+    "nothing ran" is as wrong as billing it as an hour. Found by the full suite, when a fix that
+    acted on the first meaning quietly hit nine tests that were exercising the second.
     """
 
     known: bool
+    #: Whether this worker keeps a journal at all. A worker that does not cannot answer the
+    #: question, and its `known=False` is "I cannot say" rather than "it did not run".
+    keeps_a_record: bool = True
     state: str = ""
     outcome: dict | None = None
     cleanup: Any = None
@@ -135,7 +148,13 @@ class Recovered:
     @property
     def settles_it(self) -> bool:
         """True when this answer ends the question one way or the other -- either the work
-        happened and here it is, or it never reached this worker at all."""
+        happened and here it is, or it never reached this worker at all.
+
+        A worker that keeps no record settles NOTHING. It used to settle everything: `not known`
+        was true for it, so "I cannot say" read as "it did not run".
+        """
+        if not self.keeps_a_record:
+            return False
         return (not self.known) or bool(self.outcome) or self.never_ran
 
 
@@ -465,12 +484,13 @@ class Worker(ABC):
         """What became of a run this worker was asked for earlier.
 
         The method that turns "the connection dropped after it ran" from a permanent unknown
-        into a fact. A worker that keeps no journal answers `Recovered(known=False)`, which is
-        honest: it does not know, rather than saying nothing happened.
+        into a fact. A worker that keeps no journal says SO -- `keeps_a_record=False` -- rather
+        than answering `known=False`, which reads as "that run did not happen here" and would be
+        a statement this worker is in no position to make.
 
         It never runs anything and never invents anything.
         """
-        return Recovered(known=False)
+        return Recovered(known=False, keeps_a_record=False)
 
     def acknowledge(self, run_id: str) -> None:
         """Tell the worker this gateway has the outcome and has written its own line, so the

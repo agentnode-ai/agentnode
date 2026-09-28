@@ -231,6 +231,10 @@ class SocketWorker(Worker):
         if not isinstance(said, dict):                        # pragma: no cover - refused first
             return Recovered(known=False)
         return Recovered(known=bool(said.get("known")),
+                         # DEFAULT TRUE for a worker from before this field existed: it answered
+                         # `known` at all, which a journal-less worker's own `_result` refuses to
+                         # do -- it raises `journal-refused` instead of returning a shape.
+                         keeps_a_record=bool(said.get("keeps_a_record", True)),
                          state=str(said.get("state") or ""),
                          outcome=said.get("outcome"),
                          cleanup=said.get("cleanup"),

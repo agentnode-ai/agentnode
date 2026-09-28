@@ -648,9 +648,12 @@ class Bench:
                 pass
         known = self.journal.look(run_id)
         if known is None:
-            return {"known": False, "state": "", "outcome": None, "cleanup": None,
-                    "ran_for": None, "never_ran": False}
-        return {"known": True, "state": known.state,
+            # A JOURNAL AND NO RECORD, which is a statement. `keeps_a_record` says so on the
+            # wire, because the same `known: False` from a worker that keeps NO journal means
+            # "I cannot say" -- and this method is only reached when there is one.
+            return {"known": False, "keeps_a_record": True, "state": "", "outcome": None,
+                    "cleanup": None, "ran_for": None, "never_ran": False}
+        return {"known": True, "keeps_a_record": True, "state": known.state,
                 # SETTLED AS NOT HAVING RUN. Reported separately from an unknown outcome
                 # because the two cost different amounts: one is billed and one is not.
                 "never_ran": known.verdict == _journal.DID_NOT_RUN,

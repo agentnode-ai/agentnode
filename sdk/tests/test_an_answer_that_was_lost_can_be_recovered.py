@@ -42,8 +42,11 @@ class TestTheWorkerCanBeAsked:
 
     def test_a_run_it_never_heard_of(self, tmp_path):
         said = self._bench(tmp_path)._result("never-asked")
-        assert said == {"known": False, "state": "", "outcome": None, "cleanup": None,
-                        "ran_for": None, "never_ran": False}
+        assert said == {"known": False, "keeps_a_record": True, "state": "", "outcome": None,
+                        "cleanup": None, "ran_for": None, "never_ran": False}
+        assert said["keeps_a_record"] is True, (
+            "this worker HAS a journal, so 'no record of that run' is a statement about the run "
+            "rather than about the worker -- which is the distinction a gateway bills on")
 
     def test_a_run_it_finished(self, tmp_path):
         bench = self._bench(tmp_path)
@@ -289,6 +292,47 @@ class TestRecoveringAfterTheGatewayItselfRestarted:
         assert "never_ran" in source
         assert "started = 0.0" in source, (
             "a run that never started has no billed clock to have begun")
+
+
+class TestTwoDifferentAnswersThatUsedToBeOneValue:
+    """"I have a journal and no record of that run" and "I keep no journal" were both
+    `known=False`, and they mean opposite things to a bill.
+
+    The class docstring said the first; the base `Worker.result` returned it for the second. A
+    fix that acted on the first meaning turned nine tests red -- every one of them exercising a
+    worker of the second kind -- which is how the conflation was found. It is one field now.
+    """
+
+    def test_a_worker_with_no_journal_says_it_cannot_say(self):
+        """Through the base class's own method, not a subclass of it: `Worker` has a dozen
+        abstract methods and stubbing them all would be a test about typing."""
+        from agentnode_sdk.worker import Worker
+
+        said = Worker.result(SimpleNamespace(), "anything")
+        assert said.keeps_a_record is False
+        assert said.known is False
+
+    def test_and_therefore_settles_nothing(self):
+        cannot_say = Recovered(known=False, keeps_a_record=False)
+        has_no_record = Recovered(known=False, keeps_a_record=True)
+
+        assert not cannot_say.settles_it, "a worker that cannot say must not end the question"
+        assert has_no_record.settles_it, "a worker that CAN say, and says no, does end it"
+
+    def test_the_wire_carries_the_difference(self, tmp_path):
+        bench = Bench(SimpleNamespace(), "unix:///nowhere.sock", KEY, only_uid=None)
+        bench.journal = J.Journal(tmp_path / "journal")
+        assert bench._result("never-asked")["keeps_a_record"] is True
+
+    def test_and_a_client_reading_an_older_worker_assumes_it_keeps_one(self):
+        """A worker from before this field answered `known` at all, which one with no journal
+        refuses to do -- it raises `journal-refused` rather than returning a shape. So the
+        default for a missing field is True, and the honest reading of an old answer."""
+        import inspect
+
+        from agentnode_sdk.worker import remote
+
+        assert 'said.get("keeps_a_record", True)' in inspect.getsource(remote.SocketWorker.result)
 
 
 class TestARunThatNeverReachedTheWorkerIsNotBilledForTheOutage:
