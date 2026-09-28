@@ -233,7 +233,8 @@ def cmd_serve(args) -> int:
     try:
         serve(address, key, uid, tls_address=listen, tls=tls,
               topology=str(getattr(args, "topology", "") or SINGLE_HOST_DEVELOPMENT),
-              keyring_path=str(getattr(args, "keyring", "") or ""))
+              keyring_path=str(getattr(args, "keyring", "") or ""),
+              journal_at=str(getattr(args, "journal", "") or ""))
     except KeyboardInterrupt:                                 # pragma: no cover - operator
         print("\n  stopped.")
         return 0
@@ -309,6 +310,9 @@ def add_parser(subparsers) -> None:
     # worker judges its own address against this and refuses a disagreement on its own, so a
     # worker placed on its own machine will not quietly bind a loopback address because
     # whoever dials it believes it is local.
+    serve.add_argument("--journal", default="", metavar="DIR",
+                       help="where this worker writes down what it has been asked to run; "
+                            "required with --topology %s" % SEPARATE_WORKER_HOST)
     serve.add_argument("--keyring", default="", metavar="FILE",
                        help="per-pair keys; required with --topology %s"
                             % SEPARATE_WORKER_HOST)

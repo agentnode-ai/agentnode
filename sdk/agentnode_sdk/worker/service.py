@@ -90,6 +90,10 @@ class Bench:
     started it.
     """
 
+    #: Where this worker writes down what it has been asked to do. `None` on the single-host
+    #: arrangement, where one gateway opens one connection per request and never retries.
+    journal = None
+
     def __init__(self, worker, address: str, key: bytes, only_uid: int | None,
                  remembers_at=None) -> None:
         self.worker = worker
@@ -291,7 +295,9 @@ class Bench:
                 "configuration_sha256": self.worker.configuration_sha256(),
             }
         if method == "run":
-            return self.worker.run(self._job(params.get("job"))).as_message()
+            return self._run_at_most_once(self._job(params.get("job")))
+        if method == "result":
+            return self._result(str(params.get("run_id") or ""))
         if method == "stop":
             return bool(self.worker.stop(
                 str(params.get("run_id") or ""), str(params.get("container_name") or ""),
@@ -313,6 +319,82 @@ class Bench:
             return self.worker.measure_egress(allowed=params.get("allowed"),
                                               denied=params.get("denied"))
         raise wire.ProtocolError(wire.UNKNOWN_METHOD, method)  # pragma: no cover - `check` first
+
+    # ------------------------------------------------------------------ at most once
+
+    def _run_at_most_once(self, job: Job):
+        """The only path that starts a container, and the only one that decides to.
+
+        Without a journal this is what it always was -- one machine, one gateway, one
+        connection per request, no retries -- and the caller gets the old behaviour. With one,
+        the decision and the record of the decision are a single act: the record is created by
+        a link() that fails if the name exists, so of any number of simultaneous deliveries of
+        the same run id exactly one proceeds and the rest are told what became of it.
+        """
+        if self.journal is None:
+            return self.worker.run(job).as_message()
+
+        from agentnode_sdk.worker import journal as _journal
+
+        try:
+            claim = self.journal.claim(job.run_id, _journal.digest_of_job(job))
+        except _journal.JournalRefused as refused:
+            # FAIL CLOSED. A worker that cannot write down what it is about to do could do it
+            # again, so it does not do it at all.
+            raise wire.ProtocolError(
+                wire.RUN_ID_CONFLICT if refused.cause == "run_id_reused_for_different_work"
+                else wire.JOURNAL_REFUSED,
+                refused.because + " " + refused.what_to_do) from refused
+
+        if claim.verdict == _journal.DONE:
+            # Already run. The recorded outcome IS the answer -- re-running it to produce a
+            # fresh one would be running foreign code twice to avoid reading a file.
+            return claim.outcome
+        if claim.verdict == _journal.IN_FLIGHT:
+            raise wire.ProtocolError(
+                wire.ALREADY_RUNNING,
+                "run %s is already running on this worker. It was not started a second time."
+                % job.run_id)
+        if claim.verdict == _journal.UNKNOWN:
+            raise wire.ProtocolError(
+                wire.OUTCOME_UNKNOWN,
+                "run %s was started on this worker and how it ended was never written down. "
+                "It is not started again: doing that could run it twice, and of the two, twice "
+                "is worse than not knowing." % job.run_id)
+        if not claim.may_execute:                             # pragma: no cover - all covered
+            raise wire.ProtocolError(wire.JOURNAL_REFUSED, "the journal did not permit this run")
+
+        # From here exactly one caller is running exactly this job.
+        self.journal.note_started(job.run_id)
+        try:
+            outcome = self.worker.run(job).as_message()
+        except BaseException:
+            # It began and it did not produce an outcome. The record stays at `started`, which
+            # is what `unknown` looks like from outside, and is not a licence to run it again.
+            raise
+        self.journal.note_finished(job.run_id, outcome)
+        return outcome
+
+    def _result(self, run_id: str):
+        """What became of a run, for a control plane that lost the answer.
+
+        Never runs anything and never invents anything: an outcome it does not have is reported
+        as not had. This is the method that turns "the connection dropped after it ran" from a
+        permanent unknown into a fact.
+        """
+        if self.journal is None:
+            raise wire.ProtocolError(
+                wire.JOURNAL_REFUSED,
+                "this worker keeps no journal, so it cannot say what became of an earlier run.")
+        from agentnode_sdk.worker import journal as _journal
+
+        known = self.journal.look(run_id)
+        if known is None:
+            return {"known": False, "state": "", "outcome": None, "cleanup": None}
+        return {"known": True, "state": known.state,
+                "outcome": known.outcome if known.verdict == _journal.DONE else None,
+                "cleanup": known.cleanup,
+                "unknown_outcome": known.verdict == _journal.UNKNOWN}
 
     @staticmethod
     def _job(said) -> Job:
@@ -373,7 +455,8 @@ class CannotHoldItsLimits(RuntimeError):
 
 def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
           tls_address: str = "", tls=None,
-          topology: str = _topology.SINGLE_HOST_DEVELOPMENT, keyring_path: str = "") -> None:
+          topology: str = _topology.SINGLE_HOST_DEVELOPMENT, keyring_path: str = "",
+          journal_at: str = "") -> None:
     """Start a worker on this machine and answer until something stops the process.
 
     `tls_address` and `tls` open the mutual-TLS door, TCP on loopback (`worker/tls.py`). Both or
@@ -397,6 +480,16 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
     # BEFORE A RUNTIME IS TOUCHED. A worker for another machine that holds no per-pair key is
     # misconfigured, and finding that out after proving a memory ceiling wastes a minute and
     # buries the reason under other output.
+    if topology == _topology.SEPARATE_WORKER_HOST and not journal_at:
+        from agentnode_sdk.worker import journal as _journal
+
+        raise _journal.JournalRefused(
+            "journal_not_configured",
+            "this worker was started for its own machine, and a worker reached over a network "
+            "must be able to say whether it has already run a job. Retries and reconnects are "
+            "ordinary there, and each carries a fresh nonce, so nothing else would stop the "
+            "same job running twice.",
+            "Start it with --journal <directory> on the worker's own disk.")
     if topology == _topology.SEPARATE_WORKER_HOST and not keyring_path:
         from agentnode_sdk.worker import pairkeys as _pairkeys
 
@@ -461,6 +554,10 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         os.environ.get("HOME", "") or os.path.expanduser("~"), "replay-floor.json")
     bench = Bench(the_worker, address, wire.read_key(key_path), only_uid,
                   remembers_at=remembers_at)
+    if journal_at:
+        from agentnode_sdk.worker.journal import Journal
+
+        bench.journal = Journal(journal_at)
 
     # Before the socket, like the ceiling. What a worker has already accepted is what stops a
     # message captured earlier being replayed after a restart, and a worker that cannot record

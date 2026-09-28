@@ -206,8 +206,10 @@ class TestTheGlobalKeyDoesNotCrossTheBoundary:
         from agentnode_sdk.worker.service import serve
 
         with pytest.raises(K.KeyringRefused) as refused:
+            # A journal IS given, so the only thing missing is the keyring and the refusal
+            # under test is the one this test is about.
             serve("", str(tmp_path / "nokey"), None, worker=object(),
                   tls_address="tcps://10.0.0.9:8443", tls=object(),
-                  topology=SEPARATE_WORKER_HOST)
+                  topology=SEPARATE_WORKER_HOST, journal_at=str(tmp_path / "journal"))
         assert refused.value.cause == K.NO_FILE
         assert "--keyring" in refused.value.what_to_do
