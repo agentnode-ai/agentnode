@@ -227,3 +227,54 @@ class TestWhatIsBilledForARecoveredRun:
 
         assert RunRecord.billed_from_the_workers_clock is False
         assert RunRecord.recovered_after_losing_the_connection is False
+
+
+class TestRecoveringAfterTheGatewayItselfRestarted:
+    """The other half of R6. A restarted gateway was not there when the run ended -- the worker
+    was -- and before this, every interrupted run was written as `interrupted` with whatever
+    this side last knew, even when the other side could say it had finished or never started."""
+
+    def test_the_four_answers_are_distinguishable_on_the_wire(self, tmp_path):
+        """One is billed, one is not, one is unresolved and one means it never reached the
+        worker. A single boolean could not carry that."""
+        bench = Bench(SimpleNamespace(), "unix:///nowhere.sock", KEY, only_uid=None)
+        bench.journal = J.Journal(tmp_path / "journal")
+
+        bench.journal.claim("ran", "d" * 64, container="c-ran")
+        bench.journal.note_started("ran")
+        bench.journal.note_finished("ran", {"exit_code": 0, "stdout": "ok"})
+
+        bench.journal.claim("began", "d" * 64, container="c-began")
+        bench.journal.note_started("began")
+
+        bench.journal.claim("claimed", "d" * 64, container="c-claimed")
+        bench.journal.note_never_started("claimed")
+
+        ran = bench._result("ran")
+        began = bench._result("began")
+        claimed = bench._result("claimed")
+        never = bench._result("not-this-one")
+
+        assert ran["outcome"] and not ran["never_ran"]
+        assert began["unknown_outcome"] and began["outcome"] is None
+        assert claimed["never_ran"] and not claimed["unknown_outcome"]
+        assert not never["known"]
+
+    def test_a_run_that_never_started_settles_and_costs_nothing(self):
+        """`settles_it` is what the recovery branches on, and "it did not run" settles it just
+        as firmly as an outcome does."""
+        claimed = Recovered(known=True, state=J.NEVER_STARTED, never_ran=True)
+        assert claimed.settles_it
+        assert not claimed.still_running
+        assert claimed.outcome is None
+
+    def test_the_recovery_path_reads_the_workers_answer(self):
+        import inspect
+
+        from agentnode_sdk.gateway.server import GatewayService
+
+        source = inspect.getsource(GatewayService._close_an_interrupted_run)
+        assert "_what_the_worker_says_became_of" in source
+        assert "never_ran" in source
+        assert "started = 0.0" in source, (
+            "a run that never started has no billed clock to have begun")

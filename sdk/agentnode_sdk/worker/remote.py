@@ -235,6 +235,7 @@ class SocketWorker(Worker):
                          outcome=said.get("outcome"),
                          cleanup=said.get("cleanup"),
                          unknown_outcome=bool(said.get("unknown_outcome")),
+                         never_ran=bool(said.get("never_ran")),
                          ran_for=(float(said["ran_for"])
                                   if said.get("ran_for") is not None else None))
 

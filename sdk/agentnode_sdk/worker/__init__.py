@@ -113,6 +113,9 @@ class Recovered:
     outcome: dict | None = None
     cleanup: Any = None
     unknown_outcome: bool = False
+    #: Settled as never having started. Separate from `unknown_outcome`, because one of them
+    #: costs the customer nothing and the other is a run that really happened.
+    never_ran: bool = False
     #: How long it actually ran, by the worker's clock. A duration, not a pair of timestamps:
     #: two machines do not share a clock, and the difference between theirs is not a fact about
     #: either of them.
@@ -120,13 +123,20 @@ class Recovered:
 
     @property
     def still_running(self) -> bool:
-        return self.known and not self.outcome and not self.unknown_outcome
+        """Known, and neither finished nor settled any other way.
+
+        `never_ran` has to be excluded explicitly. Without it, a run the worker settled as
+        never having started reported itself as still running -- so a gateway waiting for it
+        to finish would have waited for something that was never going to happen.
+        """
+        return (self.known and not self.outcome and not self.unknown_outcome
+                and not self.never_ran)
 
     @property
     def settles_it(self) -> bool:
         """True when this answer ends the question one way or the other -- either the work
         happened and here it is, or it never reached this worker at all."""
-        return (not self.known) or bool(self.outcome)
+        return (not self.known) or bool(self.outcome) or self.never_ran
 
 
 class WorkerUnreachable(Exception):

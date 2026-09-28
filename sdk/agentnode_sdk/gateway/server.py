@@ -1379,6 +1379,28 @@ class GatewayService:
         admitted = dict(entry.get("admitted") or {})
         queued = float(entry.get("first_seen") or 0.0)
         started = float(entry.get("started_at") or 0.0)
+
+        # ASK THE WORKER FIRST. This gateway was not here when the run ended; the worker was.
+        # Before this, a run interrupted by a restart was always written as `interrupted` with
+        # whatever this side last knew -- even when the other side could have said that the job
+        # finished, or that it never started at all. Those are three different lines and three
+        # different bills.
+        settled = self._what_the_worker_says_became_of(record)
+        if settled is not None and getattr(settled, "never_ran", False):
+            # It was claimed and never started. Nothing ran, so the billed clock never began,
+            # and saying "interrupted while running" about it would be a false statement.
+            started = 0.0
+            record.cleanup_verified = True
+        elif settled is not None and settled.outcome:
+            record.stdout = str(settled.outcome.get("stdout") or "")
+            record.stderr = str(settled.outcome.get("stderr") or "")
+            record.exit_code = settled.outcome.get("exit_code")
+            record.recovered_after_losing_the_connection = True
+            if settled.ran_for is not None and started:
+                record.finished_at = started + float(settled.ran_for)
+        if settled is not None and settled.cleanup is not None:
+            record.cleanup_verified = settled.cleanup
+
         sandbox = self.what_became_of_the_sandbox(
             asked_for_a_sandbox=bool(entry.get("asked_for_a_sandbox")),
             cleanup_verified=getattr(record, "cleanup_verified", None))
