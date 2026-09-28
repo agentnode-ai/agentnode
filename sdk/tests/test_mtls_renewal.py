@@ -86,11 +86,11 @@ class TestARenewalDuringTheOverlapIsAccepted:
         door = Door(world, worker_dir, {"g1"}, stub=stub, label="w1")
         inner = door.bench.converse
 
-        def noting(connection, noted=None):
+        def noting(connection, noted=None, key=None):
             der = getattr(connection, "gateway_der", None)
             if der:
                 seen_gateway_serials.append(serial_in(der))
-            return inner(connection, noted=noted)
+            return inner(connection, noted=noted, key=key)
 
         door.bench.converse = noting
         client = TlsWorker(door.address, KEY, world.settings(gateway_dir, {"w1"}),

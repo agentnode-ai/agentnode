@@ -344,9 +344,9 @@ class TestTheTransportLostInTheMiddleOfAJob:
         live = []
         counted = door.bench.converse
 
-        def keeping(connection, noted=None):
+        def keeping(connection, noted=None, key=None):
             live.append(connection)
-            return counted(connection, noted=noted)
+            return counted(connection, noted=noted, key=key)
 
         door.bench.converse = keeping
         client = TlsWorker(door.address, KEY, world.settings(gateway_dir, {"w1"}))

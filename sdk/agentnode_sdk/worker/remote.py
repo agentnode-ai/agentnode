@@ -218,9 +218,16 @@ class SocketWorker(Worker):
                 "about this one")
         return self._interpret(answered)
 
-    def result(self, run_id: str) -> Recovered:
-        """Ask the worker what became of a run. Quick: it is a file read on the other side."""
-        said = self._ask("result", {"run_id": str(run_id)}, wait=QUICK_SECONDS)
+    def result(self, run_id: str, *, wait: float = QUICK_SECONDS) -> Recovered:
+        """Ask the worker what became of a run. Quick: it is a file read on the other side.
+
+        `wait` is a parameter because the two callers want different things from it. Recovery
+        after a restart can afford to be patient. The attempt made in the middle of a lost
+        connection cannot: the run's terminal state is not published until it returns, so a
+        long wait there turns one broken connection into a client waiting a minute for an
+        answer that was never going to come.
+        """
+        said = self._ask("result", {"run_id": str(run_id)}, wait=wait)
         if not isinstance(said, dict):                        # pragma: no cover - refused first
             return Recovered(known=False)
         return Recovered(known=bool(said.get("known")),

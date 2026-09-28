@@ -271,6 +271,12 @@ RECOVERY_APPEAR_SECONDS = 1.0
 #: None, which reads as "nobody could ask" rather than "nothing was left behind".
 RECOVERY_BUDGET_SECONDS = 30.0
 
+#: How long the one attempt to find out what became of a run is given, when the connection
+#: carrying that run has just been lost. Short on purpose: the run has no terminal state
+#: until this returns, so a patient wait here is a client waiting for an answer that was
+#: probably never coming. Recovery after a restart is the patient path, not this one.
+RECONCILE_SECONDS = 5.0
+
 
 #: The first release whose client calls prepare and carries back what a person agreed to.
 #: Named in the refusal an older client gets, so "update" is an instruction rather than advice.
@@ -584,7 +590,14 @@ class GatewayService:
         perfectly alive.
         """
         try:
-            said = self.worker.result(record.run_id)
+            said = self.worker.result(record.run_id, wait=RECONCILE_SECONDS)
+        except TypeError:
+            # A worker implementation from before the budget existed. Ask it plainly rather
+            # than treating a signature difference as an unreachable worker.
+            try:
+                said = self.worker.result(record.run_id)
+            except Exception:                                 # noqa: BLE001
+                return None
         except Exception:                                     # noqa: BLE001 - it is already bad
             return None
         if said is None or not getattr(said, "known", False) and not hasattr(said, "known"):

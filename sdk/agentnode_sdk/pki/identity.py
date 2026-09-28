@@ -266,8 +266,21 @@ def check_peer(der: bytes | None, *, deployment: str, expected_role: str,
         raise PeerRefused(CHECK_INSTANCE, presented,
                           "this side was not configured to accept that %s" % expected_role)
 
-    # 6. Not revoked.
+    # 6. Not revoked, by serial.
     _not_revoked(certificate, trust, effective_time, presented)
+
+    # 7. AND NOT WITHDRAWN, by identity. Check 6 is about this certificate; this one is about
+    # the name on it. Without it, revoking a worker and issuing a new certificate for the same
+    # instance brings it straight back: the new serial is not in the revocation list, and every
+    # other check passes because the certificate is perfectly genuine. A remote verifier cannot
+    # consult the issuer's inventory, so what it consults is a signed list of the names that
+    # were taken away.
+    withdrawn = getattr(trust, "withdrawn", None)
+    if withdrawn is not None and presented in withdrawn(effective_time, presented):
+        raise PeerRefused(
+            CHECK_REVOKED, presented,
+            "that identity was withdrawn. A withdrawal is permanent and is not undone by "
+            "issuing a new certificate for the same name -- a replacement takes a new name")
     return identity
 
 

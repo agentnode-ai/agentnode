@@ -83,6 +83,7 @@ from agentnode_sdk.pki import files as _files
 from agentnode_sdk.pki import floor as _floor
 from agentnode_sdk.pki import identity as _identity
 from agentnode_sdk.pki import revocation as _revocation
+from agentnode_sdk.pki import tombstones as _tombstones
 
 DEFAULT_CA_DIR = "/etc/agentnode/ca"
 DEFAULT_TRUST_DIR = "/etc/agentnode/trust"
@@ -554,6 +555,57 @@ class Issuer:
                                  number=inventory["list_number"], now=_now())
         try:
             _files.durable_publish(self.files, self._list_path(), data, mode=0o644, label="list")
+        except OSError:
+            return False
+        # AND THE IDENTITIES, beside the serials. A serial says "not this certificate"; an
+        # identity says "not this name, ever". Without the second, revoking a worker and
+        # issuing it a new certificate brings it straight back, and a verifier on another
+        # machine has no inventory to notice with.
+        return self._publish_tombstones(inventory, ca_key)
+
+    def _tombstone_path(self):
+        return self.trust_dir / _tombstones.LIST_NAME
+
+    def _withdrawn_identities(self, inventory: dict) -> set:
+        """Every identity this deployment has taken away for good.
+
+        Two shapes, and both are permanent:
+
+          * an entry whose renewal is LOCKED -- `recover_entry` does that when an entry is
+            recovered from a compromise, and it is exactly the case where re-issuing under the
+            same name must not bring the holder back;
+          * an entry that has had certificates and has none left that is current or
+            overlapping, i.e. every certificate it ever had is revoked.
+
+        An entry that was created and never claimed is NOT withdrawn: nothing was ever issued
+        for it, so there is nothing to take away.
+        """
+        out = set()
+        for entry in (inventory.get("entries") or {}).values():
+            if not isinstance(entry, dict) or not entry.get("uri"):
+                continue
+            certificates = entry.get("certificates") or []
+            if entry.get("renewal_locked"):
+                out.add(str(entry["uri"]))
+                continue
+            if certificates and not any(
+                    c.get("status") in (CURRENT, OVERLAPPING) for c in certificates):
+                out.add(str(entry["uri"]))
+        return out
+
+    def _publish_tombstones(self, inventory: dict, ca_key) -> bool:
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives import hashes
+
+        def sign(body: bytes) -> bytes:
+            return ca_key.sign(body, ec.ECDSA(hashes.SHA256()))
+
+        data = _tombstones.publish(str(inventory.get("deployment") or ""),
+                                   self._withdrawn_identities(inventory),
+                                   now=_now(), signer=sign)
+        try:
+            _files.durable_publish(self.files, self._tombstone_path(), data, mode=0o644,
+                                   label="identities")
         except OSError:
             return False
         return True

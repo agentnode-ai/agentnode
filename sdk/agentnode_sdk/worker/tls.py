@@ -108,6 +108,13 @@ class TlsSettings:
     accept: frozenset = field(default_factory=frozenset)
     revocation_list: str = ""
     floor: str = ""
+    #: The signed list of identities this deployment has permanently withdrawn. Optional on one
+    #: machine, where the issuer's inventory is the authority and is on the same disk; required
+    #: once a verifier is elsewhere and has no inventory to consult.
+    identity_tombstones: str = ""
+    #: Whether a missing list is a refusal. Set for the separate-host arrangement, where a
+    #: verifier that cannot tell whether an identity was withdrawn must not accept it.
+    tombstones_required: bool = False
     reload_seconds: float = DEFAULT_RELOAD_SECONDS
     reevaluate_seconds: float = DEFAULT_REEVALUATE_SECONDS
 
@@ -123,7 +130,9 @@ class TlsSettings:
     def trust(self, role: str) -> TrustView:
         """The anchor, the list and the floor, read now, for a side of `role`."""
         return TrustView.read(anchor=self.anchor, revocation_list=self.revocation_list,
-                              floor=self.floor, role=role)
+                              floor=self.floor, role=role,
+                              identity_tombstones=self.identity_tombstones,
+                              tombstones_required=self.tombstones_required)
 
     def promised_seconds(self) -> float:
         """The longest a published revocation takes to cut an open connection."""
