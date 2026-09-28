@@ -10,6 +10,26 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+#: WHAT AN ENROLMENT SECRET LOOKS LIKE, and it is a prefix so that it can be told apart.
+#:
+#: It used to be 64 bare lowercase hex characters, which is exactly what a digest, a run id and a
+#: device id look like -- and the log scrubber deliberately leaves bare hex alone so that those
+#: three stay readable. So a secret that reached a log line stayed there. A review called that
+#: what it is: a documented trade is not evidence that disclosure cannot happen.
+#:
+#: The fix is to make the secret recognisable rather than to make the scrubber guess. Nothing
+#: compares the format -- the issuer keeps a digest of the string and compares digests -- so this
+#: is a change to what is generated and to what the scrubber matches, and to nothing else.
+SECRET_PREFIX = "agentnode-enrol-1."
+
+
+def mint_a_secret() -> str:
+    """A single-use enrolment secret, in a shape a log scrubber can recognise."""
+    import secrets
+
+    return SECRET_PREFIX + secrets.token_hex(32)
+
+
 #: What enrolment leaves behind in a service's TLS directory, and what nothing needs afterwards.
 #: `request.json` is the one that matters: it contains the one-shot secret in clear.
 ENROLMENT_RESIDUES = ("secret", "request.json")
@@ -51,4 +71,4 @@ def forget_the_enrolment(tls_dir) -> list:
     return gone
 
 
-__all__ = ["ENROLMENT_RESIDUES", "forget_the_enrolment"]
+__all__ = ["ENROLMENT_RESIDUES", "SECRET_PREFIX", "forget_the_enrolment", "mint_a_secret"]

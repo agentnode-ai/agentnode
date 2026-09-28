@@ -79,6 +79,86 @@ class TestTheIssuerDoesItOnDelivery:
             assert b'"secret"' not in body, "%s still carries a secret field" % path.name
 
 
+class TestAnEnrolmentSecretCanBeToldFromAnIdentifier:
+    """The third disclosure path, and the one that was left open once.
+
+    The secret was 64 bare lowercase hex characters -- the same shape as a digest, a run id and a
+    device id. `gateway/redaction.py` deliberately leaves bare hex alone so those three stay
+    readable in a log, so a secret that reached a log line stayed in it. Widening the hex rule
+    would cost every identifier; the secret is GENERATED here, so its shape is ours to choose.
+    """
+
+    def test_a_minted_secret_carries_the_prefix(self):
+        made = E.mint_a_secret()
+        assert made.startswith(E.SECRET_PREFIX)
+        assert len(made) > len(E.SECRET_PREFIX) + 32
+
+    def test_two_are_not_the_same(self):
+        assert E.mint_a_secret() != E.mint_a_secret()
+
+    def test_the_issuer_mints_them_that_way(self, world):  # noqa: F811  (a pytest fixture, imported)
+        folder = world.root / "staging"
+        folder.mkdir()
+        world.issuer.add("worker", "w-prefix", secret_at=folder / "secret",
+                         deliver_to=folder / "cert.pem")
+        assert (folder / "secret").read_text(encoding="ascii").startswith(E.SECRET_PREFIX)
+
+    def test_and_the_scrubber_takes_it_out_of_a_log_line(self):
+        from agentnode_sdk.gateway import redaction
+
+        made = E.mint_a_secret()
+        said = redaction.scrub("enrolling w1 failed with %s while reading it" % made)
+        assert made not in said
+        assert redaction.REDACTED in said
+
+    def test_while_a_digest_a_run_id_and_a_device_id_all_survive(self):
+        """The reason the scrubber leaves bare hex alone. An audit whose run ids have been
+        replaced by [redacted] answers nothing, and somebody would then turn it off."""
+        from agentnode_sdk.gateway import redaction
+
+        digest, run_id, device = "a" * 64, "b" * 32, "c" * 16
+        said = redaction.scrub("run %s digest %s device %s" % (run_id, digest, device))
+        assert digest in said and run_id in said and device in said
+
+    def test_a_structured_field_holding_one_is_recognised_too(self):
+        from agentnode_sdk.gateway import redaction
+
+        assert redaction.looks_like_a_secret(E.mint_a_secret())
+        assert not redaction.looks_like_a_secret("a" * 64), "a digest is not a secret"
+
+    def test_the_two_halves_are_held_together(self):
+        """The prefix exists FOR the scrubber's rule. Changing one without the other silently
+        reopens the hole, so this compares them rather than trusting the comment that says so."""
+        import inspect
+
+        from agentnode_sdk.gateway import redaction
+
+        assert E.SECRET_PREFIX.rstrip(".") in inspect.getsource(redaction)
+
+
+class TestWhatIsPromisedAboutCleanup:
+    """R8: the records keep CLEANED, CLEANUP_PENDING and CLEANUP_UNPROVEN apart, and the two
+    messages a human reads used to promise the first unconditionally."""
+
+    def test_the_client_message_does_not_promise_more_than_the_record(self):
+        import inspect
+
+        from agentnode_sdk.cli import remote_commands
+
+        said = inspect.getsource(remote_commands._explain_protection)
+        assert "will be cleaned up afterwards" not in said
+        assert "whether that was confirmed" in said
+
+    def test_and_neither_does_the_operator_message(self):
+        import inspect
+
+        from agentnode_sdk.cli import gateway_commands
+
+        said = inspect.getsource(gateway_commands._say_protected)
+        assert "is cleaned up afterwards" not in said
+        assert "whether its cleanup was confirmed" in said
+
+
 class TestTheWorkerSaysWhatBrokeWithoutSayingWhatItHeld:
 
     def test_only_the_exception_class_crosses(self):

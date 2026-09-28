@@ -18,6 +18,7 @@ Only shapes this gateway actually issues:
     token_urlsafe(24)   32 characters      a session, a challenge, a download ticket
     XXXX-XXXX-XXXX      a pairing code, from its own restricted alphabet
     agentnode-invite-1. an invitation, which carries a code
+    agentnode-enrol-1.  a single-use enrolment secret, which carries a prefix FOR this rule
     -----BEGIN ...      a private key of any kind
     token=, code=,      the named ways a secret travels in a URL or a header
     Bearer ...
@@ -35,6 +36,13 @@ it has an upper-case letter, a digit-and-letter mix with case, or a `-` or `_`. 
 only `[0-9a-f]` is an identifier this gateway published on purpose and is left alone. That is a
 heuristic and is written down as one; the structural rules above it are what actually keep
 secrets out.
+
+AND ONE SECRET USED TO FALL THROUGH EXACTLY THERE. The enrolment secret was 64 bare lowercase hex
+characters, so this module left it alone by the rule above, and the first two reviews of
+`remote-worker-r1` named it. Widening the hex rule would have cost every run id and digest in
+every log. So the secret was given a prefix instead -- it is generated, not received, so its
+shape is ours to choose -- and this module matches the prefix. The lesson is worth keeping: when
+a secret cannot be told from an identifier, change the secret.
 
 ## Where it runs
 
@@ -59,6 +67,16 @@ _PEM = re.compile(
 
 #: An invitation. It carries a code, so the whole token goes.
 _INVITATION = re.compile(r"agentnode-invite-1\.[A-Za-z0-9_-]+")
+
+#: A single-use ENROLMENT SECRET, which a service presents once to claim its certificate.
+#:
+#: Matched by its prefix, not by its shape, and the prefix exists for this rule. The secret used
+#: to be 64 bare lowercase hex characters -- indistinguishable from a digest, a run id or a
+#: device id, all three of which this scrubber deliberately leaves alone so they stay readable.
+#: A secret that reached a log line therefore stayed in it, and a review was right that
+#: documenting the trade is not closing it. `pki/enrolment.py::SECRET_PREFIX` is the other half
+#: of this pair: changing one without the other reopens the hole, and a test holds them together.
+_ENROLMENT_SECRET = re.compile(r"agentnode-enrol-1\.[A-Za-z0-9_-]+")
 
 #: A pairing code, in its own alphabet, which excludes look-alike characters.
 _PAIRING_CODE = re.compile(r"\b[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}"
@@ -90,7 +108,8 @@ def looks_like_a_secret(value: str) -> bool:
     to be readable.
     """
     text = str(value or "")
-    if _PEM.search(text) or _INVITATION.search(text) or _PAIRING_CODE.search(text):
+    if (_PEM.search(text) or _INVITATION.search(text) or _PAIRING_CODE.search(text)
+            or _ENROLMENT_SECRET.search(text)):
         return True
     if len(text) not in (32, 43):
         return False
@@ -111,6 +130,7 @@ def scrub(text: str) -> str:
         return said
     said = _PEM.sub(REDACTED, said)
     said = _INVITATION.sub(REDACTED, said)
+    said = _ENROLMENT_SECRET.sub(REDACTED, said)
     said = _USERINFO.sub(lambda m: m.group(1) + REDACTED + m.group(3), said)
     said = _BEARER.sub(lambda m: m.group(1) + REDACTED, said)
     said = _NAMED.sub(lambda m: m.group(1) + REDACTED, said)

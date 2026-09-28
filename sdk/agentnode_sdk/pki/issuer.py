@@ -289,7 +289,7 @@ class Issuer:
                 raise IssuanceRefused(
                     "entry %s already has a certificate; a new key for it is a renewal, or a "
                     "new entry" % name)
-            secret = secrets.token_hex(32)
+            secret = _enrolment.mint_a_secret()
             inventory["entries"][name] = {
                 "role": ident.role, "instance": ident.instance, "uri": ident.uri(),
                 "usage": _identity.USAGE_OF[ident.role], "days": DAYS,
@@ -667,7 +667,7 @@ class Issuer:
                 if record["status"] in (CURRENT, OVERLAPPING):
                     record["status"] = REVOKED
             entry["renewal_locked"] = True
-            secret = secrets.token_hex(32)
+            secret = _enrolment.mint_a_secret()
             entry["secret_sha256"] = _sha256(secret.encode("ascii"))
             entry["secret_expires"] = round(now + SECRET_HOURS * 3600, 3)
             self._commit(inventory, "recover")

@@ -313,6 +313,36 @@ CHECKS = [
          green=["tests/test_a_secret_does_not_outlive_its_use.py::TestTheResiduesGo::"
                 "test_and_nothing_is_touched_before_it_is"]),
 
+    dict(id="an-enrolment-secret-can-be-told-from-an-identifier",
+         area="R11 -- 64 bare hex characters are a digest, a run id, a device id AND, until "
+              "this, an enrolment secret; the scrubber cannot tell them apart",
+         file="agentnode_sdk/pki/enrolment.py",
+         edits=[('SECRET_PREFIX = "agentnode-enrol-1."\n', 'SECRET_PREFIX = ""\n')],
+         test="tests/test_a_secret_does_not_outlive_its_use.py::"
+              "TestAnEnrolmentSecretCanBeToldFromAnIdentifier::"
+              "test_and_the_scrubber_takes_it_out_of_a_log_line",
+         expect="assert",
+         green=["tests/test_a_secret_does_not_outlive_its_use.py::"
+                "TestAnEnrolmentSecretCanBeToldFromAnIdentifier::"
+                "test_while_a_digest_a_run_id_and_a_device_id_all_survive"]),
+
+    dict(id="cleanup-is-not-promised-unconditionally",
+         area="R8 -- the records keep three cleanup states apart and the message a human reads "
+              "promised the best one",
+         file="agentnode_sdk/cli/remote_commands.py",
+         edits=[('        print("  privileges. The gateway has measured this. The sandbox is '
+                 'removed afterwards,")\n'
+                 '        print("  and each run\'s record says whether that was confirmed -- '
+                 'where it could not be,")\n'
+                 '        print("  the record says so rather than assuming it.")\n',
+                 '        print("  privileges, and will be cleaned up afterwards. The gateway '
+                 'has measured this.")\n')],
+         test="tests/test_a_secret_does_not_outlive_its_use.py::TestWhatIsPromisedAboutCleanup::"
+              "test_the_client_message_does_not_promise_more_than_the_record",
+         expect="cleaned up afterwards\" not in said",
+         green=["tests/test_a_secret_does_not_outlive_its_use.py::"
+                "TestWhatIsPromisedAboutCleanup::test_and_neither_does_the_operator_message"]),
+
     dict(id="the-worker-does-not-put-its-exception-on-the-wire",
          area="R11 -- an arbitrary string from the worker's process, crossing to a client, "
               "past a scrubber the worker cannot reach",
