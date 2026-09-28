@@ -618,6 +618,37 @@ class GatewayService:
         # nothing about its output says nothing; it does not say the run had none.
         return Outcome(**{"exit_code": None, "stdout": "", "stderr": "", **fields})
 
+    def drop_queued_work_that_is_no_longer_permitted(self) -> list:
+        """Take waiting jobs out of the queue when their owner may no longer have them run.
+
+        R9: a stop has to reach work that has not started, not only work that is running. The
+        queue is checked here rather than at the moment of suspension because the suspension is
+        applied by a different process -- an operator's command -- which cannot reach these
+        tickets. One pass under the queue's own lock, so a job cannot slip from waiting into
+        running between the decision and the drop.
+        """
+        slots = getattr(self, "_slots", None)
+        if slots is None:
+            return []
+        accounts: dict = {}
+
+        def no_longer_permitted(ticket) -> bool:
+            account = str(getattr(ticket, "account_id", "") or "")
+            if account not in accounts:
+                try:
+                    standing = self.standing_of(account, "")
+                    # SUSPENDED, and only that. `cannot_tell` means this gateway could not read
+                    # who is suspended, which is not the same as nobody -- but it is also not a
+                    # reason to throw a job away from here. The admission path already refuses
+                    # on `cannot_tell`, so such a job is refused when its slot comes, with a
+                    # reason, instead of vanishing out of a queue on a guess.
+                    accounts[account] = bool(getattr(standing, "suspended_because", ""))
+                except Exception:                             # noqa: BLE001
+                    accounts[account] = False
+            return accounts[account]
+
+        return slots.drop_every(no_longer_permitted, "the account was suspended")
+
     def _pair_keys(self, declared: str, tls):
         """The per-pair keys, and the name this gateway answers to. `(None, "")` on the local
         topology, where one key on one machine is worth what the machine is worth.
@@ -3840,6 +3871,19 @@ def make_server(
                     # operator's stop. It is visible: `agentnode gateway watch` reports when the
                     # last sweep was, and "never" is a value it can report.
                     pass
+            # A SUSPENSION HAS TO REACH THE QUEUE TOO. `reserve` checks standing when a job is
+            # admitted and `_wait_for_a_slot` checks it again when a slot is granted, which
+            # covers a job that is running and a job that is about to start. It does not cover
+            # the one in between: a job already waiting, for an account suspended a moment
+            # later, sits in the queue until a slot frees and only then discovers it. This
+            # comment used to say that could not be helped because the suspension is applied by
+            # a different process -- true of the suspension, not of the queue, which is right
+            # here in this one. Polling it costs a file read on the same loop that is already
+            # reading the stop file.
+            try:
+                service.drop_queued_work_that_is_no_longer_permitted()
+            except Exception:                                 # noqa: BLE001 - never kill the loop
+                pass
             try:
                 halted = why_it_is_stopped(service.state.root)
             except Exception:                                 # noqa: BLE001 - never kill the loop
