@@ -310,6 +310,10 @@ class SocketWorker(Worker):
     def instance_label(self) -> str:
         return str(self._describe().get("instance_label") or "")
 
+    def boot_id(self) -> str:
+        """The boot of the machine the worker is on -- not of the one asking."""
+        return str(self._describe().get("boot_id") or "")
+
     def image_digest(self) -> str:
         return str(self._describe().get("image_digest") or "")
 

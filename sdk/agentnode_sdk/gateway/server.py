@@ -822,7 +822,11 @@ class GatewayService:
             gateway_version=identity.version,
             backend=isolation.backend if isolation.backend != "none" else "",
             image_digest=self.worker.image_digest(),
-            boot_id=boot_value,
+            # TWO MACHINES, TWO FACTS, TWO FIELDS. The worker's boot is what the measurement
+            # is about; the gateway's is about the process that signed it. They were one field
+            # filled from the gateway, which was right on one machine and wrong on two.
+            worker_boot_id=str(self.worker.boot_id() or ""),
+            gateway_boot_id=boot_value,
             backend_version=self.runtime_version(),
             conformance_schema=str(SUITE_VERSION),
             operator_policy_digest=policy_digest or self.operator_envelope().digest(),

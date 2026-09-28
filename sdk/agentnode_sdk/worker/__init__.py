@@ -437,6 +437,17 @@ class Worker(ABC):
     def measure_egress(self, *, allowed, denied):
         """Try every destination the policy permits and every one it does not, there."""
 
+    def boot_id(self) -> str:
+        """Which boot of the machine THIS WORKER is on. The measurement describes that machine,
+        so the binding has to carry that machine's boot and not the asker's."""
+        try:
+            from agentnode_sdk.gateway.boot import boot_identity
+
+            value, _how = boot_identity()
+            return str(value or "")
+        except Exception:                                     # noqa: BLE001
+            return ""
+
     def result(self, run_id: str) -> "Recovered":
         """What became of a run this worker was asked for earlier.
 

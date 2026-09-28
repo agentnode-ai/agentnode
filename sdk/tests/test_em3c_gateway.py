@@ -1997,11 +1997,13 @@ class TestAMeasurementBelongsToOneBoot:
             state = GatewayState(td, version="test")
             service = GatewayService(state, backend=StandInBackend())
             current = service.report_binding()
-            assert current.boot_id, "the binding does not record a boot at all"
+            assert current.worker_boot_id, (
+                "the binding does not record the boot of the machine the measurement is "
+                "about")
 
             # Derived from the current binding and altered in exactly one field, so a drift in
             # any other one cannot be what this test actually observes.
-            earlier = dataclasses.replace(current, boot_id="some-previous-boot")
+            earlier = dataclasses.replace(current, worker_boot_id="some-previous-boot")
             _store_measurement(service, binding=earlier)
             result = service.readiness_now()
             assert result.ready is False

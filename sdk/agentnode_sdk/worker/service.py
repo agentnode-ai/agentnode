@@ -73,6 +73,17 @@ DIRECTORY_MODE = 0o2750
 LOOK_UP_EVERY_SECONDS = 1.0
 
 
+def _own_boot_id() -> str:
+    """This machine's boot identity, or empty when it has none to give."""
+    try:
+        from agentnode_sdk.gateway.boot import boot_identity
+
+        value, _how = boot_identity()
+        return str(value or "")
+    except Exception:                                         # noqa: BLE001 - never worth failing
+        return ""
+
+
 def _build_identity() -> str:
     """Which code this is. Diagnostic only: it never decides whether two sides may speak."""
     try:
@@ -309,6 +320,11 @@ class Bench:
                 # updated in lockstep to keep working.
                 "protocol_versions": list(wire.SUPPORTED),
                 "build": _build_identity(),
+                # WHICH BOOT OF THIS MACHINE. The report the gateway binds describes what a
+                # container gets HERE, and that changes across a reboot of this host -- not of
+                # the gateway's. On one machine the two were the same value; on two they are
+                # two different facts, and only this one is about the measurement.
+                "boot_id": _own_boot_id(),
             }
         if method == "run":
             return self._run_at_most_once(self._job(params.get("job")))

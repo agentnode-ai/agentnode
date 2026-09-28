@@ -82,12 +82,22 @@ class ReportBinding:
     #: taken against a different image describes different software even on the same daemon.
     image_digest: str = ""
 
-    #: Which boot of this machine the measurement happened during. A reboot can bring a new
-    #: kernel, a cgroup controller that is no longer mounted, or a seccomp or apparmor policy that
-    #: loaded differently -- none of which move the image digest, and all of which change what the
-    #: container actually gets. Without this the report would describe the previous boot and still
-    #: look current.
-    boot_id: str = ""
+    #: WHICH BOOT OF THE MACHINE THAT RAN THE MEASUREMENT. A reboot can bring a new kernel, a
+    #: cgroup controller that is no longer mounted, or a seccomp or apparmor policy that loaded
+    #: differently -- none of which move the image digest, and all of which change what the
+    #: container actually gets. Without this the report would describe the previous boot and
+    #: still look current.
+    #:
+    #: THIS IS THE WORKER'S. It used to be filled from the gateway's kernel while describing
+    #: the worker's, which was the same value on one machine and two different facts on two.
+    #: A worker reboot would then have left a stale measurement looking current -- the exact
+    #: failure the field exists to prevent -- and a gateway reboot would have thrown away a good
+    #: one while saying "this machine has restarted" about the wrong machine.
+    worker_boot_id: str = ""
+
+    #: And the control plane's own boot, kept because some bound facts really are about the
+    #: gateway. Named so that nobody has to work out which machine a field is about.
+    gateway_boot_id: str = ""
 
     #: The version of the runtime the measurement ran against, distinct from which runtime it is.
     backend_version: str = ""
@@ -163,7 +173,8 @@ class ReportBinding:
             "gateway_version": self.gateway_version,
             "backend": self.backend,
             "image_digest": self.image_digest,
-            "boot_id": self.boot_id,
+            "worker_boot_id": self.worker_boot_id,
+            "gateway_boot_id": self.gateway_boot_id,
             "backend_version": self.backend_version,
             "conformance_schema": self.conformance_schema,
             "operator_policy_digest": self.operator_policy_digest,
@@ -294,7 +305,9 @@ class ReadinessGate:
         })
         drift = binding.mismatches(stored)
         if drift:
-            rebooted = drift == ("boot_id",)
+            rebooted = drift in (("worker_boot_id",), ("gateway_boot_id",))
+            which_machine = ("the machine that runs the sandbox worker"
+                             if drift == ("worker_boot_id",) else "this gateway's machine")
             # Only when it is the ONLY thing that moved. A report that is also from another
             # machine is not explained by a policy change, and saying so would describe the
             # smaller problem and hide the larger one.
@@ -312,10 +325,10 @@ class ReadinessGate:
                 )
             return Readiness(
                 False,
-                ("this machine has restarted since it was last measured, and a restart can change "
-                 "what a container actually gets -- a new kernel, a cgroup controller that is no "
-                 "longer mounted, a policy that loaded differently. The old measurement is not "
-                 "wrong, it just describes the previous boot.")
+                (which_machine + " has restarted since the measurement was taken, and a "
+                 "restart can change what a container actually gets -- a new kernel, a cgroup "
+                 "controller that is no longer mounted, a policy that loaded differently. The "
+                 "old measurement is not wrong; it describes the previous boot of that machine.")
                 if rebooted else
                 ("the stored measurement describes something else (" + ", ".join(drift) +
                  " differ), so it says nothing about what is running here."),
