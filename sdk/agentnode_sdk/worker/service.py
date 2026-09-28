@@ -297,7 +297,8 @@ class Bench:
         if method == "run":
             return self._run_at_most_once(self._job(params.get("job")))
         if method == "result":
-            return self._result(str(params.get("run_id") or ""))
+            return self._result(str(params.get("run_id") or ""),
+                                acknowledge=bool(params.get("acknowledge")))
         if method == "stop":
             return bool(self.worker.stop(
                 str(params.get("run_id") or ""), str(params.get("container_name") or ""),
@@ -375,7 +376,7 @@ class Bench:
         self.journal.note_finished(job.run_id, outcome)
         return outcome
 
-    def _result(self, run_id: str):
+    def _result(self, run_id: str, *, acknowledge: bool = False):
         """What became of a run, for a control plane that lost the answer.
 
         Never runs anything and never invents anything: an outcome it does not have is reported
@@ -388,6 +389,13 @@ class Bench:
                 "this worker keeps no journal, so it cannot say what became of an earlier run.")
         from agentnode_sdk.worker import journal as _journal
 
+        if acknowledge:
+            # The control plane has written its own line. Letting the record go is the only
+            # thing this does; it never changes what the record SAYS.
+            try:
+                self.journal.acknowledge(run_id)
+            except _journal.JournalRefused:
+                pass
         known = self.journal.look(run_id)
         if known is None:
             return {"known": False, "state": "", "outcome": None, "cleanup": None}

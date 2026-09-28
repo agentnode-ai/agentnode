@@ -37,6 +37,7 @@ from urllib.parse import urlparse
 from agentnode_sdk.worker import (
     Ceilings,
     NoRuntimeThere,
+    Recovered,
     SEPARATE_WORKER_HOST,
     SINGLE_HOST_DEVELOPMENT,
     CouldNotRestrictTheNetwork,
@@ -195,6 +196,25 @@ class SocketWorker(Worker):
                 "the sandbox worker answered about a different request, so nothing it said is "
                 "about this one")
         return self._interpret(answered)
+
+    def result(self, run_id: str) -> Recovered:
+        """Ask the worker what became of a run. Quick: it is a file read on the other side."""
+        said = self._ask("result", {"run_id": str(run_id)}, wait=QUICK_SECONDS)
+        if not isinstance(said, dict):                        # pragma: no cover - refused first
+            return Recovered(known=False)
+        return Recovered(known=bool(said.get("known")),
+                         state=str(said.get("state") or ""),
+                         outcome=said.get("outcome"),
+                         cleanup=said.get("cleanup"),
+                         unknown_outcome=bool(said.get("unknown_outcome")))
+
+    def acknowledge(self, run_id: str) -> None:
+        """Best effort. The worker's retention window does not depend on this arriving."""
+        try:
+            self._ask("result", {"run_id": str(run_id), "acknowledge": True},
+                      wait=QUICK_SECONDS)
+        except Exception:                                     # noqa: BLE001 - never worth failing
+            pass
 
     def _keys_for(self, who):
         """(the key to seal with, the keys an answer may carry). One key unless a keyring says

@@ -96,6 +96,35 @@ def what_it_does_not_establish(topology: str) -> str:
         "about what it does or does not protect against can be read from it.")
 
 
+@dataclass(frozen=True)
+class Recovered:
+    """What a worker says became of a run, asked after the fact.
+
+    Four shapes, and they are not interchangeable:
+
+      known=False                     this worker never heard of that run. It did not run here.
+      known=True, outcome=<...>       it ran and this is what happened.
+      known=True, unknown_outcome     it was started and how it ended cannot be established.
+      known=True, still_running       it is running now.
+    """
+
+    known: bool
+    state: str = ""
+    outcome: dict | None = None
+    cleanup: Any = None
+    unknown_outcome: bool = False
+
+    @property
+    def still_running(self) -> bool:
+        return self.known and not self.outcome and not self.unknown_outcome
+
+    @property
+    def settles_it(self) -> bool:
+        """True when this answer ends the question one way or the other -- either the work
+        happened and here it is, or it never reached this worker at all."""
+        return (not self.known) or bool(self.outcome)
+
+
 class WorkerUnreachable(Exception):
     """The worker could not be asked. NOT that the job failed -- nobody knows whether it ran.
 
@@ -403,6 +432,21 @@ class Worker(ABC):
     @abstractmethod
     def measure_egress(self, *, allowed, denied):
         """Try every destination the policy permits and every one it does not, there."""
+
+    def result(self, run_id: str) -> "Recovered":
+        """What became of a run this worker was asked for earlier.
+
+        The method that turns "the connection dropped after it ran" from a permanent unknown
+        into a fact. A worker that keeps no journal answers `Recovered(known=False)`, which is
+        honest: it does not know, rather than saying nothing happened.
+
+        It never runs anything and never invents anything.
+        """
+        return Recovered(known=False)
+
+    def acknowledge(self, run_id: str) -> None:
+        """Tell the worker this gateway has the outcome and has written its own line, so the
+        record may be let go. Best-effort: retention has a window that does not depend on it."""
 
     @abstractmethod
     def run(self, job: Job) -> Outcome:

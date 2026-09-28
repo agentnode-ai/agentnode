@@ -159,6 +159,10 @@ class RunRecord:
     native_status: int | None = None
     native_platform: str = ""
     stdout: str = ""
+    #: Set when the answer to this run was recovered from the worker after the connection
+    #: carrying it was lost. The run is ordinary; how its outcome got here is not, and a
+    #: reader of the record is entitled to know the difference.
+    recovered_after_losing_the_connection: bool = False
     stderr: str = ""
     refusal: str = ""
     #: WHICH refusal, by the contract's name, when this record is one. A record carrying only
@@ -565,6 +569,37 @@ class GatewayService:
 
                 self._worker = LocalWorker(self.backend)
         return self._worker
+
+    def _what_the_worker_says_became_of(self, record):
+        """Ask the worker what happened to a run whose answer was lost. `None` if it cannot say.
+
+        Deliberately one attempt and a short one. The usual reason for being here is that the
+        worker is unreachable, in which case this fails at once and the run stays unresolved --
+        which is correct, and is picked up again by recovery when the worker comes back. The
+        case it exists for is the cheap one: a single dropped connection to a worker that is
+        perfectly alive.
+        """
+        try:
+            said = self.worker.result(record.run_id)
+        except Exception:                                     # noqa: BLE001 - it is already bad
+            return None
+        if said is None or not getattr(said, "known", False) and not hasattr(said, "known"):
+            return None
+        return said
+
+    @staticmethod
+    def _outcome_from(said: dict):
+        """A recovered outcome, as the same object a live run would have produced."""
+        from agentnode_sdk.worker import Outcome
+
+        known = getattr(Outcome, "__dataclass_fields__", {})
+        # ONLY THE FIELDS THIS BUILD HAS. A worker on another machine may be a build ahead, and
+        # an outcome carrying a field this gateway does not know must not turn a recoverable
+        # answer into a crash -- that would lose the very thing being recovered.
+        fields = {k: v for k, v in (said or {}).items() if k in known}
+        # And the three a run always has, so a sparse record still builds. An outcome that says
+        # nothing about its output says nothing; it does not say the run had none.
+        return Outcome(**{"exit_code": None, "stdout": "", "stderr": "", **fields})
 
     def _pair_keys(self, declared: str, tls):
         """The per-pair keys, and the name this gateway answers to. `(None, "")` on the local
@@ -2597,13 +2632,46 @@ class GatewayService:
             # entitled to know which one went.
             from agentnode_sdk.gateway.protocol import TRANSPORT_LOST
 
-            terminal = "unverified"
-            record.termination_reason = TRANSPORT_LOST
-            record.refusal = (
-                "the sandbox that runs jobs for this gateway could not be reached, so what "
-                f"happened to this run is not known: {exc}. It was not established that it ran, "
-                "and it was not established that it did not."
-            )
+            # ASK BEFORE CONCLUDING. The connection went; that does not mean the work did not
+            # happen, and it does not mean it did. A worker that keeps a journal can say which,
+            # and asking costs one short round trip. Until this existed, every dropped
+            # connection after a job had already run was recorded as permanently unknown --
+            # billed, with the customer told nothing was established.
+            settled = self._what_the_worker_says_became_of(record)
+            if settled is not None and settled.outcome:
+                # The work happened. The record is filled from the recovered outcome exactly as
+                # it would have been from a live one -- a run whose answer arrived late is not
+                # a different kind of run, and its line must not look like one.
+                outcome = self._outcome_from(settled.outcome)
+                left_behind = outcome.egress_gone
+                record.termination_reason = outcome.reason
+                record.native_status = outcome.native_status
+                record.native_platform = outcome.native_platform
+                record.exit_code = outcome.exit_code
+                record.stdout = outcome.stdout
+                record.stderr = outcome.stderr
+                record.recovered_after_losing_the_connection = True
+                terminal = "finished"
+            elif settled is not None and not settled.known:
+                # It never reached the worker. Nothing ran, and that is a FACT rather than an
+                # absence of one -- so it is not billed as an execution.
+                terminal = "refused"
+                record.termination_reason = TRANSPORT_LOST
+                record.refusal = (
+                    "the connection to the sandbox worker was lost before this run reached it. "
+                    "The worker has no record of it, so it did not run, and nothing was "
+                    f"charged for running it: {exc}")
+            else:
+                terminal = "unverified"
+                record.termination_reason = TRANSPORT_LOST
+                record.refusal = (
+                    "the sandbox that runs jobs for this gateway could not be reached, so what "
+                    f"happened to this run is not known: {exc}. It was not established that it "
+                    "ran, and it was not established that it did not."
+                    + ("" if settled is None else
+                       " The worker was asked afterwards and says it began the run and cannot "
+                       "establish how it ended.")
+                )
         except CouldNotRestrictTheNetwork as exc:
             terminal = "refused"
             record.refusal = (
