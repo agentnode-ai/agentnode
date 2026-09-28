@@ -138,6 +138,8 @@ class Claim:
     outcome: dict | None = None
     cleanup: Any = None
     recorded_digest: str = ""
+    #: Seconds of actual execution, by the worker's own clock. `None` while it has not finished.
+    ran_for: float | None = None
 
     @property
     def may_execute(self) -> bool:
@@ -359,8 +361,11 @@ class Journal:
 
         state = str(record.get("state") or "")
         if state in (FINISHED, CLEANUP_PENDING, CLEANED, CLEANUP_UNPROVEN):
+            began, ended = record.get("started_at"), record.get("finished_at")
             return Claim(DONE, run_id, state=state, outcome=record.get("outcome"),
-                         cleanup=record.get("cleanup"), recorded_digest=recorded)
+                         cleanup=record.get("cleanup"), recorded_digest=recorded,
+                         ran_for=(max(0.0, float(ended) - float(began))
+                                  if began and ended else None))
         if state == STARTED:
             # It was started and no outcome was ever written. Something happened in the world
             # and this worker cannot say what. That is `unknown`, and it stays unknown.

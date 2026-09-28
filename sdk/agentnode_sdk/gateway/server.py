@@ -163,6 +163,10 @@ class RunRecord:
     #: carrying it was lost. The run is ordinary; how its outcome got here is not, and a
     #: reader of the record is entitled to know the difference.
     recovered_after_losing_the_connection: bool = False
+    #: And whether the billed seconds came from the worker's measurement of the run rather
+    #: than from this gateway's own two timestamps. Recorded because a reader comparing a
+    #: line against this gateway's clock would otherwise find them disagreeing.
+    billed_from_the_workers_clock: bool = False
     stderr: str = ""
     refusal: str = ""
     #: WHICH refusal, by the contract's name, when this record is one. A record carrying only
@@ -2651,7 +2655,15 @@ class GatewayService:
                 record.stdout = outcome.stdout
                 record.stderr = outcome.stderr
                 record.recovered_after_losing_the_connection = True
-                terminal = "finished"
+                # BILLED FOR WHAT IT RAN, not for how long the connection was broken.
+                # `finished_at` is otherwise set in the `finally` below, at the moment this
+                # gateway gave up -- which on a lost connection includes the whole outage. The
+                # worker measured the execution on its own clock; that DURATION is transferable
+                # even though its timestamps are not, so it is anchored to this gateway's own
+                # start. Without this, an outage would be charged to the customer as compute.
+                if settled.ran_for is not None and record.started_at:
+                    record.finished_at = float(record.started_at) + float(settled.ran_for)
+                    record.billed_from_the_workers_clock = True
             elif settled is not None and not settled.known:
                 # It never reached the worker. Nothing ran, and that is a FACT rather than an
                 # absence of one -- so it is not billed as an execution.
@@ -2712,7 +2724,14 @@ class GatewayService:
                 # needed BESIDES its container is on the worker's side of the line, so the worker
                 # is what says whether it is gone.
                 record.cleanup_verified = left_behind
-            record.finished_at = time.time()
+            # WHEN IT ENDED. Normally now: this is the moment the run stopped being in flight.
+            # The one exception is a run whose outcome was recovered after the connection to the
+            # worker was lost, where "now" is when this gateway gave up rather than when the
+            # work ended -- and the difference is the whole outage, which would then be charged
+            # as compute. That branch has already set the end from the duration the worker
+            # measured, and it is not overwritten here.
+            if not record.billed_from_the_workers_clock:
+                record.finished_at = time.time()
             # The terminal state is published LAST, and that ordering is the point. An earlier
             # version set it before this block, so a client polling in the window between the two
             # saw state="finished" on a record whose cleanup_verified was still None -- a terminal

@@ -398,11 +398,18 @@ class Bench:
                 pass
         known = self.journal.look(run_id)
         if known is None:
-            return {"known": False, "state": "", "outcome": None, "cleanup": None}
+            return {"known": False, "state": "", "outcome": None, "cleanup": None,
+                    "ran_for": None}
         return {"known": True, "state": known.state,
                 "outcome": known.outcome if known.verdict == _journal.DONE else None,
                 "cleanup": known.cleanup,
-                "unknown_outcome": known.verdict == _journal.UNKNOWN}
+                "unknown_outcome": known.verdict == _journal.UNKNOWN,
+                # HOW LONG IT ACTUALLY RAN, measured by the clock that ran it. A duration
+                # rather than two timestamps, on purpose: the two machines' clocks are not the
+                # same clock, and a difference between them is not a fact about either. The
+                # gateway bills this duration from its own start, so time the connection spent
+                # broken is not charged as execution.
+                "ran_for": known.ran_for}
 
     @staticmethod
     def _job(said) -> Job:

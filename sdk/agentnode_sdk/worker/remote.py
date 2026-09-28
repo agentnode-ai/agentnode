@@ -206,7 +206,9 @@ class SocketWorker(Worker):
                          state=str(said.get("state") or ""),
                          outcome=said.get("outcome"),
                          cleanup=said.get("cleanup"),
-                         unknown_outcome=bool(said.get("unknown_outcome")))
+                         unknown_outcome=bool(said.get("unknown_outcome")),
+                         ran_for=(float(said["ran_for"])
+                                  if said.get("ran_for") is not None else None))
 
     def acknowledge(self, run_id: str) -> None:
         """Best effort. The worker's retention window does not depend on this arriving."""

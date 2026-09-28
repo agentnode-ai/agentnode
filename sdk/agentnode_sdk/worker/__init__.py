@@ -113,6 +113,10 @@ class Recovered:
     outcome: dict | None = None
     cleanup: Any = None
     unknown_outcome: bool = False
+    #: How long it actually ran, by the worker's clock. A duration, not a pair of timestamps:
+    #: two machines do not share a clock, and the difference between theirs is not a fact about
+    #: either of them.
+    ran_for: float | None = None
 
     @property
     def still_running(self) -> bool:

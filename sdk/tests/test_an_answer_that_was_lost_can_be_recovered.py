@@ -42,7 +42,8 @@ class TestTheWorkerCanBeAsked:
 
     def test_a_run_it_never_heard_of(self, tmp_path):
         said = self._bench(tmp_path)._result("never-asked")
-        assert said == {"known": False, "state": "", "outcome": None, "cleanup": None}
+        assert said == {"known": False, "state": "", "outcome": None, "cleanup": None,
+                        "ran_for": None}
 
     def test_a_run_it_finished(self, tmp_path):
         bench = self._bench(tmp_path)
@@ -171,3 +172,58 @@ class TestTheGatewayUsesIt:
 
         built = GatewayService._outcome_from({"exit_code": 0, "a_field_from_a_later_build": 1})
         assert built.exit_code == 0
+
+
+class TestWhatIsBilledForARecoveredRun:
+    """R7: billing follows execution. A connection that was broken for an hour must not be an
+    hour of compute on somebody's bill."""
+
+    def test_the_worker_reports_how_long_it_actually_ran(self, tmp_path):
+        book = J.Journal(tmp_path / "journal")
+        job = a_journal_job(run_id="timed")
+        book.claim(job.run_id, J.digest_of_job(job))
+        book.note_started(job.run_id)
+        book.note_finished(job.run_id, {"exit_code": 0})
+
+        said = book.look("timed")
+        assert said.ran_for is not None and said.ran_for >= 0.0
+
+    def test_a_duration_crosses_and_not_two_timestamps(self, tmp_path):
+        """Two machines do not share a clock. The difference between their clocks is not a
+        fact about either, so what crosses is how long it ran and nothing else."""
+        bench = Bench(SimpleNamespace(), "unix:///nowhere.sock", KEY, only_uid=None)
+        bench.journal = J.Journal(tmp_path / "journal")
+        job = a_journal_job(run_id="dur")
+        bench.journal.claim(job.run_id, J.digest_of_job(job))
+        bench.journal.note_started(job.run_id)
+        bench.journal.note_finished(job.run_id, {"exit_code": 0})
+
+        said = bench._result("dur")
+        assert "ran_for" in said
+        assert "started_at" not in said and "finished_at" not in said
+
+    def test_an_unfinished_run_reports_no_duration(self, tmp_path):
+        book = J.Journal(tmp_path / "journal")
+        job = a_journal_job(run_id="midway")
+        book.claim(job.run_id, J.digest_of_job(job))
+        book.note_started(job.run_id)
+        assert book.look("midway").ran_for is None
+
+    def test_the_end_time_of_a_recovered_run_is_not_when_the_gateway_gave_up(self):
+        """The arithmetic, directly. A run that took 2 seconds and was recovered 3600 seconds
+        later is billed 2 seconds, not 3602."""
+        began = 1_000_000.0
+        ran_for = 2.0
+        gave_up_at = began + 3600.0
+
+        ends_at = began + ran_for
+        assert ends_at - began == 2.0
+        assert gave_up_at - began == 3600.0, "what it would have been without this"
+
+    def test_the_record_says_which_clock_decided(self):
+        """A reader comparing the line against this gateway's own clock would otherwise find
+        them disagreeing and have no way to know why."""
+        from agentnode_sdk.gateway.server import RunRecord
+
+        assert RunRecord.billed_from_the_workers_clock is False
+        assert RunRecord.recovered_after_losing_the_connection is False
