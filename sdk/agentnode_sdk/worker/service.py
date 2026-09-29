@@ -436,6 +436,23 @@ class Bench:
         except JobFailed as exc:
             self._refuse(connection, asked, wire.JOB_FAILED, str(exc), key=key,
                          egress_gone=exc.egress_gone)
+        except OSError as exc:
+            # THE PEER WENT AWAY. This is not an internal error and it used to be reported as
+            # one, hundreds of times, in the log an operator reads to find real ones: a reset,
+            # a read that timed out, a TLS teardown -- all `OSError` -- landed in the arm below
+            # and were printed as "internal error while answering: BrokenPipeError(32, ...)".
+            #
+            # A CLEAN hangup never came here: `read_frame` turns an early end into a MALFORMED
+            # ProtocolError, which is answered with silence. These are the untidy ones, and
+            # they are just as ordinary.
+            #
+            # Nothing is sent. There is no live socket to send it on -- that is what happened.
+            #
+            # Deliberately NOT widened to `Exception`: the arm below is for this process being
+            # wrong about something, and a fix that quietly swallowed those would be worse than
+            # the noise it removed. Nothing in `answer()` raises a bare OSError; journal and
+            # lease failures are already `JournalRefused` and `LeaseRefused`.
+            print("  the peer went away before the answer: %s" % type(exc).__name__, flush=True)
         except Exception as exc:                              # noqa: BLE001
             # Something here broke. Saying so is the point: a worker that hung instead would make
             # the control plane wait out its deadline for a failure it could have been told about.
