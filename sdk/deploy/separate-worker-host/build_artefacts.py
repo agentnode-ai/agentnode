@@ -99,11 +99,16 @@ def _provenance(wheel: pathlib.Path, version: str, commit: str) -> dict:
             commit = done.stdout.strip()
             dirty = subprocess.run(["git", "-C", str(HERE), "status", "--porcelain"],
                                    capture_output=True, text=True, check=True).stdout.strip()
+        except FileNotFoundError:
+            raise SystemExit(
+                "git is not on PATH, so this build cannot read the commit it is building, and "
+                "an artefact that cannot name its commit produces a pin no worker will accept. "
+                "Put git on PATH, or pass --commit explicitly.")
         except (OSError, subprocess.CalledProcessError) as exc:
             raise SystemExit(
-                "this artefact would not be able to say which commit it was built from, and a "
-                "worker will not start without a pin that names one. Build inside the "
-                "repository, or pass --commit explicitly. (%s)" % type(exc).__name__)
+                "this directory is not a git checkout, so the build cannot read the commit it "
+                "is building, and a worker will not start from a pin that names none. Build "
+                "inside the repository, or pass --commit explicitly. (%s)" % type(exc).__name__)
     else:
         dirty = ""
     return {"commit": commit, "tree_was_clean": not dirty, "version": version,
