@@ -68,13 +68,22 @@ class TestAWorkerCanEstablishItsOwnFloor:
         world = _a_deployment(tmp_path)
         monkeypatch.setattr(floors, "_boot", lambda: "this-boot")
 
-        # A floor belonging to the GATEWAY's identity, in the worker's role slot.
+        # A floor belonging to the GATEWAY's identity, in the worker's role slot -- and written
+        # NOW, in this boot. The age has to be irreproachable or the refusal below could be the
+        # floor being stale rather than the floor being somebody else's. The first version of
+        # this test got that wrong and the counter-check caught it: with the identity check
+        # removed it still went red, on `time-floor-too-old`, which proves nothing at all.
+        now = floors._monotonic()
         carried = floors.initial("worker", 1.0, world["gateway_uri"])
-        carried = floors.advance(carried, system_now=2.0, monotonic_now=1.0, boot="this-boot",
+        carried = floors.advance(carried, system_now=2.0, monotonic_now=now, boot="this-boot",
                                  list_this_update=None)
         where = floors.path_for(tmp_path / "floor", "worker")
         where.parent.mkdir(parents=True, exist_ok=True)
         where.write_bytes(carried.to_bytes())
+
+        # THE CONTROL: judged as the identity it actually belongs to, this very file is usable.
+        # So age, boot, role and format are all fine, and only one thing can refuse it below.
+        assert floors.read(where, "worker", world["gateway_uri"]) == carried.floor
 
         with pytest.raises(floors.FloorUnusable) as refused:
             floors.read(where, "worker", world["worker_uri"])

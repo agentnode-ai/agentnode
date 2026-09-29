@@ -41,6 +41,7 @@ GONE = "tests/test_a_withdrawn_identity_stays_withdrawn.py::"
 MACHINE = "tests/test_the_binding_describes_the_right_machine.py::"
 STOP = "tests/test_a_stop_reaches_work_that_has_not_started.py::"
 ROLES = "tests/test_the_two_roles_are_separable.py::"
+REPAIR = "tests/test_the_repair_of_what_two_machines_found.py::"
 
 CHECKS = [
     dict(id="remote-permits-only-mutual-tls",
@@ -385,6 +386,69 @@ CHECKS = [
          green=["tests/test_a_secret_does_not_outlive_its_use.py::"
                 "TestTheWorkerSaysWhatBrokeWithoutSayingWhatItHeld::"
                 "test_the_operator_of_this_machine_still_gets_the_whole_thing"]),
+
+    # ---------------------------------------------------------------------------------------
+    # THE REPAIR OF WHAT TWO MACHINES FOUND. Each property below came into existence on
+    # 2026-09-29 and is held to the same bar as the twenty-seven above: take it away and a
+    # NAMED test has to notice. A repair whose new properties have tests but no counter-checks
+    # is a repair nobody can tell is still there in six months.
+
+    dict(id="a-floor-belongs-to-one-identity",
+         area="D6 -- without it, a floor copied from the other machine is indistinguishable "
+              "from this side's own: right role, right format, and perfectly fresh in the boot "
+              "it was written in. On one host the case cannot arise, which is why it was never "
+              "checked before there were two",
+         file="agentnode_sdk/pki/floor.py",
+         edits=[("    if state.identity != identity:\n", "    if False:\n")],
+         test=REPAIR + "TestAWorkerCanEstablishItsOwnFloor::"
+                       "test_a_floor_carried_from_the_other_machine_is_refused",
+         expect="DID NOT RAISE",
+         green=[REPAIR + "TestAWorkerCanEstablishItsOwnFloor::"
+                         "test_and_it_can_be_kept_without_the_issuer"]),
+
+    dict(id="an-upgrade-does-not-hand-the-tolerance-back",
+         area="D6 -- adopting a format-1 floor must carry its counters. Starting them again is "
+              "the easy migration, and it gives every upgraded deployment a fresh tolerance",
+         file="agentnode_sdk/pki/floor.py",
+         edits=[('        body["identity"] = str(identity)\n',
+                 '        body["identity"] = str(identity)\n'
+                 '        body["granted_total"] = 0.0\n')],
+         test=REPAIR + "TestAWorkerCanEstablishItsOwnFloor::"
+                       "test_an_upgrade_carries_the_counters_instead_of_starting_them_again",
+         expect="the spent tolerance was given back",
+         green=[REPAIR + "TestAWorkerCanEstablishItsOwnFloor::"
+                         "test_a_floor_carried_from_the_other_machine_is_refused"]),
+
+    dict(id="the-installers-own-check-runs-as-the-account",
+         area="D4 -- run as root it refuses by construction: securedir requires that the state "
+              "directory belong to whoever is looking at it, and the same script made it 0700 "
+              "to the gateway a few steps earlier",
+         file="deploy/separate-worker-host/install-control-plane.sh",
+         edits=[('  if runuser -u "$GATEWAY_USER" -- "$PREFIX/venv/bin/agentnode" gateway '
+                 'doctor \\\n',
+                 '  if "$PREFIX/venv/bin/agentnode" gateway doctor \\\n')],
+         test=REPAIR + "test_the_installer_runs_the_gateway_s_own_check_as_the_gateway",
+         expect="assert",
+         green=[REPAIR + "test_the_floor_step_is_guarded_like_every_other_step"]),
+
+    dict(id="a-partial-install-can-be-run-again",
+         area="D3 -- one unguarded step under `set -e` is the whole difference between an "
+              "install that resumes and a machine that has to be wiped",
+         file="deploy/separate-worker-host/install-worker-host.sh",
+         edits=[('if [ ! -f "$FLOOR/worker.floor" ]; then\n', "if true; then\n")],
+         test=REPAIR + "test_the_floor_step_is_guarded_like_every_other_step",
+         expect="assert",
+         green=[REPAIR + "test_the_installer_runs_the_gateway_s_own_check_as_the_gateway"]),
+
+    dict(id="the-build-refuses-an-artefact-that-cannot-install-itself",
+         area="D2 -- six unit references resolved in the repository and nowhere else, and no "
+              "build step would have noticed. The check that notices must itself be checkable",
+         file="deploy/separate-worker-host/build_artefacts.py",
+         edits=[("    if problems:\n", "    if False:\n")],
+         test=REPAIR + "test_the_build_refuses_an_artefact_whose_script_asks_for_a_missing_unit",
+         expect="the build produced an artefact that cannot install itself",
+         green=[REPAIR + "TestAnArtefactCanInstallItself::"
+                         "test_every_script_is_executable_whatever_built_it"]),
 ]
 
 #: Run pytest in a subprocess whose sys.path does not contain the OTHER checkout.
