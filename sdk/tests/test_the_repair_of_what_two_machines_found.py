@@ -243,6 +243,46 @@ class TestWhatTheDocumentationSays:
         assert not worker_tick, worker_tick
 
 
+# =============================================================== D6/D7: what preflight asks
+
+class TestPreflightAsksTheSameQuestionTheServiceWill:
+    """Found by bringing a real pair up, not by reading: preflight assembled its OWN trust view
+    and left the identity out, so a perfectly healthy worker was told it could not serve --
+    `time-floor-no-identity-to-judge-by`, against its own floor. Two views of the same thing
+    drifted apart the moment one of them grew an argument."""
+
+    def test_a_side_s_trust_view_knows_which_identity_it_is(self, tmp_path):
+        from agentnode_sdk.worker.tls import TlsSettings
+
+        world = _a_deployment(tmp_path)
+        settings = TlsSettings(certificate=str(world["worker_cert"]),
+                               key=str(world["worker_dir"] / "key.pem"),
+                               anchor=str(world["anchor"]), deployment="repair",
+                               accept=frozenset({"g1"}),
+                               revocation_list=str(world["anchor"]),
+                               floor=str(tmp_path / "nothing.floor"))
+        assert settings.own_identity() == world["worker_uri"]
+        assert settings.trust("worker").identity == world["worker_uri"], \
+            "a view built without an identity refuses every floor, including its own"
+
+    def test_preflight_does_not_build_a_second_view_of_its_own(self):
+        source = (Path(__file__).resolve().parent.parent / "agentnode_sdk" / "cli" /
+                  "worker_commands.py").read_text(encoding="utf-8")
+        assert "TrustView.read(" not in source, \
+            "preflight must ask settings.trust(), or it will drift from what the service uses"
+
+    def test_the_worker_is_never_advised_to_run_the_issuer_s_run(self):
+        """D7's documentation half, in the product's own words this time. The advice printed
+        when a worker's floor is unusable used to be `Run agentnode pki tick as root ON THIS
+        HOST` -- the one command a worker host cannot run."""
+        source = (Path(__file__).resolve().parent.parent / "agentnode_sdk" / "cli" /
+                  "worker_commands.py").read_text(encoding="utf-8")
+        for number, line in enumerate(source.splitlines(), 1):
+            if "pki tick" in line and not line.strip().startswith("#"):
+                raise AssertionError("worker_commands.py:%d still sends a worker to the "
+                                     "issuer's run: %s" % (number, line.strip()))
+
+
 # =============================================================== D4: the ownership model
 
 def test_the_installer_runs_the_gateway_s_own_check_as_the_gateway():

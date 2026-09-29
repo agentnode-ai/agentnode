@@ -298,10 +298,12 @@ def cmd_preflight(args) -> int:
         from agentnode_sdk.pki.trust import TrustView
         from agentnode_sdk.worker.tls import own_instance
 
-        view = TrustView.read(anchor=tls.anchor, revocation_list=tls.revocation_list,
-                              floor=tls.floor, role="worker",
-                              identity_tombstones=tls.identity_tombstones or None,
-                              tombstones_required=tls.tombstones_required)
+        # `identity` and not just `role`: since a floor names whose it is, a view built without
+        # one refuses every floor, including this worker's own. Preflight built one that way and
+        # therefore reported a healthy worker as unable to serve -- found by bringing a real pair
+        # up, not by reading. `settings.trust()` is the one place that knows how to answer this,
+        # so preflight asks it rather than assembling a second, subtly different view.
+        view = tls.trust("worker")
         try:
             instance = own_instance(tls)
             good("this worker's certificate names it %s" % instance)
@@ -342,9 +344,14 @@ def cmd_preflight(args) -> int:
             view.effective_time()
             good("the time floor at %s is usable" % tls.floor)
         except Exception as exc:                              # noqa: BLE001 - reported, not raised
+            # NOT `pki tick`. That is the issuer's run: it reads the inventory and publishes the
+            # revocation list, neither of which a worker host has, and telling an operator to
+            # run it here is how a worker ended up with no floor at all.
             refuse("the time floor is not usable: %s" % exc,
-                   "Run `agentnode pki tick` as root ON THIS HOST, and check that the timer is "
-                   "enabled here as well.")
+                   "As root ON THIS HOST: `agentnode pki floor advance --role worker "
+                   "--certificate %s --anchor %s`, and check that "
+                   "agentnode-floor-advance.timer is enabled here."
+                   % (tls.certificate, tls.anchor))
 
     print("\n".join(say))
     print()
