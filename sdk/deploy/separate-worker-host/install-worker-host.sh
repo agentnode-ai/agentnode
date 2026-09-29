@@ -242,7 +242,7 @@ fi
 ok "in the worker's own rootless storage"
 
 # ---------------------------------------------------------------------------------------------
-say "the service"
+say "the environment the unit runs with"
 
 cat > "$CONF/worker.env" <<EOF
 # Written by install-worker-host.sh. The session directory holds the cgroups its ceilings live in.
@@ -267,6 +267,38 @@ AGENTNODE_TOMBSTONES=$TRUST/revoked-identities.json
 AGENTNODE_FLOOR=$FLOOR/worker.floor
 EOF
 chmod 0644 "$CONF/worker.env"
+
+# ---------------------------------------------------------------------------------------------
+say "the runtime pin"
+
+# WITHOUT THIS THE WORKER DOES NOT START. It refuses rather than run unable to say which
+# interpreter and artefact it was meant to run from -- correctly -- and the install used to
+# finish anyway and leave a machine that could never serve. The values are not asked for: the
+# artefact carries the commit and the wheel's digest in BUILD.json, written by the build, so
+# the person installing is not the source of truth about what they are installing.
+if [ -f "$CONF/runtime-pin.json" ]; then
+  ok "a pin is already here; left as it stands"
+else
+  [ -f "$HERE/BUILD.json" ] || die "this artefact carries no BUILD.json, so it cannot say which
+    commit it was built from, and the worker will not start without a pin that names one."
+  "$PREFIX/venv/bin/python" - "$HERE/BUILD.json" "$CONF" "$WHEEL" <<'PINEOF'
+import json, sys
+from agentnode_sdk.gateway import runtime_pin
+build = json.load(open(sys.argv[1], encoding="utf-8"))
+running = "%d.%d.%d" % sys.version_info[:3]
+where = runtime_pin.write_pin(sys.argv[2], python_version=running,
+                              artefact_sha256=build["wheel_sha256"], commit=build["commit"])
+print("   pin        : %s" % where)
+print("   interpreter: %s" % running)
+print("   built from : %s%s" % (build["commit"][:12],
+                                "" if build.get("tree_was_clean", True) else "  (tree not clean)"))
+PINEOF
+  chmod 0644 "$CONF/runtime-pin.json"
+  ok "written from the artefact's own BUILD.json, not from anybody's memory"
+fi
+
+# ---------------------------------------------------------------------------------------------
+say "the service"
 
 install -m 0644 "$(unit_file agentnode-worker.service worker-host.service)" \
         /etc/systemd/system/agentnode-worker.service

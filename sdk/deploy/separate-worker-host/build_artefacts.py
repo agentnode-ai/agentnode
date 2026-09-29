@@ -81,6 +81,35 @@ def _sha256(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _provenance(wheel: pathlib.Path, version: str, commit: str) -> dict:
+    """What this artefact was built from, recorded INSIDE it.
+
+    A worker refuses to start without a runtime pin -- it cannot otherwise say which interpreter
+    and artefact it was meant to run from -- and the pin needs a commit. `deploy-pinned.sh` asks
+    the operator for one, which is fine for a hand deploy and wrong for an artefact: an artefact
+    that cannot say where it came from makes the person installing it the source of truth. So
+    the build writes it down, and the installers read it instead of asking.
+    """
+    import subprocess
+
+    if not commit:
+        try:
+            done = subprocess.run(["git", "-C", str(HERE), "rev-parse", "HEAD"],
+                                  capture_output=True, text=True, check=True)
+            commit = done.stdout.strip()
+            dirty = subprocess.run(["git", "-C", str(HERE), "status", "--porcelain"],
+                                   capture_output=True, text=True, check=True).stdout.strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise SystemExit(
+                "this artefact would not be able to say which commit it was built from, and a "
+                "worker will not start without a pin that names one. Build inside the "
+                "repository, or pass --commit explicitly. (%s)" % type(exc).__name__)
+    else:
+        dirty = ""
+    return {"commit": commit, "tree_was_clean": not dirty, "version": version,
+            "wheel": wheel.name, "wheel_sha256": _sha256(wheel)}
+
+
 def _mode_for(inside: str) -> int:
     """The mode a file gets INSIDE the artefact, decided here rather than inherited.
 
@@ -115,7 +144,8 @@ def _units_a_script_needs(text: str) -> list:
     return calls
 
 
-def build(role: str, wheel: pathlib.Path, out: pathlib.Path, version: str) -> pathlib.Path:
+def build(role: str, wheel: pathlib.Path, out: pathlib.Path, version: str,
+          provenance: dict) -> pathlib.Path:
     """Write one artefact and return its path. Never overwrites silently: it names the version."""
     files = ROLES[role]
     name = "agentnode-%s-%s" % (role, version)
@@ -123,6 +153,10 @@ def build(role: str, wheel: pathlib.Path, out: pathlib.Path, version: str) -> pa
     (staged / "unit").mkdir(parents=True)
     (staged / "wheel").mkdir()
 
+    import json as _json
+
+    (staged / "BUILD.json").write_text(_json.dumps(provenance, indent=1, sort_keys=True) + "\n",
+                                       encoding="utf-8")
     lines = []
     placed = {"wheel/" + wheel.name: wheel}
     for inside, source in files.items():
@@ -193,6 +227,8 @@ def main() -> int:
     parser.add_argument("--wheel", required=True)
     parser.add_argument("--out", default=str(HERE.parent / "artefacts"))
     parser.add_argument("--version", default="")
+    parser.add_argument("--commit", default="",
+                        help="the commit this wheel was built from; read from git if omitted")
     args = parser.parse_args()
 
     wheel = pathlib.Path(args.wheel).resolve()
@@ -200,13 +236,19 @@ def main() -> int:
         raise SystemExit("no wheel at %s" % wheel)
     version = args.version or wheel.name.split("-")[1] if "-" in wheel.name else "unknown"
 
+    provenance = _provenance(wheel, version, args.commit)
     out = pathlib.Path(args.out).resolve()
     for role in sorted(ROLES):
-        made = build(role, wheel, out, version)
+        made = build(role, wheel, out, version, provenance)
         print("  %-58s %s" % (made.name, _sha256(made)[:16]))
     print()
+    print("  built from commit %s%s" % (provenance["commit"][:12],
+                                        "" if provenance["tree_was_clean"]
+                                        else "  (WORKING TREE WAS NOT CLEAN)"))
     print("  Two artefacts, one wheel inside both. Each holds only its own role's unit and")
-    print("  install script; the build fails if the other's is in it.")
+    print("  install script; the build fails if the other's is in it, and it refuses to write")
+    print("  one that cannot say which commit it came from -- a worker will not start without")
+    print("  a runtime pin, and the pin needs that commit.")
     return 0
 
 

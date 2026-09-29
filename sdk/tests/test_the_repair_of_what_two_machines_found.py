@@ -167,6 +167,34 @@ class TestAnArtefactCanInstallItself:
                     assert any("%s/unit/%s" % (root, name) in names for name in alternatives), \
                         "%s: none of %s is in %s" % (artefact.name, alternatives, root)
 
+    def test_it_says_which_commit_it_was_built_from(self, tmp_path):
+        """A worker refuses to start without a runtime pin, and the pin needs a commit. Asking
+        the operator for it -- which is what deploy-pinned.sh does -- makes the person
+        installing the artefact the source of truth about what they are installing. The
+        artefact says it itself, and the installer reads it."""
+        done, out = self._built(tmp_path)
+        assert done.returncode == 0, done.stdout + done.stderr
+        for artefact in sorted(out.glob("*.tar.gz")):
+            with tarfile.open(artefact) as tar:
+                root = tar.getnames()[0].split("/")[0]
+                import json
+
+                build = json.loads(tar.extractfile(root + "/BUILD.json").read().decode())
+                assert len(build["commit"]) == 40, build
+                assert len(build["wheel_sha256"]) == 64, build
+                assert "tree_was_clean" in build
+
+    def test_the_worker_installer_writes_the_pin_the_worker_demands(self):
+        """The install used to finish and leave a machine that could never start: `Not started.
+        This worker has no runtime pin.` A finished install must produce a startable service or
+        stop and say why."""
+        script = (DEPLOY / "install-worker-host.sh").read_text(encoding="utf-8")
+        code = "\n".join(l for l in script.splitlines() if not l.strip().startswith("#"))
+        assert "runtime_pin.write_pin" in code, "the installer writes no pin"
+        assert "BUILD.json" in code, "the pin's commit must come from the artefact, not a person"
+        assert "AGENTNODE_ALLOW_UNPINNED" not in code, \
+            "starting unpinned would be the easy way out and removes the check entirely"
+
     def test_the_worker_is_never_given_the_issuer_s_timer(self, tmp_path):
         done, out = self._built(tmp_path)
         assert done.returncode == 0, done.stdout + done.stderr
@@ -197,11 +225,22 @@ def test_the_build_refuses_an_artefact_whose_script_asks_for_a_missing_unit(tmp_
 
     wheel = tmp_path / "agentnode_sdk-0.0.0-py3-none-any.whl"
     wheel.write_bytes(b"not a real wheel")
+    # --commit explicitly: this copy is outside the repository, so without it the build would
+    # stop on provenance instead of on the missing unit, and the mutation would prove nothing.
+    # A control first, to show the copy builds at all when nothing is broken.
+    control = subprocess.run([sys.executable, str(DEPLOY / "build_artefacts.py"),
+                              "--wheel", str(wheel), "--out", str(tmp_path / "control"),
+                              "--version", "0.0.0", "--commit", "0" * 40],
+                             capture_output=True, text=True)
+    assert control.returncode == 0, "the control build failed, so the mutation below shows " \
+                                    "nothing: " + control.stdout + control.stderr
+
     done = subprocess.run([sys.executable, str(staged / "build_artefacts.py"),
                            "--wheel", str(wheel), "--out", str(tmp_path / "out"),
-                           "--version", "0.0.0"], capture_output=True, text=True)
+                           "--version", "0.0.0", "--commit", "0" * 40],
+                          capture_output=True, text=True)
     assert done.returncode != 0, "the build produced an artefact that cannot install itself"
-    assert "agentnode-nowhere.service" in (done.stdout + done.stderr)
+    assert "agentnode-nowhere.service" in (done.stdout + done.stderr), done.stdout + done.stderr
 
 
 # =============================================================== D1/D5: the documented order
