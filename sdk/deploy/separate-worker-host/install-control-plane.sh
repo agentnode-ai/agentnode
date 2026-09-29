@@ -154,6 +154,16 @@ if [ -n "$WHEEL" ]; then
   "$PREFIX/venv/bin/pip" install --quiet --force-reinstall --no-deps "$WHEEL"
   "$PREFIX/venv/bin/pip" install --quiet "$WHEEL"
   ok "installed $(basename "$WHEEL")"
+  # WHICH ARTEFACT THIS IS, recorded inside the installed distribution, exactly as
+  # deploy/deploy-pinned.sh does it. A service refuses to start when its pin names an artefact
+  # the installation cannot confirm, and both installers here used to leave that record absent.
+  ARTEFACT_DIGEST="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+  SITE="$(ls -d "$PREFIX"/venv/lib*/python3*/site-packages 2>/dev/null | head -1)"
+  DIST="$(ls -d "$SITE"/agentnode_sdk-*.dist-info 2>/dev/null | head -1)"
+  [ -n "$DIST" ] || die "the installed distribution has no dist-info, so nothing can record
+    which artefact it came from and this gateway would refuse to start."
+  printf '%s\n' "$ARTEFACT_DIGEST" > "$DIST/AGENTNODE_ARTEFACT"
+  ok "artefact digest recorded in $(basename "$DIST")"
 else
   [ -x "$PREFIX/venv/bin/agentnode" ] || die "no wheel given and nothing installed at $PREFIX"
   ok "keeping what is already installed"
@@ -169,6 +179,34 @@ say "directories, and who cannot read them"
 install -d -o root -g root -m 0755 "$CONF"
 install -d -o root -g root -m 0755 "$TRUST"
 install -d -o "$GATEWAY_USER" -g "$GATEWAY_USER" -m 0700 "$STATE" "$STATE/state"
+
+# ---------------------------------------------------------------------------------------------
+say "the runtime pin"
+
+# The gateway refuses to start without one, for the same reason the worker does: a service that
+# cannot say which interpreter and artefact it was meant to run from cannot notice that it is
+# running from the wrong one. The commit and the wheel's digest come from the artefact's own
+# BUILD.json, so nobody has to remember them.
+if [ -f "$CONF/runtime-pin.json" ]; then
+  ok "a pin is already here; left as it stands"
+else
+  [ -f "$HERE/BUILD.json" ] || die "this artefact carries no BUILD.json, so it cannot say which
+    commit it was built from, and the gateway will not start without a pin that names one."
+  "$PREFIX/venv/bin/python" - "$HERE/BUILD.json" "$CONF" <<'PINEOF'
+import json, sys
+from agentnode_sdk.gateway import runtime_pin
+build = json.load(open(sys.argv[1], encoding="utf-8"))
+running = "%d.%d.%d" % sys.version_info[:3]
+where = runtime_pin.write_pin(sys.argv[2], python_version=running,
+                              artefact_sha256=build["wheel_sha256"], commit=build["commit"])
+print("   pin        : %s" % where)
+print("   interpreter: %s" % running)
+print("   built from : %s%s" % (build["commit"][:12],
+                                "" if build.get("tree_was_clean", True) else "  (tree not clean)"))
+PINEOF
+  chmod 0644 "$CONF/runtime-pin.json"
+  ok "written from the artefact's own BUILD.json"
+fi
 ok "$STATE is 0700 to $GATEWAY_USER"
 ok "$TRUST is root's: the gateway reads the signed lists and cannot write them"
 

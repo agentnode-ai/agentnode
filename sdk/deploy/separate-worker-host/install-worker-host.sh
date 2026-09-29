@@ -135,6 +135,18 @@ if [ -n "$WHEEL" ]; then
   "$PREFIX/venv/bin/pip" install --quiet --force-reinstall --no-deps "$WHEEL"
   "$PREFIX/venv/bin/pip" install --quiet "$WHEEL"
   ok "installed $(basename "$WHEEL")"
+  # WHICH ARTEFACT THIS IS, recorded inside the installed distribution, exactly as
+  # deploy/deploy-pinned.sh does it. Without this the start refuses -- "the pin expects
+  # artefact ... and the installed distribution records none" -- and the install had no way of
+  # knowing, because it never started the service. Recomputing a digest from unpacked files
+  # afterwards would be inventing a number; this is the one that was installed.
+  ARTEFACT_DIGEST="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+  SITE="$(ls -d "$PREFIX"/venv/lib*/python3*/site-packages 2>/dev/null | head -1)"
+  DIST="$(ls -d "$SITE"/agentnode_sdk-*.dist-info 2>/dev/null | head -1)"
+  [ -n "$DIST" ] || die "the installed distribution has no dist-info, so nothing can record
+    which artefact it came from and this worker would refuse to start."
+  printf '%s\n' "$ARTEFACT_DIGEST" > "$DIST/AGENTNODE_ARTEFACT"
+  ok "artefact digest recorded in $(basename "$DIST")"
 else
   [ -x "$PREFIX/venv/bin/agentnode" ] || die "no wheel given and nothing installed at $PREFIX"
   ok "keeping what is already installed"

@@ -173,6 +173,12 @@ def build(role: str, wheel: pathlib.Path, out: pathlib.Path, version: str,
         if any(forbidden in inside for inside in placed):
             raise SystemExit("%s is in the %s artefact and must not be" % (forbidden, role))
 
+    # BUILD.json is covered too. The pin an installer writes comes out of it, so a provenance
+    # file the manifest did not cover would be the one file in the artefact that could be
+    # changed without the check noticing -- and it is the file that says what this is.
+    lines.append("%s  %s" % (_sha256(staged / "BUILD.json"), "BUILD.json"))
+    lines.sort(key=lambda line: line.split("  ", 1)[1])
+
     (staged / "MANIFEST.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (staged / "WHAT-THIS-IS.txt").write_text(
         "agentnode %s, version %s.\n\n"

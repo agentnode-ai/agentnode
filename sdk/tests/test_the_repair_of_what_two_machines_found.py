@@ -183,6 +183,11 @@ class TestAnArtefactCanInstallItself:
                 assert len(build["commit"]) == 40, build
                 assert len(build["wheel_sha256"]) == 64, build
                 assert "tree_was_clean" in build
+                # And the manifest covers it. The installer's pin is written FROM this file, so
+                # a provenance record the manifest left out would be the one file in the
+                # artefact that could be changed without the check noticing.
+                manifest = tar.extractfile(root + "/MANIFEST.sha256").read().decode()
+                assert "BUILD.json" in manifest, manifest
 
     def test_the_worker_installer_writes_the_pin_the_worker_demands(self):
         """The install used to finish and leave a machine that could never start: `Not started.
