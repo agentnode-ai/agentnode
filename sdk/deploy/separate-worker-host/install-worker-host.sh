@@ -164,7 +164,42 @@ say "directories"
 
 install -d -o root         -g root         -m 0755 "$CONF" "$TRUST"
 install -d -o "$WORKER_USER" -g "$WORKER_USER" -m 0700 "$HOME_DIR" "$HOME_DIR/tmp" "$TLS_DIR" "$JOURNAL"
+# AND THE ONES THE CONTAINER RUNTIME NEEDS, which `useradd --create-home` would have made --
+# except that it only runs when the account does not already exist. Reinstalling onto a host
+# whose account survived but whose home did not therefore died at the image pull with
+# `stat /var/lib/agentnode-worker/.config: no such file or directory`. `install -d` is
+# idempotent, so creating them unconditionally costs nothing and removes the difference
+# between a first install and a later one.
+install -d -o "$WORKER_USER" -g "$WORKER_USER" -m 0700 \
+    "$HOME_DIR/.config" "$HOME_DIR/.config/containers" \
+    "$HOME_DIR/.local" "$HOME_DIR/.local/share" "$HOME_DIR/.local/share/containers"
 ok "$HOME_DIR is 0700 to $WORKER_USER; its journal and its key are inside it"
+ok "the runtime's own directories exist whether or not this account is new"
+
+# WHY THIS FILE EXISTS, because it looks like a workaround and is the opposite of one.
+#
+# Podman puts `net.ipv4.ping_group_range` on every rootless container by default, and crun
+# writes it inside the container's network namespace. This unit runs with
+# ProtectKernelTunables=yes, which mounts /proc/sys read-only for the service and for
+# everything it spawns -- so the write fails with EROFS and NO container starts. Including
+# the one the worker runs before it serves, to prove its memory ceiling binds. The worker
+# then refuses, correctly, and a rebooted host never comes back.
+#
+# Measured: with that unit property the pinned image fails to start; without it, it does not.
+#
+# The cheap fix would have been ProtectKernelTunables=no, and it would have been the wrong
+# one: it makes every kernel tunable writable by the one account on this machine that runs
+# foreign code. Emptying podman's default sysctl list removes the write instead. What that
+# costs is unprivileged ping inside a sandbox that has no network at all; what it keeps is
+# the hardening.
+cat > "$HOME_DIR/.config/containers/containers.conf" <<'CONTAINERSCONF'
+# Written by install-worker-host.sh. See the comment in that script for why.
+[containers]
+default_sysctls = []
+CONTAINERSCONF
+chown "$WORKER_USER:$WORKER_USER" "$HOME_DIR/.config/containers/containers.conf"
+chmod 0600 "$HOME_DIR/.config/containers/containers.conf"
+ok "podman asks for no kernel tunable, so the unit keeps ProtectKernelTunables=yes"
 
 # ---------------------------------------------------------------------------------------------
 say "what had to be carried from the control plane"
