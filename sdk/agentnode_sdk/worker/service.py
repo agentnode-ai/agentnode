@@ -487,8 +487,21 @@ class Bench:
                 # the gateway's. On one machine the two were the same value; on two they are
                 # two different facts, and only this one is about the measurement.
                 "boot_id": _own_boot_id(),
+                # WHETHER THIS WORKER KEEPS LEASES, said in the handshake rather than found out
+                # by being refused. A worker on its own machine does; one behind a unix socket
+                # on the gateway's own host does not, because there a lease would be ceremony
+                # rather than protection. Nothing told the caller which kind it was talking to,
+                # so nothing ever took a lease, and every job-bearing call to a remote worker
+                # was refused with "this worker holds no lease, so nothing may give it work".
+                # The worker was right and nobody had ever asked. Now the answer comes first.
+                "leases": self.leases is not None,
             }
         if method == "take_lease":
+            if self.leases is None:
+                raise wire.ProtocolError(
+                    wire.NO_LEASE,
+                    "this worker keeps no leases, so there is none to take. `describe` says so; "
+                    "asking anyway means the answer was not read. Send the work without one.")
             held = self.leases.take(self._caller)
             return {"holder": held.holder, "epoch": held.epoch,
                     "renew_within": _lease.HEARTBEAT_EVERY_SECONDS,

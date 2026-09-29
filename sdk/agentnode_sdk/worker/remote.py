@@ -187,6 +187,16 @@ class SocketWorker(Worker):
         # local suite could not have.
         if method in self.JOB_BEARING and not self._agreed:
             self._describe(wait=min(wait, QUICK_SECONDS))
+        # AND A LEASE, TAKEN BECAUSE WORK IS ABOUT TO CROSS rather than because somebody
+        # remembered to switch it on. `lease_from_the_worker()` existed, was documented as
+        # idempotent, and had no caller anywhere -- not in the product and not in a test -- so
+        # `_leasing` was never true, no `lease_epoch` was ever attached, and a worker on another
+        # machine refused every job-bearing call with "this worker holds no lease, so nothing
+        # may give it work". The worker was right; nothing on this side had ever asked.
+        #
+        # Found by bringing a real pair up: the FIRST thing the control plane did with its
+        # worker was `gateway doctor --measure`, and it was refused. On one host nothing had
+        # noticed, because the tests that prove the fencing drive the worker end directly.
         if method in self.JOB_BEARING and self._leasing:
             params = dict(params)
             params["lease_epoch"] = self._hold_a_lease(wait=min(wait, QUICK_SECONDS))
@@ -314,6 +324,17 @@ class SocketWorker(Worker):
             if not isinstance(got, dict):
                 raise WorkerUnreachable("the sandbox worker did not describe itself")
             self._agreed = self._agree_on_a_version(got)
+            # WHETHER TO TAKE A LEASE, from the worker rather than from a switch nobody threw.
+            # `lease_from_the_worker()` was the only thing that set `_leasing`, and it had no
+            # caller anywhere -- not in the product, not in a test -- so every job-bearing call
+            # to a worker that DOES keep leases was refused, correctly, with "this worker holds
+            # no lease". A worker behind a unix socket on the gateway's own host keeps none and
+            # says so, and then nothing is attached. Found on two machines, where the first
+            # thing the control plane asked its worker for was a measurement.
+            #
+            # `.get(...)` and not `[...]`: a worker from before this field speaks a protocol
+            # version we still accept, and for those the old behaviour -- no lease -- is right.
+            self._leasing = bool(got.get("leases"))
             self._described = got
         return self._described
 

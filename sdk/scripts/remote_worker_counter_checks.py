@@ -440,6 +440,18 @@ CHECKS = [
          expect="assert",
          green=[REPAIR + "test_the_installer_runs_the_gateway_s_own_check_as_the_gateway"]),
 
+    dict(id="a-lease-is-taken-when-the-worker-keeps-them",
+         area="the fencing this arc built was never wired in: `lease_from_the_worker()` had no "
+              "caller, so a worker on its own machine refused every job for want of a lease",
+         file="agentnode_sdk/worker/remote.py",
+         edits=[("            self._leasing = bool(got.get(\"leases\"))\n",
+                 "            self._leasing = False\n")],
+         test=REPAIR + "TestALeaseIsTakenWhenTheWorkerKeepsThem::"
+                       "test_a_worker_that_keeps_leases_is_leased_from",
+         expect="assert",
+         green=[REPAIR + "TestALeaseIsTakenWhenTheWorkerKeepsThem::"
+                         "test_and_one_that_does_not_is_not"]),
+
     dict(id="the-build-refuses-an-artefact-that-cannot-install-itself",
          area="D2 -- six unit references resolved in the repository and nowhere else, and no "
               "build step would have noticed. The check that notices must itself be checkable",

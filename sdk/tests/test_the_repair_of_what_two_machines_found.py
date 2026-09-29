@@ -374,6 +374,58 @@ class TestTheUnitCannotNameAFileTheInstallerDoesNot:
         assert "worker.key" not in self._unit_code()
 
 
+# ============================================ the lease nobody took, because nobody was told
+
+class TestALeaseIsTakenWhenTheWorkerKeepsThem:
+    """`lease_from_the_worker()` existed, was documented as idempotent, and had NO CALLER --
+    not in the product and not in a test. So `_leasing` was never true, no `lease_epoch` was
+    ever attached, and a worker on its own machine refused every job-bearing call with "this
+    worker holds no lease, so nothing may give it work". The worker was right; this side had
+    never asked. Found when a real control plane's very first act -- measuring its worker --
+    was refused, and invisible on one host, where a socket worker keeps no leases at all."""
+
+    def _a_client(self, said):
+        from agentnode_sdk.worker import protocol as wire
+        from agentnode_sdk.worker.remote import SocketWorker
+
+        answer = {"protocol_versions": list(wire.SUPPORTED)}
+        answer.update(said)
+
+        class Answering(SocketWorker):
+            def _ask(self, method, params, *, wait=None, run_id=""):  # noqa: D102
+                assert method == "describe"
+                return dict(answer)
+
+        return Answering("unix:///nowhere.sock", b"k" * 48)
+
+    def test_a_worker_that_keeps_leases_is_leased_from(self):
+        client = self._a_client({"leases": True})
+        client._describe()
+        assert client._leasing is True
+
+    def test_and_one_that_does_not_is_not(self):
+        """A socket worker on the gateway's own host keeps none, and a lease there would be
+        ceremony. Attaching one anyway used to end in `AttributeError` inside the worker."""
+        client = self._a_client({"leases": False})
+        client._describe()
+        assert client._leasing is False
+
+    def test_a_worker_from_before_the_field_is_treated_as_keeping_none(self):
+        """The old behaviour, for a build that speaks a version this side still accepts. Reading
+        a missing field as 'yes' would refuse work that used to run."""
+        client = self._a_client({})
+        client._describe()
+        assert client._leasing is False
+
+    def test_the_worker_says_so_in_its_own_describe(self, tmp_path):
+        """The other end of the same fact, so the two cannot disagree."""
+        source = (Path(__file__).resolve().parent.parent / "agentnode_sdk" / "worker" /
+                  "service.py").read_text(encoding="utf-8")
+        assert '"leases": self.leases is not None,' in source
+        # And asking for a lease where there is none is a named refusal, not an AttributeError.
+        assert "this worker keeps no leases" in source
+
+
 # =============================================================== D4: the ownership model
 
 def test_the_installer_runs_the_gateway_s_own_check_as_the_gateway():
