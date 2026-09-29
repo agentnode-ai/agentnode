@@ -252,6 +252,19 @@ TMPDIR=$HOME_DIR/tmp
 AGENTNODE_LISTEN=$LISTEN
 AGENTNODE_DEPLOYMENT=$DEPLOYMENT
 AGENTNODE_GATEWAY_INSTANCE=$GATEWAY_INSTANCE
+# EVERY PATH THE UNIT USES IS WRITTEN HERE, by the script that created the files, so that the
+# unit cannot name one the installer does not. It named two: a tombstone list called
+# withdrawn.json that the control plane never writes, and /etc/agentnode/worker.key, the single
+# global worker key that per-pair keys replaced. The installer's own preflight passed and the
+# unit's failed, on every start, and nothing short of starting the service on a real worker host
+# would have shown it.
+AGENTNODE_KEYRING=$CONF/pair-keys.json
+AGENTNODE_JOURNAL=$JOURNAL
+AGENTNODE_TLS_DIR=$TLS_DIR
+AGENTNODE_TRUST=$TRUST/ca.pem
+AGENTNODE_REVOCATION_LIST=$TRUST/revoked.crl
+AGENTNODE_TOMBSTONES=$TRUST/revoked-identities.json
+AGENTNODE_FLOOR=$FLOOR/worker.floor
 EOF
 chmod 0644 "$CONF/worker.env"
 

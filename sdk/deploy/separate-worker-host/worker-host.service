@@ -40,33 +40,41 @@ EnvironmentFile=/etc/agentnode/worker.env
 # same code, so the two cannot drift: a unit that validated its configuration with a second
 # implementation would eventually permit something the product refuses, or refuse something it
 # permits. Preflight opens nothing, binds nothing and prints no key material.
+#
+# EVERY PATH COMES FROM worker.env, which install-worker-host.sh writes. It used to spell them
+# out here, and two of them were wrong in a way nothing could catch without starting the
+# service on a real worker host: `--tombstones .../withdrawn.json`, a file the control plane
+# never writes (it is `revoked-identities.json`), and `--key /etc/agentnode/worker.key`, the
+# single global worker key that per-pair keys replaced. The installer's own preflight passed
+# because it used the right paths; the unit's failed, fail-closed, every time. One source for
+# the paths is the only arrangement in which that cannot happen again.
 ExecStartPre=/opt/agentnode/venv/bin/agentnode worker preflight \
     --topology separate-worker-host \
     --listen ${AGENTNODE_LISTEN} \
-    --keyring /etc/agentnode/pair-keys.json \
-    --journal /var/lib/agentnode-worker/journal \
-    --tls-dir /var/lib/agentnode-worker/tls \
-    --trust /etc/agentnode/trust/ca.pem \
+    --keyring ${AGENTNODE_KEYRING} \
+    --journal ${AGENTNODE_JOURNAL} \
+    --tls-dir ${AGENTNODE_TLS_DIR} \
+    --trust ${AGENTNODE_TRUST} \
     --deployment ${AGENTNODE_DEPLOYMENT} \
     --accept-gateway ${AGENTNODE_GATEWAY_INSTANCE} \
-    --revocation-list /etc/agentnode/trust/revoked.crl \
-    --tombstones /etc/agentnode/trust/withdrawn.json \
-    --floor /var/lib/agentnode-floor/worker.floor \
-    --key /etc/agentnode/worker.key
+    --revocation-list ${AGENTNODE_REVOCATION_LIST} \
+    --tombstones ${AGENTNODE_TOMBSTONES} \
+    --floor ${AGENTNODE_FLOOR} \
+    --key ${AGENTNODE_KEYRING}
 
 ExecStart=/opt/agentnode/venv/bin/agentnode worker serve \
     --topology separate-worker-host \
     --listen ${AGENTNODE_LISTEN} \
-    --keyring /etc/agentnode/pair-keys.json \
-    --journal /var/lib/agentnode-worker/journal \
-    --tls-dir /var/lib/agentnode-worker/tls \
-    --trust /etc/agentnode/trust/ca.pem \
+    --keyring ${AGENTNODE_KEYRING} \
+    --journal ${AGENTNODE_JOURNAL} \
+    --tls-dir ${AGENTNODE_TLS_DIR} \
+    --trust ${AGENTNODE_TRUST} \
     --deployment ${AGENTNODE_DEPLOYMENT} \
     --accept-gateway ${AGENTNODE_GATEWAY_INSTANCE} \
-    --revocation-list /etc/agentnode/trust/revoked.crl \
-    --tombstones /etc/agentnode/trust/withdrawn.json \
-    --floor /var/lib/agentnode-floor/worker.floor \
-    --key /etc/agentnode/worker.key
+    --revocation-list ${AGENTNODE_REVOCATION_LIST} \
+    --tombstones ${AGENTNODE_TOMBSTONES} \
+    --floor ${AGENTNODE_FLOOR} \
+    --key ${AGENTNODE_KEYRING}
 
 # There is no --for-user, and that is not an omission. It names the ONE LOCAL ACCOUNT allowed to
 # open the unix socket, and there is no socket here. Who may give this worker work is decided by

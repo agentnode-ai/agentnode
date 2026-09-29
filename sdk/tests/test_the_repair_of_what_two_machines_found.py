@@ -283,6 +283,53 @@ class TestPreflightAsksTheSameQuestionTheServiceWill:
                                      "issuer's run: %s" % (number, line.strip()))
 
 
+# ====================================================== D5/D7: the unit and the installer agree
+
+class TestTheUnitCannotNameAFileTheInstallerDoesNot:
+    """Found by starting the service on a real worker host, which nothing had ever done. The
+    unit spelled out `--tombstones /etc/agentnode/trust/withdrawn.json` -- a file the control
+    plane does not write; it writes `revoked-identities.json` -- and `--key
+    /etc/agentnode/worker.key`, the single global worker key that per-pair keys replaced. The
+    installer's own preflight passed, because it used the right paths. The unit's failed, fail
+    closed, on every start. A correctly installed worker could not run."""
+
+    def _unit(self) -> str:
+        return (DEPLOY / "worker-host.service").read_text(encoding="utf-8")
+
+    def _unit_code(self) -> str:
+        """The unit with its comments removed. Both files here EXPLAIN the defect they fixed, in
+        prose, naming the wrong paths -- so a test that scans the whole text finds the
+        explanation and calls it the defect. It did, twice, before this helper existed."""
+        return "\n".join(line for line in self._unit().splitlines()
+                         if not line.strip().startswith("#"))
+
+    def test_the_unit_spells_out_no_path_of_its_own(self):
+        offenders = []
+        for number, line in enumerate(self._unit().splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("--") and ("/etc/" in stripped or "/var/" in stripped):
+                offenders.append("%d: %s" % (number, stripped))
+        assert not offenders, ("these take a literal path instead of one the installer wrote "
+                               "into worker.env, which is how two of them came to name files "
+                               "that do not exist:\n  " + "\n  ".join(offenders))
+
+    def test_every_variable_the_unit_uses_is_written_by_the_installer(self):
+        import re
+
+        unit = self._unit_code()
+        installer = (DEPLOY / "install-worker-host.sh").read_text(encoding="utf-8")
+        used = set(re.findall(r"\$\{(AGENTNODE_[A-Z_]+)\}", unit))
+        assert used, "the unit takes no paths from the environment at all"
+        for name in sorted(used):
+            assert re.search(r"^%s=" % name, installer, re.M), \
+                "the unit uses ${%s} and install-worker-host.sh never writes it" % name
+
+    def test_the_global_worker_key_is_gone_from_the_unit(self):
+        """R5 replaced one key for everybody with one key per pair. The unit still handed the
+        worker the old path, which is both wrong and a name nobody should reintroduce."""
+        assert "worker.key" not in self._unit_code()
+
+
 # =============================================================== D4: the ownership model
 
 def test_the_installer_runs_the_gateway_s_own_check_as_the_gateway():
