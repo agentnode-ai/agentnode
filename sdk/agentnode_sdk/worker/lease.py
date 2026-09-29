@@ -100,33 +100,74 @@ class Leases:
     """
 
     def __init__(self, at: str | os.PathLike[str] | None = None, *,
-                 clock=time.monotonic, ttl: float = LEASE_SECONDS) -> None:
+                 clock=time.monotonic, ttl: float = LEASE_SECONDS,
+                 legacy: str | os.PathLike[str] | None = None) -> None:
         self.at = str(at) if at else ""
+        #: Where this counter used to be kept: inside the run journal, where the journal read
+        #: it as a run record with no run id and the worker died trying to settle it. The path
+        #: is passed in rather than derived, so that the only place that knows the old layout
+        #: is the one place that has to.
+        self.legacy = str(legacy) if legacy else ""
         self._clock = clock
         self._ttl = float(ttl)
         self._held: Held | None = None
+        self.carried_from = ""
         self._last_epoch = self._read_counter()
 
     # ------------------------------------------------------------------ the durable counter
 
-    def _read_counter(self) -> int:
-        if not self.at:
-            return 0
+    def _read_one(self, path: str) -> int | None:
+        """The number in one counter file, None when there is no file, or a refusal.
+
+        A counter that EXISTS and cannot be read is never treated as zero: re-issuing an
+        epoch would make a retired gateway's instructions valid again.
+        """
+        if not path:
+            return None
         try:
-            with open(self.at, "rb") as handle:
+            with open(path, "rb") as handle:
                 return int(json.loads(handle.read().decode("utf-8")).get("last_epoch") or 0)
         except (OSError, UnicodeDecodeError, ValueError):
-            # A counter that cannot be read is not "start again at zero": re-issuing an epoch
-            # would make an old gateway's instructions valid again. It is a refusal.
-            if os.path.exists(self.at):
+            if os.path.exists(path):
                 raise LeaseRefused(
                     "lease_counter_unreadable",
                     "this worker's lease counter at %s cannot be read, so it cannot promise "
-                    "never to issue the same epoch twice." % self.at,
+                    "never to issue the same epoch twice." % path,
                     "Establish what happened to the file before starting the worker again. "
                     "Deleting it would let a control plane from before the restart give orders "
                     "again.") from None
-            return 0
+            return None
+
+    def _read_counter(self) -> int:
+        """The highest epoch this worker has ever issued, wherever it was written down.
+
+        CARRIED, NOT RESTARTED. The counter used to live inside the run journal directory;
+        moving it without bringing the number along would read a missing file as zero and
+        hand out epoch 1 again, and an epoch handed out twice is the one thing this file
+        exists to prevent.
+
+        This does the carrying automatically, which is deliberately UNLIKE `pki floor adopt`.
+        The floor's adopt is an operator step because re-initialising a floor grants a fresh
+        tolerance -- a thing of value, so somebody has to ask for it. Carrying a counter
+        cannot grant anything: it takes the MAXIMUM of what it finds, so it can only preserve
+        or raise, never lower. Refusing to start instead would take every existing deployment
+        down to protect a property that `max` already guarantees.
+        """
+        here = self._read_one(self.at)
+        there = self._read_one(self.legacy) if self.legacy != self.at else None
+        if there is None:
+            return here or 0
+        highest = max(here or 0, there)
+        if here is None or here < there:
+            # Write the carried value where it now belongs BEFORE removing the old file, so a
+            # crash in between leaves the number in at least one of the two places.
+            self._write_counter(highest)
+            self.carried_from = self.legacy
+        try:
+            os.unlink(self.legacy)
+        except OSError:                                       # pragma: no cover - best effort
+            pass
+        return highest
 
     def _write_counter(self, epoch: int) -> None:
         if not self.at:

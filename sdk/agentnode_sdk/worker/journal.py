@@ -54,6 +54,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -222,6 +223,31 @@ class Journal:
                 "Give the worker account a writable directory and point --journal at it.") from exc
 
     # ------------------------------------------------------------------ where a record lives
+
+    #: What a record's filename looks like: the sha256 of a run id, and nothing else. Written
+    #: down as a pattern because the enumerators below need to recognise one, and recognising
+    #: "ends in .json" is what let a lease counter sharing this directory be read as a run.
+    _RECORD_NAME = re.compile(r"^[0-9a-f]{64}\.json$")
+
+    def _is_a_record(self, name: str, record: object) -> bool:
+        """Whether a file in this directory is one of ours, by name AND by content.
+
+        THE ENUMERATORS USED TO ASK NEITHER. They filtered on the extension, parsed with a
+        bare `json.loads`, and so bypassed every check `_read` applies. A `lease-epoch.json`
+        written beside them parsed cleanly, had no `state`, was therefore "unsettled", and
+        produced a run id of "" that the startup reconciliation then tried to settle -- which
+        cannot be done, so the worker refused to start, for good, once any lease existed.
+
+        Both halves are checked because either alone would still be a guess: a foreign file
+        could be named like a record, and one of ours could be truncated.
+        """
+        if not self._RECORD_NAME.match(name):
+            return False
+        if not isinstance(record, dict):
+            return False
+        if not str(record.get("run_id") or ""):
+            return False
+        return int(record.get("format") or 0) == FORMAT
 
     def _path(self, run_id: str) -> str:
         """Named by a digest of the run id, not by the run id.
@@ -428,6 +454,20 @@ class Journal:
         """(run_id, state, container) for everything still in flight, for a worker that has
         just started and has to find out what it left behind."""
         out = []
+        for name, record in self._each_record():
+            if str(record.get("state")) in SETTLED:
+                continue
+            out.append((str(record.get("run_id") or ""), str(record.get("state") or ""),
+                        str(record.get("container") or "")))
+        return out
+
+    def _each_record(self):
+        """Every file in this directory that is one of ours, with its parsed content.
+
+        One place that decides what a record is, so `unsettled`, `sweep` and `count` cannot
+        drift apart about it -- they each had their own copy of the test, and all three were
+        satisfied by any parseable `.json`.
+        """
         for name in sorted(os.listdir(self.at)):
             if not name.endswith(".json") or ".new." in name:
                 continue
@@ -435,11 +475,9 @@ class Journal:
                 record = json.loads(open(os.path.join(self.at, name), "rb").read().decode())
             except (OSError, UnicodeDecodeError, ValueError):
                 continue                                      # damaged: never guessed at
-            if str(record.get("state")) in SETTLED:
+            if not self._is_a_record(name, record):
                 continue
-            out.append((str(record.get("run_id") or ""), str(record.get("state") or ""),
-                        str(record.get("container") or "")))
-        return out
+            yield name, record
 
     def acknowledge(self, run_id: str) -> None:
         """The control plane has the outcome and has written its own line. After this the
@@ -459,14 +497,8 @@ class Journal:
         at = self._now() if now is None else now
         settled: list[tuple[float, str, bool]] = []
         gone = 0
-        for name in os.listdir(self.at):
-            if not name.endswith(".json") or ".new." in name:
-                continue
+        for name, record in self._each_record():
             path = os.path.join(self.at, name)
-            try:
-                record = json.loads(open(path, "rb").read().decode("utf-8"))
-            except (OSError, UnicodeDecodeError, ValueError):
-                continue                                      # damaged: kept, never guessed at
             if str(record.get("state")) not in SETTLED:
                 continue
             when = float(record.get("finished_at") or record.get("accepted_at") or 0.0)
@@ -491,8 +523,13 @@ class Journal:
         return gone
 
     def count(self) -> int:
-        return len([n for n in os.listdir(self.at)
-                    if n.endswith(".json") and ".new." not in n])
+        """How many RECORDS are here -- not how many files.
+
+        It counted files, so a lease counter sharing the directory made preflight report
+        "2 record(s), 1 unsettled" on a worker that had one run. The number an operator reads
+        and the number the reconciliation acts on are now the same number.
+        """
+        return sum(1 for _name, _record in self._each_record())
 
 
 __all__ = ["ACCEPTED", "CLEANED", "DID_NOT_RUN", "NEVER_STARTED", "CLEANUP_PENDING", "CLEANUP_UNPROVEN", "CONFLICT", "Claim",

@@ -114,6 +114,13 @@ def reconcile_what_was_left(bench, *, say=None) -> dict:
         return {"considered": 0}
     settled = {"never_started": 0, "cleaned": 0, "unproven": 0, "considered": 0}
     for run_id, state, container in bench.journal.unsettled():
+        if not run_id:
+            # Belt and braces. The journal no longer emits a nameless record -- it now checks
+            # the filename and the content rather than the extension -- but this is the line
+            # that actually died, and a worker that will not start is too expensive a way to
+            # find out that something upstream regressed. The guard is at BOTH ends on purpose.
+            said("  a journal entry with no run id was ignored rather than settled")
+            continue
         settled["considered"] += 1
         if state == _journal.ACCEPTED:
             bench.journal.note_never_started(run_id)
@@ -875,9 +882,19 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         from agentnode_sdk.worker.journal import Journal
 
         bench.journal = Journal(journal_at)
-        # The lease counter lives beside the journal: both are this worker's durable memory of
-        # what it has been asked to do and by whom.
-        bench.leases = _lease.Leases(os.path.join(journal_at, _lease.COUNTER_NAME))
+        # BESIDE THE JOURNAL, NOT INSIDE IT. The counter used to be written into the journal
+        # directory, and the journal enumerates that directory: it read `lease-epoch.json` as
+        # a run record, found no run id in it, called it unsettled, and every start after the
+        # first lease died trying to settle a record that cannot exist. A worker that had ever
+        # been given work could not be restarted -- which is what a reboot of the worker host
+        # turned out to mean.
+        #
+        # The old path is handed over so the number is carried rather than restarted; see
+        # `Leases._read_counter`. Two things share a directory only when nothing enumerates it.
+        legacy = os.path.join(journal_at, _lease.COUNTER_NAME)
+        bench.leases = _lease.Leases(
+            os.path.join(os.path.dirname(os.path.abspath(journal_at)), _lease.COUNTER_NAME),
+            legacy=legacy)
         # And the thing that ends work when the control plane that asked for it stops being
         # entitled to have asked. Started here rather than inside `Leases` so that a test can
         # drive one pass of it without a thread.
