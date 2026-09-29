@@ -172,8 +172,11 @@ class SocketWorker(Worker):
         except OSError:                                       # pragma: no cover
             pass
 
-    def _ask(self, method: str, params: dict, *, wait: float, run_id: str = "") -> object:
+    def _ask(self, method: str, params: dict, *, wait: float, run_id: str = "",
+             _lease_was_retaken: bool = False) -> object:
         """One question and its answer, or a refusal that says which kind it is."""
+        asked_with = params
+        started_asking = time.time()
         # BEFORE ANY WORK CROSSES. `describe` negotiates; everything that carries or acts on
         # work waits for that to have happened. A mismatch therefore refuses before a job is
         # sent rather than after one has been half-processed.
@@ -234,7 +237,25 @@ class SocketWorker(Worker):
             raise WorkerUnreachable(
                 "the sandbox worker answered about a different request, so nothing it said is "
                 "about this one")
-        return self._interpret(answered)
+        try:
+            return self._interpret(answered)
+        except WorkerUnreachable as refused:
+            # A LEASE THAT LAPSED IS NOT AN UNREACHABLE WORKER, and this is where the two used
+            # to be confused. The worker was answering, promptly and correctly; it was refusing
+            # because nothing held a lease. Nothing on this side could tell, because the cause
+            # was flattened away, and nothing cleared the cached epoch -- so every later call
+            # presented the same dead number and only restarting the process helped.
+            #
+            # One retry, and only one: if the worker refuses a freshly taken lease, that is a
+            # real refusal and looping on it would turn a clear answer into a hang.
+            if not self._worth_retaking_the_lease(method, refused, already=_lease_was_retaken):
+                raise
+            left = wait - (time.time() - started_asking)
+            if left <= 0:
+                raise
+            self._forget_the_lease()
+            return self._ask(method, asked_with, wait=left, run_id=run_id,
+                             _lease_was_retaken=True)
 
     def result(self, run_id: str, *, wait: float = QUICK_SECONDS) -> Recovered:
         """Ask the worker what became of a run. Quick: it is a file read on the other side.
@@ -305,9 +326,17 @@ class SocketWorker(Worker):
                 + (": " + detail if detail else ""))
         # Everything else is the worker refusing to have an opinion: unauthenticated, stale,
         # replayed, oversized, unknown, malformed, internal. A client is told nobody knows.
-        raise WorkerUnreachable(
+        #
+        # THE CODE IS CARRIED, not only the sentence. It used to be folded into the message and
+        # lost, so a caller could read "refused the request (no_lease)" and still have nothing
+        # to branch on. A lease that has lapsed is recoverable and an unauthenticated caller is
+        # not; telling them apart needs the code as a value, not as prose.
+        refused = WorkerUnreachable(
             "the sandbox worker at " + self.address + " refused the request (" + code + ")"
             + (": " + detail if detail else ""))
+        refused.cause = code
+        refused.detail = detail
+        raise refused
 
     # ------------------------------------------------------------------ what it is
 
@@ -360,15 +389,46 @@ class SocketWorker(Worker):
                    _build_identity(), str(described.get("build") or "an unnamed build")))
         return both[0]
 
-    def lease_from_the_worker(self) -> int:
-        """Take a lease and keep it alive. Returns the epoch this gateway now holds.
+    # `lease_from_the_worker()` used to sit here: public, documented as idempotent, and with no
+    # caller anywhere in the product or the tests. That absence was the first lease defect two
+    # machines found. It is gone rather than wired up, because `_leasing` is settled by the
+    # handshake and `_hold_a_lease` is driven by work crossing -- a second, optional way in is
+    # what let the property look present while being off. `Leases.renew` was callerless in the
+    # same way and caused the second lease defect; dead code on this path has now cost twice.
 
-        Idempotent: taking one again would fence THIS gateway off from its own work, because
-        the epoch only ever goes up and the old one stops counting the moment a new one is
-        issued.
+    def _worth_retaking_the_lease(self, method: str, refused, *, already: bool) -> bool:
+        """Is this the one refusal a fresh lease would answer? Named so it can be tested.
+
+        Deliberately narrow. Only a job-bearing call, only on a worker that leases, only when
+        the worker itself named `no_lease`, and only once. An unauthenticated caller, a stale
+        replay and an oversized frame all arrive here too and none of them is fixed by taking
+        a lease -- retrying those would turn a clear refusal into a loop.
+
+        Safe for `run` in particular because the worker runs a job at most once, keyed on the
+        request digest: the refused call did not start anything, and a resend under a new
+        epoch cannot start it twice.
         """
-        self._leasing = True
-        return self._hold_a_lease()
+        if already or method not in self.JOB_BEARING or not self._leasing:
+            return False
+        return getattr(refused, "cause", "") == wire.NO_LEASE
+
+    def _forget_the_lease(self) -> None:
+        """Drop a lease this side can no longer be sure of, so the next job takes a new one.
+
+        `stop_leasing` clears the heartbeat but deliberately leaves `_leasing` off; this is the
+        other half, and it is the half that was missing. `_lease_epoch` was assigned in exactly
+        two places -- `None` at construction and the epoch at acquisition -- and nothing ever
+        put it back. So once a lease lapsed, `_hold_a_lease` kept returning the dead number for
+        the life of the process and every job was refused until somebody restarted the service.
+        The heartbeat is stopped too: it is beating for an epoch that no longer exists, and the
+        next acquisition starts a fresh one.
+        """
+        with self._lease_lock:
+            self._lease_epoch = None
+            if self._stop_beating is not None:
+                self._stop_beating.set()
+            self._heartbeat = None
+            self._stop_beating = None
 
     def _hold_a_lease(self, *, wait: float = QUICK_SECONDS) -> int:
         # Bounded the same way and for the same reason: taking a lease is something a job made

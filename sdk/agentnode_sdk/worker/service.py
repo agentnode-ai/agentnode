@@ -507,7 +507,12 @@ class Bench:
                     "renew_within": _lease.HEARTBEAT_EVERY_SECONDS,
                     "lapses_after": _lease.LEASE_SECONDS}
         if method == "renew_lease":
-            held = self._with_lease(params)
+            if self.leases is None:
+                raise wire.ProtocolError(
+                    wire.NO_LEASE,
+                    "this worker keeps no leases, so there is none to renew. `describe` says "
+                    "so; asking anyway means the answer was not read.")
+            held = self._renew_the_lease(params)
             return {"holder": held.holder, "epoch": held.epoch,
                     "renew_within": _lease.HEARTBEAT_EVERY_SECONDS,
                     "lapses_after": _lease.LEASE_SECONDS}
@@ -567,6 +572,25 @@ class Bench:
             return None
         try:
             return self.leases.check(self._caller, params.get("lease_epoch"))
+        except _lease.LeaseRefused as refused:
+            raise wire.ProtocolError(
+                wire.NO_LEASE, refused.because + " " + refused.what_to_do) from refused
+
+    def _renew_the_lease(self, params: dict):
+        """Push the expiry out, rather than agree that it has not passed yet.
+
+        THIS IS THE DEFECT TWO MACHINES FOUND. This handler used to call `_with_lease`, which
+        calls `Leases.check`. `check` only VALIDATES; `Leases.renew` is the one that moves
+        `until`. So every heartbeat was answered successfully and extended nothing, and a
+        lease died `LEASE_SECONDS` after it was taken no matter how many beats arrived --
+        after which an idle deployment refused all work until its gateway process was
+        restarted, and a job that ran longer than the lease was stopped underneath itself.
+        `Leases.renew` had no caller anywhere in the product or the tests; that absence WAS
+        the bug, and a heartbeat that asks for nothing is worse than none, because it looks
+        like the property is being kept.
+        """
+        try:
+            return self.leases.renew(self._caller, params.get("lease_epoch"))
         except _lease.LeaseRefused as refused:
             raise wire.ProtocolError(
                 wire.NO_LEASE, refused.because + " " + refused.what_to_do) from refused
