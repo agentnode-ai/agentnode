@@ -62,6 +62,59 @@ QUICK_SECONDS = 60.0
 #: longer so that "the sandbox stopped it at its limit" arrives instead of being cut off.
 RUN_MARGIN_SECONDS = 120.0
 
+#: How long a measurement may take before the gateway stops waiting for it. It runs several
+#: short containers on the worker and the doctor tells an operator it takes "a minute or two",
+#: so ten minutes is generous; it used to be THIRTY, which mattered because it was also
+#: exactly `ActivationLock.stale_after`.
+#:
+#: That coincidence was the real defect behind "another change to this gateway's policy is
+#: already running". The lock was never leaked -- it is a file lock released in `__exit__` on
+#: every path. What happened is that a transport loss which produces no reset left this call
+#: blocked in `recv` for the full half hour, so the holder was genuinely alive and the lock's
+#: staleness backstop could not fire before the call it guards had given up. Every later
+#: measurement was refused, correctly, for thirty minutes.
+#:
+#: The bound has to be shorter than the backstop, and `test_a_wedged_measurement.py` asserts
+#: it. Keepalive in `_open` is what makes the common case shorter still.
+MEASURE_SECONDS = 600.0
+
+#: A dead peer that never sent a reset is invisible to `recv`, which is why a bound alone is
+#: not enough. These make the kernel ask: after 30s of silence, probe every 10s, give up after
+#: 3 -- so a worker whose host vanished is noticed in about a minute rather than at the
+#: timeout. Named rather than inlined because the three only mean something together.
+KEEPALIVE_IDLE_SECONDS = 30
+KEEPALIVE_INTERVAL_SECONDS = 10
+KEEPALIVE_FAILURES = 3
+
+
+def _ask_the_kernel_to_notice_a_dead_peer(connection) -> None:
+    """Turn on TCP keepalive, so a peer that vanished without a reset is noticed.
+
+    A machine that is powered off, partitioned, or whose packets are being dropped sends no
+    reset, so `recv` waits for the full timeout however long that is. The gateway's measure
+    call waited thirty minutes on exactly that, and because the activation lock's staleness
+    backstop was also thirty minutes, the lock could not be judged stale before the call gave
+    up -- so every later measurement was refused for half an hour.
+
+    Best effort by design: not every platform has the three per-socket options, and a
+    deployment whose kernel lacks them is not a deployment that should fail to connect. The
+    bound in `MEASURE_SECONDS` is what makes it correct; this is what makes it quick.
+    """
+    try:
+        connection.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except (OSError, AttributeError):                         # pragma: no cover - platform
+        return
+    for name, value in (("TCP_KEEPIDLE", KEEPALIVE_IDLE_SECONDS),
+                        ("TCP_KEEPINTVL", KEEPALIVE_INTERVAL_SECONDS),
+                        ("TCP_KEEPCNT", KEEPALIVE_FAILURES)):
+        option = getattr(socket, name, None)
+        if option is None:                                    # pragma: no cover - platform
+            continue
+        try:
+            connection.setsockopt(socket.IPPROTO_TCP, option, value)
+        except OSError:                                       # pragma: no cover - platform
+            pass
+
 
 def topology_of(address: str) -> str:
     """Where a worker reached at this address is, as far as the address can establish it.
@@ -581,12 +634,12 @@ class SocketWorker(Worker):
             "options": asdict(options) if is_dataclass(options) else (options or None),
             "egress_matrix": egress_matrix,
             "egress_expected": list(egress_expected) if egress_expected else None,
-        }, wait=1800.0)
+        }, wait=MEASURE_SECONDS)
 
     def measure_egress(self, *, allowed, denied):
         return self._ask("measure_egress",
                          {"allowed": list(allowed) if not isinstance(allowed, str) else allowed,
-                          "denied": denied}, wait=1800.0)
+                          "denied": denied}, wait=MEASURE_SECONDS)
 
 
 class TlsWorker(SocketWorker):
@@ -627,6 +680,7 @@ class TlsWorker(SocketWorker):
         connection, who, der = open_to_worker(self.address, self.tls, self._contexts,
                                               self.connect_timeout, budget,
                                               topology=self._topology)
+        _ask_the_kernel_to_notice_a_dead_peer(connection)
         # Watched until it is closed; a closed one is dropped at the next pass.
         self.watch.add(connection, der, who)
         return connection, who
