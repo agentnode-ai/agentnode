@@ -1,0 +1,19 @@
+[Unit]
+# Soon after boot -- this worker serves over TLS only once its floor was written in THIS boot --
+# and then every minute. The floor's maximum age (900 s unless `floor init --max-age` said
+# otherwise) is much longer than the interval, so a late run costs nothing and a dead one shows
+# up as a worker that stops serving rather than as a worker that quietly trusts its clock.
+Description=Keep this worker's time floor written in this boot
+
+[Timer]
+# OnActiveSec as well as OnBootSec, for the reason the issuer's timer carries the same pair: a
+# timer enabled on a machine that has been up for weeks has its OnBootSec long behind it and
+# OnUnitActiveSec counts from a run that never happened, so with those two alone it never fires.
+# Found on the alpha, and not worth finding twice.
+OnActiveSec=5s
+OnBootSec=5s
+OnUnitActiveSec=60s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

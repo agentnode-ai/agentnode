@@ -158,6 +158,7 @@ class TestWhatAVerifierDoesWithIt:
             return TrustView.read(
                 anchor=world.anchor, revocation_list=world.revocation_list,
                 floor=world.floor_dir / "gateway.floor", role="gateway",
+                identity="agentnode://%s/gateway/g1" % world.deployment,
                 identity_tombstones=str(listed) if with_the_list else None,
                 tombstones_required=False)
 

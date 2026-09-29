@@ -64,12 +64,21 @@ class World:
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
+        #: Named on the World so a test that has to build an identity URI does not have to
+        #: import the constant to do it.
+        self.deployment = DEPLOYMENT
         self.issuer = Issuer(self.root / "ca", self.root / "trust")
         self.issuer.initialise(DEPLOYMENT)
         self.anchor = self.root / "trust" / "ca.pem"
         self.revocation_list = self.root / "trust" / "revoked.crl"
         self.floor_dir = self.root / "floor"
-        self.issuer.floor_init(self.floor_dir)
+        # A floor belongs to ONE identity now, so setting it up means naming whose it is. In a
+        # deployment that is the single service of that role on the machine; here it is the pair
+        # the transport tests use. Services this World makes under other instance names get their
+        # own floor from `service()`.
+        self.issuer.floor_init(self.floor_dir, identities={
+            "gateway": "agentnode://%s/gateway/g1" % DEPLOYMENT,
+            "worker": "agentnode://%s/worker/w1" % DEPLOYMENT})
         self.tick()
 
     def tick(self) -> dict:
@@ -85,6 +94,26 @@ class World:
         request = json.loads(make_request(folder, (folder / "secret").read_text()).read_text())
         self.issuer.enroll(request["csr"].encode("ascii"), request["secret"])
         return folder
+
+    def floor_for(self, role: str, instance: str) -> Path:
+        """A floor of this World's boot made out to ONE identity, at its own path.
+
+        The World's two default floors belong to g1 and w1, because a machine runs one service
+        of a role and a floor belongs to that service. A test that stands up a SECOND service of
+        the same role -- two workers on one machine, which no deployment does -- needs a second
+        floor, and this writes it. The alternative would be a floor that names no identity, and
+        that is the thing the two-machine run showed must not exist.
+        """
+        who = "agentnode://%s/%s/%s" % (DEPLOYMENT, role, instance)
+        directory = self.root / ("floor-" + role + "-" + instance)
+        directory.mkdir(exist_ok=True)
+        path = floors.path_for(directory, role)
+        state = floors.initial(role, self._ca()[1].not_valid_before_utc.timestamp(), who)
+        written = floors.advance(state, system_now=time.time(),
+                                 monotonic_now=floors._monotonic(), boot=floors._boot(),
+                                 list_this_update=None)
+        path.write_bytes(written.to_bytes())
+        return path
 
     def settings(self, folder: Path, accept, *, anchor=None, deployment=DEPLOYMENT, role=None,
                  revocation_list=None, floor=None):

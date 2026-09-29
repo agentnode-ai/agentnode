@@ -128,10 +128,24 @@ class TlsSettings:
         if not float(self.reload_seconds) > 0 or not float(self.reevaluate_seconds) > 0:
             raise ValueError("the reload and re-evaluation intervals must be positive")
 
+    def own_identity(self) -> str:
+        """The identity URI in this side's OWN certificate, or "" if it cannot be read.
+
+        Read at the moment it is needed rather than cached: the certificate is renewed under a
+        running service, and a cached name would outlive the file it came from. Empty is not a
+        pass -- `floor.judge` refuses a side that cannot say who it is.
+        """
+        from agentnode_sdk.pki import localfloor as _localfloor
+
+        try:
+            return _localfloor.identity_in(self.certificate)
+        except _localfloor.FloorRefused:
+            return ""
+
     def trust(self, role: str) -> TrustView:
         """The anchor, the list and the floor, read now, for a side of `role`."""
         return TrustView.read(anchor=self.anchor, revocation_list=self.revocation_list,
-                              floor=self.floor, role=role,
+                              floor=self.floor, role=role, identity=self.own_identity(),
                               identity_tombstones=self.identity_tombstones,
                               tombstones_required=self.tombstones_required)
 

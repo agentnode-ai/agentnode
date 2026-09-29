@@ -46,7 +46,7 @@ def _bytes(path) -> tuple[bytes | None, str]:
 
 class TrustView:
     def __init__(self, *, anchor: bytes | None, revocation_list: bytes | None,
-                 floor: bytes | None, floor_problem: str, role: str,
+                 floor: bytes | None, floor_problem: str, role: str, identity: str = "",
                  identity_tombstones: bytes | None = None,
                  tombstones_required: bool = False) -> None:
         self._anchor_bytes = anchor
@@ -54,6 +54,11 @@ class TrustView:
         self._floor_bytes = floor
         self._floor_problem = floor_problem
         self.role = role
+        #: Who this side is, from its own certificate. The floor is judged against it, so that a
+        #: floor copied from the other machine -- same role, same format, perfectly fresh in the
+        #: boot it was written in -- is refused instead of believed. Empty means "not told", and
+        #: that is itself a refusal rather than a pass.
+        self.identity = identity
         self._anchor = None
         #: The signed list of identities that may never be accepted again. Optional on one
         #: machine, where the issuer's own inventory is the authority and is right here;
@@ -62,7 +67,7 @@ class TrustView:
         self._tombstones_required = bool(tombstones_required)
 
     @classmethod
-    def read(cls, *, anchor, revocation_list, floor, role: str,
+    def read(cls, *, anchor, revocation_list, floor, role: str, identity: str = "",
              identity_tombstones=None, tombstones_required: bool = False) -> "TrustView":
         """Every file, now. The anchor's absence surfaces when it is asked for."""
         anchor_bytes, _ = _bytes(anchor)
@@ -72,7 +77,7 @@ class TrustView:
         if identity_tombstones:
             tombstone_bytes, _ = _bytes(identity_tombstones)
         return cls(anchor=anchor_bytes, revocation_list=list_bytes, floor=floor_bytes,
-                   floor_problem=floor_problem, role=role,
+                   floor_problem=floor_problem, role=role, identity=identity,
                    identity_tombstones=tombstone_bytes,
                    tombstones_required=tombstones_required)
 
@@ -146,8 +151,8 @@ class TrustView:
                                         "the floor file could not be read (%s)"
                                         % self._floor_problem)
         try:
-            value = _floor.judge(self._floor_bytes, role=self.role, boot=_floor._boot(),
-                                 monotonic_now=_floor._monotonic())
+            value = _floor.judge(self._floor_bytes, role=self.role, identity=self.identity,
+                                 boot=_floor._boot(), monotonic_now=_floor._monotonic())
         except _floor.FloorUnusable as unusable:
             raise _identity.PeerRefused(unusable.check, presented, unusable.detail) from unusable
         return _floor.effective_time(value)

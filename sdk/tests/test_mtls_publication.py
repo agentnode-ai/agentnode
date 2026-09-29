@@ -156,7 +156,8 @@ class TestAfterARestart:
         def view():
             return TrustView.read(anchor=world.anchor, revocation_list=world.revocation_list,
                                   floor=floors.path_for(world.floor_dir, "worker"),
-                                  role="worker")
+                                  role="worker",
+                                  identity="agentnode://%s/worker/w1" % world.deployment)
 
         with pytest.raises(ids.PeerRefused) as caught:        # before the root run: no service
             view().effective_time()

@@ -815,7 +815,24 @@ class Issuer:
 
     # ------------------------------------------------------------------ the floor's lifecycle
 
-    def floor_init(self, floor_dir, roles=_floor.ROLES, *,
+    def _identity_for(self, role: str) -> str:
+        """Whose floor this role's floor is, taken from the inventory.
+
+        Exactly one entry of that role, or a refusal. Two instances of a role on one host is a
+        deployment this cannot guess about, and a guess would write a floor under a name the
+        service does not present -- which the service would then rightly refuse, at start, with
+        a message about identities rather than about installation.
+        """
+        named = sorted(entry.get("uri", "") for name, entry in self._inventory().items()
+                       if name.split("/")[0] == role and entry.get("uri"))
+        if len(named) != 1:
+            raise IssuanceRefused(
+                "the inventory holds %d identities of role %s, and a floor belongs to exactly "
+                "one of them. Name it: `agentnode pki floor init --identity <uri>`."
+                % (len(named), role))
+        return named[0]
+
+    def floor_init(self, floor_dir, roles=_floor.ROLES, *, identities: dict | None = None,
                    tolerance_s: float = _floor.DEFAULT_TOLERANCE_SECONDS,
                    max_age_s: float = _floor.DEFAULT_MAX_AGE_SECONDS,
                    after_loss: bool = False) -> dict:
@@ -824,6 +841,10 @@ class Issuer:
         A floor that exists and parses is never replaced here: that would grant a second
         tolerance. One that is missing or unreadable after it had existed is replaced only with
         `after_loss`, and that is written down in the issuer's log.
+
+        `identities` maps a role to the identity URI its floor belongs to; anything not named is
+        looked up in the inventory. On a machine that is NOT the issuer there is no inventory and
+        no key: `pki/localfloor.py` does the same job there, from the trust anchor alone.
         """
         floor_dir = Path(floor_dir)
         floor_dir.mkdir(parents=True, exist_ok=True)
@@ -855,7 +876,8 @@ class Issuer:
                                 "again, which is a root decision: repeat with --after-loss"
                                 % role) from None
                         self._note("floor re-initialised after loss", role)
-                state = _floor.initial(role, not_before, tolerance_s=tolerance_s,
+                who = (identities or {}).get(role) or self._identity_for(role)
+                state = _floor.initial(role, not_before, who, tolerance_s=tolerance_s,
                                        max_age_s=max_age_s)
                 _files.durable_publish(self.files, path, state.to_bytes(), mode=0o644,
                                        label="init-floor-" + role)

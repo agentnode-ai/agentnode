@@ -47,6 +47,21 @@ command -v python3   >/dev/null || die "python3 is not installed"
 [ -n "$DEPLOYMENT" ] || die "set AGENTNODE_DEPLOYMENT to the same deployment id the control plane was given"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# WHERE A UNIT FILE IS depends on what this script is running from: ./unit/ inside an artefact,
+# beside this script or one directory up in the repository. Guessing one of them is what made
+# both artefacts unable to install themselves, so this asks. See the same function in
+# install-control-plane.sh.
+unit_file() {
+  local name candidate
+  for name in "$@"; do
+    for candidate in "$HERE/unit/$name" "$HERE/$name" "$(dirname "$HERE")/$name"; do
+      if [ -f "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+    done
+  done
+  die "no unit file named $* is in this artefact or beside this script"
+}
+
 cd /
 
 # ---------------------------------------------------------------------------------------------
@@ -194,12 +209,24 @@ say "this machine's own time floor"
 # Keyed to THIS kernel's boot id and THIS machine's monotonic clock, so a floor written on the
 # control plane is unusable here. This is the step most often forgotten and the worker refuses
 # every connection without it.
-"$PREFIX/venv/bin/agentnode" pki floor init
-install -m 0644 "$HERE/../agentnode-pki-tick.service" /etc/systemd/system/
-install -m 0644 "$HERE/../agentnode-pki-tick.timer"   /etc/systemd/system/
+#
+# AND IT IS MADE HERE WITHOUT A CA. It used to call `agentnode pki floor init`, which is the
+# issuer's, and the issuer opens /etc/agentnode/ca/ca.key -- the one file a worker must never
+# hold. On one host that worked because the CA was on the same disk; on a real worker host the
+# install simply stopped. The bound a floor starts at is the trust ANCHOR's notBefore, which is
+# public and already here, and whose floor it is comes from this worker's own certificate.
+if [ ! -f "$FLOOR/worker.floor" ]; then
+  "$PREFIX/venv/bin/agentnode" pki floor init --role worker \
+      --certificate "$TLS_DIR/cert.pem" --anchor "$TRUST/ca.pem" --floor-dir "$FLOOR" \
+      || die "this worker could not set its time floor up, so it would refuse every connection."
+else
+  ok "the worker's floor is already set up; left as it stands"
+fi
+install -m 0644 "$(unit_file agentnode-floor-advance.service)" /etc/systemd/system/
+install -m 0644 "$(unit_file agentnode-floor-advance.timer)"   /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now agentnode-pki-tick.timer >/dev/null
-ok "$FLOOR/worker.floor, ticked by a timer on THIS host"
+systemctl enable --now agentnode-floor-advance.timer >/dev/null
+ok "$FLOOR/worker.floor, kept by this host's own timer -- not the issuer's run"
 
 # ---------------------------------------------------------------------------------------------
 say "the image jobs run in"
@@ -228,7 +255,8 @@ AGENTNODE_GATEWAY_INSTANCE=$GATEWAY_INSTANCE
 EOF
 chmod 0644 "$CONF/worker.env"
 
-install -m 0644 "$HERE/worker-host.service" /etc/systemd/system/agentnode-worker.service
+install -m 0644 "$(unit_file agentnode-worker.service worker-host.service)" \
+        /etc/systemd/system/agentnode-worker.service
 install -d -m 0755 /etc/systemd/system/agentnode-worker.service.d
 cat > /etc/systemd/system/agentnode-worker.service.d/session.conf <<EOF
 # Written by install-worker-host.sh for uid $WORKER_UID. A unit cannot expand it: %U in a system

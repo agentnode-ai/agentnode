@@ -40,6 +40,51 @@ die() { printf '\n!! %s\n' "$1" >&2; exit 1; }
 [ "$(id -u)" = "0" ] || die "this makes system accounts and units, so it needs root"
 command -v systemctl >/dev/null || die "there is no systemd here"
 command -v python3   >/dev/null || die "python3 is not installed"
+# ---------------------------------------------------------------------------------------------
+# PHASE 2. The bootstrap has two phases because it cannot have one: phase 1 builds everything
+# this machine can build alone and stops, because the worker cannot be enrolled before the CA
+# exists; phase 2 runs after the worker answers, because a gateway that cannot measure its
+# worker must not serve. Before this split the last gate of phase 1 demanded a running worker
+# and the worker needed phase 1 to have finished -- a circle, and the 2026-09-29 run sat in it.
+#
+# Separate verb rather than a re-run: "install again" would mean either "build" or "activate"
+# depending on state, and an operator would not be able to tell which one they just did.
+if [ "${1:-}" = "--verify" ]; then
+  [ -f "$STATE/state/config.json" ] || die "phase 1 has not run here: there is no configuration \
+at $STATE/state/config.json. Run this script without --verify first."
+  [ -f "$STATE/state/gtls/cert.pem" ] || die "this gateway has no certificate; phase 1 did not \
+finish. Run it again -- every step of it checks before it acts."
+  [ -f /etc/systemd/system/agentnode-gateway.service ] || die "the unit is not installed; phase \
+1 did not finish."
+
+  say "reaching the worker, as the account that owns this state"
+  # AS THE ACCOUNT. `securedir` requires that the state directory belong to whoever is looking
+  # at it (st_uid == getuid()), and phase 1 deliberately makes it 0700 to the gateway. Running
+  # this as root therefore failed with "belongs to another user" -- the installer's own last
+  # gate, refusing by construction, on every host. The script already knew the right pattern:
+  # `pki request` is run under this same account a few steps above.
+  if runuser -u "$GATEWAY_USER" -- "$PREFIX/venv/bin/agentnode" gateway doctor \
+        --dir "$STATE/state"; then
+    ok "the worker answered and is the identity this deployment expects"
+  else
+    printf '\n!! The worker did not pass. The gateway is installed and enabled, and is NOT\n'
+    printf '   started -- which is the safe end of this, not a failure of it.\n\n'
+    printf '   When the worker is running, run this again:\n\n     %s --verify\n\n' "$0"
+    exit 1
+  fi
+
+  systemctl start agentnode-gateway.service
+  sleep 1
+  if systemctl is-active --quiet agentnode-gateway.service; then
+    ok "gateway started"
+  else
+    die "the gateway did not stay up; systemctl status agentnode-gateway.service"
+  fi
+  printf '\n   Phase 2 done. The client port is still closed: open %s when a client should\n' "$PORT"
+  printf '   reach this, and not before.\n\n'
+  exit 0
+fi
+
 [ -n "$WORKER_ADDRESS" ] || die "set AGENTNODE_WORKER_ADDRESS to the worker's PRIVATE address, e.g. tcps://10.0.1.5:8443"
 [ -n "$DEPLOYMENT" ]     || die "set AGENTNODE_DEPLOYMENT to this deployment's id; every identity is named inside it"
 
@@ -53,6 +98,22 @@ case "$WORKER_ADDRESS" in
 esac
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# WHERE A UNIT FILE IS depends on what this script is running from. Inside an artefact the units
+# are in ./unit/ and two of them are renamed; in the repository the role's unit sits beside this
+# script and the shared PKI ones a directory up. Both are legitimate, and the 2026-09-29
+# cross-host run showed what guessing costs: six references that resolved in the repository and
+# nowhere else, so neither artefact could install itself. This asks instead.
+unit_file() {
+  local name candidate
+  for name in "$@"; do
+    for candidate in "$HERE/unit/$name" "$HERE/$name" "$(dirname "$HERE")/$name"; do
+      if [ -f "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+    done
+  done
+  die "no unit file named $* is in this artefact or beside this script"
+}
+
 cd /
 
 # ---------------------------------------------------------------------------------------------
@@ -122,9 +183,17 @@ if [ ! -f "$CA_DIR/ca.key" ]; then
 fi
 ok "issuer for deployment $DEPLOYMENT (key in $CA_DIR, certificate in $TRUST)"
 
-"$PREFIX/venv/bin/agentnode" pki floor init
-install -m 0644 "$HERE/../agentnode-pki-tick.service" /etc/systemd/system/
-install -m 0644 "$HERE/../agentnode-pki-tick.timer"   /etc/systemd/system/
+# Guarded like every other step in this script. It was the one that was not, and a partial
+# install could therefore never be resumed: `set -e` plus a floor that already exists ended the
+# run, every time, with no way forward but wiping the machine.
+if [ ! -f "$FLOOR/gateway.floor" ]; then
+  "$PREFIX/venv/bin/agentnode" pki floor init --role gateway \
+      --identity "agentnode://$DEPLOYMENT/gateway/$GATEWAY_INSTANCE"
+else
+  ok "the gateway's floor is already set up; left as it stands"
+fi
+install -m 0644 "$(unit_file agentnode-pki-tick.service)" /etc/systemd/system/
+install -m 0644 "$(unit_file agentnode-pki-tick.timer)"   /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now agentnode-pki-tick.timer >/dev/null
 ok "root's time floor at $FLOOR, ticked by a timer. If the timer stops, this gateway stops"
@@ -210,21 +279,62 @@ PY
 chown "$GATEWAY_USER":"$GATEWAY_USER" "$STATE/state/config.json"
 chmod 0600 "$STATE/state/config.json"
 
-# The declaration and the address have to agree, and the product checks that itself before it
-# dials. Checking it here as well means a typo is a failed install rather than a gateway that
-# starts and refuses every job.
-"$PREFIX/venv/bin/agentnode" gateway doctor --dir "$STATE/state" || \
-    die "the gateway does not accept this configuration. Nothing was started."
+# WHAT PHASE 1 CAN CHECK ABOUT THE ADDRESS, AND WHAT IT CANNOT.
+#
+# It can catch every mistake that does not need the worker to exist: the scheme, a literal
+# private address, a port, an address that is this machine's own, and whether the kernel would
+# route it out of a private interface rather than the default one. It CANNOT tell a correct
+# address from a syntactically valid address belonging to some other host on the same network --
+# that needs the worker's identity, which does not exist yet. Phase 2 does that, and this says
+# so rather than implying the check is stronger than it is.
+say "the address, as far as it can be judged before the worker exists"
+
+python3 - "$WORKER_ADDRESS" <<'PY' || die "the worker address is not one this gateway can use."
+import ipaddress, sys
+address = sys.argv[1][len("tcps://"):]
+host, _, port = address.rpartition(":")
+host = host.strip("[]")
+try:
+    ip = ipaddress.ip_address(host)
+except ValueError:
+    raise SystemExit("   %s is not a literal IP address. A name can move; the worker's address "
+                     "is written down." % host)
+if not (port.isdigit() and 0 < int(port) < 65536):
+    raise SystemExit("   %r is not a port" % port)
+for bad, why in ((ip.is_loopback, "loopback"), (ip.is_multicast, "multicast"),
+                 (ip.is_unspecified, "the wildcard")):
+    if bad:
+        raise SystemExit("   %s is %s, which is not another machine" % (ip, why))
+if not ip.is_private:
+    raise SystemExit("   %s is a public address. The worker is reached over the private network; "
+                     "a public one here is an open door with a certificate on it." % ip)
+print("   %s is a literal private address on port %s" % (ip, port))
+PY
+
+WORKER_IP="${WORKER_ADDRESS#tcps://}"; WORKER_IP="${WORKER_IP%:*}"; WORKER_IP="${WORKER_IP#[}"
+WORKER_IP="${WORKER_IP%]}"
+if ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qx "$WORKER_IP"; then
+  die "$WORKER_IP is an address of THIS machine. The worker is the other one."
+fi
+if command -v ip >/dev/null 2>&1; then
+  route="$(ip route get "$WORKER_IP" 2>/dev/null || true)"
+  if [ -z "$route" ]; then
+    ok "no route to $WORKER_IP yet -- the private network may not be up on this host"
+  else
+    ok "routed as: $(printf '%s' "$route" | head -1)"
+  fi
+fi
 
 # ---------------------------------------------------------------------------------------------
 say "the service"
 
-install -m 0644 "$HERE/control-plane.service" /etc/systemd/system/agentnode-gateway.service
+install -m 0644 "$(unit_file agentnode-gateway.service control-plane.service)" \
+        /etc/systemd/system/agentnode-gateway.service
 systemctl daemon-reload
 systemctl enable agentnode-gateway.service >/dev/null
 # NOT started. The gateway has no worker to reach until the worker host is installed and
 # enrolled, and a control plane that spends its first minutes refusing every job teaches whoever
-# is watching to ignore it.
+# is watching to ignore it. `--verify` starts it, once the worker answers.
 ok "installed and enabled, NOT started"
 
 # ---------------------------------------------------------------------------------------------
@@ -234,6 +344,14 @@ printf '\n   Copy these to the worker host (they are signed; the copy does not h
 printf '   but it does have to be FRESH -- both expire, and a list too old to believe is a refusal):\n\n'
 printf '     %s\n' "$TRUST/ca.pem" "$TRUST/revoked.crl" "$TRUST/revoked-identities.json" "$CONF/pair-keys.json"
 printf '\n   Then, here, make the worker an identity and hand over the one-shot secret:\n\n'
-printf '     agentnode pki add --dir %s --role worker --instance %s\n\n' "$STATE/state" "$WORKER_INSTANCE"
+printf '     install -d -m 0700 %s/%s\n' "$ENROL" "$WORKER_INSTANCE"
+printf '     agentnode pki add --role worker --instance %s --account root --tls-dir %s/%s\n\n' \
+       "$WORKER_INSTANCE" "$ENROL" "$WORKER_INSTANCE"
+printf '   WHEN THE WORKER IS INSTALLED, ENROLLED AND RUNNING, come back here and run:\n\n'
+printf '     %s --verify\n\n' "$0"
+printf '   That is phase 2: it reaches the worker over mutual TLS, checks it is the identity this\n'
+printf '   deployment expects, and only then starts the gateway. Until it passes, this machine is\n'
+printf '   installed and silent -- which is the point: a control plane that cannot measure its\n'
+printf '   worker does not serve.\n\n'
 printf '   The client port is still closed. Open %s when a client should reach this, and not before.\n' "$PORT"
 printf '   Topology: separate-worker-host. That two machines isolate anything is NOT MEASURED.\n\n'
