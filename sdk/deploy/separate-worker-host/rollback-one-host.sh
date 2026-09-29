@@ -62,19 +62,44 @@ rm -rf "$SITE/agentnode_sdk" "$SITE"/agentnode_sdk-*.dist-info
 tar -C "$SITE" -xf "$KEEP/installed-package.tar" || died "could not unpack the kept package"
 echo "   back to: $("$PREFIX/venv/bin/agentnode" --version 2>/dev/null || echo unknown)"
 
-step "4. the unit it was started by"
+step "4. the pin that goes with it"
+# The code and the pin are one thing. The tar carries `AGENTNODE_ARTEFACT` back with the
+# dist-info; without the pin beside it the two disagree and the next start is refused for
+# naming an artefact the installation does not record. A rollback that restores the bytes
+# and not the permission to run them is not a rollback.
+[ -f "$KEEP/runtime-pin.json" ] || died "$KEEP holds no runtime-pin.json. It was made by an
+  upgrade that did not keep one, so the code can be put back but its pin cannot. Reinstall
+  from the artefact instead."
+install -m 0644 "$KEEP/runtime-pin.json" /etc/agentnode/runtime-pin.json
+WAS_BUILD_ID="$(cat "$KEEP/build-id.txt" 2>/dev/null || echo "")"
+[ -n "$WAS_BUILD_ID" ] || died "$KEEP does not say which build it came from, so a rollback to
+  it cannot be checked. Reinstall from the artefact instead."
+echo "   pin restored; expecting $WAS_BUILD_ID"
+
+step "5. the unit it was started by"
 install -m 0644 "$KEEP/$UNIT.service" /etc/systemd/system/"$UNIT".service
 systemctl daemon-reload
 
-step "5. start it, and check it is the OLD code that came up"
+step "6. start it, and check it is the OLD code that came up"
+STARTED_AT="$(date -u +%s)"
 systemctl start "$UNIT".service || died "it did not start"
 sleep 3
 systemctl is-active --quiet "$UNIT".service || {
   journalctl -u "$UNIT".service -n 40 --no-pager | sed 's/^/   /'
   died "it did not come back"; }
-NOW="$("$PREFIX/venv/bin/agentnode" --version 2>/dev/null || echo unknown)"
-WAS="$(grep -o 'agentnode.*' "$KEEP/what-was-running.txt" | tail -1)"
-printf '   running: %s\n   the keep says it was: %s\n' "$NOW" "$WAS"
+
+# COMPARED, not printed side by side. This used to print the running version string and the
+# kept one and leave the reader to notice -- and a version string is explicitly not an
+# identity: a development wheel keeps its number while its contents change, which is the
+# reason the upgrade force-reinstalls. The build id is derived from the commit and the
+# artefact digest, so it cannot agree by coincidence.
+SAID_IT_IS="$(journalctl -u "$UNIT".service --since "@$STARTED_AT" --no-pager 2>/dev/null \
+  | grep -o 'managed-[0-9a-f]\{1,\}+[0-9a-f]\{1,\}' | tail -1)"
+[ -n "$SAID_IT_IS" ] || died "$UNIT came up but never said which build it is, so this
+  rollback cannot be confirmed."
+[ "$SAID_IT_IS" = "$WAS_BUILD_ID" ] || died "$UNIT is serving $SAID_IT_IS and the kept build
+  was $WAS_BUILD_ID. The rollback put files back and the running process is not them."
+echo "   $UNIT is up and says it is $SAID_IT_IS, which is the build that was kept"
 
 printf '\n=== %s is back on the kept build. The other host was NOT touched.\n' "$UNIT"
 printf '=== Re-measure before admission is reopened. A rollback that was not measured after is\n'
