@@ -2774,6 +2774,19 @@ class GatewayService:
                 # that may well have run. That is the same conflation `Recovered` now separates.
                 terminal = "refused"
                 record.termination_reason = TRANSPORT_LOST
+                # AND THE LINE HAS TO SAY WHAT THE SENTENCE SAYS. `ever_started` is derived in
+                # the meter from `started_at`, which this gateway sets when IT grants a local
+                # slot -- not when the worker takes the job. So a run the worker provably never
+                # saw was written down as `ever_started: true` beside `sandbox:
+                # not_established`, in the same signed line, contradicting the refusal composed
+                # three lines below. Two machines found it: run aae60f46 carried exactly that
+                # pair.
+                #
+                # This is the ONE branch where the worker's own journal says it never began, so
+                # it is the one place the slot grant can honestly be retracted. `seconds` is
+                # derived from the same field and goes to zero with it -- which is what this
+                # branch's own sentence already promised.
+                record.started_at = 0.0
                 record.refusal = (
                     "the connection to the sandbox worker was lost before this run reached it. "
                     "The worker has no record of it, so it did not run, and nothing was "
