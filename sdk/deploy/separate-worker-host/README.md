@@ -99,10 +99,14 @@ sudo AGENTNODE_WHEEL=$PWD/wheel/agentnode_sdk-<v>-py3-none-any.whl \
 sudo ./install.sh --verify
 ```
 
-Mutual TLS to the worker, the deployment and the worker identity this gateway expects, and only
-then the start. Safely repeatable: it creates no identity and resets no floor. If it fails, the
-gateway stays installed, enabled and stopped — the safe end of a failed verification rather
-than a half-finished install.
+It **measures** the worker (`gateway doctor --measure`, which runs real work on it), then checks
+mutual TLS, the deployment and the worker identity this gateway expects — and only then starts.
+A gateway that has not measured its worker does not know what it enforces and says so; running
+one on that basis is how "isolated" becomes a word rather than a fact.
+
+Safely repeatable: it creates no identity and resets no floor. If it fails, the gateway stays
+installed, enabled and stopped — the safe end of a failed verification rather than a
+half-finished install.
 
 ### A run that stopped can be run again
 

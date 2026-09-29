@@ -57,6 +57,20 @@ finish. Run it again -- every step of it checks before it acts."
   [ -f /etc/systemd/system/agentnode-gateway.service ] || die "the unit is not installed; phase \
 1 did not finish."
 
+  say "measuring the worker, as the account that owns this state"
+  # A gateway that has not measured its worker does not know what it enforces, and says so:
+  # "Nothing is in force yet: this gateway has not been measured." Phase 2 used to run only the
+  # plain doctor, which reached the worker, reported exactly that, and refused -- so the
+  # documented bring-up could not complete even with both machines up and talking. The
+  # measurement runs real work on the worker; that is what makes it a measurement.
+  if ! runuser -u "$GATEWAY_USER" -- "$PREFIX/venv/bin/agentnode" gateway doctor --measure \
+        --dir "$STATE/state"; then
+    printf '\n!! The measurement did not pass. Nothing was started. The worker is up but this\n'
+    printf '   gateway cannot say what it enforces, and it will not serve on that basis.\n\n'
+    exit 1
+  fi
+  ok "measured"
+
   say "reaching the worker, as the account that owns this state"
   # AS THE ACCOUNT. `securedir` requires that the state directory belong to whoever is looking
   # at it (st_uid == getuid()), and phase 1 deliberately makes it 0700 to the gateway. Running
