@@ -224,6 +224,55 @@ class TestTheRuntimeThatLostItsNamespace:
         assert source.count("recover_a_runtime_that_lost_its_namespace") <= 2
 
 
+class TestTheNamespaceUnitStartsAContainer:
+    """Migrating is not enough, and that is the whole finding.
+
+    Measured on the pair: `podman system migrate` repaired the stored state and the worker
+    still could not start a container. What fixes it is actually STARTING one from outside
+    the worker's unit, because that leaves podman's pause process alive. The worker's own
+    containers then JOIN that namespace rather than creating one, and joining works from
+    inside the masked mount namespace where creating does not.
+
+    It is also why it worked before the first reboot and not after: the installer had started
+    a container from outside, and the reboot took that process with it.
+    """
+
+    UNIT = (DEPLOY / "agentnode-worker-runtime.service").read_text(encoding="utf-8")
+
+    def test_it_migrates(self):
+        assert "system migrate" in self.UNIT
+
+    def test_and_then_actually_starts_a_container(self):
+        assert "podman run" in self.UNIT
+
+    def test_in_that_order(self):
+        assert self.UNIT.index("system migrate") < self.UNIT.index("podman run")
+
+    def test_with_the_pinned_image_rather_than_a_second_copy_of_it(self):
+        assert "_BASE_IMAGE" in self.UNIT
+
+    def test_it_runs_before_the_worker(self):
+        assert "Before=agentnode-worker.service" in self.UNIT
+
+    def test_and_the_worker_waits_for_it(self):
+        worker = (DEPLOY / "worker-host.service").read_text(encoding="utf-8")
+        assert "After=agentnode-worker-runtime.service" in worker
+        assert "Wants=agentnode-worker-runtime.service" in worker
+
+    def test_it_carries_none_of_the_masks_that_are_the_problem(self):
+        for directive in ("ProtectProc=", "ProtectKernelTunables=", "ProtectSystem="):
+            assert directive not in self.UNIT, (
+                "this unit exists to create a namespace, which is exactly what those stop")
+
+    def test_but_it_is_still_the_unprivileged_account(self):
+        assert "User=agentnode-worker" in self.UNIT
+
+    def test_and_it_cannot_stop_the_worker_starting(self):
+        """If the runtime is genuinely unusable the ceiling proof refuses and says why. That
+        is the right place for it; a failure here would only hide it."""
+        assert self.UNIT.count("|| true") >= 2
+
+
 class TestTheCeilingProofIsUntouched:
     """The worker must still refuse when it cannot prove its ceiling binds. A repair that
     made the container start by making the proof optional would pass every test above."""
