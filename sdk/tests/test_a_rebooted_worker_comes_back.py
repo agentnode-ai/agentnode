@@ -116,6 +116,58 @@ class TestTheHomeIsMadeWhateverTheAccountsHistory:
         assert code.index('"$HOME_DIR/.config"') < code.index("podman pull")
 
 
+class TestAnUpgradedHostGetsTheFixToo:
+    """The installer writing the file is not enough, and the pair proved it.
+
+    After upgrading the worker rather than reinstalling it, the host still had no
+    containers.conf -- so it would have failed at the next reboot exactly as before. An
+    upgrade carries CODE; it does not re-run installer steps. A fix that only reaches new
+    installations is not delivered, and upgrading is how an existing deployment gets one.
+    """
+
+    def test_the_worker_ensures_it_itself(self):
+        from agentnode_sdk.sandbox import container_backend
+
+        assert hasattr(container_backend, "ask_the_runtime_for_no_kernel_tunables")
+
+    def test_and_serve_calls_it_before_any_container(self):
+        import inspect
+
+        from agentnode_sdk.worker import service
+
+        source = inspect.getsource(service.serve)
+        assert "ask_the_runtime_for_no_kernel_tunables" in source
+        assert source.index("ask_the_runtime_for_no_kernel_tunables") < source.index(
+            "prove_its_ceilings")
+
+    def test_it_writes_what_is_needed(self, tmp_path):
+        from agentnode_sdk.sandbox import container_backend
+
+        written = container_backend.ask_the_runtime_for_no_kernel_tunables(str(tmp_path))
+        assert written
+        body = (tmp_path / ".config" / "containers" / "containers.conf").read_text(
+            encoding="utf-8")
+        assert "[containers]" in body
+        assert "default_sysctls = []" in body
+
+    def test_it_does_not_overwrite_somebody_elses(self, tmp_path):
+        from agentnode_sdk.sandbox import container_backend
+
+        where = tmp_path / ".config" / "containers"
+        where.mkdir(parents=True)
+        (where / "containers.conf").write_text("# mine\n", encoding="utf-8")
+        assert container_backend.ask_the_runtime_for_no_kernel_tunables(str(tmp_path)) == ""
+        assert (where / "containers.conf").read_text(encoding="utf-8") == "# mine\n"
+
+    def test_and_a_home_it_cannot_write_is_not_fatal(self, tmp_path):
+        """The ceiling proof is the right place to refuse from, not this."""
+        from agentnode_sdk.sandbox import container_backend
+
+        blocked = tmp_path / "a-file-not-a-directory"
+        blocked.write_text("", encoding="utf-8")
+        assert container_backend.ask_the_runtime_for_no_kernel_tunables(str(blocked)) == ""
+
+
 class TestTheCeilingProofIsUntouched:
     """The worker must still refuse when it cannot prove its ceiling binds. A repair that
     made the container start by making the proof optional would pass every test above."""

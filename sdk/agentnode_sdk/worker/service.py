@@ -830,8 +830,20 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             "this worker was started for its own machine, and a worker on its own machine does "
             "not authenticate its control plane with a key shared by everything.",
             "Start it with --keyring <path>, holding the key for this pair only.")
-    from agentnode_sdk.sandbox.container_backend import ContainerBackend
+    from agentnode_sdk.sandbox.container_backend import (
+        ContainerBackend,
+        ask_the_runtime_for_no_kernel_tunables,
+    )
     from agentnode_sdk.worker.local import LocalWorker
+
+    # BEFORE ANY CONTAINER IS STARTED, INCLUDING THE ONE THAT PROVES THE CEILING. The unit
+    # makes /proc/sys read-only, podman asks crun to write a sysctl into every rootless
+    # container, and the two together mean nothing starts. The installer writes this file as
+    # well; doing it here too is what makes an UPGRADED host carry the fix, which the pair
+    # showed it otherwise does not.
+    _wrote = ask_the_runtime_for_no_kernel_tunables()
+    if _wrote:
+        print("  wrote %s so the runtime asks for no kernel tunable" % _wrote, flush=True)
 
     # WHICH ACCOUNT MAY SPEAK -- and only where that question has an answer. `only_uid` is
     # checked with SO_PEERCRED, which reads the account at the other end of a UNIX SOCKET. A
