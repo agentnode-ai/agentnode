@@ -17,9 +17,24 @@
 #
 # The worker cannot escape its own namespace to do this -- it runs unprivileged and cannot ask
 # the system manager for a transient unit. So it is a separate unit, deliberately WITHOUT the
-# worker's protections, doing one small thing and exiting. It runs as the same unprivileged
-# account, it starts no container and opens no port, and what it produces is a namespace the
-# worker then joins.
+# worker's protections, doing one small thing and exiting.
+#
+# WHAT IT ACTUALLY DOES, SAID PLAINLY, because this is a new trust boundary and an earlier
+# version of this comment described it wrongly. It DOES start a container: that is the whole
+# point, since starting one is what leaves the namespace behind. What it starts is:
+#
+#   * the image pinned by digest in the SDK, and nothing else -- no customer's code, no job,
+#     nothing from the wire;
+#   * as `agentnode-worker`, the same unprivileged account as the worker, and as uid 1000
+#     inside;
+#   * with `--network none`;
+#   * running `/bin/true`, which exits immediately;
+#   * with `--rm`, so it leaves no container behind -- only the namespace.
+#
+# So the thing running without the worker's protections is one short-lived process from an
+# image this build names, with no network and no input. That is a smaller claim than "it
+# starts no container", which is what this comment used to say and which was simply untrue.
+# It opens no port.
 #
 # It is ordered before the worker rather than being something an operator remembers, because
 # "reboot the machine and it comes back" is the property this exists for.

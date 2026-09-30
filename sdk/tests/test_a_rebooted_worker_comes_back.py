@@ -272,6 +272,21 @@ class TestTheNamespaceUnitStartsAContainer:
         is the right place for it; a failure here would only hide it."""
         assert self.UNIT.count("|| true") >= 2
 
+    def test_what_it_runs_is_bounded_and_says_so(self):
+        """A new trust boundary has to be described accurately. An earlier version of this
+        unit's comment said it 'starts no container', which was simply untrue -- starting one
+        is the entire point. What is bounded is WHAT it starts."""
+        body = self.UNIT
+        assert "--network none" in body, "the helper's container must have no network"
+        assert "--user 1000:1000" in body, "and must not run as root inside"
+        assert "--rm" in body, "and must leave nothing behind but the namespace"
+        assert "/bin/true" in body, "and must not run anything of anybody's"
+        assert "_BASE_IMAGE" in body, "and must use the image this build pins, not any other"
+
+    def test_and_the_comment_does_not_claim_otherwise(self):
+        assert "starts no container and opens no port" not in self.UNIT, (
+            "the unit used to claim it starts no container while its ExecStart runs one")
+
 
 class TestTheCeilingProofIsUntouched:
     """The worker must still refuse when it cannot prove its ceiling binds. A repair that
