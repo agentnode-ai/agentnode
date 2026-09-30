@@ -165,11 +165,21 @@ say "directories"
 install -d -o root         -g root         -m 0755 "$CONF" "$TRUST"
 install -d -o "$WORKER_USER" -g "$WORKER_USER" -m 0700 "$HOME_DIR" "$HOME_DIR/tmp" "$TLS_DIR" "$JOURNAL"
 # AND THE ONES THE CONTAINER RUNTIME NEEDS, which `useradd --create-home` would have made --
-# except that it only runs when the account does not already exist. Reinstalling onto a host
-# whose account survived but whose home did not therefore died at the image pull with
-# `stat /var/lib/agentnode-worker/.config: no such file or directory`. `install -d` is
-# idempotent, so creating them unconditionally costs nothing and removes the difference
-# between a first install and a later one.
+# except that it only runs when the account does not already exist, so a host whose account
+# survived a wipe but whose home did not gets none of them.
+#
+# ONLY ONE OF THE FIVE IS KNOWN TO BE LOAD-BEARING, and this comment used to claim otherwise.
+# It said that reinstalling onto such a host "died at the image pull with
+# `stat /var/lib/agentnode-worker/.config: no such file or directory`". That was measured on
+# 2026-09-30 and it is NOT TRUE on this host: with all five removed and the account left in
+# place, `podman pull` of the pinned image SUCCEEDS, and creates .config, .local,
+# .local/share and .local/share/containers for itself. Three earlier probes were void before
+# one with a control gave that answer; all four are recorded in crosshost-repair-2/raw/C-08.
+#
+# `.config/containers` is the exception: podman does not create it, and it is where the
+# containers.conf written further down has to go. That one is required. The other four are
+# kept because `install -d` is idempotent and they cost nothing -- not because their absence
+# is known to break anything.
 install -d -o "$WORKER_USER" -g "$WORKER_USER" -m 0700 \
     "$HOME_DIR/.config" "$HOME_DIR/.config/containers" \
     "$HOME_DIR/.local" "$HOME_DIR/.local/share" "$HOME_DIR/.local/share/containers"
