@@ -271,7 +271,7 @@ def _refuse_unless_pinned(root, what: str) -> int:
     """
     from agentnode_sdk.gateway import runtime_pin
 
-    return runtime_pin.refuse_unless_pinned(root, what, say=print, bold=bold)
+    return runtime_pin.refuse_unless_pinned(root, what, bold=bold)
 
 def cmd_start(args) -> int:
     from agentnode_sdk.gateway.server import make_server
