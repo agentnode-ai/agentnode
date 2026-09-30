@@ -64,6 +64,10 @@ WORKER = {
     # ended up with a timer that failed every minute and a floor that was never written.
     "unit/agentnode-floor-advance.service": HERE / "agentnode-floor-advance.service",
     "unit/agentnode-floor-advance.timer": HERE / "agentnode-floor-advance.timer",
+    # The one that makes a reboot survivable: it rebuilds the rootless user namespace that
+    # podman's stored state refers to, from OUTSIDE the worker's own mount namespace, which
+    # is the only place it can be done.
+    "unit/agentnode-worker-runtime.service": HERE / "agentnode-worker-runtime.service",
 }
 
 ROLES = {"control-plane": CONTROL_PLANE, "worker": WORKER}

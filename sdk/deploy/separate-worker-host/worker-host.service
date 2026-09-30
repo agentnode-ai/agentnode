@@ -20,6 +20,15 @@ Documentation=https://agentnode.ai/docs/sandbox
 After=network-online.target
 Wants=network-online.target
 
+# AND AFTER THE ROOTLESS NAMESPACE IS REBUILT. Podman's stored state refers to the user
+# namespace of the boot it was made in, so after a reboot the first container cannot be
+# created at all. The repair cannot be done inside THIS unit: its own protections mask parts
+# of /proc, and the kernel refuses to mount a fresh procfs in a user namespace whose /proc is
+# not fully visible. Measured on two machines -- from inside here it fails in under a second,
+# from outside it succeeds and this worker then comes up with its ceiling binding.
+After=agentnode-worker-runtime.service
+Wants=agentnode-worker-runtime.service
+
 # The account's user manager owns the cgroups that hold this worker's ceilings. Written by
 # install-worker-host.sh into a drop-in, because the uid is a fact about the machine and %U in a
 # system unit resolves to the manager's uid rather than to the account in User=.

@@ -357,8 +357,27 @@ cat > /etc/systemd/system/agentnode-worker.service.d/session.conf <<EOF
 After=user@$WORKER_UID.service
 Wants=user@$WORKER_UID.service
 EOF
+
+# AND THE ONE THAT MAKES A REBOOT SURVIVABLE. Rootless podman's stored state refers to the
+# user namespace of the boot it was made in; after a reboot the first container cannot be
+# created at all, and the migrate that repairs it cannot run inside the worker's own mount
+# namespace, because that namespace masks parts of /proc and the kernel will not mount a
+# fresh procfs in a user namespace whose /proc is not fully visible. So it is its own unit,
+# without those protections, ordered in front of the worker.
+install -m 0644 "$(unit_file agentnode-worker-runtime.service agentnode-worker-runtime.service)" \
+        /etc/systemd/system/agentnode-worker-runtime.service
+install -d -m 0755 /etc/systemd/system/agentnode-worker-runtime.service.d
+cat > /etc/systemd/system/agentnode-worker-runtime.service.d/session.conf <<EOF
+# Written by install-worker-host.sh for uid $WORKER_UID, for the same reason as the worker's.
+[Unit]
+After=user@$WORKER_UID.service
+Wants=user@$WORKER_UID.service
+EOF
 systemctl daemon-reload
 systemctl start "user@$WORKER_UID.service" 2>/dev/null || true
+systemctl enable agentnode-worker-runtime.service >/dev/null
+systemctl restart agentnode-worker-runtime.service || true
+ok "the rootless namespace is rebuilt before the worker starts, which is what a reboot needs"
 
 # The same check the unit runs before every start, run here so a mistake is a failed install
 # rather than a service that flaps. It opens nothing and prints no key material.

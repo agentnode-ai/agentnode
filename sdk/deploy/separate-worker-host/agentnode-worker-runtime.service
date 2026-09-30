@@ -1,0 +1,55 @@
+# Rebuild the worker account's rootless container namespace, once, before the worker starts.
+#
+# WHY THIS IS A UNIT OF ITS OWN AND NOT A STEP INSIDE THE WORKER.
+#
+# Rootless podman keeps state that refers to the user namespace of the boot it was created in.
+# After a reboot that state is stale and the FIRST container cannot be created at all:
+#
+#     crun: mount `proc` to `proc`: Operation not permitted: OCI permission denied
+#
+# `podman system migrate` rebuilds it -- but migrating is itself an operation that creates a
+# user namespace, and it cannot be done from inside the worker's own mount namespace. The
+# worker's unit masks parts of /proc (ProtectKernelTunables, ProtectProc and the rest each add
+# their own read-only bind), and the kernel refuses to mount a fresh procfs in a user namespace
+# whose /proc is not fully visible. Measured on two machines: run from inside the worker unit
+# it fails in under a second; run outside it, it succeeds and the worker then comes up and its
+# ceiling binds.
+#
+# The worker cannot escape its own namespace to do this -- it runs unprivileged and cannot ask
+# the system manager for a transient unit. So it is a separate unit, deliberately WITHOUT the
+# worker's protections, doing one small thing and exiting. It runs as the same unprivileged
+# account, it starts no container and opens no port, and what it produces is a namespace the
+# worker then joins.
+#
+# It is ordered before the worker rather than being something an operator remembers, because
+# "reboot the machine and it comes back" is the property this exists for.
+
+[Unit]
+Description=AgentNode worker rootless runtime namespace
+Documentation=https://agentnode.ai/docs/sandbox
+# The account's session is ordered in by a drop-in the installer writes, for the same reason
+# the worker has one: %U in a system unit is the manager's uid, not the account in User=, so
+# a unit cannot name it for itself.
+After=network-online.target
+Before=agentnode-worker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=agentnode-worker
+Group=agentnode-worker
+EnvironmentFile=/etc/agentnode/worker.env
+WorkingDirectory=/var/lib/agentnode-worker
+
+# Deliberately no ProtectSystem, ProtectKernelTunables or ProtectProc here. Those are exactly
+# what stop a fresh procfs being mounted in a new user namespace, and creating that namespace
+# is this unit's entire job. It runs one command, as an unprivileged account, and exits.
+NoNewPrivileges=no
+
+# `migrate` is idempotent and is the documented remedy. `|| true` because a machine where it
+# is unnecessary must not be a machine where the worker refuses to start: if the runtime is
+# genuinely unusable, the worker's own ceiling proof is what refuses, and it says why.
+ExecStart=/bin/sh -c '/usr/bin/podman system migrate || true'
+
+[Install]
+WantedBy=multi-user.target
