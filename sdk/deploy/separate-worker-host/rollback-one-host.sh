@@ -25,6 +25,17 @@ set -uo pipefail
 KEEP="${1:-}"
 PREFIX=/opt/agentnode
 
+# An assertion the operator makes, not a bypass this script can verify. It says: the control
+# plane has ALREADY been rolled back to the same generation as the keep named here, so the two
+# will agree about what a refusal is called. Without it the worker-side refusal-code check
+# below forbids the very remedy its own message recommends, which is a fault -- a guard that
+# makes its advice impossible to follow is a guard that will be worked around.
+#
+# It deliberately does NOT relax the lease-counter check, which runs first and is unsafe in
+# both directions no matter what the other host is running, so nothing here can excuse it.
+PAIRED=""
+[ "${2:-}" = "--control-plane-already-rolled-back" ] && PAIRED=yes
+
 step() { printf '\n=== %s\n' "$*"; }
 died() { printf '\n!!! FAILED: %s\n' "$*"; exit 1; }
 
@@ -133,7 +144,7 @@ fi
 # build ever shipped and would never refuse anything. The first version of this guard did
 # exactly that, and the keep inventory it produced called a pre-fix build fine. What has to be
 # read is the ERRORS tuple itself.
-if [ "$UNIT" = "agentnode-worker" ]; then
+if [ "$UNIT" = "agentnode-worker" ] && [ -z "$PAIRED" ]; then
   KEPT_PROTOCOL="$(tar -xOf "$KEEP/installed-package.tar" agentnode_sdk/worker/protocol.py 2>/dev/null || true)"
   KEPT_ERRORS="$(printf '%s' "$KEPT_PROTOCOL" | awk '/^ERRORS[[:space:]]*=/,/\)/')"
   if [ -n "$KEPT_PROTOCOL" ] && ! printf '%s' "$KEPT_ERRORS" | grep -q 'NO_LEASE'; then
@@ -151,11 +162,24 @@ if [ "$UNIT" = "agentnode-worker" ]; then
   what a refusal is called:
 
       on the control plane:  rollback-one-host.sh <a keep from the same generation>
-      then here:             rollback-one-host.sh $KEEP
+      then here:             rollback-one-host.sh $KEEP --control-plane-already-rolled-back
+
+  That last flag is how you say you have done it. This script cannot see the other machine,
+  so it cannot check; it is your assertion and it is recorded in this output. Without it this
+  check would forbid the very remedy it just recommended.
 
   Rolling the control plane back on its own is safe and is not refused: an older gateway
   still understands a correctly named refusal from a newer worker."
   fi
+fi
+
+if [ -n "$PAIRED" ] && [ "$UNIT" = "agentnode-worker" ]; then
+  step "the refusal-code check was waived by --control-plane-already-rolled-back"
+  printf '   You have asserted that the control plane is already on a build of the same\n'
+  printf '   generation as this keep. Nothing here verified that; it cannot see the other\n'
+  printf '   machine. If it is not true, this pair will stop recovering from a lapsed lease:\n'
+  printf '   the worker will refuse with "internal" and the gateway will never re-take the\n'
+  printf '   lease. The lease-counter check, which ran before this, is NOT waived.\n'
 fi
 
 step "1. what is running now, before it is replaced"

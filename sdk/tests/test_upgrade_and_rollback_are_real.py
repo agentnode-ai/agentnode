@@ -314,6 +314,46 @@ class TestTheOtherRollbackThatMustBeRefused:
         assert "is safe and is not refused" in ROLLBACK
 
 
+class TestTheGuardDoesNotForbidItsOwnAdvice:
+    """A fault in the first version of the guard above, found by trying to follow it.
+
+    Its refusal says: roll the control plane back to the same generation, then roll this host
+    back. But the check keyed only on the keep, so it refused the worker half of that remedy
+    too -- the advice could not be taken. A guard that makes its own recommendation impossible
+    is one that will be worked around instead of followed.
+
+    The waiver is an ASSERTION by the operator, not a verification: this script cannot see the
+    other machine. So it is named for what it asserts, it is recorded in the output, and it
+    says plainly what happens if the assertion is false.
+    """
+
+    def test_the_flag_exists_and_is_named_for_what_it_asserts(self):
+        assert "--control-plane-already-rolled-back" in BACK
+
+    def test_the_refusal_tells_you_about_it(self):
+        assert "--control-plane-already-rolled-back" in ROLLBACK
+        assert "how you say you have done it" in ROLLBACK
+
+    def test_it_admits_it_cannot_check(self):
+        assert "cannot see the other" in ROLLBACK
+
+    def test_it_waives_the_refusal_code_check_and_only_that_one(self):
+        assert '[ -z "$PAIRED" ]' in BACK
+        assert BACK.index("lease-epoch.json") < BACK.index("KEPT_ERRORS"), \
+            "the counter check must run first"
+        # The waiver must not appear on the COUNTER guard's own condition line. That check is
+        # unsafe in both directions whatever the other host runs, so nothing may excuse it.
+        conditions = [ln for ln in BACK.splitlines()
+                      if "-f /var/lib/agentnode-worker/lease-epoch.json" in ln]
+        assert conditions, "the lease-counter guard's condition was not found"
+        for line in conditions:
+            assert "PAIRED" not in line, "the lease-counter check must not be waivable"
+
+    def test_and_says_so_when_it_is_used(self):
+        assert "was waived by" in ROLLBACK
+        assert "is NOT waived" in ROLLBACK
+
+
 class TestNeitherScriptTouchesState:
     """An upgrade that rewrote the journal, the floor, the counter or the certificates would
     be a migration. Both say they do not; this is the assertion."""
