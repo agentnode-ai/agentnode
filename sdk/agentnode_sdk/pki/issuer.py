@@ -373,7 +373,25 @@ class Issuer:
         # an attacker. They were left on disk indefinitely, 0400 and 0600 -- which is a
         # permission, not a lifetime. Removing them here rather than documenting the removal is
         # the difference between a procedure somebody may follow and a property the product has.
+        #
+        # THIS CALL ONLY EVER CLEANED ONE OF THE TWO PLACES, and the claim above was false on the
+        # other. `forget_the_enrolment` waits for cert.pem AND key.pem, which is correct on the
+        # SERVICE's host and impossible on the ISSUER's: the private key stays with the requester
+        # and never crosses. On a two-host deployment this directory is the issuer's, so the
+        # guard never passed and the plaintext secret survived every issuance. Found by
+        # enumerating both disks in the acceptance run of 2026-09-30 (X6-F). The issuer's side is
+        # now cleaned by `_forget_a_spent_secret`, called from `enroll` AFTER the consumption is
+        # committed -- the order matters and is argued there.
         _enrolment.forget_the_enrolment(target.parent)
+
+    def _forget_a_spent_secret(self, entry: dict) -> list:
+        """Remove the plaintext of a secret whose consumption is already committed.
+
+        Called only from `enroll`, and only after `_commit`, so that a crash between the two
+        leaves a spent secret whose replay the inventory already refuses -- rather than a live
+        secret with no record of it, which is the dangerous way round. Never raises.
+        """
+        return _enrolment.forget_a_spent_secret(Path(entry["deliver_to"]).parent)
 
     def enroll(self, csr_pem: bytes, secret: str) -> bytes:
         """First issuance, against the entry the secret belongs to. Returns the certificate."""
@@ -403,6 +421,10 @@ class Issuer:
                             raise self._refused("the inventory lost the certificate it issued",
                                                 name, public_key)
                         self._deliver(entry, pem)
+                        # Already consumed and committed, so the plaintext is spent. A run that
+                        # crashed between its commit and its removal, or one that predates the
+                        # removal existing at all, leaves a copy here; it goes now. Idempotent.
+                        self._forget_a_spent_secret(entry)
                         return pem
 
             matches = [(n, e) for n, e in inventory["entries"].items()
@@ -430,7 +452,13 @@ class Issuer:
                 "not_after": _not_after(certificate),
                 "pem": pem.decode("ascii")})
             self._commit(inventory, "issue")
+            # COMMIT FIRST, THEN FORGET, and never the other way round. After the commit the
+            # inventory refuses this secret for any other key, so a crash before the removal
+            # leaves a spent plaintext -- untidy and harmless. Removing first and crashing before
+            # the commit would leave a LIVE secret nobody can present and no record that it was
+            # used, which is worse than either.
             self._deliver(entry, pem)
+            self._forget_a_spent_secret(entry)
             return pem
 
     def renew(self, csr_pem: bytes, current_pem: bytes, signature: bytes) -> bytes:

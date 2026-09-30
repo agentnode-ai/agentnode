@@ -71,4 +71,48 @@ def forget_the_enrolment(tls_dir) -> list:
     return gone
 
 
-__all__ = ["ENROLMENT_RESIDUES", "SECRET_PREFIX", "forget_the_enrolment", "mint_a_secret"]
+def forget_a_spent_secret(folder) -> list:
+    """Remove a one-shot secret the ISSUER has already recorded as consumed. Returns what it
+    removed.
+
+    THIS IS NOT `forget_the_enrolment`, and the difference is the defect it repairs.
+
+    That function refuses to act until `cert.pem` AND `key.pem` are both in the directory,
+    which is right on the SERVICE's host: there the secret is what buys a usable pair, and
+    removing it before the pair exists would strand a service with no way back. On the ISSUER's
+    host a `key.pem` never appears -- the private key stays with whoever requested the
+    certificate and never crosses -- so that guard can never be satisfied there. The issuer
+    therefore called it after every single issuance and it removed nothing, every time, while
+    its own comment said the removal was "a property the product has" rather than a procedure
+    somebody may follow. Found by enumerating the worker's and the control plane's disks in the
+    acceptance run of 2026-09-30, criterion X6-F.
+
+    The precondition here is a different one and it is the CALLER's to establish: the
+    consumption is already committed to the inventory, so the secret is spent whatever else is
+    or is not on disk, and a copy of it is worth nothing to its holder and something to an
+    attacker. Callers must therefore commit first and call this second -- a crash in between
+    leaves a spent plaintext whose replay is already refused, which is the safe way round.
+
+    Removes only the two names in ENROLMENT_RESIDUES, never raises, and is safe to call again
+    on a directory that has already been cleaned or no longer exists.
+    """
+    folder = Path(folder)
+    gone = []
+    for name in ENROLMENT_RESIDUES:
+        residue = folder / name
+        try:
+            if residue.is_file():
+                # Written 0400, and a read-only file cannot be unlinked on Windows.
+                try:
+                    os.chmod(residue, 0o600)
+                except OSError:                               # pragma: no cover
+                    pass
+                residue.unlink()
+                gone.append(name)
+        except OSError:                                       # pragma: no cover - reported, not fatal
+            pass
+    return gone
+
+
+__all__ = ["ENROLMENT_RESIDUES", "SECRET_PREFIX", "forget_a_spent_secret",
+           "forget_the_enrolment", "mint_a_secret"]

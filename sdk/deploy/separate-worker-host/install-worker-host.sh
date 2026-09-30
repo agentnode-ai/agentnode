@@ -250,13 +250,24 @@ if [ ! -f "$TLS_DIR/cert.pem" ]; then
    Carry it to the CONTROL PLANE and run, as root:
      agentnode pki enroll --request <the copy>
    Then bring back the cert.pem it writes beside the request, put it in $TLS_DIR owned by
-   $WORKER_USER mode 0444, and run this script again. The request contains the one-shot secret in
-   clear, so delete every copy of it on both machines once the certificate exists."
+   $WORKER_USER mode 0444, and run this script again.
+
+   The request carries the one-shot secret IN CLEAR. The product removes its own copies once the
+   certificate exists -- here as soon as the certificate and the key are both in place, and on
+   the control plane as soon as the issuance is committed. What it cannot remove is a copy YOU
+   made while carrying the request or the secret between the two machines. Delete those."
 fi
 chown "$WORKER_USER":"$WORKER_USER" "$TLS_DIR/cert.pem"; chmod 0444 "$TLS_DIR/cert.pem"
 # The residues. `request.json` holds the secret in clear and neither file is any use once the
-# certificate is here. The product leaves both behind; this removes them, and that omission is
-# recorded as an open item rather than hidden by this line.
+# certificate is here.
+#
+# THE PRODUCT NOW REMOVES THESE ITSELF on this side, as soon as cert.pem and key.pem are both in
+# place -- that is `forget_the_enrolment`, and the pair check is deliberate: taking the secret
+# before the service has a usable pair would strand it with no way back. This line stays as
+# belt-and-braces for the window before the pair is complete, and because a script that leaves
+# a cleartext secret on disk when it could remove it is not improved by being sure somebody else
+# will. It is no longer compensating for an omission; the omission was on the CONTROL PLANE's
+# side and is fixed.
 rm -f "$TLS_DIR/secret" "$TLS_DIR/request.json"
 ok "certificate in place, enrolment residues deleted"
 

@@ -268,8 +268,17 @@ if [ ! -f "$STATE/state/gtls/cert.pem" ]; then
 fi
 [ -f "$STATE/state/gtls/cert.pem" ] || die "the gateway has no certificate, so it cannot dial its worker"
 # The residues enrolment leaves behind. `request.json` contains the one-shot secret in clear and
-# neither file is any use once the certificate exists. The product does not remove them; this
-# does, and that omission is recorded as an open item rather than hidden by this line.
+# neither file is any use once the certificate exists.
+#
+# THIS DIRECTORY IS THE GATEWAY'S OWN and the product does clean it: cert.pem and key.pem both
+# end up here, so `forget_the_enrolment`'s pair check passes. The earlier comment here said "the
+# product does not remove them", which was true of the OTHER directory and not of this one --
+# the worker identity issued at /var/lib/agentnode/enrolment/<instance>, where a key.pem never
+# appears because the private key stays with the worker. That is where the plaintext survived
+# every issuance, it was found by enumerating both disks in the acceptance run of 2026-09-30,
+# and the issuer now clears it after committing the consumption.
+#
+# This line stays as belt-and-braces for the window before the pair is complete here.
 rm -f "$STATE/state/gtls/secret" "$STATE/state/gtls/request.json"
 ok "certificate in $STATE/state/gtls, enrolment residues deleted"
 
