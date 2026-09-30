@@ -114,8 +114,28 @@ OUTCOME_UNKNOWN = "outcome-unknown"          # it was started and how it ended c
 RUN_ID_CONFLICT = "run-id-conflict"          # the same run id carrying different work
 JOURNAL_REFUSED = "journal-refused"          # the worker cannot write down what it is doing
 
+#: EVERY code that may cross the wire. A code that is raised but missing from here is
+#: silently rewritten to INTERNAL by `refusal` below, which destroys the one fact a caller
+#: needs to act on -- and does it under a guard marked `pragma: no cover`, so nothing noticed.
+#:
+#: NO_LEASE and NO_COMMON_PROTOCOL were both in exactly that state. Every lease refusal --
+#: the ordinary, expected, recoverable kind -- arrived at the gateway as "internal", so the
+#: client could not tell a lapsed lease from the worker having broken, and the operator was
+#: told the worker had an internal error when it was doing precisely its job. Measured on two
+#: machines: "refused the request (internal): this instruction names epoch 1 and the live
+#: lease is epoch 3".
+#:
+#: `test_every_code_that_is_raised_can_cross_the_wire` is the guard against the next one.
+#: SIX were missing, not two. The general guard found the other four as soon as it was
+#: written, and the four are the ones the comment above says are separate codes precisely
+#: so that a caller can tell them apart -- wait, read the outcome you already have, or fix
+#: whatever is minting run ids. All four arrived as "internal", which sends a caller
+#: nowhere.
 ERRORS = (UNAUTHENTICATED, MALFORMED, STALE, REPLAY, ROLLED_BACK, TOO_LARGE, UNKNOWN_METHOD,
-          BAD_PARAMS, DEADLINE_PASSED, RUNTIME_ABSENT, JOB_FAILED, NETWORK_UNAVAILABLE, INTERNAL)
+          BAD_PARAMS, DEADLINE_PASSED, RUNTIME_ABSENT, JOB_FAILED, NETWORK_UNAVAILABLE,
+          NO_LEASE, NO_COMMON_PROTOCOL,
+          ALREADY_RUNNING, OUTCOME_UNKNOWN, RUN_ID_CONFLICT, JOURNAL_REFUSED,
+          INTERNAL)
 
 
 class ProtocolError(Exception):
