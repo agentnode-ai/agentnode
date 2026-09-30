@@ -137,6 +137,36 @@ class TestAFailedUpgradeSaysWhatItAlreadyChanged:
                 assert "rollback-one-host.sh" in chunk
 
 
+class TestTheProofIsWaitedForNotSleptThrough:
+    """Measured on the pair: 71 seconds between systemd starting the gateway and the gateway
+    printing which build it is, because it settles its state and reaches its worker first. A
+    fixed three-second sleep read the journal before the line existed and reported "it never
+    said which build it is" about a service that was perfectly fine -- a false failure on the
+    one check that is supposed to BE the proof."""
+
+    def test_the_upgrade_polls_for_it(self):
+        assert "wait_for_the_build_id" in UP
+        assert "BUILD_ID_PATIENCE" in UP
+
+    def test_and_so_does_the_rollback(self):
+        assert "wait_for_the_build_id" in BACK
+        assert "BUILD_ID_PATIENCE" in BACK
+
+    def test_the_patience_is_well_past_what_was_measured(self):
+        for text in (UPGRADE, ROLLBACK):
+            line = [ln for ln in text.splitlines() if ln.startswith("BUILD_ID_PATIENCE=")][0]
+            assert int(line.split("=")[1]) >= 120
+
+    def test_neither_confirms_on_a_bare_sleep_any_more(self):
+        for text in (UP, BACK):
+            after = text[text.index("wait_for_the_build_id"):]
+            assert "sleep 3\n" not in after.split("SAID_IT_IS")[-1]
+
+    def test_and_giving_up_is_still_a_failure_rather_than_a_pass(self):
+        assert "never said which build it is" in UPGRADE
+        assert "never said which build it is" in ROLLBACK
+
+
 class TestTheKeepHasWhatARollbackNeeds:
 
     def test_the_pin_is_kept(self):

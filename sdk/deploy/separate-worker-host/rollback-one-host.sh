@@ -28,6 +28,21 @@ PREFIX=/opt/agentnode
 step() { printf '\n=== %s\n' "$*"; }
 died() { printf '\n!!! FAILED: %s\n' "$*"; exit 1; }
 
+#: See upgrade-one-host.sh: a gateway took 71 seconds on the pair between being started and
+#: printing which build it is. Waited for, not slept through.
+BUILD_ID_PATIENCE=180
+
+wait_for_the_build_id() {
+    _unit="$1"; _since="$2"; _waited=0
+    while [ "$_waited" -lt "$BUILD_ID_PATIENCE" ]; do
+        _said="$(journalctl -u "$_unit".service --since "@$_since" --no-pager 2>/dev/null \
+                 | grep -o 'managed-[0-9a-f]\{1,\}+[0-9a-f]\{1,\}' | tail -1)"
+        if [ -n "$_said" ]; then printf '%s' "$_said"; return 0; fi
+        sleep 3; _waited=$((_waited + 3))
+    done
+    return 1
+}
+
 [ "$(id -u)" = "0" ] || died "this restarts a system service, so it needs root"
 if [ -z "$KEEP" ]; then
   printf 'usage: rollback-one-host.sh <keep-directory>\n\nAvailable here:\n'
@@ -135,10 +150,9 @@ systemctl is-active --quiet "$UNIT".service || {
 # identity: a development wheel keeps its number while its contents change, which is the
 # reason the upgrade force-reinstalls. The build id is derived from the commit and the
 # artefact digest, so it cannot agree by coincidence.
-SAID_IT_IS="$(journalctl -u "$UNIT".service --since "@$STARTED_AT" --no-pager 2>/dev/null \
-  | grep -o 'managed-[0-9a-f]\{1,\}+[0-9a-f]\{1,\}' | tail -1)"
-[ -n "$SAID_IT_IS" ] || died "$UNIT came up but never said which build it is, so this
-  rollback cannot be confirmed."
+SAID_IT_IS="$(wait_for_the_build_id "$UNIT" "$STARTED_AT")"
+[ -n "$SAID_IT_IS" ] || died "$UNIT came up but never said which build it is within
+  ${BUILD_ID_PATIENCE}s, so this rollback cannot be confirmed."
 [ "$SAID_IT_IS" = "$WAS_BUILD_ID" ] || died "$UNIT is serving $SAID_IT_IS and the kept build
   was $WAS_BUILD_ID. The rollback put files back and the running process is not them."
 echo "   $UNIT is up and says it is $SAID_IT_IS, which is the build that was kept"
