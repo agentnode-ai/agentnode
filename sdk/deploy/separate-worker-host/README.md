@@ -4,10 +4,19 @@ The topology is called `separate-worker-host` and it is the one the architecture
 sibling directory above this one (`deploy/`) is `single-host-development`: two accounts on one
 kernel, which is not isolation and says so. This directory is what replaces it.
 
-**Nothing here has been run across two machines.** It is written from the code, and every part of
-it that can exist on one host has been exercised there. The measurement that would make this
-directory a claim rather than a procedure — a gateway and a worker on two real kernels — has not
-happened, and no file in this repository may be read as saying it has.
+**This has now been run across two machines, and what that does and does not establish matters.**
+The sentence here used to read "Nothing here has been run across two machines", which was true
+when it was written and stopped being true during the cross-host repair arc of 2026-09-30.
+
+What has happened: a gateway and a worker on two real kernels, through install, upgrade,
+rollback in both directions, reboot, transport loss and resource exhaustion. That run found
+eleven declared defects and eight more besides, and every one of those is repaired here.
+
+What has NOT happened: a clean acceptance run. All of that was measured on machines that had
+been wiped, reinstalled, rebooted and rolled back by hand, repeatedly — which is permitted for
+repair evidence and is explicitly not acceptance evidence. Until a run on freshly built hosts
+says otherwise, no file in this repository may be read as claiming that two machines isolate
+anything.
 
 ## Which artefact goes where
 
@@ -146,6 +155,17 @@ pair is the decision's and is not negotiable:
 2. roll the WORKER back, so incompatible execution code is gone while the gateway is fail-closed,
 3. roll the control plane back,
 4. re-measure before reopening.
+
+**One case reverses 2 and 3.** Rolling the worker back to a build from before the refusal
+codes were fixed needs `--control-plane-already-rolled-back`, and that flag *asserts* the
+control plane is already on the same generation — an assertion made before it is true is a
+lie. There the control plane goes first and the worker second. Step 2's reason is satisfied
+either way, because admission is stopped for the whole window and nothing runs during the
+mismatch. `rollback-one-host.sh` refuses the unsafe ordering, and its own message says this.
+
+**Expect `Not protecting` for some minutes after a gateway rollback**, until it is
+re-measured — 300 seconds, measured on the pair. The gateway will not trade on a measurement
+that a different build took. It is not a failed rollback and should not be read as one.
 
 A rollback of either host leaves the other's records intact. The worker's journal survives, so a
 run that was in flight across the rollback is still answerable afterwards instead of being lost;
