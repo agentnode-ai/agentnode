@@ -267,6 +267,53 @@ class TestTheOneRollbackThatMustBeRefused:
         assert "a NEW instance" in ROLLBACK
 
 
+class TestTheOtherRollbackThatMustBeRefused:
+    """Found by doing it, not by reading the code.
+
+    Six refusal codes were missing from ERRORS, so `refusal()` rewrote them to `internal`,
+    `NO_LEASE` among them. A worker from before that fix cannot say "no lease" on the wire.
+    The re-acquisition this repair added keys on the CAUSE of the refusal, so against such a
+    worker the gateway never re-takes the lease and the pair stops recovering. Measured on the
+    pair: four jobs, spaced, nothing restarted, every one refused, until the worker was rolled
+    forward again. Raw: crosshost-repair-2/raw/C-13a.
+
+    The other direction was measured too and is NOT refused: a gateway rolled back across the
+    same change ran three jobs out of three, because the rewriting happens on the worker's
+    side and an old gateway still receives correctly named codes.
+    """
+
+    def test_the_rollback_reads_the_kept_builds_ERRORS_TUPLE(self):
+        """NOT the file. `NO_LEASE = "no-lease"` has been defined in every build ever shipped;
+        the defect was that it was missing from ERRORS, which is what refusal() consults.
+        Grepping the file for the string matches everything and refuses nothing -- the first
+        version of this guard did that, and its keep inventory called a pre-fix build fine."""
+        assert "agentnode_sdk/worker/protocol.py" in BACK
+        assert "^ERRORS" in BACK and "NO_LEASE" in BACK
+        assert '"no-lease"' not in BACK, "reading the constant's value instead of the tuple"
+
+    def test_before_anything_is_stopped_or_unpacked(self):
+        """A refusal after the service is down has already broken the thing it protects."""
+        assert BACK.index("KEPT_ERRORS") < BACK.index("systemctl stop")
+        assert BACK.index("KEPT_ERRORS") < BACK.index('tar -C "$SITE" -xf')
+
+    def test_and_only_on_the_worker(self):
+        """A gateway rolled back across the same change was measured and it works."""
+        guard = BACK[BACK.index("KEPT_ERRORS") - 600 : BACK.index("KEPT_ERRORS")]
+        assert '"$UNIT" = "agentnode-worker"' in guard
+
+    def test_the_refusal_says_what_would_go_wrong(self):
+        assert "arrives at the control plane as" in ROLLBACK
+        assert "stops recovering" in ROLLBACK
+
+    def test_and_names_a_way_forward_rather_than_only_refusing(self):
+        assert "Roll forward" in ROLLBACK
+        assert "CONTROL" in ROLLBACK
+
+    def test_and_says_the_other_direction_is_allowed(self):
+        """Refusing both directions would be the easy answer and a false one."""
+        assert "is safe and is not refused" in ROLLBACK
+
+
 class TestNeitherScriptTouchesState:
     """An upgrade that rewrote the journal, the floor, the counter or the certificates would
     be a migration. Both say they do not; this is the assertion."""

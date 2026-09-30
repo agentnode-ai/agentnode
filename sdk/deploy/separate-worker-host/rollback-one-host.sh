@@ -104,6 +104,60 @@ if [ "$UNIT" = "agentnode-worker" ] && [ -f /var/lib/agentnode-worker/lease-epoc
   fi
 fi
 
+# THE SECOND ROLLBACK THIS MUST REFUSE, and this one was found by doing it.
+#
+# Six refusal codes used to be missing from `ERRORS`, so `refusal()` rewrote them to
+# `internal` -- `NO_LEASE` among them. A worker from before that fix therefore cannot say
+# "no lease" on the wire; it says "internal".
+#
+# That matters here and not only cosmetically. The re-acquisition this repair added keys on
+# the CAUSE of the refusal. Against a worker that cannot name it, the gateway never re-takes
+# the lease, and the pair does not recover on its own. Measured on the pair, worker rolled
+# back to managed-f6996a45ef4a and gateway left at head:
+#
+#   refused the request (internal): this instruction names epoch 33 and the live lease is
+#   epoch 34
+#   refused the request (internal): this worker holds no lease, so nothing may give it work
+#
+# Four jobs in a row, spaced, nothing restarted, and every one of them refused. The pair was
+# wedged until the worker was rolled forward again.
+#
+# The OTHER direction is fine and is not refused: a GATEWAY rolled back across the same
+# change ran three jobs out of three, because the rewriting happens on the worker's side and
+# an old gateway still receives correctly named codes. This guard is worker-only for that
+# reason, and it was measured in both directions rather than assumed in either.
+#
+# HOW IT IS DETECTED, because the obvious check is wrong. `NO_LEASE = "no-lease"` has been
+# DEFINED in protocol.py all along; the defect was that it was missing from the ERRORS tuple,
+# which is what `refusal()` consults. Grepping the file for "no-lease" therefore matches every
+# build ever shipped and would never refuse anything. The first version of this guard did
+# exactly that, and the keep inventory it produced called a pre-fix build fine. What has to be
+# read is the ERRORS tuple itself.
+if [ "$UNIT" = "agentnode-worker" ]; then
+  KEPT_PROTOCOL="$(tar -xOf "$KEEP/installed-package.tar" agentnode_sdk/worker/protocol.py 2>/dev/null || true)"
+  KEPT_ERRORS="$(printf '%s' "$KEPT_PROTOCOL" | awk '/^ERRORS[[:space:]]*=/,/\)/')"
+  if [ -n "$KEPT_PROTOCOL" ] && ! printf '%s' "$KEPT_ERRORS" | grep -q 'NO_LEASE'; then
+    died "this keep is from a build whose ERRORS table does not carry \"no-lease\", so every
+  lease refusal it sends arrives at the control plane as \"internal\".
+
+  The control plane re-takes a lapsed lease by looking at the CAUSE of the refusal. A worker
+  that cannot name the cause never triggers it, so the pair stops recovering: the gateway
+  keeps reissuing work under an epoch the worker has already moved past, and the worker keeps
+  refusing it. Measured on the pair -- four jobs, spaced, nothing restarted, every one
+  refused, until the worker was rolled forward again.
+
+  WHAT TO DO INSTEAD. Roll forward. If this build genuinely has to go back, roll the CONTROL
+  PLANE back with it, to a build from before the same change, so that the two agree about
+  what a refusal is called:
+
+      on the control plane:  rollback-one-host.sh <a keep from the same generation>
+      then here:             rollback-one-host.sh $KEEP
+
+  Rolling the control plane back on its own is safe and is not refused: an older gateway
+  still understands a correctly named refusal from a newer worker."
+  fi
+fi
+
 step "1. what is running now, before it is replaced"
 { systemctl is-active "$UNIT"; "$PREFIX/venv/bin/agentnode" --version 2>/dev/null; } | sed 's/^/   /'
 
