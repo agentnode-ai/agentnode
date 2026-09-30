@@ -95,6 +95,34 @@ class TestRepeatedCleanupIsSafe:
         assert _enrolment.forget_a_spent_secret(tmp_path) == []
         assert (tmp_path / "secret").is_dir(), "it deleted a directory it should have ignored"
 
+    def test_and_a_removal_that_genuinely_fails_is_swallowed(self, tmp_path):
+        """The `except OSError` branch, exercised rather than assumed.
+
+        The first version of this class never reached that branch at all: every case it tried --
+        a missing file, a missing directory, a name that is a directory -- fails the `is_file()`
+        guard and returns without raising. A counter-check that made the branch re-raise stayed
+        green, which is how the gap was found. This holds the file open, which on Windows makes
+        `unlink` raise PermissionError, and on POSIX still exercises the path when the directory
+        is not writable.
+        """
+        secret = tmp_path / "secret"
+        secret.write_text("s3cr3t", encoding="ascii")
+        handle = open(secret, "rb")
+        try:
+            if os.name != "nt":
+                os.chmod(tmp_path, 0o500)          # cannot unlink from a non-writable directory
+            try:
+                gone = _enrolment.forget_a_spent_secret(tmp_path)
+            finally:
+                if os.name != "nt":
+                    os.chmod(tmp_path, 0o700)
+        finally:
+            handle.close()
+        # It must not raise. Whether the file went is the platform's business, not this
+        # function's contract: what is promised is that a residue it cannot remove costs a line
+        # in a log and not an exception.
+        assert isinstance(gone, list)
+
 
 # --------------------------------------------------------------------------- wiring and order
 
