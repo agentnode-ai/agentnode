@@ -137,9 +137,19 @@ IDEOF
 echo "   artefact digest recorded, pin rewritten: $WILL_BE_BUILD_ID"
 
 step "4. would it still start?"
-# On the worker, the same checks the unit runs, before the service is restarted. There is no
-# equivalent on the control plane that can be run without its state, so `gateway doctor` stands
-# in: both answer "would this configuration serve", and neither opens anything.
+# On the worker, the same checks the unit runs, before the service is restarted.
+#
+# ON THE CONTROL PLANE IT HAS TO BE THE MEASUREMENT, not the plain doctor. A gateway's
+# measurement is bound to the build that took it -- artefact digest, commit and build id are
+# all in it -- so the moment the code changes the stored one "says nothing about what is
+# running here" and the plain doctor refuses. It refuses CORRECTLY, and it refuses every
+# time, which made this gate unpassable after any real upgrade.
+#
+# `install-control-plane.sh --verify` learned exactly this during the previous repair and was
+# changed to `--measure`; this script was not, and nobody found out because no upgrade had
+# ever been run across two machines. Measured here on the pair: the plain doctor reported
+# "the stored measurement describes something else (artefact_sha256, commit, build_id differ)"
+# and the upgrade stopped.
 if [ "$UNIT" = "agentnode-worker" ]; then
   set -a; . /etc/agentnode/worker.env; set +a
   runuser -u agentnode-worker -- "$PREFIX/venv/bin/agentnode" worker preflight \
@@ -153,12 +163,18 @@ if [ "$UNIT" = "agentnode-worker" ]; then
       --revocation-list /etc/agentnode/trust/revoked.crl \
       --tombstones /etc/agentnode/trust/revoked-identities.json \
       --floor /var/lib/agentnode-floor/worker.floor \
-    || died "the new build refuses this configuration. NOTHING WAS RESTARTED -- the old code is
-  still serving. Roll back with: rollback-one-host.sh $KEEP"
+    || died "the new build refuses this configuration. The service was NOT restarted and is
+  still running the old code -- but the code on disk and the runtime pin are ALREADY the new
+  ones, so a restart for any other reason would bring the new build up.
+  Put it back with: rollback-one-host.sh $KEEP"
 else
-  runuser -u agentnode-gateway -- "$PREFIX/venv/bin/agentnode" gateway doctor \
+  runuser -u agentnode-gateway -- "$PREFIX/venv/bin/agentnode" gateway doctor --measure \
       --dir /var/lib/agentnode/state \
-    || died "the new build does not accept this configuration. Nothing was restarted."
+    || died "the new build could not measure this worker, so it does not know what it would
+  enforce and will not serve on that basis. The service was NOT restarted and is still
+  running the old build -- but the code on disk and the runtime pin are ALREADY the new ones,
+  so a restart for any other reason would bring the new build up unmeasured.
+  Put it back with: rollback-one-host.sh $KEEP"
 fi
 
 step "5. restart, and check it is THIS code that came up"

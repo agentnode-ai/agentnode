@@ -100,6 +100,43 @@ class TestAnUpgradeProvesWhichCodeCameUp:
         assert '"$SAID_IT_IS" != "$WAS_BUILD_ID"' in UP
 
 
+class TestTheGatewayGateIsPassable:
+    """A gate that can never pass is not a gate.
+
+    A gateway's measurement is bound to the build that took it -- artefact digest, commit and
+    build id are all in it -- so after any code change the stored one describes something
+    else and the PLAIN doctor refuses. Correctly, and every time. `install.sh --verify`
+    learned this in the previous repair; this script had not, and no upgrade had ever been
+    run across two machines to find out. Measured on the pair: the plain doctor reported
+    "the stored measurement describes something else" and the upgrade stopped dead.
+    """
+
+    def test_the_gateway_gate_re_measures(self):
+        gate = UP[UP.index("would it still start?"):UP.index("5. restart")]
+        assert "gateway doctor --measure" in gate
+
+    def test_and_the_worker_gate_is_still_its_own_preflight(self):
+        """Different question, different check: the worker's preflight opens nothing."""
+        gate = UP[UP.index("would it still start?"):UP.index("5. restart")]
+        assert "worker preflight" in gate
+
+
+class TestAFailedUpgradeSaysWhatItAlreadyChanged:
+    """It used to say "Nothing was restarted", which is true and incomplete: by the time the
+    gate runs, the code on disk and the runtime pin are already the new ones. A host left in
+    that state comes up on the new build at the next restart for any other reason."""
+
+    def test_the_gateway_failure_says_the_pin_is_already_new(self):
+        assert "the runtime pin are ALREADY the new ones" in ROLLBACK or \
+               "runtime pin are ALREADY the new" in UPGRADE
+
+    def test_both_failure_paths_name_the_rollback(self):
+        after_install = UPGRADE[UPGRADE.index("3. the new code"):]
+        for chunk in after_install.split("died ")[1:]:
+            if "NOT restarted" in chunk or "not restarted" in chunk:
+                assert "rollback-one-host.sh" in chunk
+
+
 class TestTheKeepHasWhatARollbackNeeds:
 
     def test_the_pin_is_kept(self):
