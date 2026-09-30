@@ -47,6 +47,48 @@ systemctl list-unit-files "$UNIT.service" --no-legend 2>/dev/null | grep -q . \
   from the OTHER machine must not be applied here."
 step "this host runs $UNIT; rolling back to $KEEP"
 
+# ---------------------------------------------------------------------------------------------
+# ONE ROLLBACK THIS MUST REFUSE, and it is one this repair itself created.
+#
+# The lease epoch counter used to live INSIDE the run journal, where the journal read it as a
+# record with no run id and the worker died at every start. It now lives beside the journal,
+# and the number is carried across on first start.
+#
+# A build from before that move looks for the counter in the journal directory. After the move
+# it is not there, `_read_counter` reads a missing file as zero, and the next lease is epoch 1
+# AGAIN -- so every instruction a retired gateway still holds under epoch 1 becomes valid. That
+# is precisely the property the counter exists to provide, and losing it silently during a
+# rollback is worse than not being able to roll back.
+#
+# Putting the file back is not a way out: the old journal enumerates that directory, so the
+# crash-loop this repair removed would return with it. The two layouts are not compatible in
+# either direction, and the honest thing is to say so here rather than to do it quietly.
+#
+# Checked BEFORE anything is stopped or unpacked, and only when there is actually a number to
+# lose: a host that has never issued a lease has nothing at stake and is let through.
+if [ "$UNIT" = "agentnode-worker" ] && [ -f /var/lib/agentnode-worker/lease-epoch.json ]; then
+  KEPT_SERVICE="$(tar -xOf "$KEEP/installed-package.tar" agentnode_sdk/worker/service.py 2>/dev/null || true)"
+  if [ -n "$KEPT_SERVICE" ] && ! printf '%s' "$KEPT_SERVICE" | grep -q 'legacy=legacy'; then
+    died "this keep is from a build that reads the lease counter from inside the journal
+  directory, and this host now keeps it beside the journal at
+  /var/lib/agentnode-worker/lease-epoch.json (currently $(cat /var/lib/agentnode-worker/lease-epoch.json)).
+
+  Rolling back would make the old code find no counter, read that as zero, and hand out epoch
+  1 again -- which makes any instruction a retired control plane still holds valid. Moving the
+  file back is not a way out either: the old journal reads it as a run record and the worker
+  will not start at all.
+
+  WHAT TO DO INSTEAD. Roll forward, or if this build genuinely has to go back, retire this
+  worker's identity first so that no gateway holds an epoch for it:
+
+      on the control plane:  agentnode pki revoke --serial <this worker's serial>
+                             agentnode pki add --role worker --instance <a NEW instance>
+      then install the older artefact here with install.sh and enrol the new identity.
+
+  A reissued epoch is harmless for an identity nobody holds a lease against."
+  fi
+fi
+
 step "1. what is running now, before it is replaced"
 { systemctl is-active "$UNIT"; "$PREFIX/venv/bin/agentnode" --version 2>/dev/null; } | sed 's/^/   /'
 

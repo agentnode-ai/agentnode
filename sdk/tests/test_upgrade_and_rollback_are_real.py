@@ -135,6 +135,42 @@ class TestARollbackPutsTheCodeBackIntoService:
         assert "put files back and the running process is not them" in ROLLBACK
 
 
+class TestTheOneRollbackThatMustBeRefused:
+    """A hazard this repair itself created, and the reason the guard is not optional.
+
+    The lease counter moved out of the journal directory. A build from before that move looks
+    for it inside the journal, does not find it, reads a missing file as zero, and hands out
+    epoch 1 again -- so every instruction a retired control plane still holds becomes valid.
+    Putting the file back is not a way out: the old journal enumerates that directory and the
+    crash-loop returns. The two layouts are incompatible in both directions.
+    """
+
+    def test_the_rollback_checks_the_kept_build_for_the_new_layout(self):
+        assert "legacy=legacy" in BACK
+        assert "tar -xOf" in BACK
+
+    def test_before_anything_is_stopped_or_unpacked(self):
+        """A refusal after the service is down has already broken the thing it protects."""
+        assert BACK.index("legacy=legacy") < BACK.index('systemctl stop')
+        assert BACK.index("legacy=legacy") < BACK.index('tar -C "$SITE" -xf')
+
+    def test_only_when_there_is_actually_a_number_to_lose(self):
+        """A worker that never issued a lease has nothing at stake and is let through."""
+        assert '[ -f /var/lib/agentnode-worker/lease-epoch.json ]' in BACK
+
+    def test_and_only_on_the_worker(self):
+        """The gateway keeps no epoch counter, so the hazard cannot arise there."""
+        guard = BACK[BACK.index("legacy=legacy") - 400:BACK.index("legacy=legacy")]
+        assert '"$UNIT" = "agentnode-worker"' in guard
+
+    def test_the_refusal_says_what_would_go_wrong(self):
+        assert "epoch" in ROLLBACK and "retired control plane" in ROLLBACK
+
+    def test_and_names_a_way_forward_rather_than_only_refusing(self):
+        assert "pki revoke" in ROLLBACK
+        assert "a NEW instance" in ROLLBACK
+
+
 class TestNeitherScriptTouchesState:
     """An upgrade that rewrote the journal, the floor, the counter or the certificates would
     be a migration. Both say they do not; this is the assertion."""
