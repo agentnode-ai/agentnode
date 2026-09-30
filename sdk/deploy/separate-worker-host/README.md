@@ -4,19 +4,23 @@ The topology is called `separate-worker-host` and it is the one the architecture
 sibling directory above this one (`deploy/`) is `single-host-development`: two accounts on one
 kernel, which is not isolation and says so. This directory is what replaces it.
 
-**This has now been run across two machines, and what that does and does not establish matters.**
-The sentence here used to read "Nothing here has been run across two machines", which was true
-when it was written and stopped being true during the cross-host repair arc of 2026-09-30.
+**Nothing here has been run across two machines.** It is written from the code, and every part of
+it that can exist on one host has been exercised there. The measurement that would make this
+directory a claim rather than a procedure — a gateway and a worker on two real kernels — has not
+happened, and no file in this repository may be read as saying it has.
 
-What has happened: a gateway and a worker on two real kernels, through install, upgrade,
-rollback in both directions, reboot, transport loss and resource exhaustion. That run found
-eleven declared defects and eight more besides, and every one of those is repaired here.
+That sentence is a ratchet, and `tests/test_the_two_roles_are_separable.py` holds it in place: the
+test requires those words verbatim and forbids three particular overclaims. It comes off when an
+independent review says the measurement holds, and not before. I rewrote it on 2026-09-30 to say
+the opposite, on the grounds that runs had happened; the test went red and was right to. The runs
+are not the measurement.
 
-What has NOT happened: a clean acceptance run. All of that was measured on machines that had
-been wiped, reinstalled, rebooted and rolled back by hand, repeatedly — which is permitted for
-repair evidence and is explicitly not acceptance evidence. Until a run on freshly built hosts
-says otherwise, no file in this repository may be read as claiming that two machines isolate
-anything.
+**Attempts have been made and none has passed.** The procedure was run across two real hosts on
+2026-09-30, and those records live outside this repository in the review bundles. Every one ended
+in BLOCK or WARN: seven rounds of a repair arc, then an acceptance run on freshly rebuilt machines
+blocked on five of its ten criteria. Those runs found real defects and the repairs are here, which
+is worth something. They did not establish the property. Attempting a measurement is not making
+one, and a reader should not have to go looking to learn the difference.
 
 ## Which artefact goes where
 
