@@ -167,6 +167,35 @@ class TestTheProofIsWaitedForNotSleptThrough:
         assert "never said which build it is" in ROLLBACK
 
 
+class TestARollbackToABuildThatCannotSpeak:
+    """"Could not be established" is a different answer from "established false".
+
+    A build from before the identity line was flushed cannot announce itself while it runs --
+    under systemd stdout is a pipe and the line reaches the journal only when the process
+    exits. Measured on the pair: every `Running as ...` arrived in the same second as the
+    following "Stopped". A rollback to such a build is therefore not confirmable by anybody,
+    and calling that a failed rollback would be wrong: the code went back; the proof is what
+    is missing, and it is missing because of the build that was restored.
+    """
+
+    def test_it_distinguishes_the_two_by_looking_at_the_restored_code(self):
+        assert "flush=True" in BACK
+        assert "runtime_pin.py" in BACK
+
+    def test_a_build_that_cannot_announce_itself_is_not_called_a_failure(self):
+        assert "ROLLED BACK, NOT CONFIRMED" in ROLLBACK
+
+    def test_but_it_is_not_called_a_success_either(self):
+        """A distinct exit status, so a script driving this cannot read it as done."""
+        assert "exit 3" in BACK
+
+    def test_and_it_says_how_to_see_the_id_anyway(self):
+        assert "systemctl stop" in ROLLBACK and "journalctl -u" in ROLLBACK
+
+    def test_a_build_that_can_announce_itself_and_did_not_is_still_a_failure(self):
+        assert "this is a real failure and not a build" in ROLLBACK
+
+
 class TestTheKeepHasWhatARollbackNeeds:
 
     def test_the_pin_is_kept(self):

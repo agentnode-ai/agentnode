@@ -151,8 +151,35 @@ systemctl is-active --quiet "$UNIT".service || {
 # reason the upgrade force-reinstalls. The build id is derived from the commit and the
 # artefact digest, so it cannot agree by coincidence.
 SAID_IT_IS="$(wait_for_the_build_id "$UNIT" "$STARTED_AT")"
-[ -n "$SAID_IT_IS" ] || died "$UNIT came up but never said which build it is within
-  ${BUILD_ID_PATIENCE}s, so this rollback cannot be confirmed."
+if [ -z "$SAID_IT_IS" ]; then
+  # WHY IT SAID NOTHING DECIDES WHAT THIS IS. A build from before the identity line was
+  # flushed cannot announce itself while it runs: under systemd stdout is a pipe, Python
+  # block-buffers it, and the line reaches the journal only when the process exits. Measured
+  # on the pair -- every `Running as ...` arrived in the same second as the following
+  # "Stopped".
+  #
+  # So a rollback TO such a build is not confirmable by anybody, and reporting that as a
+  # failed rollback would be wrong: the code went back, and what is missing is the proof, not
+  # the result. "Could not be established" is a different answer from "established false" and
+  # they are not interchangeable.
+  RESTORED_PIN_SOURCE="$SITE/agentnode_sdk/gateway/runtime_pin.py"
+  if [ -f "$RESTORED_PIN_SOURCE" ] && ! grep -q 'flush=True' "$RESTORED_PIN_SOURCE"; then
+    printf '\n!!! ROLLED BACK, NOT CONFIRMED\n'
+    printf '    %s is running and the kept code and pin are in place, but the build it was\n' "$UNIT"
+    printf '    rolled back to does not flush the line that says which build it is, so it\n'
+    printf '    cannot announce itself while it runs. Nothing can read it from outside.\n\n'
+    printf '    The rollback itself is done. What is missing is the proof, and it is missing\n'
+    printf '    because of the build that was restored -- not because anything went wrong.\n\n'
+    printf '    To see it for yourself, stop the service and read the last lines: the buffer\n'
+    printf '    flushes on exit and the id appears then.\n'
+    printf '      systemctl stop %s && journalctl -u %s -n 20 --no-pager\n' "$UNIT" "$UNIT"
+    printf '    Expected: %s\n\n' "$WAS_BUILD_ID"
+    exit 3
+  fi
+  died "$UNIT came up but never said which build it is within ${BUILD_ID_PATIENCE}s, and the
+  build that was restored DOES flush that line -- so this is a real failure and not a build
+  that cannot speak. Look at: journalctl -u $UNIT -n 40 --no-pager"
+fi
 [ "$SAID_IT_IS" = "$WAS_BUILD_ID" ] || died "$UNIT is serving $SAID_IT_IS and the kept build
   was $WAS_BUILD_ID. The rollback put files back and the running process is not them."
 echo "   $UNIT is up and says it is $SAID_IT_IS, which is the build that was kept"
