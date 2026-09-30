@@ -23,6 +23,7 @@ reboot is measured on the two machines.
 """
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 DEPLOY = Path(__file__).resolve().parent.parent / "deploy" / "separate-worker-host"
@@ -166,6 +167,61 @@ class TestAnUpgradedHostGetsTheFixToo:
         blocked = tmp_path / "a-file-not-a-directory"
         blocked.write_text("", encoding="utf-8")
         assert container_backend.ask_the_runtime_for_no_kernel_tunables(str(blocked)) == ""
+
+
+class TestTheRuntimeThatLostItsNamespace:
+    """The second thing a reboot broke, once the first was fixed.
+
+    Rootless podman keeps state referring to the user namespace of the boot it was made in.
+    After a reboot the first container cannot be created at all:
+    `crun: mount proc to proc: Operation not permitted`. Measured on the pair that this is
+    NOT the unit's hardening -- ProtectProc, ProtectKernelTunables, ProtectSystem and
+    PrivateTmp were each relaxed on the real unit, one at a time, and it failed identically
+    with every one. `podman system migrate` fixed it and the worker came up.
+    """
+
+    def test_the_recovery_exists_and_is_documented_as_narrow(self):
+        from agentnode_sdk.sandbox import container_backend
+
+        source = inspect.getsource(
+            container_backend.recover_a_runtime_that_lost_its_namespace)
+        assert "system" in source and "migrate" in source
+
+    def test_it_declines_for_a_runtime_that_is_not_podman(self):
+        from agentnode_sdk.sandbox import container_backend
+
+        assert container_backend.recover_a_runtime_that_lost_its_namespace("docker") is False
+        assert container_backend.recover_a_runtime_that_lost_its_namespace("") is False
+
+    def test_serve_tries_it_only_when_nothing_could_be_started(self):
+        from agentnode_sdk.worker import service
+
+        source = inspect.getsource(service.serve)
+        assert 'never started' in source
+        assert "recover_a_runtime_that_lost_its_namespace" in source
+
+    def test_and_a_ceiling_that_failed_to_bind_is_not_recovered_from(self):
+        """The opposite fault. Recovering from it would paper over the one thing the proof
+        exists to catch, so it must still refuse."""
+        from agentnode_sdk.worker import service
+
+        source = inspect.getsource(service.serve)
+        guard = source[source.index("recover_a_runtime_that_lost_its_namespace") - 900:
+                       source.index("recover_a_runtime_that_lost_its_namespace")]
+        assert '"never started" in str(proof.reason' in guard
+
+    def test_a_failed_recovery_still_refuses(self):
+        from agentnode_sdk.worker import service
+
+        source = inspect.getsource(service.serve)
+        after = source[source.index("recover_a_runtime_that_lost_its_namespace"):]
+        assert "raise CannotHoldItsLimits" in after
+
+    def test_and_it_is_tried_once_rather_than_in_a_loop(self):
+        from agentnode_sdk.worker import service
+
+        source = inspect.getsource(service.serve)
+        assert source.count("recover_a_runtime_that_lost_its_namespace") <= 2
 
 
 class TestTheCeilingProofIsUntouched:

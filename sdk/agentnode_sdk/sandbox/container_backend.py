@@ -130,6 +130,41 @@ def ask_the_runtime_for_no_kernel_tunables(home: str = "") -> str:
         return ""
 
 
+def recover_a_runtime_that_lost_its_namespace(runtime: str = "podman", home: str = "") -> bool:
+    """Ask a rootless runtime to rebuild the user namespace its stored state refers to.
+
+    WHAT THIS IS FOR, and it is narrow. Rootless podman keeps state that refers to the user
+    namespace and runtime directory of the boot it was created in. After a reboot that state
+    is stale, and the FIRST attempt to create a container fails:
+
+        crun: mount `proc` to `proc`: Operation not permitted: OCI permission denied
+
+    Measured on the pair, and measured carefully: it is not the unit's hardening. Every one
+    of `ProtectProc`, `ProtectKernelTunables`, `ProtectSystem` and `PrivateTmp` was relaxed
+    on the real unit, one at a time, and it failed identically with each. `podman system
+    migrate` fixed it, and the worker came up and its ceiling bound.
+
+    `podman system migrate` is the documented remedy and it is idempotent. It is run only
+    when a container could not be STARTED AT ALL -- never when one started and the ceiling
+    failed to bind, because that is a different fault and recovering from it would be
+    papering over exactly what the proof exists to catch.
+    """
+    import os
+    import subprocess
+
+    if os.path.basename(str(runtime or "")) != "podman":
+        return False
+    environment = dict(os.environ)
+    if home:
+        environment["HOME"] = home
+    try:
+        done = subprocess.run([runtime, "system", "migrate"], capture_output=True,
+                              text=True, timeout=120, env=environment, cwd="/")
+        return done.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 # Hardened flags, mirrored from backend/app/verification/sandbox.py (proven recipe).
 # Never --privileged; never mount the docker socket.
 _HARDENED_FLAGS = [

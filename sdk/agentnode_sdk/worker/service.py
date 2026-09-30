@@ -865,6 +865,30 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
     # visible, and a job that runs with no memory limit on a host that believes it has one is
     # not. So this refuses rather than warning, and there is deliberately no flag to skip it.
     proof = the_worker.prove_its_ceilings()
+    # AND ONE RECOVERY, FOR ONE FAULT, ONCE. After a reboot a rootless runtime's stored state
+    # still refers to the user namespace of the boot it was made in, and the first container
+    # cannot be created at all: `crun: mount proc to proc: Operation not permitted`. That is
+    # what stopped a rebooted worker coming back, and it is not the unit's hardening -- every
+    # relevant property was relaxed on the real unit, one at a time, and it failed identically
+    # with each.
+    #
+    # Only when NOTHING COULD BE STARTED. A container that started and then walked through its
+    # ceiling is the opposite fault, and recovering from that would paper over the one thing
+    # this proof exists to catch, so that case still refuses below.
+    if proof.held is False and "never started" in str(proof.reason or ""):
+        from agentnode_sdk.sandbox.container_backend import (
+            recover_a_runtime_that_lost_its_namespace,
+        )
+
+        runtime = getattr(getattr(the_worker, "backend", None), "runtime", "") or "podman"
+        print("  nothing could be started here at all. Asking %s to rebuild the user "
+              "namespace its stored state refers to, which a reboot invalidates." % runtime,
+              flush=True)
+        if recover_a_runtime_that_lost_its_namespace(runtime):
+            proof = the_worker.prove_its_ceilings()
+            if proof.held is True:
+                print("  recovered: the runtime could not start anything until its namespace "
+                      "was rebuilt, and its ceiling binds.", flush=True)
     if proof.held is False:
         raise CannotHoldItsLimits(proof.reason, proof.evidence)
     if proof.held is None:
