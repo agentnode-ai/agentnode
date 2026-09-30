@@ -15,6 +15,26 @@
 # If the incident is demonstrably gateway-only, the gateway may go first. What may not happen is
 # work running during an unverified mismatch.
 #
+# ONE CASE REVERSES STEPS 2 AND 3, and it is not an exception to the rule above so much as a
+# consequence of it. Rolling the worker back to a build from before the refusal codes were
+# fixed needs --control-plane-already-rolled-back, and that flag is an ASSERTION that the
+# control plane is already on the same generation. An assertion made before it is true is a
+# lie, so in that case the order is:
+#
+#   1. stop admission (unchanged);
+#   2. roll the CONTROL PLANE back first;
+#   3. then the worker, with the flag;
+#   4. re-measure before reopening (unchanged, and see below).
+#
+# The reason step 2 normally puts the worker first -- get incompatible execution code out
+# while the gateway is fail-closed -- is satisfied either way here, because admission is
+# stopped for the whole window and nothing runs during the mismatch.
+#
+# EXPECT THE GATEWAY TO SAY "Not protecting" FOR SOME MINUTES after its own rollback, until it
+# is re-measured. Measured on the pair: 300 seconds. It is not broken and it is not slow to
+# start; it will not trade on a measurement that a different build took, so it refuses work
+# until it has taken its own. Plan the window around that rather than being surprised by it.
+#
 # What survives a rollback, and should: the worker's journal, so a run that was in flight across
 # it is still answerable afterwards instead of being lost. What does not, and should not: the
 # lease. The gateway takes a new one with a higher epoch, and anything issued under the old one

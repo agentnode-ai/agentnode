@@ -353,6 +353,19 @@ class TestTheGuardDoesNotForbidItsOwnAdvice:
         assert "was waived by" in ROLLBACK
         assert "is NOT waived" in ROLLBACK
 
+    def test_the_header_does_not_contradict_the_remedy(self):
+        """Review round 6, F-ROUND6-002. The header prescribes worker-first, and the waiver
+        can only be used truthfully gateway-first. Both are right for their own case; a
+        header that states only one of them misleads whoever follows it."""
+        assert "REVERSES STEPS 2 AND 3" in ROLLBACK
+        assert "roll the CONTROL PLANE back first" in ROLLBACK
+
+    def test_and_warns_about_the_re_measurement_window(self):
+        """F-ROUND6-003. Five minutes of `Not protecting` is operationally material and must
+        not be normalised as an instantaneous rollback."""
+        assert "Not protecting" in ROLLBACK
+        assert "300 seconds" in ROLLBACK
+
 
 class TestNeitherScriptTouchesState:
     """An upgrade that rewrote the journal, the floor, the counter or the certificates would
