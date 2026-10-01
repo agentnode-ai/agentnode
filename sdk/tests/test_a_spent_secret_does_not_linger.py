@@ -275,8 +275,52 @@ class TestALostAnswerStillGetsItsCertificate:
         assert (folder / "cert.pem").is_file(), "the lost delivery was not repeated"
 
 
+def _and_the_entry_still_enrols(iss, folder, what_failed):
+    """The second half of S3, which the first version of this file did exactly once.
+
+    The criterion reads "after each, the untouched entry's secret must still enrol
+    successfully". Proving that once, after one of the five refusals, leaves the other four
+    asserting only that a file is still on disk -- and a secret can survive as bytes while
+    being unusable, because `secret_sha256` was cleared or a consumption was recorded against
+    it. So every case ends here, with a real certificate out of the real issuer.
+    """
+    body = _a_request(folder)
+    pem = iss.enroll(body["csr"].encode("ascii"), body["secret"])
+    assert b"BEGIN CERTIFICATE" in pem, f"{what_failed} left the entry unable to enrol"
+    assert not (folder / "secret").exists(), \
+        f"after {what_failed} a successful issuance no longer cleans up"
+    return pem
+
+
+def _with_a_broken_signature(csr_pem: str) -> bytes:
+    """A CSR that parses and whose signature does not check out.
+
+    The last byte of the DER lies inside the signature itself, so flipping it leaves every
+    ASN.1 length exactly as it was: the request still loads, and only the proof that its sender
+    holds the key is destroyed. A request that fails to PARSE is a different case, tested
+    separately -- collapsing the two would leave the issuer's dedicated refusal for this one
+    unexercised.
+    """
+    import base64
+
+    body = "".join(ln for ln in csr_pem.strip().splitlines() if "-----" not in ln)
+    der = bytearray(base64.b64decode(body))
+    der[-1] ^= 0xFF
+    out = base64.b64encode(bytes(der)).decode("ascii")
+    wrapped = "\n".join(out[i:i + 64] for i in range(0, len(out), 64))
+    return ("-----BEGIN CERTIFICATE REQUEST-----\n" + wrapped
+            + "\n-----END CERTIFICATE REQUEST-----\n").encode("ascii")
+
+
 class TestAFailedAttemptKeepsAValidSecret:
-    """S3. The cases that must NOT consume or delete anything."""
+    """S3. The five cases the profile enumerates, each ending in a proven enrolment.
+
+    The profile names them: a malformed request, a request whose signature does not verify, a
+    secret that belongs to no entry, an expired secret, and a crash between presenting and
+    committing. The first submission covered three, and proved the "still enrols" half once, at
+    the end, for one of them. That is the reviewer's finding F-S3-INCOMPLETE-FAILURE-MATRIX and
+    both halves of it are closed here.
+    """
 
     def test_an_unknown_secret_leaves_the_real_one_alone(self, stand):
         from agentnode_sdk.pki.issuer import IssuanceRefused
@@ -288,6 +332,21 @@ class TestAFailedAttemptKeepsAValidSecret:
         with pytest.raises(IssuanceRefused):
             iss.enroll(body["csr"].encode("ascii"), body["secret"])
         assert (folder / "secret").is_file(), "a stranger's failure took the real secret"
+        _and_the_entry_still_enrols(iss, folder, "a secret belonging to no entry")
+
+    def test_a_request_whose_signature_does_not_verify(self, stand):
+        """The issuer has a dedicated refusal for this: "the request's own signature does not
+        verify, so it does not show that its sender holds the key". It fires before anything
+        looks the secret up, so this case proves the earliest exit leaves the secret alone.
+        """
+        from agentnode_sdk.pki.issuer import IssuanceRefused
+        iss, folder = stand
+        body = _a_request(folder)
+        with pytest.raises(IssuanceRefused) as refused:
+            iss.enroll(_with_a_broken_signature(body["csr"]), body["secret"])
+        assert "signature does not verify" in str(refused.value)
+        assert (folder / "secret").is_file(), "a forged request took the valid secret with it"
+        _and_the_entry_still_enrols(iss, folder, "a request whose signature does not verify")
 
     def test_a_request_that_is_not_a_request_at_all(self, stand):
         """Unparseable input raises from the x509 layer rather than as an IssuanceRefused, which
@@ -299,6 +358,7 @@ class TestAFailedAttemptKeepsAValidSecret:
             iss.enroll(b"-----BEGIN CERTIFICATE REQUEST-----\nnonsense\n"
                        b"-----END CERTIFICATE REQUEST-----\n", "whatever")
         assert (folder / "secret").is_file()
+        _and_the_entry_still_enrols(iss, folder, "a malformed request")
 
     def test_a_syntactically_valid_request_with_the_wrong_secret(self, stand):
         """The refusal path proper: a real CSR, correctly signed, presented with a secret that
@@ -310,6 +370,7 @@ class TestAFailedAttemptKeepsAValidSecret:
             iss.enroll(body["csr"].encode("ascii"), "AGENTNODE-ENROL-" + "0" * 32)
         assert "no unclaimed entry" in str(refused.value)
         assert (folder / "secret").is_file(), "a wrong secret took the right one with it"
+        _and_the_entry_still_enrols(iss, folder, "a wrong secret with a real request")
 
     def test_an_expired_secret_is_refused_and_not_removed(self, stand):
         """It is refused, and the plaintext stays: root may want to see what is there."""
@@ -324,6 +385,48 @@ class TestAFailedAttemptKeepsAValidSecret:
             iss.enroll(body["csr"].encode("ascii"), body["secret"])
         assert "expired" in str(refused.value)
         assert (folder / "secret").is_file(), "an expired secret was silently destroyed"
+        # The "still enrols" half needs the expiry I injected lifted again, because otherwise the
+        # second attempt is refused for the same reason and proves nothing about consumption.
+        # Lifting it is NOT undoing a consumption: `secret_sha256` is asserted intact first, so
+        # what is shown is that the refusal cost the secret nothing but its clock.
+        inventory = json.loads(path.read_text(encoding="utf-8"))
+        assert inventory["entries"]["worker/w1"]["secret_sha256"], \
+            "an expired secret was also consumed"
+        assert inventory["entries"]["worker/w1"].get("consumed", []) == []
+        inventory["entries"]["worker/w1"]["secret_expires"] = 2.0e9
+        path.write_text(json.dumps(inventory), encoding="utf-8")
+        _and_the_entry_still_enrols(iss, folder, "an expired secret")
+
+    def test_a_crash_between_presenting_and_committing(self, stand, monkeypatch):
+        """The fifth case, and the one the first submission filed under S4 instead.
+
+        The secret has been presented and accepted, the certificate has been built, and the
+        process dies before the consumption is durable. Nothing durable may have changed: the
+        plaintext is there, `secret_sha256` is intact, no consumption is recorded -- so the
+        secret is still LIVE and still enrols. That is the other side of S4's argument for the
+        order: this window has to be the survivable one, which it only is because the commit
+        comes first and the removal second.
+        """
+        from agentnode_sdk.pki.issuer import Issuer
+        iss, folder = stand
+
+        def the_power_goes_out(self, inventory, what):
+            raise RuntimeError("crashed between presenting and committing")
+
+        monkeypatch.setattr(Issuer, "_commit", the_power_goes_out)
+        body = _a_request(folder)
+        with pytest.raises(RuntimeError):
+            iss.enroll(body["csr"].encode("ascii"), body["secret"])
+        monkeypatch.undo()
+
+        assert (folder / "secret").is_file(), "the crash took the live secret with it"
+        assert not (folder / "cert.pem").exists(), \
+            "a certificate was delivered although the consumption never committed"
+        entry = json.loads((Path(iss.ca_dir) / "inventory.json").read_text(
+            encoding="utf-8"))["entries"]["worker/w1"]
+        assert entry["secret_sha256"], "an attempt that never committed consumed the secret"
+        assert entry.get("consumed", []) == [], "a consumption is recorded without a commit"
+        _and_the_entry_still_enrols(iss, folder, "a crash before the commit")
 
     def test_and_after_a_refusal_the_entry_is_still_enrollable(self, stand):
         from agentnode_sdk.pki.issuer import IssuanceRefused
@@ -390,3 +493,52 @@ class TestNothingLeaksTheSecret:
             for p in Path(root).rglob("*"):
                 if p.is_file():
                     assert secret not in p.read_text(encoding="utf-8", errors="replace"), p
+
+
+# --------------------------------------------------------------------------- the operator's text
+
+DEPLOY = Path(__file__).resolve().parent.parent / "deploy" / "separate-worker-host"
+
+
+class TestTheOperatorTextDescribesWhatIsImplemented:
+    """S8, as something that can break rather than something I read once.
+
+    Until now this criterion rested entirely on reading the two install scripts, which means no
+    counter-check could make it go red and the claim "the documents describe what is
+    implemented" had nothing holding it. The drift it guards against is not hypothetical: the
+    control-plane script had been asserting the OPPOSITE of the truth -- "the product does not
+    remove them" about a directory the product does clean -- and that sentence survived until
+    this arc went looking for it.
+    """
+
+    def test_the_control_plane_script_says_who_clears_the_issuer_side_copy(self):
+        text = (DEPLOY / "install-control-plane.sh").read_text(encoding="utf-8")
+        assert "the issuer now clears it after committing the consumption" in text, \
+            "the script no longer describes who removes the issuer's own plaintext copy"
+
+    def test_the_worker_script_says_the_product_removes_its_own_copies(self):
+        text = (DEPLOY / "install-worker-host.sh").read_text(encoding="utf-8")
+        assert "The product removes its own copies" in text
+
+    def test_and_still_names_what_the_operator_is_left_responsible_for(self):
+        """The other failure mode of S8: a script that claims a deletion the product performs
+        and goes quiet about the copies only the operator knows it made."""
+        text = (DEPLOY / "install-worker-host.sh").read_text(encoding="utf-8")
+        assert "Delete those." in text, \
+            "the operator is no longer told about the copies the product cannot see"
+
+    def test_no_script_states_as_fact_that_the_plaintext_is_left_behind(self):
+        """The exact words that were wrong. They may still appear as a QUOTATION inside the
+        correction that replaced them, so this requires the quoting frame wherever they occur.
+
+        The comments are hard-wrapped, so the frame and the words it quotes sit on different
+        lines; unwrapping first is the difference between testing the claim and testing where
+        somebody happened to break the line.
+        """
+        for name in ("install-control-plane.sh", "install-worker-host.sh"):
+            text = (DEPLOY / name).read_text(encoding="utf-8")
+            flat = " ".join(" ".join(
+                ln.lstrip().lstrip("#").strip() for ln in text.splitlines()).split())
+            if "product does not remove them" in flat:
+                assert 'earlier comment here said "the product does not remove them"' in flat, \
+                    f"{name} states as fact what is only true of the other directory"
