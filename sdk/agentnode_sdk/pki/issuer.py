@@ -409,7 +409,18 @@ class Issuer:
         taken its place: `consumed` is non-empty and `secret_sha256` is empty. `recover_entry`
         mints a new secret and sets `secret_sha256` again, so an entry given a fresh secret after
         a consumption is excluded by the same condition that admits the others. Never raises.
+
+        AND it refuses any directory that another entry with a LIVE secret delivers into. Two
+        identities can be pointed at one directory -- nothing stops an operator doing it -- and
+        then the spent entry's cleanup would delete the live entry's `secret`, which is the worst
+        thing in this file: destroying a secret somebody is about to use, on behalf of an
+        enrolment that had nothing to do with it. The directories are compared, not assumed to
+        differ. This is the question "can the guard hold while a live secret sits in there?",
+        asked before a reviewer asked it, and the answer was yes until this loop existed.
         """
+        live = {str(Path(e["deliver_to"]).parent)
+                for e in inventory.get("entries", {}).values()
+                if e.get("secret_sha256") and e.get("deliver_to")}
         gone = []
         for name, entry in inventory.get("entries", {}).items():
             if not entry.get("consumed"):
@@ -418,8 +429,10 @@ class Issuer:
                 continue                              # a live secret is outstanding -- leave it
             if not entry.get("deliver_to"):           # pragma: no cover - inventory damage
                 continue
-            for removed in _enrolment.forget_a_spent_secret(
-                    Path(entry["deliver_to"]).parent):
+            folder = Path(entry["deliver_to"]).parent
+            if str(folder) in live:
+                continue                              # somebody else's live secret is in there
+            for removed in _enrolment.forget_a_spent_secret(folder):
                 gone.append(name + "/" + removed)
         return gone
 

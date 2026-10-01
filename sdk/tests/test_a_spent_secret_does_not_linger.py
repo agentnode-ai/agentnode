@@ -600,6 +600,41 @@ class TestItAlsoClearsWhatOlderCodeLeftBehind:
         assert (recovered / "secret").is_file(), "a freshly recovered live secret was swept away"
         assert (recovered / "secret").read_text(encoding="ascii").strip() == fresh
 
+    def test_a_directory_shared_with_a_live_entry_is_left_alone(self, stand):
+        """The worst thing the sweep could do, and it could do it until this test existed.
+
+        Two identities pointed at ONE directory. Nothing stops an operator doing that: `add` takes
+        `secret_at` and `deliver_to` from the caller. Entry `a1` is enrolled, so it is spent and
+        the sweep is willing to clean its directory. Entry `a2` is then created with a LIVE secret
+        in the same place. Sweeping on `a1`'s behalf would delete `a2`'s live secret -- destroying
+        a secret somebody is about to use, on behalf of an enrolment that had nothing to do with
+        it, and leaving them no way to enrol at all.
+
+        I wrote this case into the reviewer's brief as something to attack, then checked it myself
+        before submitting, and it was real. The guard compares directories rather than assuming
+        they differ.
+        """
+        iss, folder = stand
+        shared = folder.parent / "shared"
+        shared.mkdir()
+        iss.add("worker", "a1", secret_at=shared / "secret", deliver_to=shared / "cert.pem")
+        spent = _a_request(shared)
+        iss.enroll(spent["csr"].encode("ascii"), spent["secret"])
+        assert not (shared / "secret").exists(), "a1's own cleanup did not run"
+
+        iss.add("worker", "a2", secret_at=shared / "secret", deliver_to=shared / "cert.pem")
+        live = (shared / "secret").read_text(encoding="ascii").strip()
+
+        mine = _a_request(folder)
+        iss.enroll(mine["csr"].encode("ascii"), mine["secret"])
+
+        assert (shared / "secret").is_file(), \
+            "the sweep deleted a LIVE secret belonging to another entry in the same directory"
+        assert (shared / "secret").read_text(encoding="ascii").strip() == live
+        # And a2 can still do what the secret is for.
+        theirs = _a_request(shared)
+        assert b"BEGIN CERTIFICATE" in iss.enroll(theirs["csr"].encode("ascii"), theirs["secret"])
+
     def test_the_sweep_runs_after_the_commit_like_the_other_one(self):
         body = ISSUER[ISSUER.index("def enroll("):ISSUER.index("def renew(")]
         success = body[body.index("matches = ["):]
