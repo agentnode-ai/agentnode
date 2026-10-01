@@ -393,6 +393,28 @@ class Issuer:
         """
         return _enrolment.forget_a_spent_secret(Path(entry["deliver_to"]).parent)
 
+    @staticmethod
+    def _same_directory_key(folder: Path):
+        """What makes two spellings of a directory the SAME directory.
+
+        Comparing `str(path)` was the defect the third review found and rated CRITICAL. A symlink,
+        or a Windows junction, gives two spellings of one directory: the strings differ, the
+        live-directory set below does not match, and a spent entry's cleanup walks through the alias
+        and deletes a live entry's secret. Case differences and `..` do the same thing more cheaply.
+
+        The filesystem's own identity -- device and inode, which Windows populates too -- is equal
+        through every alias. Measured before it was relied on: a junction and its target report
+        identical `st_dev` and `st_ino` on this platform.
+
+        A directory that does not exist has no identity, so it falls back to a normalised spelling.
+        That costs nothing: there is nothing in it to remove.
+        """
+        try:
+            st = folder.stat()
+            return (st.st_dev, st.st_ino)
+        except OSError:
+            return os.path.normcase(str(folder))
+
     def _forget_every_spent_secret(self, inventory: dict) -> list:
         """Also remove plaintext left behind by issuances THIS CODE DID NOT MAKE.
 
@@ -407,6 +429,9 @@ class Issuer:
 
         An entry is touched only when the inventory records a consumption for it, and only when NO
         entry holding a live secret delivers into the same directory.
+
+        "The same directory" means the same directory on the disk, not the same string: see
+        `_same_directory_key`, and the CRITICAL finding that made it necessary.
 
         That second condition is a DIRECTORY rule, not an entry rule, and it has to be. Two
         identities can be pointed at one directory -- `add` takes `secret_at` and `deliver_to` from
@@ -424,7 +449,7 @@ class Issuer:
         deleted it STAYED GREEN. Two guards no test can tell apart are one guard and a decoy, and
         this arc has been bitten by exactly that twice. Never raises.
         """
-        live = {str(Path(e["deliver_to"]).parent)
+        live = {self._same_directory_key(Path(e["deliver_to"]).parent)
                 for e in inventory.get("entries", {}).values()
                 if e.get("secret_sha256") and e.get("deliver_to")}
         gone = []
@@ -434,7 +459,7 @@ class Issuer:
             if not entry.get("deliver_to"):           # pragma: no cover - inventory damage
                 continue
             folder = Path(entry["deliver_to"]).parent
-            if str(folder) in live:
+            if self._same_directory_key(folder) in live:
                 continue                              # a live secret is in there -- leave it
             for removed in _enrolment.forget_a_spent_secret(folder):
                 gone.append(name + "/" + removed)

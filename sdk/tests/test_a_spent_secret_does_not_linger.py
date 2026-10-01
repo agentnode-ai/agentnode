@@ -528,6 +528,32 @@ class TestNothingLeaksTheSecret:
                     assert secret not in p.read_text(encoding="utf-8", errors="replace"), p
 
 
+def _a_directory_alias(target: Path, link: Path) -> None:
+    """Two spellings of one directory, by whatever means this platform allows.
+
+    On Windows `os.symlink` for a directory needs a privilege this account does not have, but a
+    junction via `mklink /J` does not. Measured rather than assumed: the junction and its target
+    report identical `st_dev` and `st_ino` here.
+
+    If no alias can be made this **fails** rather than skipping. A skip would quietly retire the
+    only test covering a defect an independent review rated CRITICAL, and a skip is not a red test.
+    """
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError, AttributeError):
+        pass
+    if os.name == "nt":
+        import subprocess
+        done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                              capture_output=True, text=True)
+        if link.exists():
+            return
+        raise AssertionError("no directory alias could be made, so this check did not run: %s"
+                             % (done.stderr or done.stdout).strip())
+    raise AssertionError("this platform offers no directory alias, so this check did not run")
+
+
 class TestItAlsoClearsWhatOlderCodeLeftBehind:
     """S1 retrospectively, which the first submission did not do and was marked WARN for.
 
@@ -633,6 +659,57 @@ class TestItAlsoClearsWhatOlderCodeLeftBehind:
         assert (shared / "secret").read_text(encoding="ascii").strip() == live
         # And a2 can still do what the secret is for.
         theirs = _a_request(shared)
+        assert b"BEGIN CERTIFICATE" in iss.enroll(theirs["csr"].encode("ascii"), theirs["secret"])
+
+    def test_two_spellings_of_one_directory_have_one_identity(self, tmp_path):
+        """The unit the CRITICAL finding is about, on its own."""
+        from agentnode_sdk.pki.issuer import Issuer
+        real = tmp_path / "real"
+        real.mkdir()
+        alias = tmp_path / "alias"
+        _a_directory_alias(real, alias)
+        assert Issuer._same_directory_key(real) == Issuer._same_directory_key(alias), \
+            "two spellings of one directory were treated as two directories"
+        assert Issuer._same_directory_key(real) != Issuer._same_directory_key(tmp_path)
+        # A directory that does not exist still has to compare equal to itself, because the sweep
+        # asks about it before knowing whether it is there.
+        missing = tmp_path / "gone"
+        assert Issuer._same_directory_key(missing) == Issuer._same_directory_key(missing)
+
+    def test_a_live_secret_reached_through_a_directory_ALIAS_is_left_alone(self, stand):
+        """The third review's CRITICAL finding, which the guard above did not stop.
+
+        The previous guard compared `str(path)`. A symlink or a Windows junction gives two
+        spellings of one directory, so a spent entry naming it one way and a live entry naming it
+        the other produced unequal strings, the refusal did not fire, and the cleanup walked
+        through the alias and deleted the live secret. Case differences and `..` do the same thing.
+
+        This is the same destructive outcome as the shared-directory case, one level further down:
+        not two entries in one directory, but two NAMES for one directory. The reviewer found it by
+        asking what "the same directory" meant, which is the question I had not asked.
+        """
+        iss, folder = stand
+        real = folder.parent / "real"
+        real.mkdir()
+        alias = folder.parent / "alias"
+        _a_directory_alias(real, alias)
+
+        # the spent entry names the directory through the ALIAS
+        iss.add("worker", "b1", secret_at=alias / "secret", deliver_to=alias / "cert.pem")
+        spent = _a_request(alias)
+        iss.enroll(spent["csr"].encode("ascii"), spent["secret"])
+
+        # the live entry names THE SAME directory by its real path
+        iss.add("worker", "b2", secret_at=real / "secret", deliver_to=real / "cert.pem")
+        live = (real / "secret").read_text(encoding="ascii").strip()
+
+        mine = _a_request(folder)
+        iss.enroll(mine["csr"].encode("ascii"), mine["secret"])
+
+        assert (real / "secret").is_file(), \
+            "the sweep deleted a LIVE secret through a directory alias"
+        assert (real / "secret").read_text(encoding="ascii").strip() == live
+        theirs = _a_request(real)
         assert b"BEGIN CERTIFICATE" in iss.enroll(theirs["csr"].encode("ascii"), theirs["secret"])
 
     def test_the_sweep_runs_after_the_commit_like_the_other_one(self):
