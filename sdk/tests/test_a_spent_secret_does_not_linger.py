@@ -157,6 +157,37 @@ class TestTheDecisionIsAboutContentNotAboutThePath:
         assert victim.read_text(encoding="ascii") == LIVE, \
             "the file that was unlinked was not the file that was hashed"
 
+    def test_it_refuses_a_directory_anyone_else_could_change(self):
+        """The precondition that makes safe removal possible at all, as a pure function.
+
+        Three CRITICAL findings in a row said the same thing in three places: a check on a name and
+        an action on that name can always be separated, because Python has no way to delete a file by
+        its inode. The answer is not a fourth check — it is to refuse to operate where a third party
+        can mutate the directory. The product creates these directories 0700, so this costs nothing it
+        should be doing.
+        """
+        owner = 1000
+        yes = _enrolment.only_its_owner_can_change_it
+        assert yes(0o700, owner, owner), "its own 0700 directory was refused"
+        assert yes(0o755, owner, owner), "readable by others is not writable by others"
+        assert yes(0o700, 0, owner), "a root-owned directory is acceptable"
+        assert not yes(0o770, owner, owner), "group-writable was accepted"
+        assert not yes(0o702, owner, owner), "world-writable was accepted"
+        assert not yes(0o700, 1234, owner), "a directory owned by somebody else was accepted"
+        # And the platform limitation, stated rather than hidden: with no POSIX ownership there is
+        # nothing in these fields to judge, so the answer is a conservative yes.
+        assert yes(0o777, 0, None)
+
+    def test_and_on_THIS_platform_it_says_what_it_can(self, tmp_path):
+        """Whether the enforcement actually bites here is a property of the platform, not a wish."""
+        (tmp_path / "secret").write_text(SPENT, encoding="ascii")
+        removed = _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT))
+        if hasattr(os, "geteuid"):
+            assert removed == ["secret"], "a 0700-equivalent temp directory was refused on POSIX"
+        else:
+            # No geteuid: the precondition cannot bite, and the cleanup must still work.
+            assert removed == ["secret"]
+
     def test_a_swapped_in_file_is_PUT_BACK_rather_than_merely_spared(self, tmp_path, monkeypatch):
         """The sixth review's CRITICAL finding: `lstat` then `unlink` still acts on a binding.
 

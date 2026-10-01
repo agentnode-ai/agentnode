@@ -108,6 +108,43 @@ def _the_value_in(raw: str, name: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def only_its_owner_can_change_it(mode: int, st_uid: int, euid) -> bool:
+    """Can anyone but the owning identity mutate this directory? A pure function, so it is testable.
+
+    This is the precondition that makes safe removal possible AT ALL, and it is enforced rather than
+    assumed -- which is the difference between this and the threat-boundary argument review rejected
+    twice.
+
+    The reason it is necessary is a measured fact about the language, not an opinion: **Python exposes
+    no way to delete a file by its inode.** `os.unlink` takes a name; there is no `funlinkat`, and
+    even `dir_fd` only pins the directory, not the final name. So in a directory a third party can
+    mutate, no sequence of checks can guarantee that the thing deleted is the thing examined -- which
+    is exactly what three successive CRITICAL findings kept demonstrating in three different places.
+    Stop trying to win that race and refuse to run in a directory where it exists.
+
+    `euid` is `None` on platforms with no POSIX ownership. There the answer is a conservative True and
+    the limitation is stated: Windows expresses this with ACLs that these fields do not carry, and
+    this product's hosts are Linux. Saying so is better than pretending the check means something it
+    does not.
+    """
+    if euid is None:
+        return True
+    if st_uid not in (0, euid):
+        return False                       # somebody else owns the directory
+    return not mode & (stat.S_IWGRP | stat.S_IWOTH)
+
+
+def _a_directory_nobody_else_can_change(folder: Path) -> bool:
+    try:
+        st = os.stat(folder)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(st.st_mode):
+        return False
+    euid = os.geteuid() if hasattr(os, "geteuid") else None
+    return only_its_owner_can_change_it(stat.S_IMODE(st.st_mode), st.st_uid, euid)
+
+
 def _remove_if_it_is_spent(residue: Path, name: str, spent: set) -> bool:
     """Hash a residue and remove it only if it is one of `spent` -- through ONE open handle.
 
@@ -260,6 +297,12 @@ def forget_a_spent_secret(folder, spent_digests) -> list:
     spent = {d for d in (spent_digests or ()) if d}
     gone = []
     if not spent:
+        return gone
+    # ENFORCED, not assumed. Python cannot delete a file by its inode, so in a directory a third
+    # party can mutate there is no sequence of checks that makes a removal safe -- see
+    # `only_its_owner_can_change_it`, and S1-DECISION-0001 beside the frozen profile. The product
+    # creates these directories 0700, so refusing anything else costs nothing it should be doing.
+    if not _a_directory_nobody_else_can_change(folder):
         return gone
     for name in ENROLMENT_RESIDUES:
         if _remove_if_it_is_spent(folder / name, name, spent):
