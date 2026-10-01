@@ -159,17 +159,44 @@ def _remove_if_it_is_spent(residue: Path, name: str, spent: set) -> bool:
 
     if digest_of_a_secret(_the_value_in(raw, name)) not in spent:
         return False                       # not a secret this entry spent -- leave it where it is
+
+    # TAKE IT ASIDE FIRST, THEN LOOK, THEN DELETE.
+    #
+    # Checking the name and then unlinking the name is what review rated CRITICAL three times over,
+    # in three different disguises. The last of them survived even a `(st_dev, st_ino)` comparison
+    # taken immediately beforehand, because `unlink` still acts on a *binding* and a binding can be
+    # replaced after it is inspected. No comparison can fix that, so this stops comparing before
+    # acting and acts before comparing:
+    #
+    #   1. `os.replace` moves whatever is at the name to a private name nobody can guess. Atomic.
+    #   2. only then is the identity read -- of the file now held under that private name.
+    #   3. it is deleted only if it is the inode whose content authorised the deletion.
+    #   4. and if it is not, it is PUT BACK.
+    #
+    # The consequence is the one S1 asks for without conditions: the only inode this ever unlinks is
+    # the one it hashed. An actor who swaps the file in can no longer be deleted by us -- their file
+    # is moved aside for the width of two syscalls and then restored, which is a visibility blip and
+    # not a loss. That is a weaker promise than "nothing is ever touched", and it is the honest one.
+    import secrets                         # imported here, as `mint_a_secret` does
+
+    aside = residue.with_name("%s.%s.removing" % (residue.name, secrets.token_hex(8)))
     try:
-        # The file that was hashed must be the file that is removed. `raw` came from the handle, so
-        # it belongs to a specific inode; this asks whether the NAME still refers to that inode.
-        here = os.stat(residue, follow_symlinks=False)
-        if (here.st_dev, here.st_ino) != (opened.st_dev, opened.st_ino):
-            return False                   # the name moved; whatever is there now is not ours
+        os.replace(residue, aside)
+    except OSError:
+        return False                       # gone, or not ours to move
+    try:
+        held = os.stat(aside, follow_symlinks=False)
+        if (held.st_dev, held.st_ino) != (opened.st_dev, opened.st_ino):
+            try:
+                os.replace(aside, residue)                    # not ours: put it back untouched
+            except OSError:                                   # pragma: no cover
+                pass
+            return False
         try:
-            os.chmod(residue, 0o600)       # written 0400, and Windows will not unlink read-only
+            os.chmod(aside, 0o600)         # written 0400, and Windows will not unlink read-only
         except OSError:                                       # pragma: no cover
             pass
-        os.unlink(residue)
+        os.unlink(aside)
         return True
     except OSError:                                           # pragma: no cover - reported, not fatal
         return False
@@ -237,6 +264,22 @@ def forget_a_spent_secret(folder, spent_digests) -> list:
     for name in ENROLMENT_RESIDUES:
         if _remove_if_it_is_spent(folder / name, name, spent):
             gone.append(name)
+    # And anything a crash left half-removed. `_remove_if_it_is_spent` moves a residue to a private
+    # `<name>.<hex>.removing` before deleting it, so a process that dies in that window leaves a
+    # spent secret under a name nothing would otherwise look at -- which is the exact class of
+    # leftover this whole change exists to end, so it would be absurd to create a new one. They are
+    # judged by the same content rule: still only spent values go.
+    try:
+        leftovers = sorted(folder.glob("*.removing"))
+    except OSError:                                           # pragma: no cover
+        leftovers = []
+    for half_removed in leftovers:
+        base = half_removed.name.split(".")[0]
+        if base not in ENROLMENT_RESIDUES and base + ".json" not in ENROLMENT_RESIDUES:
+            continue                       # not one of ours; leave it entirely alone
+        asked_about = base if base in ENROLMENT_RESIDUES else base + ".json"
+        if _remove_if_it_is_spent(half_removed, asked_about, spent):
+            gone.append(half_removed.name)
     return gone
 
 

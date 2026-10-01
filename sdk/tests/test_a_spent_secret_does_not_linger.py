@@ -157,6 +157,64 @@ class TestTheDecisionIsAboutContentNotAboutThePath:
         assert victim.read_text(encoding="ascii") == LIVE, \
             "the file that was unlinked was not the file that was hashed"
 
+    def test_a_swapped_in_file_is_PUT_BACK_rather_than_merely_spared(self, tmp_path, monkeypatch):
+        """The sixth review's CRITICAL finding: `lstat` then `unlink` still acts on a binding.
+
+        The answer is to stop comparing before acting: the residue is moved to a private name first,
+        and only then is its identity read, so the only inode that can be unlinked is the one whose
+        content authorised the unlink. A file swapped in is moved aside and **put back**.
+
+        This checks the putting back, which is the part that could silently not happen: sparing a
+        live secret is no good if it is left under a `.removing` name nobody will look for.
+        """
+        victim = tmp_path / "secret"
+        victim.write_text(SPENT, encoding="ascii")
+        elsewhere = tmp_path / "live-one"
+        elsewhere.write_text(LIVE, encoding="ascii")
+        digests = _spent(SPENT)
+        real = _enrolment.digest_of_a_secret
+        swapped = []
+
+        def swap(value):
+            answer = real(value)
+            if not swapped:
+                swapped.append(True)
+                victim.unlink()
+                elsewhere.replace(victim)
+            return answer
+
+        monkeypatch.setattr(_enrolment, "digest_of_a_secret", swap)
+        assert _enrolment.forget_a_spent_secret(tmp_path, digests) == []
+        monkeypatch.undo()
+
+        assert swapped
+        assert victim.is_file(), "the swapped-in file was not put back"
+        assert victim.read_text(encoding="ascii") == LIVE
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["secret"], \
+            "something was left behind under a temporary name"
+
+    def test_a_crash_mid_removal_leaves_nothing_the_next_sweep_cannot_find(self, tmp_path):
+        """The leftover class the new mechanism could have invented.
+
+        A process that dies between the rename and the unlink leaves a spent secret under
+        `<name>.<hex>.removing` -- a name nothing would otherwise look at, which is precisely the
+        kind of forgotten plaintext this whole change exists to end. So the sweep judges those by the
+        same content rule.
+        """
+        (tmp_path / "secret.deadbeef.removing").write_text(SPENT, encoding="ascii")
+        (tmp_path / "request.deadbeef.removing").write_text(
+            json.dumps({"secret": SPENT}), encoding="ascii")
+        (tmp_path / "something-else.deadbeef.removing").write_text(SPENT, encoding="ascii")
+        gone = _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT))
+        assert sorted(gone) == ["request.deadbeef.removing", "secret.deadbeef.removing"]
+        assert (tmp_path / "something-else.deadbeef.removing").is_file(), \
+            "it removed a half-removed file that was never one of ours"
+
+    def test_and_a_half_removed_file_holding_a_LIVE_secret_stays(self, tmp_path):
+        (tmp_path / "secret.deadbeef.removing").write_text(LIVE, encoding="ascii")
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == []
+        assert (tmp_path / "secret.deadbeef.removing").is_file()
+
     def test_a_residue_larger_than_a_residue_can_be_is_NOT_READ_AT_ALL(self, tmp_path, monkeypatch):
         """S5, and the first version of this test could not fail.
 
