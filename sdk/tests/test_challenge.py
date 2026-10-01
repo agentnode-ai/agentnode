@@ -416,14 +416,20 @@ class TestTheReadOnlySurface:
         conn = _paired(base, state)
         consent.submit(conn, b"print('x')", granted=_granted(service), run_id="unchanged")
         gc.wait_for(conn, "unchanged", timeout=20)
-        from agentnode_sdk.gateway.protocol import is_terminal
-
         # The worker's LAST write is the run's terminal state. Reading the directory while that
         # is still in flight would be this test breaking the gateway rather than watching it:
         # on Windows an open read handle blocks the rename an atomic write ends with.
+        #
+        # IT WAITS ON `settled_as` SINCE `state-consistency-r1`, and this is the one reader in the
+        # repository that the change caught. It asked `is_terminal` about the ledger's `state`, which
+        # used to hold a protocol word. That field is now the ledger's own LIFECYCLE -- `accepted`,
+        # `running`, `closed` -- and the protocol state machine refuses a word it does not know rather
+        # than ranking it lowest, so this raised `ProtocolError` instead of waiting. The ending lives
+        # in `settled_as`, copied from the signed line; waiting for it is waiting for exactly what
+        # this test meant, which is that the gateway has written the run down.
         for _ in range(200):
             entry = service.ledger.run_entry("unchanged") or {}
-            if is_terminal(str(entry.get("state") or "")):
+            if str(entry.get("settled_as") or ""):
                 break
             time.sleep(0.05)
         else:

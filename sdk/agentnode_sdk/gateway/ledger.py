@@ -118,11 +118,6 @@ _MAY_BECOME = {
     "closed": ("closed",),
 }
 
-#: What `settled_as` may say. The same five words the signed log uses, because this field is a copy
-#: of that log and not a second vocabulary.
-SETTLED_WORDS = ("finished", "refused", "cancelled", "unverified", "interrupted")
-
-
 class Ledger:
     """A small durable record of what this gateway has already accepted."""
 
@@ -366,6 +361,12 @@ class Ledger:
         not run twice. A DIFFERENT word is refused and recorded: the log holds one line per run, so
         two different words mean somebody read something else, and that is worth keeping rather
         than resolving by whoever arrived second.
+
+        The log's five words are `finished`, `refused`, `cancelled`, `unverified` and `interrupted`.
+        That list is documentation and NOT a check, deliberately: the signed line is the authority and
+        this field mirrors it, so refusing a word the log actually carries would be the original defect
+        again -- a durable record disagreeing with the line because a code path preferred its own idea
+        of the vocabulary.
         """
         word = str(settled_as)
         when = float(time.time() if at is None else at)
@@ -461,12 +462,6 @@ class Ledger:
             if isinstance(repairs, list):
                 repairs.append({"at": time.time(), "was": was, "now": float(now)})
                 self._write_locked()
-
-    def every_run(self) -> list[str]:
-        """Every run id this ledger still holds. For reconciliation, which is not age-bounded."""
-        with self._lock, ProcessLock(self.path):
-            self._load()
-            return sorted(self._data["runs"])
 
     def unfinished_runs(self, now: float | None = None) -> list[str]:
         """Runs with no established ending, and recent enough that a line may still be written.

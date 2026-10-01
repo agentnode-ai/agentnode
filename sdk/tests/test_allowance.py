@@ -1332,15 +1332,33 @@ class TestARunThatCouldNotBeRecordedStopsTheGateway:
         assert "disk is full" in halted
 
     def test_the_run_still_reaches_a_terminal_state(self):
-        """Structural: the write is guarded, and move_to happens after it either way."""
+        """Structural: the write is guarded, and the state is published after it either way.
+
+        ## Adapted by `state-consistency-r1`, and made harder to break by accident
+
+        Two things moved under this test, both the adapting change's doing:
+
+        1. `record.move_to(terminal)` is now `record.move_to(final)`. The handler no longer publishes
+           the word it decided; it publishes the word the signed log hands back -- because a stop that
+           had already written an `interrupted` line left this move free to say `finished`, and a
+           client was then told its job had succeeded.
+        2. it split on the LAST occurrence of `write_down_what_it_used`, and the change added a
+           COMMENT naming that function after the call, so "everything after" became a sentence rather
+           than code. A fragile anchor, so it splits on the FIRST occurrence now, which is the call.
+
+        What it asserts is unchanged, and one assertion is added: what gets published is not the
+        handler's own word.
+        """
         import inspect
 
         from agentnode_sdk.gateway import server
 
         text = inspect.getsource(server.GatewayService._run)
-        after = text.split("write_down_what_it_used")[-1]
+        after = text.split("write_down_what_it_used", 1)[-1]
         assert "could_not_record" in after
-        assert "record.move_to(terminal)" in after
+        assert "record.move_to(" in after, "nothing publishes a terminal state after the write"
+        assert "record.move_to(terminal)" not in after, (
+            "the handler publishes the word it decided rather than the one the signed log carries")
 
     def test_and_a_gateway_whose_meter_works_is_not_stopped(self, service):
         """The counter-case: this must not stop a gateway that recorded the run perfectly."""
