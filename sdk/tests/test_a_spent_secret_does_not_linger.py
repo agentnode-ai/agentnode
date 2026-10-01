@@ -129,6 +129,13 @@ class TestTheDecisionIsAboutContentNotAboutThePath:
         victim.write_text(SPENT, encoding="ascii")
         elsewhere = tmp_path / "somebody-elses-live-secret"
         elsewhere.write_text(LIVE, encoding="ascii")
+        # COMPUTED BEFORE THE PATCH IS INSTALLED. The first version of this test passed
+        # `_spent(SPENT)` as an argument to the call, so it was evaluated AFTER the patch: the
+        # helper's own digest call tripped the swap before the function under test had opened
+        # anything, the file was already LIVE when it was read, and the test passed for a reason
+        # that had nothing to do with the identity check. A counter-check that deletes that check
+        # stayed green, which is how this was found.
+        digests = _spent(SPENT)
         real = _enrolment.digest_of_a_secret
         swapped = []
 
@@ -141,7 +148,7 @@ class TestTheDecisionIsAboutContentNotAboutThePath:
             return answer
 
         monkeypatch.setattr(_enrolment, "digest_of_a_secret", swap_the_file_underneath)
-        gone = _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT))
+        gone = _enrolment.forget_a_spent_secret(tmp_path, digests)
         monkeypatch.undo()
 
         assert swapped, "the swap never happened, so this test proved nothing"
@@ -150,16 +157,43 @@ class TestTheDecisionIsAboutContentNotAboutThePath:
         assert victim.read_text(encoding="ascii") == LIVE, \
             "the file that was unlinked was not the file that was hashed"
 
-    def test_a_residue_larger_than_a_residue_can_be_is_not_read(self, tmp_path):
-        """S5. An unbounded read is how a cleanup becomes a denial of service."""
+    def test_a_residue_larger_than_a_residue_can_be_is_NOT_READ_AT_ALL(self, tmp_path, monkeypatch):
+        """S5, and the first version of this test could not fail.
+
+        It wrote an oversized file and asserted nothing was removed — which is true however much of
+        the file gets read, because a megabyte of `x` does not hash to a spent secret. The property
+        the review raised is about the READ, not the outcome: "a device, FIFO or very large file can
+        block cleanup or raise an uncaught resource exception while the issuer lock is held". So this
+        watches the read itself.
+        """
         big = tmp_path / "secret"
-        big.write_text("x" * (_enrolment.MOST_A_RESIDUE_CAN_BE + 1), encoding="ascii")
+        big.write_text("x" * (_enrolment.MOST_A_RESIDUE_CAN_BE * 2), encoding="ascii")
+        real_read = os.read
+        asked = []
+
+        def watched(fd, size):
+            asked.append(size)
+            return real_read(fd, size)
+
+        monkeypatch.setattr(_enrolment.os, "read", watched)
         assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == []
+        monkeypatch.undo()
+
+        # Either it refused the file before reading it, or it read it with a bound. Not unbounded,
+        # and not the file's own size.
+        assert all(n <= _enrolment.MOST_A_RESIDUE_CAN_BE for n in asked), \
+            f"the cleanup read without a bound: {asked}"
         assert big.is_file()
 
-    def test_a_residue_that_is_not_a_regular_file_is_not_read(self, tmp_path):
-        """A directory stands in for the device or FIFO the review named: the point is that
-        `fstat` decides what gets read, rather than a name that merely looks like a file."""
+    def test_a_residue_that_is_not_a_regular_file_is_not_removed(self, tmp_path):
+        """A directory stands in for the device or FIFO the review named.
+
+        Honest about what this does and does not establish: on Windows `os.open` refuses a directory
+        outright, so the `S_ISREG` check is not what makes this pass here — the open does. On POSIX
+        the open succeeds and `S_ISREG` is the deciding guard. The outcome asserted is the same on
+        both, which is why the test is worth having, but a counter-check that removes `S_ISREG`
+        cannot go red on this platform and is named as such in the counter-check log.
+        """
         (tmp_path / "secret").mkdir()
         assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == []
         assert (tmp_path / "secret").is_dir()
