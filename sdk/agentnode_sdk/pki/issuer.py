@@ -405,18 +405,24 @@ class Issuer:
         This is NOT a sweep over directories the product guesses at. Every path here is one the
         product wrote down itself, in `deliver_to`, when the entry was created.
 
-        An entry is touched only when the inventory says its secret is spent and nothing live has
-        taken its place: `consumed` is non-empty and `secret_sha256` is empty. `recover_entry`
-        mints a new secret and sets `secret_sha256` again, so an entry given a fresh secret after
-        a consumption is excluded by the same condition that admits the others. Never raises.
+        An entry is touched only when the inventory records a consumption for it, and only when NO
+        entry holding a live secret delivers into the same directory.
 
-        AND it refuses any directory that another entry with a LIVE secret delivers into. Two
-        identities can be pointed at one directory -- nothing stops an operator doing it -- and
-        then the spent entry's cleanup would delete the live entry's `secret`, which is the worst
-        thing in this file: destroying a secret somebody is about to use, on behalf of an
-        enrolment that had nothing to do with it. The directories are compared, not assumed to
-        differ. This is the question "can the guard hold while a live secret sits in there?",
-        asked before a reviewer asked it, and the answer was yes until this loop existed.
+        That second condition is a DIRECTORY rule, not an entry rule, and it has to be. Two
+        identities can be pointed at one directory -- `add` takes `secret_at` and `deliver_to` from
+        the caller and nothing stops it -- and then a spent entry's cleanup would delete the live
+        entry's `secret`: destroying a secret somebody is about to use, on behalf of an enrolment
+        that had nothing to do with it, and leaving them no way to enrol at all. That is the worst
+        thing in this file, and it was possible until this loop compared the directories instead of
+        assuming they differ.
+
+        The rule also covers the single-entry case it replaces. An earlier version additionally
+        skipped an entry whose own `secret_sha256` was non-empty -- the state `recover_entry`
+        leaves. That test is strictly weaker: an entry holding a live secret is itself an entry
+        delivering into its own directory, so the directory rule already refuses it. I know the
+        earlier check was redundant rather than merely believing it, because a counter-check that
+        deleted it STAYED GREEN. Two guards no test can tell apart are one guard and a decoy, and
+        this arc has been bitten by exactly that twice. Never raises.
         """
         live = {str(Path(e["deliver_to"]).parent)
                 for e in inventory.get("entries", {}).values()
@@ -425,13 +431,11 @@ class Issuer:
         for name, entry in inventory.get("entries", {}).items():
             if not entry.get("consumed"):
                 continue                              # never enrolled; any secret here is live
-            if entry.get("secret_sha256"):
-                continue                              # a live secret is outstanding -- leave it
             if not entry.get("deliver_to"):           # pragma: no cover - inventory damage
                 continue
             folder = Path(entry["deliver_to"]).parent
             if str(folder) in live:
-                continue                              # somebody else's live secret is in there
+                continue                              # a live secret is in there -- leave it
             for removed in _enrolment.forget_a_spent_secret(folder):
                 gone.append(name + "/" + removed)
         return gone
