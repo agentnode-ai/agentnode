@@ -468,6 +468,71 @@ class Use:
                         entry["seconds"] = float(seconds)
             _atomically(self.path, json.dumps(body, sort_keys=True))
 
+    def the_figure_for(self, keys, run_id: str, seconds: float, arrived_at: float,
+                       now: float | None = None) -> dict:
+        """Set this run's figure on every named scope, CREATING the entry when it is missing.
+
+        Returns `{scope: "set" | "created" | "already right" | "outside the window"}`, so a caller can
+        say what it did rather than that it did something.
+
+        ## Why creating is right, which the first version of the repair got wrong
+
+        `finished_every` only sets what is already there, and the repair of `state-consistency-r1`
+        reasoned from that: a missing entry means the scope was not counting this run, so leave it
+        alone. **That reasoning was false, and an independent review found it.** `reserve` writes an
+        entry on every scope at admission either way --
+
+            if scopes:  self.use.claim_every(...)      # there ARE window ceilings
+            else:       self.use.note_every(...)       # there are not
+
+        -- and the `else` branch is the whole point: this product always records. So a missing entry
+        is not a scope that was not counting. It is an entry that was lost, or one the window has
+        forgotten. Leaving it alone let a signed line carry billed seconds while the quota carried no
+        figure at all, which is exactly the class of disagreement that arc exists to remove.
+
+        ## Why the created entry is stamped with the run's ARRIVAL and not with now
+
+        The window forgets by `at`. An entry stamped `now` would sit in the customer's window for
+        another full day from the moment of the repair -- a charge they did not incur then. Stamped
+        with the arrival, it is forgotten exactly when the original would have been.
+
+        ## And why the window is checked here rather than left to the prune
+
+        `_forget` runs on every write, so an entry created outside the window would be dropped in the
+        same call. Correct, but silent and not byte-stable: every start would create and lose it
+        again. Outside the window the absence is the right answer, and this says so.
+        """
+        at = time.time() if now is None else now
+        wanted = float(seconds)
+        out: dict = {}
+        with self._lock, ProcessLock(self.path):
+            body = self._forget(self._load(), at)
+            changed = False
+            for key in keys:
+                if not key:
+                    continue
+                scope = str(key)
+                mine = [e for e in body.get(scope, [])
+                        if isinstance(e, dict) and e.get("run_id") == str(run_id)]
+                if mine:
+                    if all(abs(float(e.get("seconds") or 0.0) - wanted) <= 0.0005 for e in mine):
+                        out[scope] = "already right"
+                        continue
+                    for e in mine:
+                        e["seconds"] = wanted
+                    out[scope] = "set"
+                    changed = True
+                elif float(arrived_at) > at - self.window:
+                    body.setdefault(scope, []).append(
+                        {"run_id": str(run_id), "at": float(arrived_at), "seconds": wanted})
+                    out[scope] = "created"
+                    changed = True
+                else:
+                    out[scope] = "outside the window"
+            if changed:
+                _atomically(self.path, json.dumps(body, sort_keys=True))
+        return out
+
     def what_a_run_was_charged(self, keys, run_id: str) -> dict:
         """What each named scope currently holds for this run: {scope: seconds or None}.
 

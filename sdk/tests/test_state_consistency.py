@@ -32,6 +32,9 @@ established them for the same kind of window.
 from __future__ import annotations
 
 import json
+import textwrap
+import sys
+import os
 import pathlib
 import threading
 import time
@@ -984,3 +987,224 @@ class TestWhichPathDoesTheWork:
         backend.let_go.set()
         until_it_has_ended(service, "two-reasons")
         assert service.runs["two-reasons"].state == line["state"]
+
+
+# --------------------------------------------- a quota entry that is not there at all
+
+
+class TestAQuotaEntryThatIsMissingAltogether:
+    """`STATE-CONSISTENCY-0001`, F-QUOTA-MISSING-NOT-REPAIRED.
+
+    The first version of this repair reconciled a quota figure that DIFFERED from the signed line and
+    skipped a scope with no entry at all, and the docstring argued for the skip: that an absent entry
+    meant the ceilings were not counting this run. An independent review found that false, and it is:
+    `reserve` writes an entry on every scope at admission either way --
+
+        if scopes:  self.use.claim_every(...)      # there ARE window ceilings
+        else:       self.use.note_every(...)       # there are not
+
+    -- and the `else` is the point. So an absent entry is one that was LOST, or one the window has
+    forgotten, and the first of those is a signed line carrying billed seconds beside a quota carrying
+    nothing. Binding answer A5 says "repair a missing OR differing quota entry", and only half of it
+    was done.
+    """
+
+    def test_a_missing_entry_is_created_from_the_signed_line(self, gateway):
+        keys = ["dev-1", AN_ACCOUNT]
+        arrived = time.time() - 60.0
+        claimed(gateway, "quota-gone", when=arrived, started=arrived + 1.0)
+        a_signed_line(gateway.state.root, "quota-gone", state="interrupted", outcome="unverified",
+                      started_at=1010.0, finished_at=1021.0)
+        assert all(v is None for v in
+                   the_quota(gateway.state.root).what_a_run_was_charged(keys, "quota-gone").values()), (
+            "premise: no scope holds a figure for this run")
+
+        again, state = restarted(gateway)
+        try:
+            line = the_one_line_for(state.root, "quota-gone")
+            charged = the_quota(state.root).what_a_run_was_charged(keys, "quota-gone")
+            for scope, seconds in charged.items():
+                assert seconds is not None, (
+                    "scope %s still holds no figure for a run whose signed line says %r seconds"
+                    % (scope, line["seconds"]))
+                assert seconds == pytest.approx(float(line["seconds"]), abs=0.001)
+            assert len(lines_for(state.root, "quota-gone")) == 1, (
+                "the repair wrote a second usage line")
+        finally:
+            again.close()
+            state.close()
+
+    def test_the_created_entry_is_stamped_with_the_runs_arrival_and_not_with_now(self, gateway):
+        """Otherwise the charge lives in the customer's window for another day from the REPAIR.
+
+        The window forgets by `at`. A charge stamped `now` is a charge they did not incur then, and it
+        would keep counting against their allowance long after the original would have been forgotten.
+        """
+        keys = ["dev-1", AN_ACCOUNT]
+        arrived = time.time() - (6 * 60 * 60)          # six hours ago, well inside the window
+        claimed(gateway, "stamped-when-it-arrived", when=arrived, started=arrived + 1.0)
+        a_signed_line(gateway.state.root, "stamped-when-it-arrived", state="interrupted",
+                      outcome="unverified", queued_at=arrived)
+
+        again, state = restarted(gateway)
+        try:
+            body = json.loads((pathlib.Path(state.root) / USE_NAME).read_text(encoding="utf-8"))
+            stamps = [e.get("at") for entries in body.values() if isinstance(entries, list)
+                      for e in entries
+                      if isinstance(e, dict) and e.get("run_id") == "stamped-when-it-arrived"]
+            assert stamps, "nothing was created, so there is no stamp to check"
+            for at in stamps:
+                assert abs(float(at) - arrived) < 2.0, (
+                    "stamped %r; the run arrived at %r, and the difference is how much longer this "
+                    "charge would sit in the customer's window than it should"
+                    % (at, arrived))
+            assert all(float(at) < time.time() - (5 * 60 * 60) for at in stamps), (
+                "it was stamped with the repair's own clock")
+        finally:
+            again.close()
+            state.close()
+
+    def test_a_run_the_window_has_forgotten_is_not_given_a_charge_again(self, gateway):
+        """The half of the old reasoning that was RIGHT, and is kept.
+
+        Outside the window the absence IS the answer: recreating the entry would resurrect a charge
+        the customer's allowance had already forgotten. So nothing is created -- and nothing is
+        recorded as repaired either, because an answer that never changes must not be written on every
+        start. That is what `test_a_second_reconciliation_writes_nothing_at_all` would catch.
+        """
+        from agentnode_sdk.gateway.allowance import WINDOW_SECONDS
+
+        keys = ["dev-1", AN_ACCOUNT]
+        long_ago = time.time() - (WINDOW_SECONDS * 3)
+        claimed(gateway, "window-forgot-it", when=long_ago, started=long_ago + 1.0)
+        a_signed_line(gateway.state.root, "window-forgot-it", state="interrupted",
+                      outcome="unverified", queued_at=long_ago)
+
+        again, state = restarted(gateway)
+        try:
+            charged = the_quota(state.root).what_a_run_was_charged(keys, "window-forgot-it")
+            assert all(v is None for v in charged.values()), (
+                "a charge the window had forgotten was resurrected: %r" % (charged,))
+            entry = again.ledger.run_entry("window-forgot-it") or {}
+            assert not entry.get("quota_repairs"), (
+                "it recorded a repair for an answer that will never change, so every start would "
+                "append another one")
+            # And doing it again changes nothing at all.
+            before = digest_of(again.ledger.path)
+            quota_before = digest_of(pathlib.Path(state.root) / USE_NAME)
+            again.reconcile_every_record_against_the_signed_log()
+            assert digest_of(again.ledger.path) == before
+            assert digest_of(pathlib.Path(state.root) / USE_NAME) == quota_before
+        finally:
+            again.close()
+            state.close()
+
+    def test_one_figure_per_scope_and_not_two(self, gateway):
+        """Creating must not append beside an entry that is already there."""
+        keys = ["dev-1", AN_ACCOUNT]
+        arrived = time.time() - 60.0
+        claimed(gateway, "exactly-one-figure", when=arrived, started=arrived + 1.0)
+        a_signed_line(gateway.state.root, "exactly-one-figure", state="finished")
+        held = the_quota(gateway.state.root)
+        held.note_every(keys, "exactly-one-figure")
+        held.finished_every(keys, "exactly-one-figure", 999.0)
+
+        again, state = restarted(gateway)
+        try:
+            body = json.loads((pathlib.Path(state.root) / USE_NAME).read_text(encoding="utf-8"))
+            for scope in keys:
+                mine = [e for e in body.get(scope, [])
+                        if isinstance(e, dict) and e.get("run_id") == "exactly-one-figure"]
+                assert len(mine) == 1, "scope %s holds %d figures for one run" % (scope, len(mine))
+        finally:
+            again.close()
+            state.close()
+
+
+# ------------------------------------------- two gateways, in two real processes
+
+
+class TestTwoGatewaysInTwoRealProcesses:
+    """`SC5` names a second gateway, and the first submission could not establish it.
+
+    The review was right to return NOT_ESTABLISHED: two `Ledger` objects in one process exercise the
+    reload-inside-the-lock, but they share an interpreter, a thread lock and a page cache. A second
+    PROCESS shares none of those, and the cross-process lock is the only thing left.
+
+    So this starts real subprocesses. They are given the same state directory and the same run, and
+    each is told to settle it as a DIFFERENT word. Exactly one must win, the file must say that one
+    word, and the loser's attempt must be on the record rather than lost.
+    """
+
+    PROGRAM = textwrap.dedent("""
+        import sys
+        from agentnode_sdk.gateway.ledger import Ledger
+
+        path, word, barrier = sys.argv[1], sys.argv[2], sys.argv[3]
+        held = Ledger(path)
+        # Both processes wait for the same file to appear, so they reach the write together rather
+        # than one after the other. Without it this would be a sequence and not a contention.
+        import os, time
+        until = time.time() + 20
+        while not os.path.exists(barrier) and time.time() < until:
+            time.sleep(0.005)
+        got, wrote = held.note_it_settled("contended", word)
+        print("%s|%s" % (got, wrote))
+    """)
+
+    def test_exactly_one_word_wins_and_the_other_is_recorded(self, gateway, tmp_path):
+        import subprocess
+
+        claimed(gateway, "contended", started=time.time() - 5.0)
+        program = tmp_path / "settle.py"
+        program.write_text(self.PROGRAM, encoding="utf-8")
+        barrier = tmp_path / "go"
+        ledger_path = str(gateway.ledger.path)
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(pathlib.Path(gateway.state.root).parents[0]) + os.pathsep + \
+            str(pathlib.Path(__file__).resolve().parents[1])
+
+        started = [
+            subprocess.Popen([sys.executable, str(program), ledger_path, word, str(barrier)],
+                             cwd=str(pathlib.Path(__file__).resolve().parents[1]),
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+            for word in ("interrupted", "finished")
+        ]
+        barrier.write_text("go", encoding="utf-8")
+        said = []
+        for proc in started:
+            out, err = proc.communicate(timeout=60)
+            assert proc.returncode == 0, "a child failed: %s" % (err[-600:],)
+            said.append(out.strip().splitlines()[-1])
+
+        wrote = [s for s in said if s.endswith("|True")]
+        assert len(wrote) == 1, (
+            "%d of two processes believed it wrote the word: %r. Exactly one may."
+            % (len(wrote), said))
+        winner = wrote[0].split("|")[0]
+        # Both must AGREE about what the file says, whichever of them wrote it.
+        assert {s.split("|")[0] for s in said} == {winner}, (
+            "the two processes disagree about what the file now says: %r" % (said,))
+        entry = gateway.ledger.run_entry("contended") or {}
+        assert entry.get("settled_as") == winner
+        loser = "finished" if winner == "interrupted" else "interrupted"
+        assert entry.get("settled_conflicts"), (
+            "the losing process's word left no trace, so nobody can find out two paths read "
+            "different things")
+        assert any(c.get("offered") == loser for c in entry["settled_conflicts"])
+
+    def test_the_two_children_really_were_two_processes(self, gateway, tmp_path):
+        """The control. A test that proved nothing about concurrency because both halves ran in one
+        interpreter is exactly what the review just rejected, so this says what ran where."""
+        import subprocess
+
+        program = tmp_path / "whoami.py"
+        program.write_text("import os, sys; print(os.getpid())\n", encoding="utf-8")
+        pids = set()
+        for _ in range(2):
+            out = subprocess.run([sys.executable, str(program)], capture_output=True, text=True,
+                                 timeout=60)
+            assert out.returncode == 0, out.stderr
+            pids.add(out.stdout.strip())
+        assert len(pids) == 2, "the two children shared a process id: %r" % (pids,)
+        assert str(os.getpid()) not in pids, "a child ran in this interpreter"

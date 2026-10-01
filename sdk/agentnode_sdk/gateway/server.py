@@ -1457,23 +1457,32 @@ class GatewayService:
     def _reconcile_the_quota_from(self, run_id: str, line: dict, *,
                                   entry: dict | None = None,
                                   quota: dict | None = None) -> bool:
-        """Set every counting scope's figure for this run to the signed line's seconds. True if it
-        had to correct something.
+        """Make every scope's figure for this run equal the signed line's seconds. True if it had to.
 
-        ## Why a scope with NO entry is left alone
+        ## A MISSING entry is repaired too, and the first version of this was wrong about that
 
-        `claim_every` appends an entry for every scope in one atomic write, so "the client has one
-        and the account does not" is not a state this file can be in. An absent entry therefore
-        means one of two things, and neither is something to repair: the ceilings were not counting
-        this run at all, or its window has since been forgotten. Creating one would invent a charge
-        in the first case and resurrect an expired one in the second.
+        It used to skip a scope with no entry, and the docstring here argued for it: that an absent
+        entry meant the ceilings were not counting this run, so creating one would invent a charge.
+        **`STATE-CONSISTENCY-0001` found that reasoning false**, and it was: `reserve` writes an entry
+        on every scope at admission either way --
+
+            if scopes:  self.use.claim_every(...)      # there ARE window ceilings
+            else:       self.use.note_every(...)       # there are not
+
+        -- and that `else` is the point. This product always records. So an absent entry is an entry
+        that was LOST, or one the window has forgotten, and the first of those is exactly the crash
+        this reconciliation exists for: a signed line carrying billed seconds beside a quota carrying
+        no figure at all. Binding answer A5 says so in as many words -- "repair a missing or differing
+        quota entry from the signed line" -- and this only did the differing half.
+
+        The second half of the old reasoning was right and is kept: outside the window the absence IS
+        the answer, and `the_figure_for` says `outside the window` rather than resurrecting a charge.
 
         ## Why it checks before it writes
 
-        `finished_every` rewrites the whole document and prunes by window on the way through, so
-        calling it when nothing differs changes the file on every start. A repair that is not
-        byte-stable on repetition cannot be told apart from a repair that keeps finding something
-        wrong.
+        A write rewrites the whole document and prunes by window on the way through, so writing when
+        nothing differs changes the file on every start. A repair that is not byte-stable on repetition
+        cannot be told apart from a repair that keeps finding something wrong.
         """
         from agentnode_sdk.gateway.allowance import what_a_run_was_charged_in
 
@@ -1493,14 +1502,30 @@ class GatewayService:
         except Exception:                                     # noqa: BLE001
             return False
         wrong = {k: v for k, v in held.items()
-                 if v is not None and abs(float(v) - seconds) > 0.0005}
+                 if v is None or abs(float(v) - seconds) > 0.0005}
         if not wrong:
             return False
+        # WHEN THE RUN ARRIVED, so a created entry is forgotten when the original would have been
+        # rather than a day after the repair. The ledger's own `first_seen` is that moment; the line's
+        # `queued_at` says the same thing and is the fallback when the entry has been pruned away.
+        arrived = float(entry.get("first_seen") or line.get("queued_at") or 0.0)
         try:
-            self.use.finished_every(keys, run_id, seconds)
-            self.ledger.note_quota_repair(run_id, wrong, seconds)
+            did = self.use.the_figure_for(keys, run_id, seconds, arrived)
         except Exception:                                     # noqa: BLE001
             return False
+        # ONLY IF SOMETHING ACTUALLY CHANGED, and this is not tidiness. A run whose window has passed
+        # comes back `outside the window` for ever, so recording a repair on that answer would append
+        # to the ledger on every single start -- a repair that never finishes, and a file that is not
+        # byte-stable on repetition, which is the one property that tells those two apart.
+        moved = sorted(k for k, what in did.items() if what in ("set", "created"))
+        if not moved:
+            return False
+        # WHAT IT DID per scope, including any `outside the window`: a repair that declined is
+        # something a reader should be able to find, not a silent skip.
+        try:
+            self.ledger.note_quota_repair(run_id, {"was": wrong, "did": did}, seconds)
+        except Exception:                                     # noqa: BLE001
+            pass
         return True
 
     def reconcile_every_record_against_the_signed_log(self) -> dict:
@@ -3310,9 +3335,15 @@ class GatewayService:
             # this gateway's queue must not have that count against the seconds they are allowed
             # to consume -- that would be charging them twice for our ceiling, once in money and
             # once in quota.
-            self.use.finished_every(
+            #
+            # Through `the_figure_for` rather than `finished_every`, so that the ONE function which
+            # knows how a figure is recorded is the one that records it here too. `finished_every`
+            # only sets an entry that is already there, and at this moment one is -- admission wrote
+            # it -- unless a long wait let the window forget it, in which case this creates it now
+            # instead of leaving the next start to find the disagreement.
+            self.use.the_figure_for(
                 [k for k in (record.owner_client_id, record.owner_account_id) if k],
-                record.run_id, billed)
+                record.run_id, billed, float(record.queued_at or queued or started or finished))
         return str(terminal)
 
     @property
