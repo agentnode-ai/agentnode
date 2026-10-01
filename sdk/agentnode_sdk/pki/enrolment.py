@@ -7,6 +7,8 @@ have caught the shortcut.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -71,9 +73,67 @@ def forget_the_enrolment(tls_dir) -> list:
     return gone
 
 
-def forget_a_spent_secret(folder) -> list:
+def digest_of_a_secret(value: str) -> str:
+    """The one way a secret's value is turned into the digest the inventory stores.
+
+    It exists so the issuer and this module cannot drift: `Issuer.enroll` records
+    `sha256(presented.strip())` as the consumption, and the check below has to ask the same
+    question of a file's contents or the comparison is meaningless.
+    """
+    return hashlib.sha256(str(value).strip().encode("ascii", "replace")).hexdigest()
+
+
+def _the_secret_inside(residue: Path, name: str) -> str:
+    """The secret value a residue carries, or "" if it carries none that can be read.
+
+    `secret` holds the value itself. `request.json` carries it in a field, because the request is
+    what the service hands back and the secret travels with it.
+    """
+    try:
+        raw = residue.read_text(encoding="ascii", errors="replace")
+    except OSError:                                           # pragma: no cover - unreadable
+        return ""
+    if name != "request.json":
+        return raw
+    try:
+        body = json.loads(raw)
+    except (ValueError, TypeError):
+        return ""
+    return body.get("secret") or "" if isinstance(body, dict) else ""
+
+
+def forget_a_spent_secret(folder, spent_digests) -> list:
     """Remove a one-shot secret the ISSUER has already recorded as consumed. Returns what it
     removed.
+
+    **A residue is removed only when its own CONTENT hashes to one of `spent_digests`** -- the
+    digests the inventory records as consumed for the entry this directory belongs to. The
+    decision is about the bytes in the file, not about the path that led to it.
+
+    That is the fourth design of this check and the first one that is safe, so the three it
+    replaces are worth stating. All of them asked "is this the right DIRECTORY?" and then removed
+    by pathname:
+
+      1. per-entry only. Broke when two entries were pointed at one directory: the spent entry's
+         cleanup deleted the live entry's secret.
+      2. plus "refuse directories a live entry delivers into", compared as strings. Broke on a
+         symlink or a Windows junction: two spellings of one directory, unequal strings, and the
+         cleanup walked through the alias. Rated CRITICAL by review.
+      3. plus filesystem identity, `(st_dev, st_ino)`. Still broke, two ways: a directory absent
+         when the live set was sampled contributed a *string* key while the same directory present
+         later produced a *tuple*, so it could not match itself; and an alias could be created or
+         retargeted between the comparison and the unlink, which no amount of comparing fixes
+         because the unlink still followed a mutable name.
+
+    Asking about content ends that series rather than extending it. Every one of those states --
+    aliases, junctions, case differences, dot-dot, mounts, a directory that appears late, a link
+    retargeted mid-operation -- can at worst present this function with a file whose content is a
+    SPENT secret, and deleting a spent secret is precisely the intent. A live secret has a
+    different value, so it hashes to something not in `spent_digests` and is never touched. The
+    race that was destructive becomes benign, because the thing being checked can no longer
+    disagree with the thing being acted on.
+
+    `spent_digests` empty means nothing is known to be spent, so nothing is removed.
 
     THIS IS NOT `forget_the_enrolment`, and the difference is the defect it repairs.
 
@@ -97,22 +157,28 @@ def forget_a_spent_secret(folder) -> list:
     on a directory that has already been cleaned or no longer exists.
     """
     folder = Path(folder)
+    spent = {d for d in (spent_digests or ()) if d}
     gone = []
+    if not spent:
+        return gone
     for name in ENROLMENT_RESIDUES:
         residue = folder / name
         try:
-            if residue.is_file():
-                # Written 0400, and a read-only file cannot be unlinked on Windows.
-                try:
-                    os.chmod(residue, 0o600)
-                except OSError:                               # pragma: no cover
-                    pass
-                residue.unlink()
-                gone.append(name)
+            if not residue.is_file():
+                continue
+            if digest_of_a_secret(_the_secret_inside(residue, name)) not in spent:
+                continue                   # not a secret this entry spent -- leave it where it is
+            # Written 0400, and a read-only file cannot be unlinked on Windows.
+            try:
+                os.chmod(residue, 0o600)
+            except OSError:                                   # pragma: no cover
+                pass
+            residue.unlink()
+            gone.append(name)
         except OSError:                                       # pragma: no cover - reported, not fatal
             pass
     return gone
 
 
-__all__ = ["ENROLMENT_RESIDUES", "SECRET_PREFIX", "forget_a_spent_secret",
-           "forget_the_enrolment", "mint_a_secret"]
+__all__ = ["ENROLMENT_RESIDUES", "SECRET_PREFIX", "digest_of_a_secret",
+           "forget_a_spent_secret", "forget_the_enrolment", "mint_a_secret"]

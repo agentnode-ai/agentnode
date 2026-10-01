@@ -390,30 +390,18 @@ class Issuer:
         Called only from `enroll`, and only after `_commit`, so that a crash between the two
         leaves a spent secret whose replay the inventory already refuses -- rather than a live
         secret with no record of it, which is the dangerous way round. Never raises.
+
+        The entry's own consumed digests go with it: the removal is decided by what the file
+        CONTAINS, never by the path that reached it. See `forget_a_spent_secret`.
         """
-        return _enrolment.forget_a_spent_secret(Path(entry["deliver_to"]).parent)
+        return _enrolment.forget_a_spent_secret(Path(entry["deliver_to"]).parent,
+                                                self._spent_digests(entry))
 
     @staticmethod
-    def _same_directory_key(folder: Path):
-        """What makes two spellings of a directory the SAME directory.
-
-        Comparing `str(path)` was the defect the third review found and rated CRITICAL. A symlink,
-        or a Windows junction, gives two spellings of one directory: the strings differ, the
-        live-directory set below does not match, and a spent entry's cleanup walks through the alias
-        and deletes a live entry's secret. Case differences and `..` do the same thing more cheaply.
-
-        The filesystem's own identity -- device and inode, which Windows populates too -- is equal
-        through every alias. Measured before it was relied on: a junction and its target report
-        identical `st_dev` and `st_ino` on this platform.
-
-        A directory that does not exist has no identity, so it falls back to a normalised spelling.
-        That costs nothing: there is nothing in it to remove.
-        """
-        try:
-            st = folder.stat()
-            return (st.st_dev, st.st_ino)
-        except OSError:
-            return os.path.normcase(str(folder))
+    def _spent_digests(entry: dict) -> set:
+        """What this entry has already spent, as digests. The inventory never holds the values."""
+        return {used.get("secret_sha256") for used in entry.get("consumed", [])
+                if used.get("secret_sha256")}
 
     def _forget_every_spent_secret(self, inventory: dict) -> list:
         """Also remove plaintext left behind by issuances THIS CODE DID NOT MAKE.
@@ -424,44 +412,29 @@ class Issuer:
         that out: S1 asks for no plaintext anywhere the product wrote one, and "anywhere" is not
         "the entry currently being issued".
 
-        This is NOT a sweep over directories the product guesses at. Every path here is one the
-        product wrote down itself, in `deliver_to`, when the entry was created.
+        Every directory here is one the product wrote down itself, in `deliver_to`, when the entry
+        was created. **But the directory is only where to look. What decides a removal is the
+        CONTENT of the file**: it goes if and only if it hashes to a digest this entry's own
+        `consumed` list records. `forget_a_spent_secret` carries the long version of why, and it is
+        worth reading, because three earlier designs of this check compared paths instead and each
+        of them could destroy a live secret -- one by sharing a directory, one through a junction,
+        one through a directory that appeared after the comparison. Two of those were rated CRITICAL
+        by review.
 
-        An entry is touched only when the inventory records a consumption for it, and only when NO
-        entry holding a live secret delivers into the same directory.
-
-        "The same directory" means the same directory on the disk, not the same string: see
-        `_same_directory_key`, and the CRITICAL finding that made it necessary.
-
-        That second condition is a DIRECTORY rule, not an entry rule, and it has to be. Two
-        identities can be pointed at one directory -- `add` takes `secret_at` and `deliver_to` from
-        the caller and nothing stops it -- and then a spent entry's cleanup would delete the live
-        entry's `secret`: destroying a secret somebody is about to use, on behalf of an enrolment
-        that had nothing to do with it, and leaving them no way to enrol at all. That is the worst
-        thing in this file, and it was possible until this loop compared the directories instead of
-        assuming they differ.
-
-        The rule also covers the single-entry case it replaces. An earlier version additionally
-        skipped an entry whose own `secret_sha256` was non-empty -- the state `recover_entry`
-        leaves. That test is strictly weaker: an entry holding a live secret is itself an entry
-        delivering into its own directory, so the directory rule already refuses it. I know the
-        earlier check was redundant rather than merely believing it, because a counter-check that
-        deleted it STAYED GREEN. Two guards no test can tell apart are one guard and a decoy, and
-        this arc has been bitten by exactly that twice. Never raises.
+        Deciding on content ends that series instead of extending it. Whatever path games are
+        played, the worst this can be handed is a file whose bytes are a spent secret, and removing
+        a spent secret is the entire point. A live secret has different bytes and is never touched,
+        so no comparison of directories is needed at all. Never raises.
         """
-        live = {self._same_directory_key(Path(e["deliver_to"]).parent)
-                for e in inventory.get("entries", {}).values()
-                if e.get("secret_sha256") and e.get("deliver_to")}
         gone = []
         for name, entry in inventory.get("entries", {}).items():
-            if not entry.get("consumed"):
-                continue                              # never enrolled; any secret here is live
             if not entry.get("deliver_to"):           # pragma: no cover - inventory damage
                 continue
+            spent = self._spent_digests(entry)
+            if not spent:
+                continue                              # nothing recorded as spent for this entry
             folder = Path(entry["deliver_to"]).parent
-            if self._same_directory_key(folder) in live:
-                continue                              # a live secret is in there -- leave it
-            for removed in _enrolment.forget_a_spent_secret(folder):
+            for removed in _enrolment.forget_a_spent_secret(folder, spent):
                 gone.append(name + "/" + removed)
         return gone
 

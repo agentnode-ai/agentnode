@@ -29,6 +29,90 @@ from agentnode_sdk.pki import enrolment as _enrolment
 
 # --------------------------------------------------------------------------- the unit itself
 
+SPENT = "agentnode-enrol-1." + "a" * 64          # a value this test treats as already consumed
+LIVE = "agentnode-enrol-1." + "b" * 64           # and one that is still somebody's to use
+
+
+def _spent(*values):
+    """The digests of values the inventory would record as consumed."""
+    return {_enrolment.digest_of_a_secret(v) for v in values}
+
+
+class TestTheDecisionIsAboutContentNotAboutThePath:
+    """The fourth design of this check, and the first that cannot destroy a live secret.
+
+    Three earlier versions asked "is this the right DIRECTORY?" and then removed by pathname. Each
+    could delete a secret somebody was about to use: by two entries sharing a directory, by a
+    junction giving one directory two names, and by a directory appearing between the comparison and
+    the unlink. Two of the three were rated CRITICAL by independent review.
+
+    A removal decided by the file's CONTENT has no such states to enumerate. These tests are the
+    property itself rather than a list of the ways round the old one.
+    """
+
+    def test_a_spent_secret_goes(self, tmp_path):
+        (tmp_path / "secret").write_text(SPENT, encoding="ascii")
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == ["secret"]
+
+    def test_a_LIVE_secret_in_the_very_same_directory_stays(self, tmp_path):
+        """The whole point. Same directory, same filename, same call -- different bytes."""
+        (tmp_path / "secret").write_text(LIVE, encoding="ascii")
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == []
+        assert (tmp_path / "secret").read_text(encoding="ascii") == LIVE
+
+    def test_so_no_path_trick_can_reach_a_live_secret(self, tmp_path):
+        """Every state the three earlier designs fell to, all at once: the directory is reached
+        through an alias, it did not exist when the entry was created, and it is shared. None of it
+        matters, because the file does not contain a spent secret."""
+        real = tmp_path / "real"
+        real.mkdir()
+        alias = tmp_path / "alias"
+        _a_directory_alias(real, alias)
+        (real / "secret").write_text(LIVE, encoding="ascii")
+        assert _enrolment.forget_a_spent_secret(alias, _spent(SPENT)) == []
+        assert (real / "secret").read_text(encoding="ascii") == LIVE
+        # and the same call through the same alias DOES remove the spent one
+        (real / "secret").write_text(SPENT, encoding="ascii")
+        assert _enrolment.forget_a_spent_secret(alias, _spent(SPENT)) == ["secret"]
+
+    def test_another_entry_s_spent_secret_is_not_this_entry_s_to_remove(self, tmp_path):
+        """Conservative on purpose: the digests passed in are one entry's own consumptions."""
+        (tmp_path / "secret").write_text(SPENT, encoding="ascii")
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(LIVE)) == []
+
+    def test_no_digests_means_nothing_is_known_to_be_spent_so_nothing_goes(self, tmp_path):
+        (tmp_path / "secret").write_text(SPENT, encoding="ascii")
+        assert _enrolment.forget_a_spent_secret(tmp_path, set()) == []
+        assert _enrolment.forget_a_spent_secret(tmp_path, None) == []
+        assert (tmp_path / "secret").is_file()
+
+    def test_a_request_carrying_the_spent_secret_goes_and_one_carrying_a_live_one_stays(self, tmp_path):
+        """`request.json` holds the secret in a field, so the value has to be read out of it."""
+        (tmp_path / "request.json").write_text(json.dumps({"csr": "...", "secret": LIVE}),
+                                               encoding="ascii")
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == []
+        (tmp_path / "request.json").write_text(json.dumps({"csr": "...", "secret": SPENT}),
+                                               encoding="ascii")
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == ["request.json"]
+
+    def test_an_unreadable_or_unparseable_request_is_left_alone(self, tmp_path):
+        (tmp_path / "request.json").write_text("{not json", encoding="ascii")
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == []
+        assert (tmp_path / "request.json").is_file()
+
+    def test_the_digest_is_the_same_one_the_inventory_records(self):
+        """If these two drifted apart the comparison would be meaningless, and it would LOOK fine:
+        nothing would ever be removed and the only symptom would be leftovers."""
+        from agentnode_sdk.pki.issuer import _sha256
+        value = "  " + SPENT + "\n"
+        assert _enrolment.digest_of_a_secret(value) == \
+            _sha256(str(value).strip().encode("ascii", "replace"))
+
+    def test_whitespace_around_the_value_on_disk_does_not_hide_it(self, tmp_path):
+        (tmp_path / "secret").write_text(SPENT + "\n", encoding="ascii")
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == ["secret"]
+
+
 class TestTheIssuerSideCleanupExistsAndIsSeparate:
     """S1 and the reason there are two functions rather than one relaxed one."""
 
@@ -49,27 +133,30 @@ class TestTheIssuerSideCleanupExistsAndIsSeparate:
 
     def test_the_issuer_side_does_not_wait_for_a_key_that_never_comes(self, tmp_path):
         """S1. The issuer's directory has cert.pem and never a key.pem."""
-        (tmp_path / "secret").write_text("s3cr3t", encoding="ascii")
-        (tmp_path / "request.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "secret").write_text(SPENT, encoding="ascii")
+        (tmp_path / "request.json").write_text(json.dumps({"secret": SPENT}), encoding="ascii")
         (tmp_path / "cert.pem").write_text("c", encoding="ascii")
-        assert sorted(_enrolment.forget_a_spent_secret(tmp_path)) == ["request.json", "secret"]
+        assert sorted(_enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT))) \
+            == ["request.json", "secret"]
         assert not (tmp_path / "secret").exists()
         assert not (tmp_path / "request.json").exists()
         assert (tmp_path / "cert.pem").is_file(), "it removed something it was not asked to"
 
     def test_it_removes_only_the_two_names(self, tmp_path):
-        for name in ("secret", "request.json", "cert.pem", "key.pem", "inventory.json", "ca.key"):
-            (tmp_path / name).write_text("x", encoding="ascii")
-        _enrolment.forget_a_spent_secret(tmp_path)
+        # Every one of them holds the spent value, so only the NAMES can save the others.
+        for name in ("cert.pem", "key.pem", "inventory.json", "ca.key", "secret"):
+            (tmp_path / name).write_text(SPENT, encoding="ascii")
+        (tmp_path / "request.json").write_text(json.dumps({"secret": SPENT}), encoding="ascii")
+        _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT))
         left = sorted(p.name for p in tmp_path.iterdir())
         assert left == ["ca.key", "cert.pem", "inventory.json", "key.pem"]
 
     def test_a_read_only_secret_is_still_removed(self, tmp_path):
         """The secret is written 0400 and a read-only file cannot be unlinked on Windows."""
         s = tmp_path / "secret"
-        s.write_text("s3cr3t", encoding="ascii")
+        s.write_text(SPENT, encoding="ascii")
         os.chmod(s, 0o400)
-        assert _enrolment.forget_a_spent_secret(tmp_path) == ["secret"]
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == ["secret"]
         assert not s.exists()
 
 
@@ -77,22 +164,22 @@ class TestRepeatedCleanupIsSafe:
     """S5. Called again, on an empty directory, on one that never existed."""
 
     def test_again_on_the_same_directory(self, tmp_path):
-        (tmp_path / "secret").write_text("s", encoding="ascii")
-        assert _enrolment.forget_a_spent_secret(tmp_path) == ["secret"]
-        assert _enrolment.forget_a_spent_secret(tmp_path) == []
-        assert _enrolment.forget_a_spent_secret(tmp_path) == []
+        (tmp_path / "secret").write_text(SPENT, encoding="ascii")
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == ["secret"]
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == []
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == []
 
     def test_on_a_directory_that_does_not_exist(self, tmp_path):
-        assert _enrolment.forget_a_spent_secret(tmp_path / "never-existed") == []
+        assert _enrolment.forget_a_spent_secret(tmp_path / "never-existed", _spent(SPENT)) == []
 
     def test_on_a_path_that_is_a_file(self, tmp_path):
         f = tmp_path / "a-file"
         f.write_text("x", encoding="ascii")
-        assert _enrolment.forget_a_spent_secret(f) == []
+        assert _enrolment.forget_a_spent_secret(f, _spent(SPENT)) == []
 
     def test_it_never_raises_even_when_the_name_is_a_directory(self, tmp_path):
         (tmp_path / "secret").mkdir()
-        assert _enrolment.forget_a_spent_secret(tmp_path) == []
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == []
         assert (tmp_path / "secret").is_dir(), "it deleted a directory it should have ignored"
 
     def test_and_a_removal_that_genuinely_fails_is_swallowed(self, tmp_path):
@@ -106,13 +193,13 @@ class TestRepeatedCleanupIsSafe:
         is not writable.
         """
         secret = tmp_path / "secret"
-        secret.write_text("s3cr3t", encoding="ascii")
+        secret.write_text(SPENT, encoding="ascii")
         handle = open(secret, "rb")
         try:
             if os.name != "nt":
                 os.chmod(tmp_path, 0o500)          # cannot unlink from a non-writable directory
             try:
-                gone = _enrolment.forget_a_spent_secret(tmp_path)
+                gone = _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT))
             finally:
                 if os.name != "nt":
                     os.chmod(tmp_path, 0o700)
@@ -661,32 +748,14 @@ class TestItAlsoClearsWhatOlderCodeLeftBehind:
         theirs = _a_request(shared)
         assert b"BEGIN CERTIFICATE" in iss.enroll(theirs["csr"].encode("ascii"), theirs["secret"])
 
-    def test_two_spellings_of_one_directory_have_one_identity(self, tmp_path):
-        """The unit the CRITICAL finding is about, on its own."""
-        from agentnode_sdk.pki.issuer import Issuer
-        real = tmp_path / "real"
-        real.mkdir()
-        alias = tmp_path / "alias"
-        _a_directory_alias(real, alias)
-        assert Issuer._same_directory_key(real) == Issuer._same_directory_key(alias), \
-            "two spellings of one directory were treated as two directories"
-        assert Issuer._same_directory_key(real) != Issuer._same_directory_key(tmp_path)
-        # A directory that does not exist still has to compare equal to itself, because the sweep
-        # asks about it before knowing whether it is there.
-        missing = tmp_path / "gone"
-        assert Issuer._same_directory_key(missing) == Issuer._same_directory_key(missing)
-
     def test_a_live_secret_reached_through_a_directory_ALIAS_is_left_alone(self, stand):
-        """The third review's CRITICAL finding, which the guard above did not stop.
+        """The third review's CRITICAL finding, end to end, and still the right test after the
+        fourth review made the guard unnecessary rather than stronger.
 
-        The previous guard compared `str(path)`. A symlink or a Windows junction gives two
-        spellings of one directory, so a spent entry naming it one way and a live entry naming it
-        the other produced unequal strings, the refusal did not fire, and the cleanup walked
-        through the alias and deleted the live secret. Case differences and `..` do the same thing.
-
-        This is the same destructive outcome as the shared-directory case, one level further down:
-        not two entries in one directory, but two NAMES for one directory. The reviewer found it by
-        asking what "the same directory" meant, which is the question I had not asked.
+        Two identities, one physical directory, reached by two names. The first three designs of
+        this cleanup compared paths and deleted by name, so this state destroyed a live secret. The
+        current one decides on the file's contents, so the alias is simply not interesting -- but
+        the test stays, because what must be true is about the outcome and not about the mechanism.
         """
         iss, folder = stand
         real = folder.parent / "real"
@@ -712,6 +781,44 @@ class TestItAlsoClearsWhatOlderCodeLeftBehind:
         theirs = _a_request(real)
         assert b"BEGIN CERTIFICATE" in iss.enroll(theirs["csr"].encode("ascii"), theirs["secret"])
 
+    def test_a_live_entry_whose_directory_appeared_after_the_spent_one(self, stand):
+        """The state behind the fourth review's CRITICAL finding, as far as a test can build it.
+
+        That finding was not really a race. The guard it replaced sampled filesystem identities into
+        a set: a directory absent at that moment contributed a *string* key while the same directory
+        present later produced a *(st_dev, st_ino)* tuple, so it could not match itself and a live
+        secret in it was deleted.
+
+        **What this test cannot do is construct the intra-call window**, where the directory appears
+        between the sampling and the unlink inside one `enroll`. That needs another thread, and a
+        test that pretends otherwise would be theatre. What makes the window harmless is that there
+        is no sampling step left at all -- the decision is the file's content -- and that is tested
+        directly in `TestTheDecisionIsAboutContentNotAboutThePath`, which hands the function a live
+        secret in the directory it is cleaning and requires it to survive.
+
+        This covers the ordering a test CAN establish: the spent entry existed and was consumed
+        before the live entry's directory existed at all.
+        """
+        iss, folder = stand
+        spent_dir = folder.parent / "spent"
+        spent_dir.mkdir()
+        iss.add("worker", "c1", secret_at=spent_dir / "secret", deliver_to=spent_dir / "cert.pem")
+        used = _a_request(spent_dir)
+        iss.enroll(used["csr"].encode("ascii"), used["secret"])
+
+        late = folder.parent / "late"
+        assert not late.exists(), "the directory was supposed to appear later"
+        late.mkdir()
+        iss.add("worker", "c2", secret_at=late / "secret", deliver_to=late / "cert.pem")
+        theirs = (late / "secret").read_text(encoding="ascii").strip()
+
+        mine = _a_request(folder)
+        iss.enroll(mine["csr"].encode("ascii"), mine["secret"])
+
+        assert (late / "secret").is_file(), \
+            "a live secret in a late-appearing directory was swept away"
+        assert (late / "secret").read_text(encoding="ascii").strip() == theirs
+
     def test_the_sweep_runs_after_the_commit_like_the_other_one(self):
         body = ISSUER[ISSUER.index("def enroll("):ISSUER.index("def renew(")]
         success = body[body.index("matches = ["):]
@@ -724,12 +831,26 @@ class TestItAlsoClearsWhatOlderCodeLeftBehind:
         iss = _issuer(tmp_path)
         one = tmp_path / "e1"
         one.mkdir()
-        (one / "secret").write_text("left-behind", encoding="ascii")
-        inventory = {"entries": {"worker/w1": {"consumed": [{"transaction": "x"}],
-                                              "secret_sha256": "",
-                                              "deliver_to": str(one / "cert.pem")}}}
+        (one / "secret").write_text(SPENT, encoding="ascii")
+        inventory = {"entries": {"worker/w1": {
+            "consumed": [{"transaction": "x",
+                          "secret_sha256": _enrolment.digest_of_a_secret(SPENT)}],
+            "secret_sha256": "",
+            "deliver_to": str(one / "cert.pem")}}}
         assert iss._forget_every_spent_secret(inventory) == ["worker/w1/secret"]
         assert iss._forget_every_spent_secret(inventory) == [], "it is not idempotent"
+
+    def test_and_an_entry_with_no_recorded_consumption_is_not_swept(self, tmp_path):
+        """`consumed` empty means nothing is known to be spent, so there is no digest that could
+        authorise a removal and nothing may be removed."""
+        iss = _issuer(tmp_path)
+        one = tmp_path / "e2"
+        one.mkdir()
+        (one / "secret").write_text(SPENT, encoding="ascii")
+        inventory = {"entries": {"worker/w2": {"consumed": [], "secret_sha256": "",
+                                              "deliver_to": str(one / "cert.pem")}}}
+        assert iss._forget_every_spent_secret(inventory) == []
+        assert (one / "secret").is_file()
 
 
 # --------------------------------------------------------------------------- the operator's text
