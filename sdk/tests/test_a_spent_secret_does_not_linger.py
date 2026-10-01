@@ -528,6 +528,98 @@ class TestNothingLeaksTheSecret:
                     assert secret not in p.read_text(encoding="utf-8", errors="replace"), p
 
 
+class TestItAlsoClearsWhatOlderCodeLeftBehind:
+    """S1 retrospectively, which the first submission did not do and was marked WARN for.
+
+    The review's `F-S1-PROSPECTIVE-ONLY` said the fix "does not remove plaintext produced by
+    older code", so the frozen no-plaintext property stayed incomplete until somebody deleted the
+    leftovers by hand. I had argued against closing it, on the grounds that a sweep would make
+    one operation reach into directories it was not asked about. **That argument was wrong.**
+    `deliver_to` is not a guess: the product wrote it into the inventory itself when the entry was
+    created.
+
+    What follows is the guard that makes the sweep safe, tested from both sides: it takes what the
+    inventory records as spent, and it leaves everything else alone.
+    """
+
+    def _a_second_entry_with_a_leftover(self, iss, folder, instance="w9"):
+        """An entry enrolled and then given back a plaintext secret, which is exactly the state
+        the OLD code left behind: consumption committed, `secret_sha256` cleared, and the
+        cleartext still sitting in the issuer's directory."""
+        other = folder.parent / instance
+        other.mkdir()
+        iss.add("worker", instance, secret_at=other / "secret", deliver_to=other / "cert.pem")
+        leftover = (other / "secret").read_text(encoding="ascii").strip()
+        body = _a_request(other)
+        iss.enroll(body["csr"].encode("ascii"), body["secret"])
+        assert not (other / "secret").exists()
+        (other / "secret").write_text(leftover, encoding="ascii")      # as the old code left it
+        return other
+
+    def test_a_leftover_from_an_earlier_issuance_goes_on_the_next_one(self, stand):
+        iss, folder = stand
+        stale = self._a_second_entry_with_a_leftover(iss, folder)
+        assert (stale / "secret").is_file(), "the test did not set up the leftover"
+        body = _a_request(folder)
+        iss.enroll(body["csr"].encode("ascii"), body["secret"])
+        assert not (stale / "secret").exists(), \
+            "a plaintext from an earlier issuance survived a later successful one"
+
+    def test_but_a_live_secret_belonging_to_another_entry_is_left_alone(self, stand):
+        """The entry has never been enrolled, so whatever is in its directory is still live and
+        taking it would strand whoever is about to use it."""
+        iss, folder = stand
+        waiting = folder.parent / "w8"
+        waiting.mkdir()
+        iss.add("worker", "w8", secret_at=waiting / "secret", deliver_to=waiting / "cert.pem")
+        body = _a_request(folder)
+        iss.enroll(body["csr"].encode("ascii"), body["secret"])
+        assert (waiting / "secret").is_file(), \
+            "an unrelated entry's LIVE secret was deleted by someone else's issuance"
+
+    def test_and_an_entry_given_a_fresh_secret_after_recovery_is_not_touched(self, stand):
+        """The dangerous case, through the real recovery API rather than a hand-edited field.
+
+        After `recover_entry` the entry has a consumption on record AND a new live secret. A
+        sweep keyed on "has consumed anything" alone would delete it; the guard also requires
+        `secret_sha256` to be empty, and recovery sets it.
+        """
+        iss, folder = stand
+        recovered = folder.parent / "w7"
+        recovered.mkdir()
+        iss.add("worker", "w7", secret_at=recovered / "secret", deliver_to=recovered / "cert.pem")
+        body = _a_request(recovered)
+        iss.enroll(body["csr"].encode("ascii"), body["secret"])
+        iss.recover_entry("worker", "w7", secret_at=recovered / "secret")
+        assert (recovered / "secret").is_file(), "recovery did not write a new secret"
+        fresh = (recovered / "secret").read_text(encoding="ascii").strip()
+
+        mine = _a_request(folder)
+        iss.enroll(mine["csr"].encode("ascii"), mine["secret"])
+
+        assert (recovered / "secret").is_file(), "a freshly recovered live secret was swept away"
+        assert (recovered / "secret").read_text(encoding="ascii").strip() == fresh
+
+    def test_the_sweep_runs_after_the_commit_like_the_other_one(self):
+        body = ISSUER[ISSUER.index("def enroll("):ISSUER.index("def renew(")]
+        success = body[body.index("matches = ["):]
+        assert success.index('self._commit(inventory, "issue")') \
+            < success.index("self._forget_every_spent_secret(inventory)")
+
+    def test_it_reports_what_it_removed_and_names_the_entry(self, tmp_path):
+        """A sweep that returns nothing cannot be logged, and one that returns bare filenames
+        cannot say whose they were."""
+        iss = _issuer(tmp_path)
+        one = tmp_path / "e1"
+        one.mkdir()
+        (one / "secret").write_text("left-behind", encoding="ascii")
+        inventory = {"entries": {"worker/w1": {"consumed": [{"transaction": "x"}],
+                                              "secret_sha256": "",
+                                              "deliver_to": str(one / "cert.pem")}}}
+        assert iss._forget_every_spent_secret(inventory) == ["worker/w1/secret"]
+        assert iss._forget_every_spent_secret(inventory) == [], "it is not idempotent"
+
+
 # --------------------------------------------------------------------------- the operator's text
 
 DEPLOY = Path(__file__).resolve().parent.parent / "deploy" / "separate-worker-host"

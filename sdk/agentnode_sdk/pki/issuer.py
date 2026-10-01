@@ -393,6 +393,36 @@ class Issuer:
         """
         return _enrolment.forget_a_spent_secret(Path(entry["deliver_to"]).parent)
 
+    def _forget_every_spent_secret(self, inventory: dict) -> list:
+        """Also remove plaintext left behind by issuances THIS CODE DID NOT MAKE.
+
+        The per-entry cleanup above closes the defect for every issuance from here on. It does
+        nothing about copies the old code already left on disk, so a host upgraded across the fix
+        keeps them until somebody deletes them by hand. The review of the first submission called
+        that out: S1 asks for no plaintext anywhere the product wrote one, and "anywhere" is not
+        "the entry currently being issued".
+
+        This is NOT a sweep over directories the product guesses at. Every path here is one the
+        product wrote down itself, in `deliver_to`, when the entry was created.
+
+        An entry is touched only when the inventory says its secret is spent and nothing live has
+        taken its place: `consumed` is non-empty and `secret_sha256` is empty. `recover_entry`
+        mints a new secret and sets `secret_sha256` again, so an entry given a fresh secret after
+        a consumption is excluded by the same condition that admits the others. Never raises.
+        """
+        gone = []
+        for name, entry in inventory.get("entries", {}).items():
+            if not entry.get("consumed"):
+                continue                              # never enrolled; any secret here is live
+            if entry.get("secret_sha256"):
+                continue                              # a live secret is outstanding -- leave it
+            if not entry.get("deliver_to"):           # pragma: no cover - inventory damage
+                continue
+            for removed in _enrolment.forget_a_spent_secret(
+                    Path(entry["deliver_to"]).parent):
+                gone.append(name + "/" + removed)
+        return gone
+
     def enroll(self, csr_pem: bytes, secret: str) -> bytes:
         """First issuance, against the entry the secret belongs to. Returns the certificate."""
         from cryptography.hazmat.primitives import serialization
@@ -459,6 +489,11 @@ class Issuer:
             # used, which is worse than either.
             self._deliver(entry, pem)
             self._forget_a_spent_secret(entry)
+            # And the leftovers of issuances made by code that predates this cleanup, so a host
+            # upgraded across the fix does not need a manual migration. Same order argument: this
+            # runs after the commit, and it only touches entries the inventory already records as
+            # spent.
+            self._forget_every_spent_secret(inventory)
             return pem
 
     def renew(self, csr_pem: bytes, current_pem: bytes, signature: bytes) -> bytes:
