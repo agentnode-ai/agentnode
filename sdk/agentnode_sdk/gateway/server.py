@@ -1308,7 +1308,7 @@ class GatewayService:
         }
 
     @staticmethod
-    def what_to_tell_them_about_an_interruption(reason: str, ever_ran: bool) -> str:
+    def what_to_tell_them_about_an_interruption(reason: str, ever_ran: bool | None) -> str:
         """The sentence that goes with the reason, saying the same thing the value says.
 
         The value is what a machine branches on; this is what a person reads. They have to
@@ -1333,13 +1333,23 @@ class GatewayService:
             GATEWAY_CRASHED: "this gateway failed and ended",
             GATEWAY_KILLED: "this gateway was ended from outside",
         }.get(reason, "this gateway went away, and what ended it is not known")
-        if ever_ran:
+        if ever_ran is True:
             return (what + " while your job was running, so it did not finish. Whether it got "
                     "anything done before that is not known. It has not been started again -- "
                     "submit it as a new job if you still want it run.")
-        return (what + " while your job was still waiting for its turn, so it did not finish "
-                "and never started -- nothing was charged for it. It has not been started "
-                "again: submit it as a new job if you still want it run.")
+        if ever_ran is False:
+            return (what + " while your job was still waiting for its turn, so it did not finish "
+                    "and never started -- nothing was charged for it. It has not been started "
+                    "again: submit it as a new job if you still want it run.")
+        # UNKNOWN, AND SAID SO. This sentence used to be the one above: `ever_ran` was a bool, and
+        # everything that was not a positive record of a slot being held was told, in plain words,
+        # that its job never started. That is a claim, and for a run whose best-effort timestamp
+        # merely failed to be written it is a false one. Nothing is charged either way, which is the
+        # part that can be stated; whether it began is the part that cannot.
+        return (what + " while your job was in flight, so it did not finish. Whether it ever "
+                "started is not something this gateway can now establish, and nothing was charged "
+                "for it. It has not been started again: submit it as a new job if you still want "
+                "it run.")
 
     @staticmethod
     def what_became_of_the_sandbox(*, asked_for_a_sandbox: bool, cleanup_verified,
@@ -1390,9 +1400,168 @@ class GatewayService:
             return SANDBOX_STILL_THERE
         return SANDBOX_CONFIRMED_GONE if asked_for_a_sandbox else SANDBOX_NEVER_CREATED
 
+    # ------------------------------------------------------- the signed line is the authority
+    #
+    # `state-consistency-r1`. Four things answer for a run: the signed use log, the ledger, the
+    # quota, and whatever a client is told. Only one of them is signed and chained, and only one of
+    # them is guaranteed to hold a single statement per run. So that one is the authority and the
+    # other three are caches of it -- reconciled FROM it, never chosen alongside it.
+    #
+    # Reconciling rather than ordering the writes is deliberate, and it is the reviewer's correction
+    # to the first proposal: these are separate files, and no order of two writes to two files is
+    # atomic. A process that dies between them leaves a line with a stale cache beside it, and only
+    # something that repairs the cache afterwards closes that window.
+
+    def _the_signed_line_for(self, run_id: str) -> dict | None:
+        """The one non-tombstone line for this run, or None. The LAST one if there were somehow
+        several, because that is the one a reader of the file ends on."""
+        from agentnode_sdk.gateway import meter
+
+        try:
+            said = meter.read(self.state.root)
+        except Exception:                                     # noqa: BLE001
+            return None
+        found = None
+        for line in said:
+            if str(line.get("run_id") or "") != str(run_id):
+                continue
+            if meter.is_a_tombstone(line):
+                continue
+            found = line
+        return found
+
+    def _settle_the_caches_from_the_signed_line(self, run_id: str) -> str:
+        """Make the ledger and the quota say what the signed line says. Returns the line's word.
+
+        Idempotent: running it again on a record that already agrees writes nothing at all. `""`
+        when the run has no line, which is not an error -- it is the state a run is in before
+        anybody has closed it, and the caller's next move depends on telling the two apart.
+        """
+        line = self._the_signed_line_for(run_id)
+        if line is None:
+            return ""
+        return self._settle_the_caches_from(run_id, line)
+
+    def _settle_the_caches_from(self, run_id: str, line: dict) -> str:
+        """The same, for a caller that already has the line -- so a pass over many runs reads the
+        log once instead of once per run."""
+        word = str(line.get("state") or "")
+        if word:
+            try:
+                self.ledger.note_it_settled(run_id, word)
+            except Exception:                                 # noqa: BLE001
+                pass
+        self._reconcile_the_quota_from(run_id, line)
+        return word
+
+    def _reconcile_the_quota_from(self, run_id: str, line: dict, *,
+                                  entry: dict | None = None,
+                                  quota: dict | None = None) -> bool:
+        """Set every counting scope's figure for this run to the signed line's seconds. True if it
+        had to correct something.
+
+        ## Why a scope with NO entry is left alone
+
+        `claim_every` appends an entry for every scope in one atomic write, so "the client has one
+        and the account does not" is not a state this file can be in. An absent entry therefore
+        means one of two things, and neither is something to repair: the ceilings were not counting
+        this run at all, or its window has since been forgotten. Creating one would invent a charge
+        in the first case and resurrect an expired one in the second.
+
+        ## Why it checks before it writes
+
+        `finished_every` rewrites the whole document and prunes by window on the way through, so
+        calling it when nothing differs changes the file on every start. A repair that is not
+        byte-stable on repetition cannot be told apart from a repair that keeps finding something
+        wrong.
+        """
+        from agentnode_sdk.gateway.allowance import what_a_run_was_charged_in
+
+        if entry is None:
+            entry = self.ledger.run_entry(run_id) or {}
+        keys = [k for k in (str(entry.get("owner_client_id") or ""),
+                            str(entry.get("owner_account_id") or "")) if k]
+        if not keys:
+            return False
+        seconds = float(line.get("seconds") or 0.0)
+        try:
+            # `quota` is a document a caller looking at many runs has already read. Asking the file
+            # per run means a lock and a parse per run, which on a month of history is a start that
+            # spends minutes establishing that it has nothing to do.
+            held = (what_a_run_was_charged_in(quota, keys, run_id) if quota is not None
+                    else self.use.what_a_run_was_charged(keys, run_id))
+        except Exception:                                     # noqa: BLE001
+            return False
+        wrong = {k: v for k, v in held.items()
+                 if v is not None and abs(float(v) - seconds) > 0.0005}
+        if not wrong:
+            return False
+        try:
+            self.use.finished_every(keys, run_id, seconds)
+            self.ledger.note_quota_repair(run_id, wrong, seconds)
+        except Exception:                                     # noqa: BLE001
+            return False
+        return True
+
+    def reconcile_every_record_against_the_signed_log(self) -> dict:
+        """Make every cache agree with the log. Idempotent, and NOT bounded by the sweep's age.
+
+        A contradiction between two of this service's own files does not become acceptable because
+        it is a day old, and repairing one asks nothing of a worker -- it is a read of a file this
+        process already has. Only contacting a worker and creating a MISSING line stay age-bounded.
+
+        The log is read once here. The per-run form reads it per run, which is right for one run and
+        quadratic for all of them.
+        """
+        from agentnode_sdk.gateway import meter
+
+        try:
+            said = meter.read(self.state.root)
+        except Exception:                                     # noqa: BLE001
+            return {"read": False, "settled": 0, "quota": 0}
+        lines: dict = {}
+        for line in said:
+            if meter.is_a_tombstone(line):
+                continue
+            run_id = str(line.get("run_id") or "")
+            if run_id:
+                lines[run_id] = line
+        # ONE READ OF EACH FILE, not one per run. A pass that asked the ledger and the quota run by
+        # run would take a file lock and parse a whole document for every run in a month of history,
+        # on every start, just to find out that it has nothing to do.
+        runs = self.ledger.snapshot()
+        charged = self.use.snapshot()
+        settled = quota = 0
+        for run_id, entry in sorted(runs.items()):
+            line = lines.get(run_id)
+            if line is None:
+                continue
+            word = str(line.get("state") or "")
+            if word and not str(entry.get("settled_as") or ""):
+                try:
+                    if self.ledger.note_it_settled(run_id, word)[1]:
+                        settled += 1
+                except Exception:                             # noqa: BLE001
+                    pass
+            if self._reconcile_the_quota_from(run_id, line, entry=entry, quota=charged):
+                quota += 1
+                # The write prunes by window as it goes, so the copy taken above is stale for every
+                # run after it. Re-read, which happens only when something was actually repaired.
+                charged = self.use.snapshot()
+        return {"read": True, "settled": settled, "quota": quota}
+
     def _close_an_interrupted_run(self, record, entry: dict, *, reason: str = "",
-                                  owe_it_on_failure: bool = True) -> bool:
+                                  owe_it_on_failure: bool = True) -> str:
         """Write the one signed, chained usage line an interrupted run is owed.
+
+        ## What it returns, and why it is a word rather than a yes
+
+        It returns WHAT THE SIGNED LOG NOW SAYS this run became, or `""` if the run still has no
+        line. It used to return a bool, and each caller then wrote the word `interrupted` into the
+        ledger itself -- including when this had found a line already there saying something else.
+        That is `state-consistency-r1`'s defect pointing the other way: the durable word coming from
+        the code path instead of from the record that owns it. So the word travels back from here,
+        where the line is, to the callers, which only cache it.
 
         ## Why this exists
 
@@ -1408,7 +1577,7 @@ class GatewayService:
 
         ## The times are read, not invented
 
-        `queued_at` is the ledger's `first_seen`; `started_at` is what `note_state('running')`
+        `queued_at` is the ledger's `first_seen`; `started_at` is what `note_lifecycle('running')`
         wrote, and is ABSENT for a run that never left the queue. The meter derives `seconds` and
         `waited_s` from those, so a job that never started bills zero because there is nothing to
         subtract from -- not because a rule set it to zero afterwards.
@@ -1451,6 +1620,16 @@ class GatewayService:
             # running" about it would be a false statement.
             started = 0.0
             record.cleanup_verified = True
+            # AND IT IS WRITTEN DOWN, both halves. A run that never created a sandbox has nothing to
+            # clean up, so `cleanup` is settled affirmatively rather than left unset -- otherwise the
+            # derived "needs attention" predicate stays true forever for a run with nothing to find.
+            # And a worker that KEEPS a record saying the run never began is the only authority that
+            # can establish that; it is recorded so nothing later has to guess from a timestamp.
+            try:
+                self.ledger.note_cleanup(record.run_id, True)
+                self.ledger.note_execution(record.run_id, False)
+            except Exception:                                 # noqa: BLE001
+                pass
         elif settled is not None and settled.outcome:
             record.stdout = str(settled.outcome.get("stdout") or "")
             record.stderr = str(settled.outcome.get("stderr") or "")
@@ -1506,8 +1685,11 @@ class GatewayService:
             # failing. It is reached when a previous process wrote the line and did not get to
             # move the ledger entry before it went, and it would be reached by a second gateway
             # sharing this directory. Either way the run has its one line, the caller goes on to
-            # move the state, and nothing is written twice.
-            return True
+            # cache what that line says, and nothing is written twice.
+            #
+            # WHAT IT SAYS, not what this path would have said. Returning `interrupted` here was
+            # how the ledger could end up contradicting a line that says something else.
+            return self._settle_the_caches_from_the_signed_line(record.run_id)
         except Exception as exc:                              # noqa: BLE001
             # A line that could not be written is not a reason to fail the recovery and leave
             # every other interrupted run unanswered. It is reported the way any other failure
@@ -1532,8 +1714,12 @@ class GatewayService:
             #
             # Found by driving it rather than by reading it: a check on the ORDER of the two
             # calls passes on this code, because the order was never the problem.
-            return False
-        return True
+            return ""
+        # THE LINE IS OURS, so its word is `interrupted` and its figures are the ones the quota must
+        # carry. Charged here because nothing else does: a run closed by a restart rather than by its
+        # own handler got a signed line and no quota entry at all, so the signed record and the
+        # customer's counters disagreed in the other direction.
+        return self._settle_the_caches_from_the_signed_line(record.run_id)
 
     def _restore_interrupted(self) -> None:
         """Runs that were executing when the process died are interrupted, not running.
@@ -1541,7 +1727,21 @@ class GatewayService:
         They are restored so the client gets an honest answer instead of a status that will
         never change again, and they are emphatically NOT re-executed: the client asked once,
         and the gateway does not get to decide it should happen a second time.
+
+        RECONCILE FIRST, before anything decides what still needs doing. Two reasons, and the second
+        is the one that was missing: a run whose line already exists needs its caches made to agree
+        with it rather than any further action, and until that has happened the sets below are
+        selected from a ledger that may still be carrying a contradiction written by an older
+        version. This step asks nothing of a worker, so it is not inside the recovery budget and not
+        bounded by the sweep's age.
         """
+        try:
+            self.reconcile_every_record_against_the_signed_log()
+        except Exception:                                     # noqa: BLE001
+            # A reconciliation that cannot run is not a reason to refuse to start -- what it repairs
+            # is a disagreement between records, and starting without it leaves exactly the state
+            # the previous version left. The sets below still select conservatively.
+            pass
         budget = time.monotonic() + RECOVERY_BUDGET_SECONDS
         for run_id in self.ledger.runs_left_unswept():
             if time.monotonic() >= budget:
@@ -1561,16 +1761,25 @@ class GatewayService:
                 owner_account_id=str(entry.get("owner_account_id", "")),
                 state="interrupted",
             )
-            # WHICH OF THE TWO THIS WAS, from the last thing the ledger durably saw. `running`
-            # is written once, when a slot is held and before a container is asked for; a run
-            # still sitting at `accepted` therefore never left the queue.
+            # WHICH OF THE THREE THIS WAS -- and there are three, not two.
             #
             # They are told apart because they are not the same event and the customer's next
             # move differs: one had a sandbox that may have done work and left something behind,
             # the other never started and owes nothing. Neither is billed -- `started_at` stays
             # 0.0 on a rebuilt record either way -- but telling somebody their job was running
             # when it was queued is a false statement in the one place they go to find out.
-            ever_ran = str(entry.get("state")) == "running"
+            #
+            # IT USED TO READ `state == "running"`, and that is a two-valued answer to a question
+            # with three. `running` is written on a BEST EFFORT, before the container is asked for:
+            # a ledger that could not be written is explicitly not a reason to refuse a job that
+            # already holds a slot, so the write is wrapped and swallowed. Its presence can
+            # therefore overstate execution and its ABSENCE establishes nothing at all. The old
+            # comparison turned "nobody wrote it down" into "it never started", which is the same
+            # false statement it was written to avoid, pointing the other way.
+            #
+            # So: True when a slot was held, False only when a worker that keeps a record said so,
+            # and None -- unknown -- otherwise.
+            ever_ran = self.ledger.did_it_ever_run(run_id)
             record.refusal = self.what_to_tell_them_about_an_interruption(
                 self._how_it_was_interrupted(), ever_ran)
             record.finished_at = time.time()
@@ -1611,12 +1820,14 @@ class GatewayService:
             # about. The two are not close.
             if time.monotonic() < budget:
                 self._clean_up_what_it_left(record)
-            # ONLY IF IT HAS ITS LINE. Moving the entry takes the run out of the set a later
-            # start selects from, and doing that for a run whose line could not be written is
-            # how a run leaves the signed log for good.
-            if self._close_an_interrupted_run(
-                    record, entry, reason=self._how_it_was_interrupted()):
-                self.ledger.note_state(run_id, "interrupted")
+            # ONLY IF IT HAS ITS LINE, and WITH THE WORD THAT LINE CARRIES. Settling the entry takes
+            # the run out of the set a later start selects from, and doing that for a run whose line
+            # could not be written is how a run leaves the signed log for good -- so `""` back from
+            # here leaves it selectable. The word is not written by this path: `_close_an_interrupted_run`
+            # has already cached whatever the log says, which is `interrupted` when it wrote the line
+            # and whatever was already there when it found one.
+            self._close_an_interrupted_run(
+                record, entry, reason=self._how_it_was_interrupted())
 
     #: How often a gateway tries again to write a closing line it could not write.
     #:
@@ -1668,10 +1879,10 @@ class GatewayService:
         written = []
         for run_id, (record, entry, reason) in owed:
             try:
+                # The word, not a yes -- and the caching is already done where the line is.
                 if not self._close_an_interrupted_run(record, entry, reason=reason,
                                                       owe_it_on_failure=False):
                     continue
-                self.ledger.note_state(run_id, "interrupted")
             except Exception:                                  # noqa: BLE001
                 continue
             written.append(run_id)
@@ -1724,10 +1935,28 @@ class GatewayService:
                 # from, and a test reads every assignment to make sure there is only one.
                 record.container_name = container_name_for(run_id)
                 self._clean_up_what_it_left(record)
-                if not self._close_an_interrupted_run(record, entry, reason=GATEWAY_STOPPED):
+                settled = self._close_an_interrupted_run(record, entry, reason=GATEWAY_STOPPED)
+                if not settled:
                     # Left where the next start will find it, for the same reason.
                     continue
-                self.ledger.note_state(run_id, "interrupted")
+                # AND THE RECORD IS MOVED TOO, which it was not.
+                #
+                # This wrote the signed line and settled the ledger and left the in-memory record
+                # at `running`. So the run's own handler, coming back a moment later, made a
+                # perfectly legal `running -> finished` move -- and a client asking about a run
+                # whose signed record says `interrupted` / `unverified` was told `finished`, whose
+                # outcome is `succeeded`. Honest files are not enough if the one place a person
+                # looks says the job worked.
+                #
+                # Moved to the word the LOG carries, so the answer a client gets and the record a
+                # customer would be handed are the same statement. `move_to` refuses anything that
+                # is not forward, and from here on a terminal state cannot be replaced at all.
+                try:
+                    record.move_to(settled)
+                except Exception:                              # noqa: BLE001
+                    # Already terminal, or at a state this is not a forward move from. Either way
+                    # the record is not silently assigned over.
+                    pass
                 closed.append(run_id)
             except Exception:                                  # noqa: BLE001
                 continue
@@ -2634,7 +2863,7 @@ class GatewayService:
         # pointless question to the worker. The other order would leave a run marked as merely
         # waiting while its sandbox was live, and that one loses a container.
         try:
-            self.ledger.note_state(record.run_id, "running")
+            self.ledger.note_lifecycle(record.run_id, "running")
         except Exception:                                     # noqa: BLE001
             # A ledger that cannot be written is not a reason to refuse a job that has already
             # been admitted and holds a slot. The cost is the old behaviour for this one run.
@@ -2878,8 +3107,9 @@ class GatewayService:
             # record, and a client that saw one and immediately sent another job would otherwise
             # be admitted against a count that had not yet included the run it just finished.
             # The test for one line per run found this the first time it was written.
+            settled = ""
             try:
-                self.write_down_what_it_used(record, granted, terminal)
+                settled = self.write_down_what_it_used(record, granted, terminal)
             except Exception as exc:                          # noqa: BLE001
                 # A run that ended and was never recorded is a run that disappeared from the
                 # account of what this gateway has done. Leaving the client hanging would be
@@ -2888,9 +3118,29 @@ class GatewayService:
                 # That is durable (a file), visible (every client is told), and an operator lifts
                 # it deliberately once the cause is fixed.
                 self.could_not_record(record, exc)
+            # WHAT THE SIGNED LOG SAYS, NOT WHAT THIS HANDLER DECIDED.
+            #
+            # `state-consistency-r1`. This handler used to publish `terminal` and write `terminal`
+            # into the ledger unconditionally -- including when a stop on the way out had already
+            # written a signed line saying `interrupted`. The meter refused the second line, the
+            # comment above that refusal said so, and the two lines below it went on anyway. The
+            # measured result, twice, on two machines: a signed `interrupted` / `unverified` run
+            # whose ledger said `finished` and whose client was told `succeeded`.
+            #
+            # `write_down_what_it_used` now comes back with the word that is actually in the log --
+            # its own when it wrote the line, the existing one when it found one. Only when there is
+            # no line at all does this fall back to what it decided, because then there is nothing
+            # more authoritative to defer to.
+            final = settled or terminal
             # A reader that sees a terminal state must be seeing a complete record.
-            record.move_to(terminal)
-            self.ledger.note_state(record.run_id, terminal)
+            try:
+                record.move_to(final)
+            except Exception:                                 # noqa: BLE001
+                # Something already moved it to a terminal state -- a stop, most likely, which now
+                # moves the record as well as the files. `move_to` refuses rather than assigns, and
+                # being refused here is the invariant holding, not a failure to handle.
+                pass
+            self.ledger.note_it_settled(record.run_id, final)
 
     #: How long a cancellation waits for the run to actually stop before it answers. The worker
     #: publishes the terminal state LAST, after cleanup -- so waiting for that state is waiting
@@ -2925,12 +3175,17 @@ class GatewayService:
         except Exception:                                     # noqa: BLE001 - never mask the first
             pass
 
-    def write_down_what_it_used(self, record, granted, terminal: str) -> None:
+    def write_down_what_it_used(self, record, granted, terminal: str) -> str:
         """One line about one run, for an operator who has to say who used what.
 
         Everything here is a number or a name this gateway already published. Nothing of the
         job's content and nothing of anybody's credential: see `gateway/meter.py`, where the
         fields are declared and a test walks a real line looking for every secret there is.
+
+        Returns WHAT THE LOG NOW SAYS this run became: `terminal` when this call wrote the line, the
+        existing line's word when it found one already there, and `""` when there is no line. The
+        caller publishes that word rather than its own, which is what stops a handler that lost the
+        race to the meter from telling a client something the signed record contradicts.
         """
         from agentnode_sdk.gateway import meter
         from agentnode_sdk.gateway.protocol import TRANSPORT_LOST as _TRANSPORT_LOST
@@ -2953,16 +3208,20 @@ class GatewayService:
         # Up to the slot if it ever got one, otherwise up to the end. A job that never started
         # waited until whatever ended it.
         waited = max(0.0, (started or finished) - queued)
-        if record.owner_client_id:
-            # Every scope that counted it, or an account ceiling would be charged for the run
-            # starting and never for it ending.
-            # The window quota is charged the BILLED seconds too. A customer whose job sat in
-            # this gateway's queue must not have that count against the seconds they are allowed
-            # to consume -- that would be charging them twice for our ceiling, once in money and
-            # once in quota.
-            self.use.finished_every(
-                [k for k in (record.owner_client_id, record.owner_account_id) if k],
-                record.run_id, billed)
+        # THE QUOTA IS CHARGED AFTER THE LINE IS WRITTEN, AND ONLY BY WHOEVER WROTE IT.
+        #
+        # It was charged here, before the line was attempted, by whichever path reached this
+        # function -- including the path whose line was then refused because another had already
+        # written one. Measured on the stand, twice: the quota held 44.093 s and 60.237 s for runs
+        # whose signed lines say 33.422 s and 49.617 s. The customer's counters carried 10.6 seconds
+        # more than the record they would have been handed, in both cases, because the two figures
+        # came from two clocks read by two code paths.
+        #
+        # Moving it is not on its own enough, and that is the reviewer's correction to the first
+        # design: two separate files cannot be made atomic by ordering their writes, so a process
+        # that dies in between leaves a line with no charge beside it. What closes that window is
+        # `_reconcile_the_quota_from`, which repairs the figure from the line and is called on every
+        # path that meets an existing line -- including the next start.
         try:
             # Which policy this run was admitted under, by digest and by ordinal. Read from
             # the record's own effective policy rather than from whatever is configured now: a
@@ -3024,16 +3283,37 @@ class GatewayService:
                 allowance_admitted_under=(record.admitted_under_values
                                           or self.allowance().as_dict()))
         except meter.AlreadyRecorded:
-            # This run is already in the log, so it is accounted for and there is nothing to do.
-            # Reached when a stop closed it on the way out and its own thread came back a
-            # moment later, which is a race both halves of are correct: whichever reached the
-            # meter first wrote the line, and the meter refused the second. Publishing the
-            # terminal state still happens after this, so the client is answered either way.
-            pass
+            # This run is already in the log. Reached when a stop closed it on the way out and its
+            # own thread came back a moment later, which is a race both halves of are correct:
+            # whichever reached the meter first wrote the line, and the meter refused the second.
+            #
+            # "and there is nothing to do" is what this said, and it was wrong about everything
+            # except the line. The run's other three records -- the ledger's word, the quota's
+            # figure, and what a client is told -- were all still written by the path that LOST the
+            # race, from its own numbers. So the loser reconciles instead: it reads the line that
+            # won and makes the caches say that, which is also what repairs a crash between the two
+            # file writes.
+            return self._settle_the_caches_from_the_signed_line(record.run_id)
         except OSError:                                       # pragma: no cover - a full disk
             # A run that happened is not un-happened by a meter that could not be written, and
-            # refusing to publish the terminal state over it would lose the run instead.
-            pass
+            # refusing to publish the terminal state over it would lose the run instead. Nothing is
+            # returned, so the caller falls back to the word it decided: there is no line to defer
+            # to, and a run with no line has nothing more authoritative than the handler that ran it.
+            return ""
+        # THE LINE IS OURS. Its figures are therefore the ones every other record must carry, so the
+        # quota is set from the same `billed` the line was written with, and the ledger caches the
+        # same word -- both through the one function that does this everywhere else.
+        if record.owner_client_id:
+            # Every scope that counted it, or an account ceiling would be charged for the run
+            # starting and never for it ending.
+            # The window quota is charged the BILLED seconds too. A customer whose job sat in
+            # this gateway's queue must not have that count against the seconds they are allowed
+            # to consume -- that would be charging them twice for our ceiling, once in money and
+            # once in quota.
+            self.use.finished_every(
+                [k for k in (record.owner_client_id, record.owner_account_id) if k],
+                record.run_id, billed)
+        return str(terminal)
 
     @property
     def slots(self):

@@ -314,6 +314,24 @@ def why_it_is_stopped(root: str | os.PathLike[str]) -> str:
 
 # ------------------------------------------------------------------------------- the counting
 
+def what_a_run_was_charged_in(body: dict, keys, run_id: str) -> dict:
+    """What each named scope holds for this run in an ALREADY-READ document: {scope: seconds|None}.
+
+    A pure function on a snapshot, so a caller looking at many runs reads the file once and asks this
+    many times. `None` means that scope has no entry for the run, which is not the same as zero.
+    """
+    out: dict = {}
+    for key in keys:
+        if not key:
+            continue
+        found = None
+        for entry in (body.get(str(key), []) if isinstance(body, dict) else []):
+            if isinstance(entry, dict) and entry.get("run_id") == str(run_id):
+                found = entry.get("seconds")
+        out[str(key)] = found
+    return out
+
+
 class Use:
     """What each client has used lately. Durable, locked, and forgotten by time."""
 
@@ -433,7 +451,12 @@ class Use:
 
     def finished_every(self, keys, run_id: str, seconds: float,
                        now: float | None = None) -> None:
-        """How long it took, added to every scope that was counting it."""
+        """How long it took, SET on every scope that was counting it.
+
+        Set and not added, which is what makes it safe to call twice for one run -- and the reason
+        the repair of `state-consistency-r1` could reconcile this file from the signed line rather
+        than having to guarantee the call happens exactly once.
+        """
         at = time.time() if now is None else now
         with self._lock, ProcessLock(self.path):
             body = self._forget(self._load(), at)
@@ -444,6 +467,23 @@ class Use:
                     if entry.get("run_id") == str(run_id):
                         entry["seconds"] = float(seconds)
             _atomically(self.path, json.dumps(body, sort_keys=True))
+
+    def what_a_run_was_charged(self, keys, run_id: str) -> dict:
+        """What each named scope currently holds for this run: {scope: seconds or None}.
+
+        Exists so a reconciliation can tell "already right" from "needs correcting" WITHOUT writing.
+        `finished_every` rewrites the whole document and prunes by window as it goes, so calling it
+        when nothing differs would change the file on every start -- and a repair that is not
+        byte-stable on repetition cannot be told apart from a repair that keeps finding something
+        wrong.
+        """
+        return what_a_run_was_charged_in(self.snapshot(), keys, run_id)
+
+    def snapshot(self) -> dict:
+        """The whole document, under one lock and one read. For a caller that has to look at many
+        runs: asking per run means a file lock and a full parse per run."""
+        with self._lock, ProcessLock(self.path):
+            return self._load()
 
     def forget_everything_about(self, key: str) -> bool:
         """Drop one scope's counters entirely. What deleting a customer has to imply."""

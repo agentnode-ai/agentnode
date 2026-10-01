@@ -314,7 +314,7 @@ class TestARestartTellsAWaitingJobApartFromARunningOne:
     def test_a_job_that_was_running_still_gets_the_answer_it_had(self, capped, tmp_path):
         """The fix must not make the case it did not break any quieter."""
         self._a_claimed_run(capped, "was-really-running", nonce="n2")
-        capped.ledger.note_state("was-really-running", "running")
+        capped.ledger.note_lifecycle("was-really-running", "running")
         again, state = self._restarted(capped, tmp_path)
         try:
             record = again.runs["was-really-running"]
@@ -333,7 +333,7 @@ class TestARestartTellsAWaitingJobApartFromARunningOne:
         twice for one request and runs somebody's code without being asked to."""
         self._a_claimed_run(capped, "only-ever-waited", nonce="n1")
         self._a_claimed_run(capped, "was-really-running", nonce="n2")
-        capped.ledger.note_state("was-really-running", "running")
+        capped.ledger.note_lifecycle("was-really-running", "running")
         again, state = self._restarted(capped, tmp_path)
         try:
             for run_id in ("only-ever-waited", "was-really-running"):
@@ -665,7 +665,7 @@ class TestAnInterruptedRunIsStillInTheRecord:
                                     now=when, owner_account_id="acct-" + "1" * 16,
                                     admitted=self.ADMITTED)
         if started is not None:
-            service.ledger.note_state(run_id, "running", at=started)
+            service.ledger.note_lifecycle(run_id, "running", at=started)
 
     def _restarted(self, service):
         from tests.test_em3c_gateway import StandInBackend
@@ -738,8 +738,14 @@ class TestAnInterruptedRunIsStillInTheRecord:
             state.close()
 
     def test_a_second_restart_does_not_write_a_second_line(self, capped):
-        """Enforced, not hoped: `unfinished_runs` selects `accepted` and `running`, and the entry
-        says `interrupted` once the line is written. A second restart cannot see it again."""
+        """Enforced, not hoped: `unfinished_runs` selects runs with NO established ending, and the
+        entry carries `settled_as` once the line is written. A second restart cannot see it again.
+
+        The selection used to read `state in ("accepted", "running")`. `state-consistency-r1` moved
+        it onto the absence of a fact rather than the presence of a word, because the word was one a
+        later path could overwrite. What this test asserts -- one line however many restarts -- is
+        unchanged; only the mechanism underneath it is named differently.
+        """
         self._claimed(capped, "only-once", nonce="n1", when=time.time() - 10.0)
         again, state = self._restarted(capped)
         once, state2 = self._restarted(again)
@@ -786,7 +792,7 @@ class TestAnOperatorCommandIsNotAGatewayTakingOver:
     def _an_unfinished_run(self, service, run_id="left-in-flight"):
         assert service.ledger.claim(run_id, "nonce-" + run_id, "s" * 64, "dev",
                                     owner_account_id="acct-" + "2" * 16)
-        service.ledger.note_state(run_id, "running")
+        service.ledger.note_lifecycle(run_id, "running")
         return run_id
 
     def _another_service(self, service, recover):

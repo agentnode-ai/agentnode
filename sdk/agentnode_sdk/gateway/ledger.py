@@ -27,9 +27,51 @@ the run that was interrupted.
 ## In-flight runs at restart
 
 A run that was executing when the process died is not running any more and never will be. It is
-marked `interrupted` on load rather than left saying `running`, because a status that will never
-change again is worse than an honest one -- and it is emphatically not re-executed. The client
-asked once; the gateway does not get to decide it should happen again.
+closed by the next start rather than left saying `running`, because a status that will never change
+again is worse than an honest one -- and it is emphatically not re-executed. The client asked once;
+the gateway does not get to decide it should happen again.
+
+## THREE FACTS, AND WHICH FIELD HOLDS WHICH
+
+`state-consistency-r1`. This used to be two fields doing three jobs, and two code paths wrote an
+outcome into the same one. Measured on two machines, twice: a run whose signed line said
+`interrupted` had a ledger entry saying `finished`, because the shutdown path wrote the line and the
+run's own handler came back afterwards and wrote the ledger. The word in this file was whichever
+path ran last.
+
+So the three facts are kept apart, and only one of them is a word about the ending:
+
+* **`state`** -- this ledger's LIFECYCLE position and nothing else: `accepted`, `running`, `closed`.
+  It never carries an outcome. `closed` is absorbing, and `accepted` may go straight to `closed`
+  because a run can be refused, cancelled or interrupted without ever leaving the queue.
+* **`settled_as`** (with `settled_at`) -- the outcome, COPIED FROM THE SIGNED LINE and written once.
+  The signed use log is what a customer would be handed, so it is the authority; this field is a
+  cache of it and is never chosen by a code path. A second write of the same word is a no-op; a
+  second write of a DIFFERENT word is refused and recorded in `settled_conflicts`, because it means
+  two paths read different things out of a log that can only hold one line per run.
+* **`cleanup`** -- `None` nobody could ask, `False` something is still there, `True` confirmed gone.
+  `True` is absorbing. Before this it was not, so a later start that could not reach the worker
+  overwrote an established `True` with "nobody could ask".
+
+**Recovery need is derived from those, never stored.** A run needs attention while `settled_as` is
+absent or `cleanup` is not `True`. Nothing writes a field meaning "recovery finished", because a
+field like that is one a less-informed write can switch off.
+
+**`ever_ran` is three-valued.** `started_at` is written on a best effort before the container is
+asked for, so its presence can overstate execution and its absence cannot establish that nothing
+ran. Absence is therefore unknown, and `False` is written only when a worker that keeps a record
+says so.
+
+Every one of these moves is a compare-and-set: the file is re-read inside the cross-process lock and
+the move is checked against what is actually there. A check against this object's own memory would
+hold for one process and not for two sharing a directory, which the rest of this module already
+treats as a real situation.
+
+## SCHEMA
+
+The document carries `schema`. A file without one is schema 1, from before `settled_as` existed, and
+is read without complaint -- its `state` may hold an outcome word, which is exactly why nothing here
+ever infers an outcome from `state`. Writers always stamp the current `SCHEMA`.
 """
 from __future__ import annotations
 
@@ -52,7 +94,33 @@ RUN_RETENTION_SECONDS = 30 * 24 * 60 * 60
 #: How long an interrupted run whose sandbox was never confirmed gone keeps being asked about on
 #: every start. Long enough to cover a worker that was down for a while; short enough that a start
 #: does not interrogate a runtime about a month of history.
+#:
+#: This bounds TWO things and deliberately not a third: contacting a worker, and creating a signed
+#: line that is missing. It does NOT bound reconciling a record against a line that already exists.
+#: A contradiction between two of this service's own files does not become acceptable because it is
+#: a day old, and repairing one needs nobody's cooperation -- it is a read of a file this process
+#: already has.
 SWEEP_AGAIN_WITHIN_SECONDS = 24 * 60 * 60
+
+#: The shape of the document on disk. 1 is everything written before `settled_as` existed, where
+#: `state` could hold an outcome word; 2 keeps the lifecycle and the outcome in separate fields.
+SCHEMA = 2
+
+#: The lifecycle, in order. `accepted` may go straight to `closed`: a run can be refused, cancelled
+#: or interrupted while it is still in the queue, and a mandatory `running` in between would claim
+#: an execution that never happened.
+LIFECYCLE = ("accepted", "running", "closed")
+
+#: Where each lifecycle position may go, itself included -- arriving twice is not a move.
+_MAY_BECOME = {
+    "accepted": ("accepted", "running", "closed"),
+    "running": ("running", "closed"),
+    "closed": ("closed",),
+}
+
+#: What `settled_as` may say. The same five words the signed log uses, because this field is a copy
+#: of that log and not a second vocabulary.
+SETTLED_WORDS = ("finished", "refused", "cancelled", "unverified", "interrupted")
 
 
 class Ledger:
@@ -61,7 +129,7 @@ class Ledger:
     def __init__(self, path: str | os.PathLike[str]) -> None:
         self.path = Path(path)
         self._lock = threading.Lock()
-        self._data: dict[str, dict] = {"nonces": {}, "runs": {}}
+        self._data: dict = {"schema": SCHEMA, "nonces": {}, "runs": {}}
         self._load()
 
     # ------------------------------------------------------------------ storage
@@ -83,12 +151,20 @@ class Ledger:
             ) from None
         if isinstance(loaded, dict):
             self._data = {
+                # A document with no `schema` is one written before `settled_as` existed. It is read
+                # without complaint and WITHOUT being rewritten: a load that writes is a load that
+                # can corrupt, and the repair of an old entry belongs to the reconciliation that
+                # reads the signed log, not to opening the file.
+                "schema": int(loaded.get("schema") or 1),
                 "nonces": dict(loaded.get("nonces") or {}),
                 "runs": dict(loaded.get("runs") or {}),
             }
 
     def _write_locked(self) -> None:
         """Atomic: write beside the target, then rename over it."""
+        # Stamped on every write, so a document that has been touched by this version says so and a
+        # reader never has to guess which shape it is holding.
+        self._data["schema"] = SCHEMA
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle, tmp = tempfile.mkstemp(dir=str(self.path.parent), prefix=".ledger-")
         try:
@@ -232,35 +308,184 @@ class Ledger:
             binding = entry.get("challenge")
             return dict(binding) if isinstance(binding, dict) else None
 
-    def note_state(self, run_id: str, state: str, at: float | None = None) -> None:
-        """Move a run to a state, and -- for `running` -- record WHEN.
+    def note_lifecycle(self, run_id: str, state: str, at: float | None = None) -> str:
+        """Move a run's LIFECYCLE position forward, and -- for `running` -- record WHEN.
 
-        The time matters for exactly one reason and it is not bookkeeping: a gateway that
-        restarts has to write a closing line for the run it interrupted, and a closing line
-        whose billed figure was computed from times this process invented is a false statement
-        about a customer's bill. `first_seen` already says when the job arrived; this says when
-        it started, and the difference between them is what was waited rather than billed.
+        Returns where the run now is, which is not always where the caller asked for: a move that
+        is not allowed leaves the file alone and returns what is actually there. A caller that
+        needs to know whether its move was the one that happened compares.
+
+        The time matters for exactly one reason and it is not bookkeeping: a gateway that restarts
+        has to write a closing line for the run it interrupted, and a closing line whose billed
+        figure was computed from times this process invented is a false statement about a
+        customer's bill. `first_seen` already says when the job arrived; this says when it started,
+        and the difference between them is what was waited rather than billed.
 
         Written only for `running`, because that is the only transition whose time is not
         recoverable from somewhere else: arrival is `first_seen`, and an ending is whenever the
         gateway is writing the line.
+
+        THIS FIELD IS NOT AN OUTCOME. It was, and that is the defect this module was rewritten for:
+        two paths put ending-words here and the last one to run decided what the file said. An
+        ending lives in `settled_as`, copied from the signed line.
+        """
+        want = str(state)
+        with self._lock, ProcessLock(self.path):
+            # RE-READ INSIDE THE LOCK. The comparison that decides this move has to be against
+            # what is on disk, not against what this object loaded at construction -- otherwise
+            # two gateways sharing a directory each compare against their own stale copy and the
+            # monotonicity holds in neither.
+            self._load()
+            entry = self._data["runs"].get(str(run_id))
+            if entry is None:
+                return ""
+            here = str(entry.get("state") or "accepted")
+            # A document from before this change can hold an outcome word here. It is not a
+            # lifecycle position, so it is not compared as one: such an entry is treated as
+            # `closed`, which refuses every further move and is the conservative reading.
+            if here not in LIFECYCLE:
+                here = "closed"
+            if want not in _MAY_BECOME.get(here, ()):
+                return here
+            entry["state"] = want
+            if want == "running" and not entry.get("started_at"):
+                entry["started_at"] = float(time.time() if at is None else at)
+            self._write_locked()
+            return want
+
+    def note_it_settled(self, run_id: str, settled_as: str,
+                        at: float | None = None) -> tuple[str, bool]:
+        """Record WHAT THE SIGNED LINE SAYS this run became. Once. Returns (what it says, wrote).
+
+        The word must come from the line, never from the path that is calling. That is the whole
+        repair: the shutdown path and the run's own handler both reach here, and on the parent they
+        each wrote their own idea of the ending, so the file said whichever ran last.
+
+        Writing the same word again is not a conflict -- two paths that both read the one line will
+        both pass the same word, and that has to be allowed or an idempotent reconciliation could
+        not run twice. A DIFFERENT word is refused and recorded: the log holds one line per run, so
+        two different words mean somebody read something else, and that is worth keeping rather
+        than resolving by whoever arrived second.
+        """
+        word = str(settled_as)
+        when = float(time.time() if at is None else at)
+        with self._lock, ProcessLock(self.path):
+            self._load()
+            entry = self._data["runs"].get(str(run_id))
+            if entry is None:
+                return "", False
+            already = str(entry.get("settled_as") or "")
+            if already:
+                if already != word:
+                    # DURABLY, and without touching the value. A conflict that is only logged is a
+                    # conflict nobody finds; one that overwrites is the defect again.
+                    conflicts = entry.setdefault("settled_conflicts", [])
+                    if isinstance(conflicts, list):
+                        conflicts.append({"at": when, "already": already, "offered": word})
+                        self._write_locked()
+                return already, False
+            entry["settled_as"] = word
+            entry["settled_at"] = when
+            # An ending is also the end of the lifecycle. Written here rather than by a second call,
+            # so there is no window in which a run has an outcome and is still selectable as
+            # mid-flight.
+            entry["state"] = "closed"
+            self._write_locked()
+            return word, True
+
+    def settled_as(self, run_id: str) -> str:
+        """What the signed line says this run became, or "" if nothing has established it yet."""
+        with self._lock, ProcessLock(self.path):
+            self._load()
+            entry = self._data["runs"].get(str(run_id))
+            return str((entry or {}).get("settled_as") or "")
+
+    def note_execution(self, run_id: str, ever_ran: bool) -> bool | None:
+        """Record, from an authority, whether this run ever began. Returns what is now established.
+
+        Only a worker that keeps a record can establish `False`. Nothing derives it from a missing
+        timestamp, because `started_at` is written on a best effort: its absence means nobody wrote
+        it, which is not the same as nothing having run.
+        """
+        with self._lock, ProcessLock(self.path):
+            self._load()
+            entry = self._data["runs"].get(str(run_id))
+            if entry is None:
+                return None
+            known = entry.get("ever_ran")
+            if isinstance(known, bool):
+                # Established already. A second, contradicting answer is kept rather than applied,
+                # for the same reason a contradicting outcome is.
+                if known is not bool(ever_ran):
+                    conflicts = entry.setdefault("execution_conflicts", [])
+                    if isinstance(conflicts, list):
+                        conflicts.append({"at": time.time(), "already": known,
+                                          "offered": bool(ever_ran)})
+                        self._write_locked()
+                return known
+            entry["ever_ran"] = bool(ever_ran)
+            self._write_locked()
+            return bool(ever_ran)
+
+    def did_it_ever_run(self, run_id: str) -> bool | None:
+        """True, False, or None for unknown -- and unknown is a real answer here.
+
+        `True` when a slot was held, which is what `started_at` records. `False` only when a worker
+        said so. `None` otherwise, including for every run whose best-effort `started_at` simply was
+        not written: telling somebody their job never started because a timestamp is missing is a
+        false statement in the one place they go to find out.
+        """
+        with self._lock, ProcessLock(self.path):
+            self._load()
+            entry = self._data["runs"].get(str(run_id))
+            if entry is None:
+                return None
+            if entry.get("started_at"):
+                return True
+            known = entry.get("ever_ran")
+            return known if isinstance(known, bool) else None
+
+    def note_quota_repair(self, run_id: str, was, now: float) -> None:
+        """Say that a quota figure was corrected from the signed line, and what it was.
+
+        Recorded so a repair is auditable without writing a second usage line -- the log holds one
+        line per run and this is not one. Written once per correction, so a reconciliation that has
+        nothing left to correct writes nothing at all and is byte-stable on repetition.
         """
         with self._lock, ProcessLock(self.path):
             self._load()
             entry = self._data["runs"].get(str(run_id))
             if entry is None:
                 return
-            entry["state"] = str(state)
-            if str(state) == "running" and not entry.get("started_at"):
-                entry["started_at"] = float(time.time() if at is None else at)
-            self._write_locked()
+            repairs = entry.setdefault("quota_repairs", [])
+            if isinstance(repairs, list):
+                repairs.append({"at": time.time(), "was": was, "now": float(now)})
+                self._write_locked()
 
-    def unfinished_runs(self) -> list[str]:
-        """Run ids the ledger last saw mid-flight -- interrupted, not running."""
-        with self._lock:
+    def every_run(self) -> list[str]:
+        """Every run id this ledger still holds. For reconciliation, which is not age-bounded."""
+        with self._lock, ProcessLock(self.path):
+            self._load()
+            return sorted(self._data["runs"])
+
+    def unfinished_runs(self, now: float | None = None) -> list[str]:
+        """Runs with no established ending, and recent enough that a line may still be written.
+
+        Selected on the ABSENCE OF A FACT rather than on a word. After reconciliation every run that
+        has a signed line has `settled_as`, so what is left here is exactly the set that has no line
+        -- which is the set a start owes one. A legacy entry whose old `state` happens to read
+        `finished` is in this set if nothing signed ever said so, and that is deliberate: the word
+        in that field was never evidence.
+
+        Age-bounded, because writing a line is work with a worker in it.
+        """
+        now = time.time() if now is None else now
+        with self._lock, ProcessLock(self.path):
+            self._load()
             return sorted(
                 run_id for run_id, entry in self._data["runs"].items()
-                if str(entry.get("state")) in ("accepted", "running")
+                if not str(entry.get("settled_as") or "")
+                and float(entry.get("first_seen", 0)) > now - SWEEP_AGAIN_WITHIN_SECONDS
             )
 
     def note_a_sandbox_was_asked_for(self, run_id: str) -> None:
@@ -279,39 +504,89 @@ class Ledger:
             entry["asked_for_a_sandbox"] = True
             self._write_locked()
 
-    def note_cleanup(self, run_id: str, verified: bool | None) -> None:
-        """Whether what a run left behind was confirmed gone. Durable, because the answer
-        decides whether anyone ever asks again."""
+    def note_cleanup(self, run_id: str, verified: bool | None) -> bool | None:
+        """Whether what a run left behind was confirmed gone. Returns what is now recorded.
+
+        `True` IS ABSORBING, and it was not. This wrote whatever it was handed, and what it is
+        handed on a later start is `record.cleanup_verified`, which is `None` when the worker could
+        not be reached. So a start that could not ask overwrote an answer an earlier start HAD got
+        -- replacing "confirmed gone" with "nobody could ask", and losing the only fact that stops
+        anyone asking again.
+
+        `None` and `False` may still move between themselves: neither ends the search, so neither
+        can lose anything by being replaced by the other.
+        """
         with self._lock, ProcessLock(self.path):
             self._load()
             entry = self._data["runs"].get(str(run_id))
             if entry is None:
-                return
+                return None
+            if entry.get("cleanup") is True:
+                return True
             entry["cleanup"] = verified
             self._write_locked()
+            return verified
 
     def runs_left_unswept(self, now: float | None = None) -> list[str]:
-        """Interrupted runs whose sandbox nobody has confirmed is gone.
+        """Runs whose sandbox nobody has confirmed is gone. Selected on that fact and nothing else.
 
-        A run is marked interrupted by the restart that cut it short, which is also when its
-        container is asked about. If the worker could not be reached at that moment -- a gateway
-        coming up before its worker is exactly when that happens -- the container is still there
-        and the run is no longer mid-flight, so nothing would ever look at it again. This is what
-        the next restart looks at.
+        It used to also require `state == "interrupted"`, and that is how this very set could be
+        escaped: the word was overwritable, so a run whose ending was rewritten by a later path fell
+        out of the only place anything would have looked at it again -- whatever its cleanup said.
+        The condition is now the fact the search is actually about.
 
         Only True stops the asking. False is "something is still there" and None is "nobody could
-        ask"; neither is an answer that should end the search. Bounded by age, because a run old
-        enough that its host has been rebooted since is not one to keep questioning a runtime
-        about on every start.
+        ask"; neither is an answer that should end the search, and neither can be reached from True
+        any more. Nothing here is gated on `asked_for_a_sandbox` or on `started_at` either: both are
+        best-effort writes, and this module's own comments say a run can have a live container and
+        still read as having never started. Using either as negative proof loses containers.
+
+        Bounded by age, because asking is work with a worker in it, and a run old enough that its
+        host has been rebooted since is not one to keep questioning a runtime about on every start.
+
+        Runs whose ending is not established yet are NOT here: they are `unfinished_runs`, and that
+        path sweeps them as part of closing them. The two sets are kept disjoint on purpose -- their
+        union is `runs_needing_attention`, which is the predicate that matters -- because a start
+        works through this one against a budget. Overlapping sets spend that budget twice on the same
+        run and can leave the second half of recovery with none.
         """
         now = time.time() if now is None else now
-        with self._lock:
+        with self._lock, ProcessLock(self.path):
+            self._load()
             return sorted(
                 run_id for run_id, entry in self._data["runs"].items()
-                if str(entry.get("state")) == "interrupted"
-                and entry.get("cleanup") is not True
+                if entry.get("cleanup") is not True
+                and str(entry.get("settled_as") or "")
                 and float(entry.get("first_seen", 0)) > now - SWEEP_AGAIN_WITHIN_SECONDS
             )
+
+    def runs_needing_attention(self, now: float | None = None) -> list[str]:
+        """THE predicate, in one place: an ending that is not established, or a cleanup that is not.
+
+        `unfinished_runs` and `runs_left_unswept` are the two disjoint halves of this, and a start
+        does different work for each. This exists so that what recovery is responsible for can be
+        read as one sentence rather than inferred from two methods -- and so a test can check the
+        predicate itself instead of checking one of its halves.
+        """
+        now = time.time() if now is None else now
+        with self._lock, ProcessLock(self.path):
+            self._load()
+            return sorted(
+                run_id for run_id, entry in self._data["runs"].items()
+                if (not str(entry.get("settled_as") or "") or entry.get("cleanup") is not True)
+                and float(entry.get("first_seen", 0)) > now - SWEEP_AGAIN_WITHIN_SECONDS
+            )
+
+    def snapshot(self) -> dict:
+        """A copy of every run entry, taken under one lock and one read.
+
+        For the reconciliation, which has to look at every run. Asking the ledger run by run means a
+        file lock and a full parse per run, which on a month of history is a start that spends
+        minutes deciding it has nothing to do.
+        """
+        with self._lock, ProcessLock(self.path):
+            self._load()
+            return {run_id: dict(entry) for run_id, entry in self._data["runs"].items()}
 
 
 class LedgerUnreadable(Exception):
