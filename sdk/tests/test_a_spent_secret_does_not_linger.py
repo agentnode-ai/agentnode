@@ -179,11 +179,24 @@ class TestTheDecisionIsAboutContentNotAboutThePath:
         assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == []
         monkeypatch.undo()
 
-        # Either it refused the file before reading it, or it read it with a bound. Not unbounded,
-        # and not the file's own size.
+        # NOT READ AT ALL is the property, and the first version of this assertion missed it: it
+        # allowed any bounded read, which is true even with the size guard gone, because the read is
+        # capped as well. `fstat` is what decides, so what has to be asserted is that nothing was
+        # read -- and a counter-check removing the size guard then goes red here.
+        assert asked == [], f"an oversized residue was read: {asked} bytes asked for"
+        assert big.is_file()
+
+        # And a residue of ordinary size IS read, with a bound. Without this the assertion above
+        # would also pass if the cleanup had simply stopped reading anything ever.
+        big.unlink()
+        (tmp_path / "secret").write_text(SPENT, encoding="ascii")
+        asked.clear()
+        monkeypatch.setattr(_enrolment.os, "read", watched)
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == ["secret"]
+        monkeypatch.undo()
+        assert asked, "nothing was read at all, so the check above proves nothing"
         assert all(n <= _enrolment.MOST_A_RESIDUE_CAN_BE for n in asked), \
             f"the cleanup read without a bound: {asked}"
-        assert big.is_file()
 
     def test_a_residue_that_is_not_a_regular_file_is_not_removed(self, tmp_path):
         """A directory stands in for the device or FIFO the review named.
