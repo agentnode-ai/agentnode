@@ -137,9 +137,19 @@ class TestTheIssuerCallsItAndInTheRightOrder:
         assert "_forget_a_spent_secret" in ISSUER
 
     def test_it_is_called_on_the_success_path_after_the_commit(self):
+        """The first version searched for the removal STARTING AT the commit, so a call inserted
+        BEFORE the commit was invisible to it: the counter-check that reverses the order left
+        this test green, and the only thing that went red was an unrelated occurrence count.
+
+        It now reads the success path as a whole and requires exactly one removal in it, after
+        the commit. "There exists a commit somewhere before a removal" was never the property.
+        """
         body = ISSUER[ISSUER.index("def enroll("):ISSUER.index("def renew(")]
-        commit = body.index('self._commit(inventory, "issue")')
-        forget = body.index("self._forget_a_spent_secret(entry)", commit)
+        success = body[body.index("matches = ["):]
+        assert success.count("self._forget_a_spent_secret(entry)") == 1, \
+            "more than one removal on the success path; which runs first is then not stated"
+        commit = success.index('self._commit(inventory, "issue")')
+        forget = success.index("self._forget_a_spent_secret(entry)")
         assert commit < forget, "the plaintext is removed before the consumption is durable"
 
     def test_and_on_the_replay_path_too(self):
@@ -167,14 +177,34 @@ def _issuer(tmp_path):
 
 
 def _a_request(folder):
-    """Build a real request the way `pki request` does, from the secret in `folder`.
+    """Build a real request the way the REQUESTING side does, in a directory of its own.
 
-    `make_request` writes request.json and returns its path, so this reads it back -- the same
-    round trip the operator makes by hand between the two machines.
+    This matters far more than it looks, and the first version of this file got it wrong.
+
+    `make_request` generates the private key in whatever directory it is handed, and the issuer
+    delivers the certificate into ITS directory. On a two-host deployment those are different
+    machines, so the issuer's directory never holds a `key.pem` -- which is precisely why
+    `forget_the_enrolment`'s cert+key guard could never fire there, and therefore why the
+    plaintext secret survived every single issuance. The defect IS the separation.
+
+    The first version built the request inside the issuer's own directory. `key.pem` and
+    `cert.pem` then both landed there, the old guard PASSED, and the old code removed the secret
+    too -- so every S1 test here would have been green against the unfixed product. That is a
+    test which cannot fail for the reason it names, and it was found by the counter-check that
+    deletes the fix: the suite stayed green on the very test meant to catch it.
+
+    So the secret is CARRIED to a directory belonging to the requesting side, the way the
+    operator carries it between the machines, and the request is built there. A sibling
+    directory is not a second host; the two-host evidence is the live run. What it does
+    reproduce exactly is the one condition the defect needs.
     """
     from agentnode_sdk.pki.issuer import make_request
+    folder = Path(folder)
     secret = (folder / "secret").read_text(encoding="ascii").strip()
-    return json.loads(make_request(folder, secret).read_text(encoding="utf-8"))
+    requester = folder.parent / (folder.name + "-requester")
+    requester.mkdir(parents=True, exist_ok=True)
+    (requester / "secret").write_text(secret, encoding="ascii")
+    return json.loads(make_request(requester, secret).read_text(encoding="utf-8"))
 
 
 @pytest.fixture()
@@ -196,7 +226,10 @@ class TestSuccessRemovesThePlaintext:
         iss.enroll(body["csr"].encode("ascii"), body["secret"])
         assert (folder / "cert.pem").is_file(), "no certificate was delivered"
         assert not (folder / "secret").exists(), "the spent plaintext secret is still there"
-        assert not (folder / "request.json").exists()
+        # S1 says to judge by enumerating the issuer's own directory, so enumerate it. The live
+        # run of 2026-10-01 showed exactly this: `secret` before, only `cert.pem` after.
+        assert sorted(p.name for p in folder.iterdir()) == ["cert.pem"], \
+            "the issuer's own directory holds more than the certificate it delivered"
 
     def test_and_the_inventory_never_held_the_secret_itself(self, stand):
         iss, folder = stand
