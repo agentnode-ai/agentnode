@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from pathlib import Path
 
 #: WHAT AN ENROLMENT SECRET LOOKS LIKE, and it is a prefix so that it can be told apart.
@@ -83,23 +84,95 @@ def digest_of_a_secret(value: str) -> str:
     return hashlib.sha256(str(value).strip().encode("ascii", "replace")).hexdigest()
 
 
-def _the_secret_inside(residue: Path, name: str) -> str:
-    """The secret value a residue carries, or "" if it carries none that can be read.
+# A secret is 82 characters and a request a few hundred. Anything larger is not a residue this
+# product wrote, and reading it unbounded is how a cleanup gets turned into a denial of service by
+# a named pipe or a multi-gigabyte file.
+MOST_A_RESIDUE_CAN_BE = 1 << 16
+
+
+def _the_value_in(raw: str, name: str) -> str:
+    """The secret value a residue's text carries, or "" if it carries none.
 
     `secret` holds the value itself. `request.json` carries it in a field, because the request is
     what the service hands back and the secret travels with it.
     """
-    try:
-        raw = residue.read_text(encoding="ascii", errors="replace")
-    except OSError:                                           # pragma: no cover - unreadable
-        return ""
     if name != "request.json":
         return raw
     try:
         body = json.loads(raw)
     except (ValueError, TypeError):
         return ""
-    return body.get("secret") or "" if isinstance(body, dict) else ""
+    if not isinstance(body, dict):
+        return ""
+    value = body.get("secret")
+    return value if isinstance(value, str) else ""
+
+
+def _remove_if_it_is_spent(residue: Path, name: str, spent: set) -> bool:
+    """Hash a residue and remove it only if it is one of `spent` -- through ONE open handle.
+
+    The previous version read the file by pathname and then unlinked that pathname, which review
+    rated CRITICAL: between the two the name can be made to point at something else, so the file
+    that was checked need not be the file that is deleted. Content authorisation fixed every static
+    state -- shared directories, junctions, late directories -- and did nothing about that gap.
+
+    So the file is opened ONCE and everything is decided about that handle:
+
+      * `O_NOFOLLOW`, where the platform has it, so the final component is never a symlink the
+        caller can retarget. Windows has no such flag; what it does have is that creating a file
+        symlink needs a privilege, and a junction is a directory rather than a file.
+      * `fstat` on the handle: a regular file, and no larger than a residue can be. A device or a
+        FIFO is not read at all, which is also the answer to a cleanup that could be made to block.
+      * the content is read FROM THE HANDLE, not from the name again, so the bytes that authorise
+        the removal belong to one specific inode rather than to whatever the name meant at the time.
+      * and immediately before the removal the name is `lstat`ed and compared back to that inode.
+        Anything that has moved under the name is left alone.
+
+    **What remains, stated rather than glossed.** Neither POSIX nor Windows has an "unlink this
+    inode" call, and Windows will not unlink an open file at all, so the handle must be closed before
+    the removal. Between the last identity comparison and the `unlink` there is therefore a window no
+    implementation here can close. To use it an actor must create files inside the issuer's own
+    state directory -- root-owned -- and that same actor can simply delete the secret directly, so
+    winning the race grants no capability they did not already have. That is a threat boundary, not
+    atomicity, and it is the honest claim. What the identity check does buy is that the window is now
+    between two syscalls rather than spanning a read, a parse and a hash.
+    """
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        fd = os.open(residue, flags)
+    except OSError:
+        return False                       # absent, a symlink, a directory, or not ours to read
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            return False
+        if opened.st_size > MOST_A_RESIDUE_CAN_BE:
+            return False
+        raw = os.read(fd, MOST_A_RESIDUE_CAN_BE).decode("ascii", "replace")
+    except OSError:                                           # pragma: no cover - unreadable
+        return False
+    finally:
+        # The handle is closed before the removal because WINDOWS WILL NOT UNLINK AN OPEN FILE: the
+        # first version of this held it open across the unlink, every removal failed with a sharing
+        # violation, and the whole suite went red at once. Measured, not reasoned about.
+        os.close(fd)
+
+    if digest_of_a_secret(_the_value_in(raw, name)) not in spent:
+        return False                       # not a secret this entry spent -- leave it where it is
+    try:
+        # The file that was hashed must be the file that is removed. `raw` came from the handle, so
+        # it belongs to a specific inode; this asks whether the NAME still refers to that inode.
+        here = os.stat(residue, follow_symlinks=False)
+        if (here.st_dev, here.st_ino) != (opened.st_dev, opened.st_ino):
+            return False                   # the name moved; whatever is there now is not ours
+        try:
+            os.chmod(residue, 0o600)       # written 0400, and Windows will not unlink read-only
+        except OSError:                                       # pragma: no cover
+            pass
+        os.unlink(residue)
+        return True
+    except OSError:                                           # pragma: no cover - reported, not fatal
+        return False
 
 
 def forget_a_spent_secret(folder, spent_digests) -> list:
@@ -162,21 +235,8 @@ def forget_a_spent_secret(folder, spent_digests) -> list:
     if not spent:
         return gone
     for name in ENROLMENT_RESIDUES:
-        residue = folder / name
-        try:
-            if not residue.is_file():
-                continue
-            if digest_of_a_secret(_the_secret_inside(residue, name)) not in spent:
-                continue                   # not a secret this entry spent -- leave it where it is
-            # Written 0400, and a read-only file cannot be unlinked on Windows.
-            try:
-                os.chmod(residue, 0o600)
-            except OSError:                                   # pragma: no cover
-                pass
-            residue.unlink()
+        if _remove_if_it_is_spent(folder / name, name, spent):
             gone.append(name)
-        except OSError:                                       # pragma: no cover - reported, not fatal
-            pass
     return gone
 
 

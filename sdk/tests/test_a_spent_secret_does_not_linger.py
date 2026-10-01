@@ -112,6 +112,64 @@ class TestTheDecisionIsAboutContentNotAboutThePath:
         (tmp_path / "secret").write_text(SPENT + "\n", encoding="ascii")
         assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == ["secret"]
 
+    def test_the_file_HASHED_must_be_the_file_UNLINKED(self, tmp_path, monkeypatch):
+        """The fifth review's CRITICAL finding, built as a synchronised swap.
+
+        Deciding on content fixed every static state and left one gap: the content was read by
+        pathname and the unlink used that pathname again, so between the two the name could be made
+        to point at a different, still-usable secret. The reviewer asked for exactly this
+        counter-check -- "a synchronized second-thread/process swap between those operations".
+
+        No second thread is needed and none should be used: a thread would make the test racy, which
+        is the opposite of what is wanted. `digest_of_a_secret` is called at precisely the moment
+        between reading the handle and the removal, so wrapping it does the swap deterministically,
+        every run, in exactly the window under test. The production code has no hook in it.
+        """
+        victim = tmp_path / "secret"
+        victim.write_text(SPENT, encoding="ascii")
+        elsewhere = tmp_path / "somebody-elses-live-secret"
+        elsewhere.write_text(LIVE, encoding="ascii")
+        real = _enrolment.digest_of_a_secret
+        swapped = []
+
+        def swap_the_file_underneath(value):
+            answer = real(value)                       # the honest digest of what WAS read
+            if not swapped:
+                swapped.append(True)
+                victim.unlink()                        # the name now refers to nothing...
+                elsewhere.replace(victim)              # ...and now to a LIVE secret
+            return answer
+
+        monkeypatch.setattr(_enrolment, "digest_of_a_secret", swap_the_file_underneath)
+        gone = _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT))
+        monkeypatch.undo()
+
+        assert swapped, "the swap never happened, so this test proved nothing"
+        assert gone == [], "a live secret was deleted because the name was re-pointed after the check"
+        assert victim.is_file(), "the swapped-in file is gone"
+        assert victim.read_text(encoding="ascii") == LIVE, \
+            "the file that was unlinked was not the file that was hashed"
+
+    def test_a_residue_larger_than_a_residue_can_be_is_not_read(self, tmp_path):
+        """S5. An unbounded read is how a cleanup becomes a denial of service."""
+        big = tmp_path / "secret"
+        big.write_text("x" * (_enrolment.MOST_A_RESIDUE_CAN_BE + 1), encoding="ascii")
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == []
+        assert big.is_file()
+
+    def test_a_residue_that_is_not_a_regular_file_is_not_read(self, tmp_path):
+        """A directory stands in for the device or FIFO the review named: the point is that
+        `fstat` decides what gets read, rather than a name that merely looks like a file."""
+        (tmp_path / "secret").mkdir()
+        assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == []
+        assert (tmp_path / "secret").is_dir()
+
+    def test_a_request_whose_secret_field_is_not_a_string_is_left_alone(self, tmp_path):
+        for body in ('{"secret": 7}', '{"secret": null}', '{"secret": {"a": 1}}', '[]', '"x"'):
+            (tmp_path / "request.json").write_text(body, encoding="ascii")
+            assert _enrolment.forget_a_spent_secret(tmp_path, _spent(SPENT)) == [], body
+            assert (tmp_path / "request.json").is_file(), body
+
 
 class TestTheIssuerSideCleanupExistsAndIsSeparate:
     """S1 and the reason there are two functions rather than one relaxed one."""
