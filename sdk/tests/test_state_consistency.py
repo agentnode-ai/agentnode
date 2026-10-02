@@ -616,7 +616,8 @@ class TestRepeatingItChangesNothing:
 
     def test_a_second_reconciliation_writes_nothing_at_all(self, gateway):
         claimed(gateway, "twice-over", started=time.time() - 5.0)
-        a_signed_line(gateway.state.root, "twice-over", state="interrupted", outcome="unverified")
+        a_signed_line(gateway.state.root, "twice-over", state="interrupted", outcome="unverified",
+                      queued_at=time.time() - 30.0)
         held = the_quota(gateway.state.root)
         keys = ["dev-1", AN_ACCOUNT]
         held.note_every(keys, "twice-over")
@@ -1013,8 +1014,12 @@ class TestAQuotaEntryThatIsMissingAltogether:
         keys = ["dev-1", AN_ACCOUNT]
         arrived = time.time() - 60.0
         claimed(gateway, "quota-gone", when=arrived, started=arrived + 1.0)
+        # `queued_at` is given the real arrival. It defaults to 1000.0 in this helper -- an epoch
+        # stamp -- and once the signed line became the authority for the arrival (round two's
+        # F-ARRIVAL-CONFLICT-TRUSTS-LEDGER) that default put the run 56 years outside the window, so
+        # the correct answer became "do not create" and this test went red against a correct product.
         a_signed_line(gateway.state.root, "quota-gone", state="interrupted", outcome="unverified",
-                      started_at=1010.0, finished_at=1021.0)
+                      queued_at=arrived, started_at=1010.0, finished_at=1021.0)
         assert all(v is None for v in
                    the_quota(gateway.state.root).what_a_run_was_charged(keys, "quota-gone").values()), (
             "premise: no scope holds a figure for this run")
@@ -1105,7 +1110,8 @@ class TestAQuotaEntryThatIsMissingAltogether:
         keys = ["dev-1", AN_ACCOUNT]
         arrived = time.time() - 60.0
         claimed(gateway, "exactly-one-figure", when=arrived, started=arrived + 1.0)
-        a_signed_line(gateway.state.root, "exactly-one-figure", state="finished")
+        a_signed_line(gateway.state.root, "exactly-one-figure", state="finished",
+                      queued_at=arrived)
         held = the_quota(gateway.state.root)
         held.note_every(keys, "exactly-one-figure")
         held.finished_every(keys, "exactly-one-figure", 999.0)
@@ -1125,8 +1131,14 @@ class TestAQuotaEntryThatIsMissingAltogether:
 # ------------------------------------------- two gateways, in two real processes
 
 
-class TestTwoGatewaysInTwoRealProcesses:
-    """`SC5` names a second gateway, and the first submission could not establish it.
+class TestTwoLedgersInTwoRealProcesses:
+    """A cross-process compare-and-set on the `Ledger` itself. NOT the evidence for SC5.
+
+    Round two accepted this as valid for what it measures and refused it as evidence for SC5, because
+    it instantiates `Ledger` directly rather than two gateway services and contends on one persisted
+    fact. Both are true. It is kept because the narrower property -- that the write-once decision is
+    made against the FILE and not against one object's memory -- is worth a test of its own, and
+    `TestTwoGatewayServicesInTwoRealProcesses` below is what SC5 is judged on.
 
     The review was right to return NOT_ESTABLISHED: two `Ledger` objects in one process exercise the
     reload-inside-the-lock, but they share an interpreter, a thread lock and a page cache. A second
@@ -1209,3 +1221,401 @@ class TestTwoGatewaysInTwoRealProcesses:
             pids.add(out.stdout.strip())
         assert len(pids) == 2, "the two children shared a process id: %r" % (pids,)
         assert str(os.getpid()) not in pids, "a child ran in this interpreter"
+
+
+# ------------------------------- what round two found: duplicates, equality, and which clock decides
+
+
+class TestOneFigurePerScopeAndExactlyTheSignedOne:
+    """`STATE-CONSISTENCY-0002`, F-QUOTA-DUPLICATES-SURVIVE and F-QUOTA-APPROXIMATE-NOT-EQUAL.
+
+    The first repair of the quota set every matching entry and left two entries as two, and it treated
+    a figure within half a millisecond of the signed one as already right. Both were found by review:
+    a scope holding two billing figures does not hold one, whatever the numbers are, and close is not
+    the same number.
+    """
+
+    def test_two_entries_for_one_run_are_collapsed_to_one(self, gateway):
+        keys = ["dev-1", AN_ACCOUNT]
+        arrived = time.time() - 120.0
+        claimed(gateway, "two-figures", when=arrived, started=arrived + 1.0)
+        a_signed_line(gateway.state.root, "two-figures", state="finished", queued_at=arrived)
+        held = the_quota(gateway.state.root)
+        # Two entries on each scope, which is what two calls to `note_every` leave behind.
+        held.note_every(keys, "two-figures", now=arrived)
+        held.note_every(keys, "two-figures", now=arrived + 5.0)
+        assert all(n == 2 for n in held.how_many_figures_for(keys, "two-figures").values()), "premise"
+
+        again, state = restarted(gateway)
+        try:
+            counts = the_quota(state.root).how_many_figures_for(keys, "two-figures")
+            assert all(n == 1 for n in counts.values()), (
+                "a scope still holds more than one billing figure for one run: %r" % (counts,))
+            line = the_one_line_for(state.root, "two-figures")
+            charged = the_quota(state.root).what_a_run_was_charged(keys, "two-figures")
+            for scope, seconds in charged.items():
+                assert float(seconds) == float(line["seconds"]), (
+                    "scope %s holds %r and the signed line says %r" % (scope, seconds,
+                                                                       line["seconds"]))
+        finally:
+            again.close()
+            state.close()
+
+    def test_duplicates_that_already_agree_are_still_collapsed(self, gateway):
+        """The case the old code called `already right` and walked away from."""
+        keys = ["dev-1", AN_ACCOUNT]
+        arrived = time.time() - 120.0
+        claimed(gateway, "two-that-agree", when=arrived, started=arrived + 1.0)
+        a_signed_line(gateway.state.root, "two-that-agree", state="finished",
+                      queued_at=arrived, started_at=1010.0, finished_at=1021.0)
+        line = the_one_line_for(gateway.state.root, "two-that-agree")
+        held = the_quota(gateway.state.root)
+        held.note_every(keys, "two-that-agree", now=arrived)
+        held.note_every(keys, "two-that-agree", now=arrived + 5.0)
+        # BOTH already carry the right value, so nothing about the numbers is wrong.
+        held.the_figure_for(keys, "two-that-agree", float(line["seconds"]), arrived)
+        before = the_quota(gateway.state.root).how_many_figures_for(keys, "two-that-agree")
+
+        again, state = restarted(gateway)
+        try:
+            counts = the_quota(state.root).how_many_figures_for(keys, "two-that-agree")
+            assert all(n == 1 for n in counts.values()), (
+                "two entries that agreed were left as two: before %r, after %r" % (before, counts))
+        finally:
+            again.close()
+            state.close()
+
+    def test_a_figure_half_a_millisecond_out_is_replaced(self, gateway):
+        """Close is not the same number, and equality is what a reader compares."""
+        keys = ["dev-1", AN_ACCOUNT]
+        arrived = time.time() - 120.0
+        claimed(gateway, "nearly-right", when=arrived, started=arrived + 1.0)
+        a_signed_line(gateway.state.root, "nearly-right", state="finished", queued_at=arrived)
+        line = the_one_line_for(gateway.state.root, "nearly-right")
+        held = the_quota(gateway.state.root)
+        held.note_every(keys, "nearly-right", now=arrived)
+        nearly = float(line["seconds"]) + 0.0004
+        held.the_figure_for(keys, "nearly-right", nearly, arrived)
+        assert all(float(v) == nearly for v in
+                   held.what_a_run_was_charged(keys, "nearly-right").values()), "premise"
+
+        again, state = restarted(gateway)
+        try:
+            charged = the_quota(state.root).what_a_run_was_charged(keys, "nearly-right")
+            for scope, seconds in charged.items():
+                assert float(seconds) == float(line["seconds"]), (
+                    "scope %s still holds %r against a signed %r -- a difference of %r"
+                    % (scope, seconds, line["seconds"], float(seconds) - float(line["seconds"])))
+        finally:
+            again.close()
+            state.close()
+
+
+class TestWhichClockDecidesWhenTheTwoDisagree:
+    """`STATE-CONSISTENCY-0002`, F-ARRIVAL-CONFLICT-TRUSTS-LEDGER.
+
+    The first repair read the ledger's `first_seen` and fell back to the signed line, which is this
+    arc's own principle inverted in the one place where the two records can disagree. A stale
+    `first_seen` suppressed a repair the line supported; a recent one kept a charge alive longer than
+    the line said it should.
+
+    The line is the authority for this run's figures, and when it began to wait is one of them.
+    """
+
+    def test_a_stale_ledger_stamp_does_not_suppress_a_repair_the_line_supports(self, gateway):
+        from agentnode_sdk.gateway.allowance import WINDOW_SECONDS
+
+        keys = ["dev-1", AN_ACCOUNT]
+        recent = time.time() - 120.0
+        claimed(gateway, "ledger-is-stale", when=time.time() - (WINDOW_SECONDS * 3))
+        # The LINE says it arrived two minutes ago; the ledger says three windows ago.
+        a_signed_line(gateway.state.root, "ledger-is-stale", state="finished", queued_at=recent)
+
+        again, state = restarted(gateway)
+        try:
+            charged = the_quota(state.root).what_a_run_was_charged(keys, "ledger-is-stale")
+            assert all(v is not None for v in charged.values()), (
+                "the ledger's stale stamp suppressed a repair the signed line supports: %r"
+                % (charged,))
+            body = json.loads((pathlib.Path(state.root) / USE_NAME).read_text(encoding="utf-8"))
+            stamps = [e.get("at") for entries in body.values() if isinstance(entries, list)
+                      for e in entries
+                      if isinstance(e, dict) and e.get("run_id") == "ledger-is-stale"]
+            for at in stamps:
+                assert abs(float(at) - recent) < 2.0, (
+                    "stamped %r, which is the ledger's figure and not the line's %r" % (at, recent))
+        finally:
+            again.close()
+            state.close()
+
+    def test_a_recent_ledger_stamp_does_not_keep_a_charge_the_line_calls_old(self, gateway):
+        """The mirror. The ledger says it arrived a minute ago, the line says three windows ago."""
+        from agentnode_sdk.gateway.allowance import WINDOW_SECONDS
+
+        keys = ["dev-1", AN_ACCOUNT]
+        long_ago = time.time() - (WINDOW_SECONDS * 3)
+        claimed(gateway, "ledger-looks-fresh", when=time.time() - 60.0)
+        a_signed_line(gateway.state.root, "ledger-looks-fresh", state="finished", queued_at=long_ago)
+
+        again, state = restarted(gateway)
+        try:
+            charged = the_quota(state.root).what_a_run_was_charged(keys, "ledger-looks-fresh")
+            assert all(v is None for v in charged.values()), (
+                "a charge the signed line puts outside the window was created because the ledger's "
+                "own stamp looked recent: %r" % (charged,))
+        finally:
+            again.close()
+            state.close()
+
+    def test_an_arrival_nobody_knows_is_said_rather_than_called_expired(self, gateway):
+        """`0` is not a time, and "nobody knows when this arrived" is not "this is too old"."""
+        keys = ["dev-1", AN_ACCOUNT]
+        held = the_quota(gateway.state.root)
+        said = held.the_figure_for(keys, "no-arrival-at-all", 5.0, 0.0)
+        assert set(said.values()) == {"no arrival"}, (
+            "an unusable arrival was reported as %r" % (sorted(set(said.values())),))
+        assert all(v is None for v in held.what_a_run_was_charged(keys, "no-arrival-at-all").values())
+        # And it is NOT the same answer as an arrival the window has passed.
+        from agentnode_sdk.gateway.allowance import WINDOW_SECONDS
+
+        expired = held.the_figure_for(keys, "too-old", 5.0, time.time() - (WINDOW_SECONDS * 3))
+        assert set(expired.values()) == {"outside the window"}, expired
+
+
+# ----------------------------------- SC5, with two real gateway services in two real processes
+
+
+class TestTwoGatewayServicesInTwoRealProcesses:
+    """`STATE-CONSISTENCY-0002`, F-SC5-LEDGER-PROCESSES-NOT-GATEWAYS.
+
+    Round two accepted the previous test as a valid cross-process compare-and-set on the `Ledger`, and
+    refused it as evidence for SC5: it instantiated `Ledger` directly rather than two gateway services,
+    and it contended on one persisted fact out of four. Both objections are right, so this contends on
+    **all four** -- the lifecycle, the outcome, the cleanup and the quota -- through real
+    `GatewayService` objects, in processes that share nothing but the state directory and its lock.
+
+    ## Why `recover=False` in the children, said rather than hidden
+
+    Constructing a `GatewayService` runs crash recovery by default, and the product's own comment says
+    why that matters: eleven operator commands used to build one just to reach a method, and each was
+    *"marking its running jobs as interrupted, asking the worker to remove their containers -- which
+    kills them"*. Two children recovering the same directory would spend the test destroying each
+    other's state, and what came out would be about recovery rather than about monotonicity. So they
+    pass `recover=False`, the same flag the product gives to callers that are not starting a gateway.
+
+    This is therefore evidence about **two gateway services contending for durable state across
+    processes**, and not about two gateways both performing startup recovery at once. That second thing
+    is a different measurement and is named as still owed.
+    """
+
+    #: What each child does. It builds a real gateway on the shared directory and then writes to every
+    #: persisted fact SC5 names, each in the direction that must NOT win, so that whichever child goes
+    #: second is the one trying to weaken what the first established.
+    CHILD = textwrap.dedent('''
+        import json, os, sys, time
+
+        root, run_id, word, cleanup, seconds, barrier = (
+            sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], float(sys.argv[5]), sys.argv[6])
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.server import GatewayService
+        from tests.test_em3c_gateway import StandInBackend
+
+        state = GatewayState(root, version="test")
+        # recover=False: see the docstring of the test that runs this.
+        service = GatewayService(state, backend=StandInBackend(), recover=False)
+
+        until = time.time() + 30
+        while not os.path.exists(barrier) and time.time() < until:
+            time.sleep(0.005)
+
+        said = {}
+        # WHAT IT SAW BEFORE IT WROTE. Without this the test would have to assume an order, and the
+        # barrier exists precisely so that there is none: monotonicity is then observable per child --
+        # a process that SAW an established fact must be told that fact by its own write.
+        was = service.ledger.run_entry(run_id) or {}
+        said["settled_before"] = was.get("settled_as") or ""
+        said["cleanup_before"] = was.get("cleanup")
+        said["lifecycle"] = service.ledger.note_lifecycle(run_id, "running")
+        settled, wrote = service.ledger.note_it_settled(run_id, word)
+        said["settled_as"] = settled
+        said["wrote_the_word"] = wrote
+        said["cleanup"] = service.ledger.note_cleanup(run_id, json.loads(cleanup))
+        said["quota"] = service.use.the_figure_for(
+            ["dev-1"], run_id, seconds, time.time() - 60.0)
+        said["pid"] = os.getpid()
+        print("RESULT " + json.dumps(said))
+    ''')
+
+    def _run_two(self, gateway, tmp_path, run_id, first, second):
+        import subprocess
+
+        program = tmp_path / "contend.py"
+        program.write_text(self.CHILD, encoding="utf-8")
+        barrier = tmp_path / "go"
+        here = str(pathlib.Path(__file__).resolve().parents[1])
+        env = dict(os.environ)
+        env["PYTHONPATH"] = here
+        root = str(pathlib.Path(gateway.state.root))
+
+        started = []
+        for word, cleanup, seconds in (first, second):
+            started.append(subprocess.Popen(
+                [sys.executable, str(program), root, run_id, word, json.dumps(cleanup),
+                 str(seconds), str(barrier)],
+                cwd=here, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env))
+        barrier.write_text("go", encoding="utf-8")
+        said = []
+        for proc in started:
+            out, err = proc.communicate(timeout=120)
+            assert proc.returncode == 0, "a child failed:\n%s" % (err[-1500:],)
+            line = [x for x in out.splitlines() if x.startswith("RESULT ")]
+            assert line, "a child printed no result:\n%s\n%s" % (out[-600:], err[-600:])
+            said.append(json.loads(line[-1][len("RESULT "):]))
+        return said
+
+    def test_every_persisted_fact_is_monotone_across_two_gateway_processes(self, gateway, tmp_path):
+        arrived = time.time() - 300.0
+        claimed(gateway, "contended", when=arrived, started=arrived + 1.0)
+        # One child establishes the stronger facts, the other offers the weaker ones. Which child
+        # arrives first is not controlled -- that is the point of the barrier -- so the assertions are
+        # about what survives rather than about an order.
+        said = self._run_two(gateway, tmp_path, "contended",
+                             ("interrupted", True, 11.0),
+                             ("finished", None, 99.0))
+
+        assert len({s["pid"] for s in said}) == 2, "the children shared a process: %r" % (said,)
+        assert str(os.getpid()) not in {str(s["pid"]) for s in said}, "a child ran in this test"
+
+        # THE OUTCOME: exactly one child may have written the word, and both must agree afterwards.
+        wrote = [s for s in said if s["wrote_the_word"]]
+        assert len(wrote) == 1, (
+            "%d of two gateway processes believed it wrote the outcome: %r" % (len(wrote), said))
+        winner = wrote[0]["settled_as"]
+        assert {s["settled_as"] for s in said} == {winner}, (
+            "the two processes disagree about the outcome in the file: %r" % (said,))
+
+        entry = gateway.ledger.run_entry("contended") or {}
+        assert entry.get("settled_as") == winner
+        loser = "finished" if winner == "interrupted" else "interrupted"
+        assert entry.get("settled_conflicts"), "the losing word left no trace"
+        assert any(c.get("offered") == loser for c in entry["settled_conflicts"])
+
+        # THE LIFECYCLE: settling closes it, so neither child can have left it at `running`.
+        assert entry.get("state") == "closed", (
+            "the lifecycle reads %r after both processes wrote" % (entry.get("state"),))
+
+        # THE CLEANUP: one child offered None over the other's True, and True is absorbing. The
+        # ORDER is deliberately not controlled, so the claim is per child and about what it saw:
+        # whichever process observed `True` before writing must have been told `True` by its write.
+        assert entry.get("cleanup") is True, (
+            "an established cleanup was weakened across processes to %r" % (entry.get("cleanup"),))
+        for s in said:
+            if s["cleanup_before"] is True:
+                assert s["cleanup"] is True, (
+                    "a process saw cleanup already True and was told its None had been applied: %r"
+                    % (s,))
+            if s["settled_before"]:
+                assert s["settled_as"] == s["settled_before"], (
+                    "a process saw the outcome %r and was then told %r"
+                    % (s["settled_before"], s["settled_as"]))
+                assert not s["wrote_the_word"], (
+                    "a process that saw an outcome already established was told it wrote one: %r"
+                    % (s,))
+
+        # THE QUOTA: one figure, and it is one of the two that were offered rather than a mixture.
+        counts = the_quota(gateway.state.root).how_many_figures_for(["dev-1"], "contended")
+        assert counts.get("dev-1") == 1, (
+            "the scope holds %r figures for one run after two processes wrote" % (counts,))
+        charged = the_quota(gateway.state.root).what_a_run_was_charged(["dev-1"], "contended")
+        assert float(charged["dev-1"]) in (11.0, 99.0), (
+            "the figure is %r, which is neither of the two that were written" % (charged,))
+
+    def test_the_same_word_twice_is_a_no_op_in_both_processes(self, gateway, tmp_path):
+        """Two processes that both read the one signed line pass the SAME word, and that has to be
+        allowed or an idempotent reconciliation could not run twice."""
+        arrived = time.time() - 300.0
+        claimed(gateway, "agreed", when=arrived, started=arrived + 1.0)
+        said = self._run_two(gateway, tmp_path, "agreed",
+                             ("interrupted", True, 11.0),
+                             ("interrupted", True, 11.0))
+        wrote = [s for s in said if s["wrote_the_word"]]
+        assert len(wrote) == 1, "the same word was written twice: %r" % (said,)
+        assert {s["settled_as"] for s in said} == {"interrupted"}
+        entry = gateway.ledger.run_entry("agreed") or {}
+        assert entry.get("settled_as") == "interrupted"
+        assert not entry.get("settled_conflicts"), (
+            "two processes passing the SAME word were recorded as a conflict: %r"
+            % (entry.get("settled_conflicts"),))
+
+
+# ------------------------------------------- every read of the ledger, under the lock
+
+
+class TestEveryReadOfTheLedgerIsUnderTheLock:
+    """Structural, because the defect it guards is not deterministic enough to drive.
+
+    `Ledger.__init__` was the one `_load()` that took no cross-process lock, and the two-process test
+    round two asked for found it: a second gateway starting while the first wrote raised
+    `LedgerUnreadable`, which this gateway treats as a reason to REFUSE TO START, about a file that was
+    perfectly intact. A write here is a temporary file and a rename over the target, and on Windows a
+    read landing inside that rename fails with a sharing violation.
+
+    Reproducing it needs the read to fall in that window, which is luck. What is not luck is whether
+    every read is inside a `with ... ProcessLock(...)`, and that is a question the syntax tree answers
+    exactly. So this asks the tree.
+    """
+
+    def _lock_ranges(self, tree):
+        """Every line span that is lexically inside a `with` holding a `ProcessLock`."""
+        import ast
+
+        spans = []
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.With, ast.AsyncWith)):
+                continue
+            items = " ".join(ast.unparse(i.context_expr) for i in node.items)
+            if "ProcessLock" in items:
+                spans.append((node.body[0].lineno, node.end_lineno or node.body[-1].lineno))
+        return spans
+
+    def test_no_read_happens_outside_it(self):
+        import ast
+        import inspect
+
+        from agentnode_sdk.gateway import ledger as ledger_module
+
+        source = inspect.getsource(ledger_module)
+        tree = ast.parse(source)
+        spans = self._lock_ranges(tree)
+        assert spans, "nothing in this module takes a ProcessLock, so the question is wrong"
+
+        reads = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.Call)
+                 and ast.unparse(node.func).endswith("._load")]
+        assert reads, "no call to _load was found, so this test is reading the wrong thing"
+
+        loose = [node.lineno for node in reads
+                 if not any(lo <= node.lineno <= hi for lo, hi in spans)]
+        assert not loose, (
+            "the ledger is read without the cross-process lock at line(s) %r of %s. A read that "
+            "lands inside another process's rename fails with a sharing violation, and this module "
+            "turns that into LedgerUnreadable -- which refuses to start the gateway, about a file "
+            "that is intact." % (loose, ledger_module.__file__))
+
+    def test_and_the_constructor_in_particular(self):
+        """Named separately because that is the one that was wrong, so a regression there is a
+        failure with its own name rather than a line number in a list."""
+        import ast
+        import inspect
+        import textwrap
+
+        from agentnode_sdk.gateway.ledger import Ledger
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(Ledger.__init__)))
+        spans = self._lock_ranges(tree)
+        reads = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.Call) and ast.unparse(node.func).endswith("._load")]
+        assert reads, "the constructor no longer reads the file, so this test needs rewriting"
+        for node in reads:
+            assert any(lo <= node.lineno <= hi for lo, hi in spans), (
+                "Ledger.__init__ reads the file without the cross-process lock")

@@ -1484,7 +1484,7 @@ class GatewayService:
         nothing differs changes the file on every start. A repair that is not byte-stable on repetition
         cannot be told apart from a repair that keeps finding something wrong.
         """
-        from agentnode_sdk.gateway.allowance import what_a_run_was_charged_in
+        from agentnode_sdk.gateway.allowance import how_many_figures_in, what_a_run_was_charged_in
 
         if entry is None:
             entry = self.ledger.run_entry(run_id) or {}
@@ -1497,18 +1497,42 @@ class GatewayService:
             # `quota` is a document a caller looking at many runs has already read. Asking the file
             # per run means a lock and a parse per run, which on a month of history is a start that
             # spends minutes establishing that it has nothing to do.
-            held = (what_a_run_was_charged_in(quota, keys, run_id) if quota is not None
-                    else self.use.what_a_run_was_charged(keys, run_id))
+            body = quota if quota is not None else self.use.snapshot()
+            held = what_a_run_was_charged_in(body, keys, run_id)
+            # AND HOW MANY, because the value alone cannot tell one figure from two that agree.
+            # `STATE-CONSISTENCY-0002`, F-QUOTA-DUPLICATES-SURVIVE: deciding from the value left
+            # duplicates in place, and a scope holding two billing figures does not hold one.
+            counts = how_many_figures_in(body, keys, run_id)
         except Exception:                                     # noqa: BLE001
             return False
+        # EQUAL, NOT CLOSE. Same review, F-QUOTA-APPROXIMATE-NOT-EQUAL: a figure within half a
+        # millisecond of the signed one was treated as already right, and close is not the same
+        # number -- equality is what a reader comparing the two records does.
         wrong = {k: v for k, v in held.items()
-                 if v is None or abs(float(v) - seconds) > 0.0005}
+                 if v is None or float(v) != seconds or counts.get(k, 0) > 1}
         if not wrong:
             return False
         # WHEN THE RUN ARRIVED, so a created entry is forgotten when the original would have been
-        # rather than a day after the repair. The ledger's own `first_seen` is that moment; the line's
-        # `queued_at` says the same thing and is the fallback when the entry has been pruned away.
-        arrived = float(entry.get("first_seen") or line.get("queued_at") or 0.0)
+        # rather than a day after the repair.
+        #
+        # THE SIGNED LINE FIRST, and the first version of this had it backwards: it read the ledger's
+        # `first_seen` and fell back to the line. That is this arc's own principle inverted, in the one
+        # place where the two records can disagree. `STATE-CONSISTENCY-0002`,
+        # F-ARRIVAL-CONFLICT-TRUSTS-LEDGER: a stale `first_seen` suppresses the repair, and a recent
+        # one keeps the charge alive longer than the signed record says it should. The line is the
+        # authority for this run's figures, and when it began to wait is one of them.
+        #
+        # `0` is not a time, so it is not accepted from either -- and `the_figure_for` then reports
+        # `no arrival` rather than `outside the window`, which are different statements.
+        arrived = 0.0
+        for candidate in (line.get("queued_at"), entry.get("first_seen")):
+            try:
+                maybe = float(candidate or 0.0)
+            except (TypeError, ValueError):
+                maybe = 0.0
+            if maybe > 0.0:
+                arrived = maybe
+                break
         try:
             did = self.use.the_figure_for(keys, run_id, seconds, arrived)
         except Exception:                                     # noqa: BLE001
@@ -1517,7 +1541,8 @@ class GatewayService:
         # comes back `outside the window` for ever, so recording a repair on that answer would append
         # to the ledger on every single start -- a repair that never finishes, and a file that is not
         # byte-stable on repetition, which is the one property that tells those two apart.
-        moved = sorted(k for k, what in did.items() if what in ("set", "created"))
+        moved = sorted(k for k, what in did.items()
+                       if what in ("set", "created", "deduplicated"))
         if not moved:
             return False
         # WHAT IT DID per scope, including any `outside the window`: a repair that declined is

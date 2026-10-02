@@ -125,7 +125,22 @@ class Ledger:
         self.path = Path(path)
         self._lock = threading.Lock()
         self._data: dict = {"schema": SCHEMA, "nonces": {}, "runs": {}}
-        self._load()
+        # UNDER THE LOCK, like every other read in this class.
+        #
+        # This was the ONE `_load()` that was not, and the two-process test round two asked for found
+        # it: a second gateway starting on one directory raised `LedgerUnreadable` -- which this
+        # gateway treats as a reason to REFUSE TO START -- about a file that was perfectly intact.
+        #
+        # A write here is a temporary file and a rename over the target. On Windows a read that lands
+        # inside that rename fails with a sharing violation, and `_load` turns an `OSError` into
+        # `LedgerUnreadable` deliberately and correctly: an unreadable ledger must never be read as an
+        # empty one, because an empty one says yes to every replay. The fault was reading at all
+        # without the lock every other access takes.
+        #
+        # `ProcessLock` does not need the target to exist -- it locks a dedicated file beside it -- so
+        # this is safe on a directory that has never held a ledger.
+        with self._lock, ProcessLock(self.path):
+            self._load()
 
     # ------------------------------------------------------------------ storage
 

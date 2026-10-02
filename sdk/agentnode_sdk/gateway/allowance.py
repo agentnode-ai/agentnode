@@ -314,6 +314,23 @@ def why_it_is_stopped(root: str | os.PathLike[str]) -> str:
 
 # ------------------------------------------------------------------------------- the counting
 
+def how_many_figures_in(body: dict, keys, run_id: str) -> dict:
+    """How many entries each named scope holds for this run, in an ALREADY-READ document.
+
+    A pure function on a snapshot, so a caller looking at many runs reads the file once. Two entries
+    for one run is two billing figures however much they agree, and a value-only accessor cannot see
+    that -- which is why this is separate rather than folded into the one that returns the value.
+    """
+    out: dict = {}
+    for key in keys:
+        if not key:
+            continue
+        out[str(key)] = sum(
+            1 for entry in (body.get(str(key), []) if isinstance(body, dict) else [])
+            if isinstance(entry, dict) and entry.get("run_id") == str(run_id))
+    return out
+
+
 def what_a_run_was_charged_in(body: dict, keys, run_id: str) -> dict:
     """What each named scope holds for this run in an ALREADY-READ document: {scope: seconds|None}.
 
@@ -501,9 +518,30 @@ class Use:
         `_forget` runs on every write, so an entry created outside the window would be dropped in the
         same call. Correct, but silent and not byte-stable: every start would create and lose it
         again. Outside the window the absence is the right answer, and this says so.
+
+        ## EXACTLY ONE ENTRY PER SCOPE, and the first version of this only set whatever it found
+
+        `STATE-CONSISTENCY-0002`, F-QUOTA-DUPLICATES-SURVIVE: it iterated every matching entry and set
+        each one, so two entries for one run stayed two -- and when both already carried the wanted
+        value it said `already right` and left them. A scope holding two billing figures is a scope
+        that does not hold one, whatever the numbers are. Duplicates are now COLLAPSED: the earliest
+        `at` is kept, because that is the one nearest the real arrival, and the rest go.
+
+        ## EQUAL, not close
+
+        Same review, F-QUOTA-APPROXIMATE-NOT-EQUAL: this treated a figure within 0.0005 s of the
+        signed one as already right. Close is not the same number, and the comparison a reader makes
+        between the two records is equality. The tolerance is gone.
+
+        ## And an arrival it cannot use is SAID, not silently treated as expired
+
+        `0` is not a time. It used to fall into the `outside the window` branch, which is a different
+        statement -- "this charge is too old to recreate" rather than "nobody knows when this run
+        arrived". They are told apart now.
         """
         at = time.time() if now is None else now
         wanted = float(seconds)
+        arrived = float(arrived_at or 0.0)
         out: dict = {}
         with self._lock, ProcessLock(self.path):
             body = self._forget(self._load(), at)
@@ -512,19 +550,28 @@ class Use:
                 if not key:
                     continue
                 scope = str(key)
-                mine = [e for e in body.get(scope, [])
-                        if isinstance(e, dict) and e.get("run_id") == str(run_id)]
-                if mine:
-                    if all(abs(float(e.get("seconds") or 0.0) - wanted) <= 0.0005 for e in mine):
+                here = [e for e in body.get(scope, []) if isinstance(e, dict)]
+                mine = [e for e in here if e.get("run_id") == str(run_id)]
+                if len(mine) > 1:
+                    # Keep the earliest, which is the one nearest the arrival, and drop the rest.
+                    keep = min(mine, key=lambda e: float(e.get("at") or 0.0))
+                    keep["seconds"] = wanted
+                    body[scope] = [e for e in here if e is keep or e.get("run_id") != str(run_id)]
+                    out[scope] = "deduplicated"
+                    changed = True
+                elif mine:
+                    only = mine[0]
+                    if float(only.get("seconds") or 0.0) == wanted:
                         out[scope] = "already right"
                         continue
-                    for e in mine:
-                        e["seconds"] = wanted
+                    only["seconds"] = wanted
                     out[scope] = "set"
                     changed = True
-                elif float(arrived_at) > at - self.window:
+                elif arrived <= 0.0:
+                    out[scope] = "no arrival"
+                elif arrived > at - self.window:
                     body.setdefault(scope, []).append(
-                        {"run_id": str(run_id), "at": float(arrived_at), "seconds": wanted})
+                        {"run_id": str(run_id), "at": arrived, "seconds": wanted})
                     out[scope] = "created"
                     changed = True
                 else:
@@ -532,6 +579,16 @@ class Use:
             if changed:
                 _atomically(self.path, json.dumps(body, sort_keys=True))
         return out
+
+    def how_many_figures_for(self, keys, run_id: str) -> dict:
+        """How many entries each named scope holds for this run: `{scope: count}`.
+
+        Exists because `what_a_run_was_charged` answers with ONE value -- the last matching entry --
+        and therefore cannot tell a scope holding one figure from a scope holding two that happen to
+        agree. A reconciliation that decides from that value alone leaves duplicates in place, which
+        is what `STATE-CONSISTENCY-0002` found.
+        """
+        return how_many_figures_in(self.snapshot(), keys, run_id)
 
     def what_a_run_was_charged(self, keys, run_id: str) -> dict:
         """What each named scope currently holds for this run: {scope: seconds or None}.
