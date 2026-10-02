@@ -497,8 +497,9 @@ class Use:
                        now: float | None = None) -> dict:
         """Set this run's figure on every named scope, CREATING the entry when it is missing.
 
-        Returns `{scope: "set" | "created" | "already right" | "outside the window"}`, so a caller can
-        say what it did rather than that it did something.
+        Returns one of six words per scope, so a caller can say what it did rather than that it did
+        something: `set`, `created`, `created without a usable arrival`, `deduplicated`,
+        `already right`, `outside the window`.
 
         ## Why creating is right, which the first version of the repair got wrong
 
@@ -541,11 +542,17 @@ class Use:
         signed one as already right. Close is not the same number, and the comparison a reader makes
         between the two records is equality. The tolerance is gone.
 
-        ## And an arrival it cannot use is SAID, not silently treated as expired
+        ## An arrival it cannot use is SAID -- and saying it was not enough
 
-        `0` is not a time. It used to fall into the `outside the window` branch, which is a different
-        statement -- "this charge is too old to recreate" rather than "nobody knows when this run
-        arrived". They are told apart now.
+        `0` is not a time, and nor is a stamp ahead of this clock. Both used to fall into
+        `outside the window`, a different statement: "this charge is too old to recreate" rather than
+        "nobody knows when this run arrived". `STATE-CONSISTENCY-0004` had them told apart, and
+        `STATE-CONSISTENCY-0005` then found what telling them apart left behind -- a scope with no
+        entry kept none, so the signed line's billed seconds sat beside no figure at all. Under
+        `DECISION-0004` the figure is now recorded at this recorder's own instant and the substituted
+        placement is the answer: `created without a usable arrival`. `outside the window` is unchanged,
+        because a USABLE arrival the window has forgotten is a different thing again and is not
+        resurrected.
         """
         at = time.time() if now is None else now
         wanted = float(seconds)
@@ -575,16 +582,35 @@ class Use:
                     only["seconds"] = wanted
                     out[scope] = "set"
                     changed = True
-                elif arrived <= 0.0:
-                    out[scope] = "no arrival"
-                elif arrived > at + AHEAD_OF_US:
-                    # A RUN CANNOT HAVE ARRIVED AFTER NOW. `STATE-CONSISTENCY-0004`,
-                    # F-SIGNED-ARRIVAL-INVALID-FALLS-BACK-TO-LEDGER, second half: "a positive but
-                    # absurd future timestamp is accepted". It was -- the only test was `> 0` -- and a
-                    # charge stamped in the future would sit in the customer's window until that time
-                    # plus a day. Said as its own answer rather than folded into `no arrival`, because
-                    # "this value is wrong" and "there is no value" are different things to find.
-                    out[scope] = "arrival in the future"
+                elif arrived <= 0.0 or arrived > at + AHEAD_OF_US:
+                    # AN ARRIVAL THIS CANNOT USE -- AND THE FIGURE IS RECORDED ANYWAY.
+                    #
+                    # Two shapes, both decidable here without reading another record: not a time at
+                    # all, or ahead of this clock by more than `AHEAD_OF_US`, and a run cannot have
+                    # arrived after now.
+                    #
+                    # `STATE-CONSISTENCY-0004` asked for the second to be SAID rather than believed,
+                    # and saying it was right. `STATE-CONSISTENCY-0005` found what saying it left
+                    # behind -- F-FUTURE-ARRIVAL-BREAKS-EXACTLY-ONE-FIGURE: with no entry on the
+                    # scope, refusing left a signed line carrying billed seconds beside a scope
+                    # carrying NO FIGURE AT ALL, for ever, and `moved` came back empty so nothing
+                    # recorded that anything had been declined. A said refusal is still two records
+                    # disagreeing.
+                    #
+                    # `DECISION-0004`: the arrival places the figure in the window and is nothing
+                    # else. When it cannot place it, the figure is recorded at the instant this
+                    # recorder is running -- the one value this process measured itself -- and the
+                    # SUBSTITUTION is the answer, under its own word. `created` and `created without a
+                    # usable arrival` are different facts and a reader must be able to tell them
+                    # apart. The cost is in the decision and is not hidden here: a figure placed at
+                    # this instant is forgotten LATER than the real arrival would have had it
+                    # forgotten, by at most one window, and for a ceiling whose purpose is to limit,
+                    # counting a charge slightly too long is the conservative direction.
+                    body.setdefault(scope, []).append(
+                        {"run_id": str(run_id), "at": at, "seconds": wanted,
+                         "arrival": "substituted"})
+                    out[scope] = "created without a usable arrival"
+                    changed = True
                 elif arrived > at - self.window:
                     body.setdefault(scope, []).append(
                         {"run_id": str(run_id), "at": arrived, "seconds": wanted})

@@ -1529,9 +1529,15 @@ class GatewayService:
         # the cases where the line's own value is unusable.
         #
         # Every path that reaches here has a line, so the ledger is not consulted at all. A line that
-        # cannot say when its run arrived is a line that cannot say it, and `the_figure_for` answers
-        # `no arrival` -- which is not the same statement as `outside the window`, and is why they are
-        # separate answers. The run keeps its unrepaired figure and the next start looks again.
+        # cannot say when its run arrived is a line that cannot say it.
+        #
+        # AND THE FIGURE IS STILL RECORDED. `STATE-CONSISTENCY-0005`,
+        # F-FUTURE-ARRIVAL-BREAKS-EXACTLY-ONE-FIGURE: answering and declining left a scope with no
+        # figure beside a signed line that carried billed seconds, for ever, and with `moved` empty
+        # nothing even recorded the decline. Under `DECISION-0004` an unusable arrival places the
+        # figure at the recorder's own instant and says so -- `created without a usable arrival` --
+        # which is a repair and is recorded as one below. `outside the window` is still a decline,
+        # because that arrival was usable and the window has forgotten it.
         try:
             arrived = float(line.get("queued_at") or 0.0)
         except (TypeError, ValueError):
@@ -1545,7 +1551,8 @@ class GatewayService:
         # to the ledger on every single start -- a repair that never finishes, and a file that is not
         # byte-stable on repetition, which is the one property that tells those two apart.
         moved = sorted(k for k, what in did.items()
-                       if what in ("set", "created", "deduplicated"))
+                       if what in ("set", "created", "created without a usable arrival",
+                                   "deduplicated"))
         if not moved:
             return False
         # WHAT IT DID per scope, including any `outside the window`: a repair that declined is

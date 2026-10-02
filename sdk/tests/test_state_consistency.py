@@ -383,6 +383,32 @@ def the_quota(root):
     return Use(pathlib.Path(root) / USE_NAME)
 
 
+def the_quota_file(root):
+    """The quota document itself, for a test that needs its digest or has to edit it."""
+    return pathlib.Path(root) / USE_NAME
+
+
+def edit_the_line(root, run_id: str, **changes):
+    """Change a field of the one signed line on disk.
+
+    Needed because the meter will not WRITE some of the shapes these tests are about: `meter.record`
+    does `float(queued_at or started_at)`, so a zero is replaced by the start and an unreadable value
+    raises. Those shapes are unreachable through the writer -- and reachable through anything else that
+    can edit a file, which is why the reconciliation still has to answer for them. Saying they are
+    reachable through the product would be a claim this cannot support, so the tests say where they
+    come from instead.
+    """
+    where = pathlib.Path(root) / meter.METER_NAME
+    out = []
+    for raw in where.read_text(encoding="utf-8").splitlines():
+        if run_id in raw:
+            said = json.loads(raw)
+            said.update(changes)
+            raw = json.dumps(said, sort_keys=True)
+        out.append(raw)
+    where.write_text(chr(10).join(out) + chr(10), encoding="utf-8")
+
+
 def digest_of(path) -> str:
     import hashlib
 
@@ -1373,26 +1399,9 @@ class TestTheLineIsTheOnlySourceOfTheArrival:
         a_signed_line(gateway.state.root, run_id, state="finished", queued_at=queued_at)
 
     def _edit_the_line(self, root, run_id, **changes):
-        """Change a field of the one signed line on disk.
-
-        Needed because the meter will not WRITE the shapes this class is about: `meter.record` does
-        `float(queued_at or started_at)` at line 470, so a zero is replaced by the start and an
-        unreadable value raises. Those shapes are therefore unreachable through the writer -- and
-        reachable through anything else that can edit a file, which is why the reconciliation still
-        has to answer for them. Saying they are reachable through the product would be a claim this
-        cannot support, so the test says where they come from instead.
-        """
-        import pathlib as _pathlib
-
-        where = _pathlib.Path(root) / meter.METER_NAME
-        out = []
-        for raw in where.read_text(encoding="utf-8").splitlines():
-            if run_id in raw:
-                said = json.loads(raw)
-                said.update(changes)
-                raw = json.dumps(said, sort_keys=True)
-            out.append(raw)
-        where.write_text(chr(10).join(out) + chr(10), encoding="utf-8")
+        """The module-level `edit_the_line`, kept as a method because every test here calls it that
+        way and because a second class now needs the same thing. One body, two callers."""
+        edit_the_line(root, run_id, **changes)
 
     def test_a_line_that_cannot_say_when_it_arrived_does_not_borrow_the_ledgers_answer(self, gateway):
         """The ledger's own stamp here is recent and perfectly usable. It must still not be used."""
@@ -1410,10 +1419,26 @@ class TestTheLineIsTheOnlySourceOfTheArrival:
 
         again, state = restarted(gateway)
         try:
-            charged = the_quota(state.root).what_a_run_was_charged(keys, "line-cannot-say")
-            assert all(v is None for v in charged.values()), (
-                "the arrival was taken from the ledger although a signed line exists: %r"
-                % (charged,))
+            # THE PROPERTY IS UNCHANGED: the ledger's usable stamp must not become the placement.
+            # What changed is that refusing is no longer how it is honoured -- `DECISION-0004` records
+            # the figure at the recorder's own instant -- so the assertion moved from "nothing was
+            # written" to "what was written is not the ledger's answer". That is the property itself
+            # rather than a side effect of it, and it is the stricter of the two.
+            held = the_quota(state.root)
+            charged = held.what_a_run_was_charged(keys, "line-cannot-say")
+            billed = float(line["seconds"])
+            assert all(v == billed for v in charged.values()), (
+                "the quota and the signed line's %s s disagree: %r" % (billed, charged))
+            seen = 0
+            for entries in held.snapshot().values():
+                for row in entries:
+                    if row.get("run_id") != "line-cannot-say":
+                        continue
+                    seen += 1
+                    assert abs(float(row["at"]) - recent) > 30.0, (
+                        "the placement IS the ledger's own stamp, to within 30 s: %r" % (row,))
+                    assert row.get("arrival") == "substituted", row
+            assert seen == len(keys), "the figure is not on every scope: %d" % seen
         finally:
             again.close()
             state.close()
@@ -1447,45 +1472,88 @@ class TestTheLineIsTheOnlySourceOfTheArrival:
 
         again, state = restarted(gateway)
         try:
-            charged = the_quota(state.root).what_a_run_was_charged(keys, "edited-stamp")
-            assert all(v is None for v in charged.values()), (
-                "an unreadable stamp produced a charge anyway: %r" % (charged,))
+            held = the_quota(state.root)
+            charged = held.what_a_run_was_charged(keys, "edited-stamp")
+            # Under `DECISION-0004` the figure is recorded and its PLACEMENT is substituted, so what
+            # this test checks is the property it was written for: the unreadable value never becomes
+            # a time. Before that decision it checked that nothing at all was written, and
+            # `STATE-CONSISTENCY-0005` found that leaving the two records disagreeing.
+            # The figure comes from the line, so the expectation is read from the line too rather than
+            # written here as a number that could drift away from the fixture.
+            signed = [line for line in meter.read(state.root) if line.get("run_id") == "edited-stamp"]
+            assert len(signed) == 1, signed
+            billed = float(signed[0]["seconds"])
+            assert all(v == billed for v in charged.values()), (
+                "an unreadable stamp left the quota disagreeing with the signed line's %s s: %r"
+                % (billed, charged))
+            for entries in held.snapshot().values():
+                for entry in entries:
+                    if entry.get("run_id") == "edited-stamp":
+                        assert isinstance(entry["at"], (int, float)), entry
+                        assert entry.get("arrival") == "substituted", entry
+            assert again.ledger.runs_with_a_substituted_arrival() == ["edited-stamp"], (
+                "the substituted placement is not listed anywhere a reader would find it")
         finally:
             again.close()
             state.close()
 
-    def test_an_arrival_in_the_future_is_refused_and_said_as_its_own_answer(self, gateway):
-        """A run cannot have arrived after now, and `this value is wrong` is not `there is no value`."""
+    def test_an_arrival_in_the_future_never_becomes_the_figures_placement(self, gateway):
+        """A run cannot have arrived after now, so that value is never where the figure sits.
+
+        Round four demanded that the future stamp not be believed, and this test asserted it by
+        requiring NOTHING to be written. `STATE-CONSISTENCY-0005` showed what "nothing" left behind,
+        and `DECISION-0004` records the figure at the recorder's own instant instead. The property this
+        test was written for is unchanged and is checked more strictly now: the future value is read
+        back out of the file, and it must not be the stored placement.
+        """
         from agentnode_sdk.gateway.allowance import AHEAD_OF_US
 
         keys = ["dev-1", AN_ACCOUNT]
         held = the_quota(gateway.state.root)
-        said = held.the_figure_for(keys, "from-the-future", 5.0, time.time() + (AHEAD_OF_US * 10))
-        assert set(said.values()) == {"arrival in the future"}, (
-            "a future arrival was reported as %r" % (sorted(set(said.values())),))
-        assert all(v is None for v in held.what_a_run_was_charged(keys, "from-the-future").values()), (
-            "a charge was created with a stamp in the future, so it would sit in the customer's "
-            "window until that time plus a day")
-        # And a stamp inside the jitter allowance is still accepted, or ordinary clock noise between
-        # two processes would start refusing real charges.
+        ahead = time.time() + (AHEAD_OF_US * 10)
+        said = held.the_figure_for(keys, "from-the-future", 5.0, ahead)
+        assert set(said.values()) == {"created without a usable arrival"}, (
+            "a future arrival was answered with %r" % (sorted(set(said.values())),))
+        charged = held.what_a_run_was_charged(keys, "from-the-future")
+        assert all(v == 5.0 for v in charged.values()), (
+            "the signed figure and the quota still disagree: %r" % (charged,))
+        assert set(held.how_many_figures_for(keys, "from-the-future").values()) == {1}
+        seen = 0
+        for scope, entries in held.snapshot().items():
+            for entry in entries:
+                if entry.get("run_id") != "from-the-future":
+                    continue
+                seen += 1
+                assert float(entry["at"]) < ahead - AHEAD_OF_US, (
+                    "the future stamp became the placement on %s, so the charge would sit in the "
+                    "customer's window until that time plus a window" % scope)
+                assert entry.get("arrival") == "substituted", entry
+        assert seen == len(keys), "the figure was not written on every scope: %d" % seen
+        # And a stamp inside the jitter allowance is still the real arrival, or ordinary clock noise
+        # between two processes would start substituting placements for real charges.
         ok = held.the_figure_for(keys, "a-second-ahead", 5.0, time.time() + 1.0)
         assert set(ok.values()) == {"created"}, ok
 
-    def test_the_three_refusals_are_told_apart(self, gateway):
-        """`no arrival`, `arrival in the future` and `outside the window` are three different facts,
-        and collapsing them would hide which one happened."""
+    def test_the_three_input_shapes_are_told_apart(self, gateway):
+        """No arrival, an arrival ahead of this clock, and an arrival the window has forgotten are
+        three different facts. Two of them now place the figure and one still refuses, and collapsing
+        any of them would hide which happened."""
         from agentnode_sdk.gateway.allowance import AHEAD_OF_US, WINDOW_SECONDS
 
         held = the_quota(gateway.state.root)
-        assert set(held.the_figure_for(["dev-1"], "none", 1.0, 0.0).values()) == {"no arrival"}
+        assert set(held.the_figure_for(["dev-1"], "none", 1.0, 0.0).values()) == \
+            {"created without a usable arrival"}
         assert set(held.the_figure_for(["dev-1"], "ahead", 1.0,
                                        time.time() + AHEAD_OF_US * 5).values()) == \
-            {"arrival in the future"}
+            {"created without a usable arrival"}
         assert set(held.the_figure_for(["dev-1"], "old", 1.0,
                                        time.time() - WINDOW_SECONDS * 3).values()) == \
             {"outside the window"}
-        assert all(v is None for v in
-                   held.what_a_run_was_charged(["dev-1"], "none").values())
+        # The refusal is still a refusal: a USABLE arrival the window has forgotten is not resurrected.
+        assert held.what_a_run_was_charged(["dev-1"], "old")["dev-1"] is None
+        # And the two that are not refusals left exactly one figure each.
+        assert set(held.how_many_figures_for(["dev-1"], "none").values()) == {1}
+        assert set(held.how_many_figures_for(["dev-1"], "ahead").values()) == {1}
 
 
 class TestWhichClockDecidesWhenTheTwoDisagree:
@@ -1544,19 +1612,183 @@ class TestWhichClockDecidesWhenTheTwoDisagree:
             again.close()
             state.close()
 
-    def test_an_arrival_nobody_knows_is_said_rather_than_called_expired(self, gateway):
-        """`0` is not a time, and "nobody knows when this arrived" is not "this is too old"."""
+    def test_an_arrival_nobody_knows_is_still_not_the_same_as_one_too_old(self, gateway):
+        """`0` is not a time, and "nobody knows when this arrived" is not "this is too old".
+
+        What each one DOES changed with `DECISION-0004` -- the first places the figure and says the
+        placement was substituted, the second still refuses -- and that is exactly why they must not
+        collapse into one answer.
+        """
         keys = ["dev-1", AN_ACCOUNT]
         held = the_quota(gateway.state.root)
         said = held.the_figure_for(keys, "no-arrival-at-all", 5.0, 0.0)
-        assert set(said.values()) == {"no arrival"}, (
-            "an unusable arrival was reported as %r" % (sorted(set(said.values())),))
-        assert all(v is None for v in held.what_a_run_was_charged(keys, "no-arrival-at-all").values())
-        # And it is NOT the same answer as an arrival the window has passed.
+        assert set(said.values()) == {"created without a usable arrival"}, (
+            "an unusable arrival was answered with %r" % (sorted(set(said.values())),))
+        assert all(v == 5.0 for v in
+                   held.what_a_run_was_charged(keys, "no-arrival-at-all").values())
+        # And it is NOT the same answer as an arrival the window has passed, which writes nothing.
         from agentnode_sdk.gateway.allowance import WINDOW_SECONDS
 
         expired = held.the_figure_for(keys, "too-old", 5.0, time.time() - (WINDOW_SECONDS * 3))
         assert set(expired.values()) == {"outside the window"}, expired
+        assert all(v is None for v in held.what_a_run_was_charged(keys, "too-old").values())
+
+
+
+
+class TestASignedLineBesideNoFigureAtAll:
+    """`STATE-CONSISTENCY-0005`, F-FUTURE-ARRIVAL-REFUSES-RECONCILIATION and
+    F-FUTURE-ARRIVAL-BREAKS-EXACTLY-ONE-FIGURE.
+
+    Round four's fix answered an unusable arrival instead of believing it, which was right. This is
+    what answering left behind: with **no entry on the scope**, the answer was all that happened, so a
+    signed line carrying billed seconds sat beside a scope carrying no figure at all -- for ever, since
+    every later start answers the same way -- and `moved` came back empty, so not even the decline was
+    recorded. `DECISION-0004` records the figure at the recorder's own instant and names the
+    substitution.
+
+    The finding says a future arrival *"prevents all quota repair"*, and that is wider than the code:
+    an existing wrong figure and a duplicate pair are repaired without the arrival being consulted at
+    all. The last test in this class holds that bound, because a repair claimed where none happened and
+    a defect claimed wider than it is are the same kind of mistake.
+    """
+
+    def _a_run_with_a_line_and_no_figure(self, gateway, run_id, queued_at):
+        """A settled, signed run whose quota entry is gone -- the crash this reconciliation is for."""
+        claimed(gateway, run_id, when=time.time() - 120.0, started=time.time() - 119.0)
+        a_signed_line(gateway.state.root, run_id, state="finished", queued_at=queued_at)
+        held = the_quota(gateway.state.root)
+        body = held.snapshot()
+        for scope in list(body):
+            body[scope] = [e for e in body[scope] if e.get("run_id") != run_id]
+        the_quota_file(gateway.state.root).write_text(json.dumps(body), encoding="utf-8")
+        assert all(v is None for v in
+                   the_quota(gateway.state.root).what_a_run_was_charged(
+                       ["dev-1", AN_ACCOUNT], run_id).values())
+
+    def _billed(self, root, run_id) -> float:
+        signed = [line for line in meter.read(root) if line.get("run_id") == run_id]
+        assert len(signed) == 1, signed
+        return float(signed[0]["seconds"])
+
+    def test_a_line_from_a_clock_ahead_of_us_still_ends_with_exactly_one_figure(self, gateway):
+        """The reported shape, end to end: a restart must leave the two records agreeing."""
+        from agentnode_sdk.gateway.allowance import AHEAD_OF_US
+
+        keys = ["dev-1", AN_ACCOUNT]
+        ahead = time.time() + (AHEAD_OF_US * 20)
+        self._a_run_with_a_line_and_no_figure(gateway, "ahead-and-missing", ahead)
+
+        again, state = restarted(gateway)
+        try:
+            billed = self._billed(state.root, "ahead-and-missing")
+            held = the_quota(state.root)
+            charged = held.what_a_run_was_charged(keys, "ahead-and-missing")
+            assert all(v == billed for v in charged.values()), (
+                "the signed line bills %s s and the quota says %r" % (billed, charged))
+            assert set(held.how_many_figures_for(keys, "ahead-and-missing").values()) == {1}, (
+                "a scope does not hold exactly one figure: %r"
+                % (held.how_many_figures_for(keys, "ahead-and-missing"),))
+            for entries in held.snapshot().values():
+                for entry in entries:
+                    if entry.get("run_id") == "ahead-and-missing":
+                        assert float(entry["at"]) < ahead - AHEAD_OF_US, entry
+        finally:
+            again.close()
+            state.close()
+
+    def test_a_line_that_cannot_say_when_it_arrived_does_too(self, gateway):
+        """The same hole through the other unusable shape, which nobody reported and which was there."""
+        keys = ["dev-1", AN_ACCOUNT]
+        recent = time.time() - 120.0
+        self._a_run_with_a_line_and_no_figure(gateway, "zero-and-missing", recent)
+        edit_the_line(gateway.state.root, "zero-and-missing", queued_at=0)
+
+        again, state = restarted(gateway)
+        try:
+            billed = self._billed(state.root, "zero-and-missing")
+            charged = the_quota(state.root).what_a_run_was_charged(keys, "zero-and-missing")
+            assert all(v == billed for v in charged.values()), (
+                "a line that cannot say when it arrived left the quota empty: %r" % (charged,))
+        finally:
+            again.close()
+            state.close()
+
+    def test_the_substitution_is_recorded_and_can_be_listed(self, gateway):
+        """A substituted placement nothing can list is one nobody will look at."""
+        from agentnode_sdk.gateway.allowance import AHEAD_OF_US
+
+        self._a_run_with_a_line_and_no_figure(gateway, "listed", time.time() + (AHEAD_OF_US * 20))
+        again, state = restarted(gateway)
+        try:
+            assert again.ledger.runs_with_a_substituted_arrival() == ["listed"]
+            # It is recorded as a repair, with the word in it rather than beside it.
+            entry = again.ledger.run_entry("listed") or {}
+            repairs = entry.get("quota_repairs") or []
+            assert any("created without a usable arrival" in (r.get("was", {}).get("did") or {}).values()
+                       for r in repairs), repairs
+            # And it is NOT the sweep's business: the run is settled and the figure is right.
+            assert "listed" not in again.ledger.runs_needing_attention(), (
+                "a settled run with a right figure was handed back to the recovery sweep")
+        finally:
+            again.close()
+            state.close()
+
+    def test_and_a_second_start_changes_nothing(self, gateway):
+        """A5's idempotence, which the refusal could never reach: it answered the same way for ever."""
+        from agentnode_sdk.gateway.allowance import AHEAD_OF_US
+
+        self._a_run_with_a_line_and_no_figure(gateway, "twice", time.time() + (AHEAD_OF_US * 20))
+        again, state = restarted(gateway)
+        try:
+            after_one = digest_of(the_quota_file(state.root))
+            repairs_one = len((again.ledger.run_entry("twice") or {}).get("quota_repairs") or [])
+        finally:
+            again.close()
+            state.close()
+        third, state3 = restarted(gateway)
+        try:
+            assert digest_of(the_quota_file(state3.root)) == after_one, (
+                "the second start rewrote the quota, so the repair is not byte-stable")
+            assert len((third.ledger.run_entry("twice") or {}).get("quota_repairs") or []) == \
+                repairs_one, "the second start recorded another repair for a run already repaired"
+            assert third.ledger.runs_with_a_substituted_arrival() == ["twice"]
+        finally:
+            third.close()
+            state3.close()
+
+    def test_an_existing_wrong_figure_is_repaired_whatever_the_line_says_about_the_arrival(self,
+                                                                                          gateway):
+        """The bound of the defect, so the submission does not claim a wider one than it fixed.
+
+        With an entry already there, the arrival is never consulted: a wrong value is set and a
+        duplicate pair is collapsed, future stamp or not. That was true before this change and stays
+        true, and it is the half of the finding's wording that the code does not support.
+        """
+        from agentnode_sdk.gateway.allowance import AHEAD_OF_US
+
+        keys = ["dev-1", AN_ACCOUNT]
+        held = the_quota(gateway.state.root)
+        ahead = time.time() + (AHEAD_OF_US * 20)
+        here = time.time() - 60.0
+        # One wrong figure, and a scope with two.
+        held.the_figure_for(keys, "wrong", 1.0, here)
+        body = held.snapshot()
+        for scope in body:
+            for entry in body[scope]:
+                if entry.get("run_id") == "wrong":
+                    entry["seconds"] = 99.0
+            body[scope].append({"run_id": "double", "at": here, "seconds": 1.0})
+            body[scope].append({"run_id": "double", "at": here + 1.0, "seconds": 2.0})
+        the_quota_file(gateway.state.root).write_text(json.dumps(body), encoding="utf-8")
+
+        said = the_quota(gateway.state.root).the_figure_for(keys, "wrong", 7.0, ahead)
+        assert set(said.values()) == {"set"}, said
+        assert all(v == 7.0 for v in
+                   the_quota(gateway.state.root).what_a_run_was_charged(keys, "wrong").values())
+        twice = the_quota(gateway.state.root).the_figure_for(keys, "double", 7.0, ahead)
+        assert set(twice.values()) == {"deduplicated"}, twice
+        assert set(the_quota(gateway.state.root).how_many_figures_for(keys, "double").values()) == {1}
 
 
 # ----------------------------------- SC5, with two real gateway services in two real processes
@@ -1592,6 +1824,15 @@ class TestTwoGatewayServicesInTwoRealProcesses:
         import json, os, sys, time
 
         root, run_id, word, cleanup, barrier, mode = sys.argv[1:7]
+        rest = sys.argv[7:]
+        # How long this child spends INSIDE the target run's close, so the contended region is long
+        # enough that the other child's necessarily falls inside it. Fault injection, deterministic.
+        slow_ms = float(rest[0]) if rest else 0.0
+        # A file this child touches once its region has ended, and a file it waits for before starting
+        # its own. Together they FORCE THE TWO REGIONS APART, which is the control for the overlap
+        # measurement: with them set, the measurement must refuse.
+        after_me = rest[1] if len(rest) > 1 else ""
+        wait_for = rest[2] if len(rest) > 2 else ""
         from agentnode_sdk.gateway.identity import GatewayState
         from agentnode_sdk.gateway.server import GatewayService
         from tests.test_em3c_gateway import StandInBackend
@@ -1621,12 +1862,49 @@ class TestTwoGatewayServicesInTwoRealProcesses:
         # test catches a second line -- the meter would refuse one even if the two recoveries never
         # met. So overlap is its own measurement: each child says when its contended work began and
         # ended, and the test asserts there was an instant when both were inside their own window.
+        #
+        # AND THE WINDOW MUST BE THE CONTENDED REGION, NOT THE WHOLE CONSTRUCTOR.
+        # STATE-CONSISTENCY-0005, F-RECOVERY-WINDOW-IS-WIDER-THAN-CONTENTION: "those constructor
+        # windows can overlap while the actual lock-protected recovery of the target run occurs
+        # sequentially". Correct -- a constructor does lifecycle, journal pickup and more besides, so
+        # two overlapping constructors say nothing about the one operation this test is about. The
+        # window is now the target run's own close: `_close_an_interrupted_run` for THIS run_id, which
+        # is where the line is written and the record settled.
         said_began = said_ended = 0.0
+        marks = []
         if mode == "recover":
+            closing = GatewayService._close_an_interrupted_run
+
+            def timed(service_self, record, entry, *a, **kw):
+                rid = str(getattr(record, "run_id", "") or (entry or {}).get("run_id") or "")
+                if rid != run_id:
+                    return closing(service_self, record, entry, *a, **kw)
+                begin = time.time()
+                # Spend `slow_ms` INSIDE the region, before doing the work, so the other child's
+                # attempt at the same run necessarily happens while this one is still in here. Without
+                # it the region is sub-millisecond and whether the two meet is up to the scheduler --
+                # which is how a contention test becomes a coin toss that usually passes.
+                if slow_ms:
+                    time.sleep(slow_ms / 1000.0)
+                try:
+                    return closing(service_self, record, entry, *a, **kw)
+                finally:
+                    marks.append([begin, time.time()])
+
+            GatewayService._close_an_interrupted_run = timed
             ready_and_wait()
-            said_began = time.time()
+            # AFTER the handshake, so the parent is never waiting for a child that is waiting for a
+            # file the other child writes after the barrier.
+            if wait_for:
+                until = time.time() + 60
+                while not os.path.exists(wait_for) and time.time() < until:
+                    time.sleep(0.002)
             service = GatewayService(state, backend=StandInBackend(), recover=True)
-            said_ended = time.time()
+            if marks:
+                said_began = min(b for b, _ in marks)
+                said_ended = max(e for _, e in marks)
+            if after_me:
+                open(after_me, "w").close()
         else:
             service = GatewayService(state, backend=StandInBackend(), recover=False)
             ready_and_wait()
@@ -1661,25 +1939,40 @@ class TestTwoGatewayServicesInTwoRealProcesses:
             said_ended = time.time()
         said["began"] = said_began
         said["ended"] = said_ended
+        said["marks"] = marks
+        said["window_is"] = ("the target run's own close" if mode == "recover"
+                             else "the explicit contended writes")
         print("RESULT " + json.dumps(said))
     ''')
 
-    def _run_two(self, gateway, tmp_path, run_id, first, second, mode="contend"):
+    def _run_two(self, gateway, tmp_path, run_id, first, second, mode="contend",
+                 slow_ms=0.0, force_apart=False, require_overlap=True):
+        """Two real processes, released together, each reporting the window of its contended work.
+
+        `slow_ms` is spent inside the FIRST child's contended region, so the second child's falls
+        inside it by construction rather than by luck. `force_apart` makes the second child wait until
+        the first has left its region, which is the control for the overlap measurement: the windows
+        are then disjoint and `_they_overlapped` must refuse them.
+        """
         import subprocess
 
         program = tmp_path / "contend.py"
         program.write_text(self.CHILD, encoding="utf-8")
         barrier = tmp_path / "go"
+        done = tmp_path / ("left-the-region-" + run_id)
         here = str(pathlib.Path(__file__).resolve().parents[1])
         env = dict(os.environ)
         env["PYTHONPATH"] = here
         root = str(pathlib.Path(gateway.state.root))
 
         started = []
-        for word, cleanup in (first, second):
+        for index, (word, cleanup) in enumerate((first, second)):
+            extra = [str(slow_ms if index == 0 else 0.0),
+                     str(done) if (force_apart and index == 0) else "",
+                     str(done) if (force_apart and index == 1) else ""]
             started.append(subprocess.Popen(
                 [sys.executable, str(program), root, run_id, word, json.dumps(cleanup),
-                 str(barrier), mode],
+                 str(barrier), mode] + extra,
                 cwd=here, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env))
         release_when_both_are_ready(started, barrier, tmp_path)
         said = []
@@ -1691,7 +1984,8 @@ class TestTwoGatewayServicesInTwoRealProcesses:
             said.append(json.loads(line[-1][len("RESULT "):]))
         assert len({s["pid"] for s in said}) == 2, "the children shared a process: %r" % (said,)
         assert str(os.getpid()) not in {str(s["pid"]) for s in said}, "a child ran in this test"
-        self._they_overlapped(said)
+        if require_overlap:
+            self._they_overlapped(said)
         return said
 
     @staticmethod
@@ -1705,8 +1999,15 @@ class TestTwoGatewayServicesInTwoRealProcesses:
         line even if the two recoveries never met.
         """
         windows = [(float(s.get("began") or 0.0), float(s.get("ended") or 0.0)) for s in said]
-        assert all(b > 0 and e >= b for b, e in windows), (
-            "a child did not report its window: %r" % (windows,))
+        # NOTHING MEASURED is a different failure from NO OVERLAP, and in recovery mode it has a
+        # specific cause worth naming: a child that never entered the target run's close reports no
+        # window at all, and a test that read that as "did not overlap" would be describing the wrong
+        # thing. STATE-CONSISTENCY-0005 asked for the instrument to be the contended region itself, so
+        # the instrument has to be able to say that it never ran.
+        for s, (b, e) in zip(said, windows):
+            assert b > 0 and e >= b, (
+                "a child measured NOTHING: it never entered %s. said=%r"
+                % (s.get("window_is") or "its contended region", s))
         latest_start = max(b for b, _ in windows)
         earliest_end = min(e for _, e in windows)
         assert latest_start <= earliest_end, (
@@ -1769,6 +2070,58 @@ class TestTwoGatewayServicesInTwoRealProcesses:
                 "a process ended seeing %r while the line says %r" % (s["quota_after"],
                                                                      line["seconds"]))
 
+    def test_the_measurement_refuses_two_recoveries_that_were_forced_apart(self, gateway, tmp_path):
+        """The control for the instrument, and it is a real serialisation rather than a synthetic one.
+
+        `STATE-CONSISTENCY-0005`, F-RECOVERY-WINDOW-IS-WIDER-THAN-CONTENTION, ended with the thing to
+        supply: *"Instrument the actual target-run recovery/lock region and supply a negative control
+        that forces those regions apart."* The region moved to the target run's own close; this is the
+        control. The second child waits until the first has LEFT that region, so the two cannot have
+        met, and the measurement must say so.
+
+        Without this, the overlap assertion could be satisfied by two windows that always overlap for
+        a reason that has nothing to do with contention -- and nothing in the suite would notice. The
+        synthetic unit control below proves the interval arithmetic; this proves the timestamps
+        delimit the operation, which is the half the arithmetic cannot reach.
+        """
+        arrived = time.time() - 300.0
+        claimed(gateway, "forced-apart", when=arrived, started=arrived + 1.0)
+        the_quota(gateway.state.root).note_every(["dev-1"], "forced-apart", now=arrived)
+
+        driver = TestTwoGatewayServicesInTwoRealProcesses()
+        said = driver._run_two(
+            gateway, tmp_path, "forced-apart", ("interrupted", True), ("interrupted", True),
+            mode="recover", slow_ms=400.0, force_apart=True, require_overlap=False)
+
+        # WHAT SERIALISATION ACTUALLY LOOKS LIKE HERE, and it is not what I expected when I wrote this
+        # control. Forced apart, the second child does not merely enter the region late -- it never
+        # enters it at all, because the first has already closed the run and there is nothing left to
+        # close. So the two worlds are observably different in the instrument:
+        #
+        #   released together  BOTH children report a region (the test above asserts it)
+        #   forced apart       EXACTLY ONE does, and the other has nothing to recover
+        #
+        # Either way the measurement must refuse, and it must refuse with the right reason, which is
+        # why "measured NOTHING" has a message of its own.
+        entered = [s for s in said if s.get("marks")]
+        assert len(entered) == 1, (
+            "forcing the regions apart left %d of two children inside the region: %r"
+            % (len(entered), said))
+        assert entered[0]["pid"] == said[0]["pid"], (
+            "the child that ran first is not the one that did the work: %r" % (said,))
+        with pytest.raises(AssertionError) as refused:
+            driver._they_overlapped(said)
+        assert "measured NOTHING" in str(refused.value), str(refused.value)
+        # And the second child's recovery was not merely silent: it agreed with what it found.
+        assert said[1]["settled_after"] == said[0]["settled_after"], said
+
+        # And the product still held while they were apart: one line, one figure, one answer. A
+        # control that breaks the thing it is controlling proves nothing about the instrument.
+        got = lines_for(gateway.state.root, "forced-apart")
+        assert len(got) == 1, "two serialised recoveries wrote %d lines" % len(got)
+        counts = the_quota(gateway.state.root).how_many_figures_for(["dev-1"], "forced-apart")
+        assert counts.get("dev-1") == 1, counts
+
     def test_the_overlap_check_refuses_two_windows_that_do_not_meet(self):
         """The control for the overlap assertion, and it needs no real serialisation to be engineered.
 
@@ -1786,8 +2139,10 @@ class TestTwoGatewayServicesInTwoRealProcesses:
             TestTwoGatewayServicesInTwoRealProcesses._they_overlapped(apart)
         together = [{"began": 100.0, "ended": 103.0}, {"began": 102.0, "ended": 104.0}]
         TestTwoGatewayServicesInTwoRealProcesses._they_overlapped(together)
-        # And a child that reported no window at all is refused rather than treated as overlapping.
-        with pytest.raises(AssertionError, match="did not report its window"):
+        # And a child that reported no window at all is refused rather than treated as overlapping --
+        # with its own message, because "it never entered the region" and "the regions did not meet"
+        # are different findings and reading the first as the second describes the wrong thing.
+        with pytest.raises(AssertionError, match="measured NOTHING"):
             TestTwoGatewayServicesInTwoRealProcesses._they_overlapped(
                 [{"began": 0.0, "ended": 0.0}, {"began": 102.0, "ended": 104.0}])
 
@@ -1840,9 +2195,15 @@ class TestTwoGatewaysRecoveringAtOnce:
 
         said = TestTwoGatewayServicesInTwoRealProcesses._run_two(
             TestTwoGatewayServicesInTwoRealProcesses(), gateway, tmp_path, "both-recovering",
-            ("interrupted", True), ("interrupted", True), mode="recover")
+            ("interrupted", True), ("interrupted", True), mode="recover", slow_ms=400.0)
 
         assert all(s["mode"] == "recover" for s in said), said
+        # BOTH children were inside the target run's own close, which is what `_run_two` asserted by
+        # overlap and this says in the plainest form: two regions, not one. The control below shows the
+        # same instrument reporting exactly one when the two are forced apart.
+        assert all(s.get("marks") for s in said), (
+            "a child never entered the target run's close, so there was no contention to pass: %r"
+            % (said,))
         # ONE line, written by one of two processes that both tried.
         got = lines_for(gateway.state.root, "both-recovering")
         assert len(got) == 1, (
