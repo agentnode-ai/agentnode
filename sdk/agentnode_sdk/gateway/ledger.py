@@ -478,41 +478,18 @@ class Ledger:
                 repairs.append({"at": time.time(), "was": was, "now": float(now)})
                 self._write_locked()
 
-    def runs_with_a_substituted_arrival(self) -> list[str]:
-        """Every run whose quota figure was placed at a recorder's instant instead of at its arrival.
-
-        DERIVED, never stored twice: the fact is already in the `did` of the repair that recorded it,
-        and a second field saying the same thing is a second thing that can disagree with the first.
-
-        It exists because `DECISION-0004` records the figure rather than refusing it, and a
-        substitution nothing can list is one nobody will ever look at. `STATE-CONSISTENCY-0005` asked
-        for "a representation that preserves safety without leaving contradictory records"; that
-        representation has two halves, and this is the second. The first is that the figure equals the
-        signed line.
-
-        NOT part of `runs_needing_attention`. That predicate is about an ending or a cleanup that is
-        not established and it drives a sweep with a budget. A substituted placement is neither: the
-        run is settled, the figure is right, and only where it sits in the window is this service's own
-        choice. Folding it in would make every start keep working on runs that are already as resolved
-        as this process can make them.
-        """
-        want = "created without a usable arrival"
-        with self._lock, ProcessLock(self.path):
-            self._load()
-            out = []
-            for run_id, entry in self._data["runs"].items():
-                repairs = entry.get("quota_repairs")
-                if not isinstance(repairs, list):
-                    continue
-                for repair in repairs:
-                    if not isinstance(repair, dict):
-                        continue
-                    was = repair.get("was")
-                    did = was.get("did") if isinstance(was, dict) else None
-                    if isinstance(did, dict) and any(v == want for v in did.values()):
-                        out.append(run_id)
-                        break
-            return sorted(out)
+    # THERE IS NO `runs_with_a_substituted_arrival` HERE, AND THERE WAS FOR ONE ROUND.
+    #
+    # It derived the listing of substituted placements from the `quota_repairs` above, and
+    # `STATE-CONSISTENCY-0006` found the gap: that note is written AFTER the quota's own atomic write
+    # and is best-effort, since a failed audit note must not fail a repair. A crash in between left
+    # the quota saying `arrival: substituted` for ever while the listing said nothing, and the next
+    # start found the figure already correct and repaired nothing.
+    #
+    # The fact belongs where it is written atomically with the figure it describes, so the listing is
+    # `allowance.runs_with_a_substituted_arrival_in` and reads the quota. These repair notes stay what
+    # they were -- an audit trail of what a reconciliation did -- and nothing derives a durable claim
+    # from them.
 
     def unfinished_runs(self, now: float | None = None) -> list[str]:
         """Runs with no established ending, and recent enough that a line may still be written.

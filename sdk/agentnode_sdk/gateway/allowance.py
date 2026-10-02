@@ -357,6 +357,36 @@ def what_a_run_was_charged_in(body: dict, keys, run_id: str) -> dict:
     return out
 
 
+def runs_with_a_substituted_arrival_in(body: dict) -> list[str]:
+    """Every run in an ALREADY-READ quota document whose figure was placed by a clock, not its arrival.
+
+    ## Why this reads the QUOTA and not the ledger, which is where it first looked
+
+    `STATE-CONSISTENCY-0006`, F-SUBSTITUTED-ARRIVAL-AUDIT-HAS-A-DURABLE-GAP. The first version derived
+    this from the ledger's `quota_repairs`, and that annotation is written AFTER the quota's own atomic
+    write and is best-effort -- its exceptions are swallowed, because a failed audit note must not fail
+    a repair. So a crash in the gap left the quota saying `arrival: substituted` for ever while the
+    listing said nothing, and the next start found the figure already correct and repaired nothing.
+    Two records, one claim, and a window in which they disagree permanently.
+
+    The substitution is a property OF THE ENTRY, and it is written in the same `_atomically` call as the
+    figure it describes. Reading it from there cannot have a gap: there is one write and one fact. The
+    ledger's repair note stays what it always was -- an audit trail of what a reconciliation did -- and
+    nothing derives a durable claim from it any more.
+
+    A placement is forgotten when its figure is: once the window drops the entry, there is no figure
+    whose placement could be in question, and the absence is the right answer rather than a loss.
+    """
+    out = []
+    for entries in (body.values() if isinstance(body, dict) else []):
+        for entry in (entries if isinstance(entries, list) else []):
+            if isinstance(entry, dict) and entry.get("arrival") == "substituted":
+                run_id = str(entry.get("run_id") or "")
+                if run_id and run_id not in out:
+                    out.append(run_id)
+    return sorted(out)
+
+
 class Use:
     """What each client has used lately. Durable, locked, and forgotten by time."""
 
@@ -631,6 +661,15 @@ class Use:
         is what `STATE-CONSISTENCY-0002` found.
         """
         return how_many_figures_in(self.snapshot(), keys, run_id)
+
+    def runs_with_a_substituted_arrival(self) -> list[str]:
+        """Every run whose figure was placed by this recorder's clock rather than by its own arrival.
+
+        Read from the quota itself, for the reason in `runs_with_a_substituted_arrival_in`: the fact and
+        the figure are written by the same atomic write, so there is no gap in which one can exist
+        without the other.
+        """
+        return runs_with_a_substituted_arrival_in(self.snapshot())
 
     def what_a_run_was_charged(self, keys, run_id: str) -> dict:
         """What each named scope currently holds for this run: {scope: seconds or None}.

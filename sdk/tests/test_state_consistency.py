@@ -1491,7 +1491,7 @@ class TestTheLineIsTheOnlySourceOfTheArrival:
                     if entry.get("run_id") == "edited-stamp":
                         assert isinstance(entry["at"], (int, float)), entry
                         assert entry.get("arrival") == "substituted", entry
-            assert again.ledger.runs_with_a_substituted_arrival() == ["edited-stamp"], (
+            assert again.use.runs_with_a_substituted_arrival() == ["edited-stamp"], (
                 "the substituted placement is not listed anywhere a reader would find it")
         finally:
             again.close()
@@ -1721,7 +1721,7 @@ class TestASignedLineBesideNoFigureAtAll:
         self._a_run_with_a_line_and_no_figure(gateway, "listed", time.time() + (AHEAD_OF_US * 20))
         again, state = restarted(gateway)
         try:
-            assert again.ledger.runs_with_a_substituted_arrival() == ["listed"]
+            assert again.use.runs_with_a_substituted_arrival() == ["listed"]
             # It is recorded as a repair, with the word in it rather than beside it.
             entry = again.ledger.run_entry("listed") or {}
             repairs = entry.get("quota_repairs") or []
@@ -1733,6 +1733,68 @@ class TestASignedLineBesideNoFigureAtAll:
         finally:
             again.close()
             state.close()
+
+    def test_the_listing_survives_the_audit_note_failing_altogether(self, gateway, monkeypatch):
+        """`STATE-CONSISTENCY-0006`, F-SUBSTITUTED-ARRIVAL-AUDIT-HAS-A-DURABLE-GAP, injected.
+
+        The quota's write is atomic and authoritative; the ledger's repair note comes after it and is
+        best-effort, because a failed audit note must not fail a repair. So the gap the review named is
+        real as long as the LISTING is derived from that note: a crash in between leaves the quota saying
+        `arrival: substituted` for ever while the listing says nothing, and the next start finds the
+        figure already correct and repairs nothing.
+
+        This makes the note fail outright -- the worst case in that gap, strictly worse than a crash,
+        because the process carries on -- and requires the listing to be right anyway.
+        """
+        from agentnode_sdk.gateway import ledger as ledger_module
+        from agentnode_sdk.gateway.allowance import AHEAD_OF_US
+
+        self._a_run_with_a_line_and_no_figure(gateway, "note-failed", time.time() + (AHEAD_OF_US * 20))
+
+        def no_note(self, run_id, was, now):
+            raise OSError("the audit note could not be written")
+
+        monkeypatch.setattr(ledger_module.Ledger, "note_quota_repair", no_note)
+        again, state = restarted(gateway)
+        try:
+            billed = self._billed(state.root, "note-failed")
+            charged = the_quota(state.root).what_a_run_was_charged(["dev-1", AN_ACCOUNT], "note-failed")
+            assert all(v == billed for v in charged.values()), charged
+            # The ledger genuinely has NO record of the repair -- this is the gap, not a simulation of it.
+            entry = again.ledger.run_entry("note-failed") or {}
+            assert not (entry.get("quota_repairs") or []), (
+                "premise: the audit note must be absent for this to be the reported failure: %r"
+                % (entry.get("quota_repairs"),))
+            # And the listing is still right, because it reads the record that was written atomically.
+            assert again.use.runs_with_a_substituted_arrival() == ["note-failed"], (
+                "the quota says the placement was substituted and the listing cannot see it")
+        finally:
+            again.close()
+            state.close()
+
+    def test_and_a_restart_after_that_gap_still_lists_it(self, gateway, monkeypatch):
+        """The second half of the finding: on restart the figure is already correct, so nothing repairs
+        the ledger -- which is exactly why the listing must not depend on the ledger."""
+        from agentnode_sdk.gateway import ledger as ledger_module
+        from agentnode_sdk.gateway.allowance import AHEAD_OF_US
+
+        self._a_run_with_a_line_and_no_figure(gateway, "after-the-gap", time.time() + (AHEAD_OF_US * 20))
+        monkeypatch.setattr(ledger_module.Ledger, "note_quota_repair",
+                            lambda self, run_id, was, now: (_ for _ in ()).throw(OSError("no note")))
+        one, state_one = restarted(gateway)
+        one.close()
+        state_one.close()
+        monkeypatch.undo()
+
+        two, state_two = restarted(gateway)
+        try:
+            assert not ((two.ledger.run_entry("after-the-gap") or {}).get("quota_repairs") or []), (
+                "premise: the restart did not repair the audit note, because the figure was already "
+                "correct -- which is the reviewer's point")
+            assert two.use.runs_with_a_substituted_arrival() == ["after-the-gap"]
+        finally:
+            two.close()
+            state_two.close()
 
     def test_and_a_second_start_changes_nothing(self, gateway):
         """A5's idempotence, which the refusal could never reach: it answered the same way for ever."""
@@ -1752,7 +1814,7 @@ class TestASignedLineBesideNoFigureAtAll:
                 "the second start rewrote the quota, so the repair is not byte-stable")
             assert len((third.ledger.run_entry("twice") or {}).get("quota_repairs") or []) == \
                 repairs_one, "the second start recorded another repair for a run already repaired"
-            assert third.ledger.runs_with_a_substituted_arrival() == ["twice"]
+            assert third.use.runs_with_a_substituted_arrival() == ["twice"]
         finally:
             third.close()
             state3.close()
