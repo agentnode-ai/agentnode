@@ -1040,7 +1040,8 @@ class TestAQuotaEntryThatIsMissingAltogether:
         The window forgets by `at`. A charge stamped `now` is a charge they did not incur then, and it
         would keep counting against their allowance long after the original would have been forgotten.
         """
-        keys = ["dev-1", AN_ACCOUNT]
+        # No scope list here, on purpose: this reads the document itself rather than asking per
+        # scope, because what it is about is the `at` on whatever entries exist and not their figures.
         arrived = time.time() - (6 * 60 * 60)          # six hours ago, well inside the window
         claimed(gateway, "stamped-when-it-arrived", when=arrived, started=arrived + 1.0)
         a_signed_line(gateway.state.root, "stamped-when-it-arrived", state="interrupted",
