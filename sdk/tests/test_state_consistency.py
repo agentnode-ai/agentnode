@@ -1440,8 +1440,6 @@ class TestTheLineIsTheOnlySourceOfTheArrival:
     def test_and_the_reconciliation_survives_one_that_was_edited_in(self, gateway):
         """The case the meter cannot produce and a text editor can: the file is the authority, and a
         file is a file."""
-        import pathlib as _pathlib
-
         keys = ["dev-1", AN_ACCOUNT]
         recent = time.time() - 120.0
         self._a_line_with(gateway, "edited-stamp", queued_at=recent, ledger_first_seen=recent)
