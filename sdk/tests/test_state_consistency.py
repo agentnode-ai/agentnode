@@ -1819,6 +1819,58 @@ class TestASignedLineBesideNoFigureAtAll:
             third.close()
             state3.close()
 
+    def test_what_happens_to_the_marker_when_a_scope_holds_two_figures(self, gateway):
+        """Dedupe keeps the EARLIEST entry, so what happens to the marker is worth measuring, not
+        assuming.
+
+        A substituted placement sits at the recorder's instant, which is LATER than any real arrival. So
+        when a scope holds both, `min(at)` keeps the real-arrival entry and the substituted one goes --
+        and the surviving figure's placement genuinely is not substituted any more, so the listing being
+        silent about it afterwards is correct rather than a loss. That is the answer; this measures it
+        instead of arguing it, because the opposite outcome would be a defect and the two look alike from
+        the outside.
+        """
+        keys = ["dev-1"]
+        held = the_quota(gateway.state.root)
+        arrived = time.time() - 600.0
+        body = held.snapshot()
+        body.setdefault("dev-1", [])
+        body["dev-1"].append({"run_id": "both", "at": arrived, "seconds": 1.0})
+        body["dev-1"].append({"run_id": "both", "at": time.time(), "seconds": 2.0,
+                              "arrival": "substituted"})
+        the_quota_file(gateway.state.root).write_text(json.dumps(body), encoding="utf-8")
+        assert the_quota(gateway.state.root).runs_with_a_substituted_arrival() == ["both"]
+
+        again = the_quota(gateway.state.root)
+        said = again.the_figure_for(keys, "both", 7.0, arrived)
+        assert set(said.values()) == {"deduplicated"}, said
+        assert set(again.how_many_figures_for(keys, "both").values()) == {1}
+        survivor = [e for e in again.snapshot()["dev-1"] if e.get("run_id") == "both"]
+        assert len(survivor) == 1, survivor
+        assert float(survivor[0]["at"]) == arrived, (
+            "the earliest entry did not survive, so the placement moved: %r" % (survivor,))
+        assert "arrival" not in survivor[0], (
+            "the surviving entry is placed at a real arrival and still claims a substitution: %r"
+            % (survivor,))
+        assert again.runs_with_a_substituted_arrival() == [], (
+            "the run is still listed as substituted although the surviving figure is not")
+
+    def test_a_later_correction_does_not_erase_the_substitution(self, gateway):
+        """And the other direction: when the signed seconds change, the figure is set in place and the
+        placement is still the substituted one, so the run stays listed."""
+        keys = ["dev-1", AN_ACCOUNT]
+        from agentnode_sdk.gateway.allowance import AHEAD_OF_US
+
+        held = the_quota(gateway.state.root)
+        held.the_figure_for(keys, "corrected", 5.0, time.time() + (AHEAD_OF_US * 20))
+        assert held.runs_with_a_substituted_arrival() == ["corrected"]
+        said = the_quota(gateway.state.root).the_figure_for(keys, "corrected", 9.0, 0.0)
+        assert set(said.values()) == {"set"}, said
+        later = the_quota(gateway.state.root)
+        assert all(v == 9.0 for v in later.what_a_run_was_charged(keys, "corrected").values())
+        assert later.runs_with_a_substituted_arrival() == ["corrected"], (
+            "correcting the seconds dropped the fact that the placement was substituted")
+
     def test_an_existing_wrong_figure_is_repaired_whatever_the_line_says_about_the_arrival(self,
                                                                                           gateway):
         """The bound of the defect, so the submission does not claim a wider one than it fixed.
