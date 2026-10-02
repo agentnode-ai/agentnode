@@ -65,6 +65,14 @@ STOP_NAME = "stopped.json"
 #: ever would refuse a client that behaved perfectly a month ago.
 WINDOW_SECONDS = 24 * 60 * 60.0
 
+#: How far ahead of now a recorded arrival may be before it is refused rather than believed.
+#:
+#: A run cannot have arrived after now, so in principle this is zero. It is not zero because the stamp
+#: and the clock reading it can come from two processes and a second of jitter between them is
+#: ordinary. A minute is generous for that and nowhere near long enough for a wrong value to matter: a
+#: charge stamped in the future would sit in the customer's window until that time plus a whole day.
+AHEAD_OF_US = 60.0
+
 
 #: What every refusal of these two kinds begins with. A client is told in prose, like every
 #: other refusal, but the prose starts with something stable -- so "I am over a limit" can be
@@ -569,6 +577,14 @@ class Use:
                     changed = True
                 elif arrived <= 0.0:
                     out[scope] = "no arrival"
+                elif arrived > at + AHEAD_OF_US:
+                    # A RUN CANNOT HAVE ARRIVED AFTER NOW. `STATE-CONSISTENCY-0004`,
+                    # F-SIGNED-ARRIVAL-INVALID-FALLS-BACK-TO-LEDGER, second half: "a positive but
+                    # absurd future timestamp is accepted". It was -- the only test was `> 0` -- and a
+                    # charge stamped in the future would sit in the customer's window until that time
+                    # plus a day. Said as its own answer rather than folded into `no arrival`, because
+                    # "this value is wrong" and "there is no value" are different things to find.
+                    out[scope] = "arrival in the future"
                 elif arrived > at - self.window:
                     body.setdefault(scope, []).append(
                         {"run_id": str(run_id), "at": arrived, "seconds": wanted})

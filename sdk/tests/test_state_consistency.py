@@ -1355,6 +1355,141 @@ class TestOneFigurePerScopeAndExactlyTheSignedOne:
             state.close()
 
 
+
+class TestTheLineIsTheOnlySourceOfTheArrival:
+    """`STATE-CONSISTENCY-0004`, F-SIGNED-ARRIVAL-INVALID-FALLS-BACK-TO-LEDGER.
+
+    Round two moved the arrival from the ledger to the signed line. Round four pointed out that
+    ORDERING the two sources was not enough: a line whose `queued_at` was absent, zero or unreadable
+    sent the code to the ledger anyway, so the arrival could still be derived from the cache while the
+    authority sat right there. And a positive but absurd future stamp was simply believed.
+
+    Every path that reaches the reconciliation has a line, so the ledger is not consulted for this at
+    all now, and a value that cannot be a time is refused rather than used.
+    """
+
+    def _a_line_with(self, gateway, run_id, queued_at, ledger_first_seen):
+        claimed(gateway, run_id, when=ledger_first_seen, started=ledger_first_seen + 1.0)
+        a_signed_line(gateway.state.root, run_id, state="finished", queued_at=queued_at)
+
+    def _edit_the_line(self, root, run_id, **changes):
+        """Change a field of the one signed line on disk.
+
+        Needed because the meter will not WRITE the shapes this class is about: `meter.record` does
+        `float(queued_at or started_at)` at line 470, so a zero is replaced by the start and an
+        unreadable value raises. Those shapes are therefore unreachable through the writer -- and
+        reachable through anything else that can edit a file, which is why the reconciliation still
+        has to answer for them. Saying they are reachable through the product would be a claim this
+        cannot support, so the test says where they come from instead.
+        """
+        import pathlib as _pathlib
+
+        where = _pathlib.Path(root) / meter.METER_NAME
+        out = []
+        for raw in where.read_text(encoding="utf-8").splitlines():
+            if run_id in raw:
+                said = json.loads(raw)
+                said.update(changes)
+                raw = json.dumps(said, sort_keys=True)
+            out.append(raw)
+        where.write_text(chr(10).join(out) + chr(10), encoding="utf-8")
+
+    def test_a_line_that_cannot_say_when_it_arrived_does_not_borrow_the_ledgers_answer(self, gateway):
+        """The ledger's own stamp here is recent and perfectly usable. It must still not be used."""
+        keys = ["dev-1", AN_ACCOUNT]
+        recent = time.time() - 120.0
+        self._a_line_with(gateway, "line-cannot-say", queued_at=recent,
+                          ledger_first_seen=recent)
+        # The meter fills a zero in from `started_at`, so the shape is edited in rather than written.
+        self._edit_the_line(gateway.state.root, "line-cannot-say", queued_at=0)
+        line = the_one_line_for(gateway.state.root, "line-cannot-say")
+        assert float(line["queued_at"]) == 0.0, "premise: the LINE cannot say when it arrived"
+        entry = gateway.ledger.run_entry("line-cannot-say") or {}
+        assert float(entry.get("first_seen") or 0) > time.time() - 600, (
+            "premise: the LEDGER knows when this arrived, and it is well inside the window")
+
+        again, state = restarted(gateway)
+        try:
+            charged = the_quota(state.root).what_a_run_was_charged(keys, "line-cannot-say")
+            assert all(v is None for v in charged.values()), (
+                "the arrival was taken from the ledger although a signed line exists: %r"
+                % (charged,))
+        finally:
+            again.close()
+            state.close()
+
+    def test_a_line_with_an_unreadable_stamp_cannot_be_written_in_the_first_place(self, gateway):
+        """Where the guard actually is, which is NOT where I first looked.
+
+        I wrote this test expecting to drive a line whose `queued_at` was unreadable through the
+        reconciliation. It cannot be driven, because `meter.record` does `float(queued_at or
+        started_at)` at line 470 and raises before any line is written. So a line of that shape does
+        not exist, and the one that matters is the one the meter refuses.
+
+        The reconciliation keeps its own `try`/`except (TypeError, ValueError)` round that conversion
+        anyway. That is not dead weight for the reason this class exists -- the authority is a FILE,
+        and a file can be edited by something that is not `meter.record` -- but it is unreachable
+        through the writer, and saying it is reachable would be a claim this cannot support.
+        """
+        with pytest.raises(ValueError):
+            a_signed_line(gateway.state.root, "stamp-is-nonsense", state="finished",
+                          queued_at="not a time")
+        assert not lines_for(gateway.state.root, "stamp-is-nonsense"), (
+            "a line was written despite the refusal")
+
+    def test_and_the_reconciliation_survives_one_that_was_edited_in(self, gateway):
+        """The case the meter cannot produce and a text editor can: the file is the authority, and a
+        file is a file."""
+        import pathlib as _pathlib
+
+        keys = ["dev-1", AN_ACCOUNT]
+        recent = time.time() - 120.0
+        self._a_line_with(gateway, "edited-stamp", queued_at=recent, ledger_first_seen=recent)
+        self._edit_the_line(gateway.state.root, "edited-stamp", queued_at="not a time")
+
+        again, state = restarted(gateway)
+        try:
+            charged = the_quota(state.root).what_a_run_was_charged(keys, "edited-stamp")
+            assert all(v is None for v in charged.values()), (
+                "an unreadable stamp produced a charge anyway: %r" % (charged,))
+        finally:
+            again.close()
+            state.close()
+
+    def test_an_arrival_in_the_future_is_refused_and_said_as_its_own_answer(self, gateway):
+        """A run cannot have arrived after now, and `this value is wrong` is not `there is no value`."""
+        from agentnode_sdk.gateway.allowance import AHEAD_OF_US
+
+        keys = ["dev-1", AN_ACCOUNT]
+        held = the_quota(gateway.state.root)
+        said = held.the_figure_for(keys, "from-the-future", 5.0, time.time() + (AHEAD_OF_US * 10))
+        assert set(said.values()) == {"arrival in the future"}, (
+            "a future arrival was reported as %r" % (sorted(set(said.values())),))
+        assert all(v is None for v in held.what_a_run_was_charged(keys, "from-the-future").values()), (
+            "a charge was created with a stamp in the future, so it would sit in the customer's "
+            "window until that time plus a day")
+        # And a stamp inside the jitter allowance is still accepted, or ordinary clock noise between
+        # two processes would start refusing real charges.
+        ok = held.the_figure_for(keys, "a-second-ahead", 5.0, time.time() + 1.0)
+        assert set(ok.values()) == {"created"}, ok
+
+    def test_the_three_refusals_are_told_apart(self, gateway):
+        """`no arrival`, `arrival in the future` and `outside the window` are three different facts,
+        and collapsing them would hide which one happened."""
+        from agentnode_sdk.gateway.allowance import AHEAD_OF_US, WINDOW_SECONDS
+
+        held = the_quota(gateway.state.root)
+        assert set(held.the_figure_for(["dev-1"], "none", 1.0, 0.0).values()) == {"no arrival"}
+        assert set(held.the_figure_for(["dev-1"], "ahead", 1.0,
+                                       time.time() + AHEAD_OF_US * 5).values()) == \
+            {"arrival in the future"}
+        assert set(held.the_figure_for(["dev-1"], "old", 1.0,
+                                       time.time() - WINDOW_SECONDS * 3).values()) == \
+            {"outside the window"}
+        assert all(v is None for v in
+                   held.what_a_run_was_charged(["dev-1"], "none").values())
+
+
 class TestWhichClockDecidesWhenTheTwoDisagree:
     """`STATE-CONSISTENCY-0002`, F-ARRIVAL-CONFLICT-TRUSTS-LEDGER.
 
@@ -1464,16 +1599,40 @@ class TestTwoGatewayServicesInTwoRealProcesses:
         from tests.test_em3c_gateway import StandInBackend
 
         state = GatewayState(root, version="test")
-        service = GatewayService(state, backend=StandInBackend(),
-                                 recover=(mode == "recover"))
 
-        # A HANDSHAKE, NOT JUST A BARRIER -- see the note in the Ledger-only child above. Releasing
-        # on a file the parent writes as soon as both are spawned lets process startup serialise them,
-        # and a sequence is not a contention.
-        open(barrier + ".ready." + str(os.getpid()), "w").close()
-        until = time.time() + 60
-        while not os.path.exists(barrier) and time.time() < until:
-            time.sleep(0.002)
+        def ready_and_wait():
+            # A HANDSHAKE, NOT JUST A BARRIER -- see the note in the Ledger-only child above.
+            open(barrier + ".ready." + str(os.getpid()), "w").close()
+            until = time.time() + 60
+            while not os.path.exists(barrier) and time.time() < until:
+                time.sleep(0.002)
+
+        # WHERE THE HANDSHAKE GOES DEPENDS ON WHAT IS BEING CONTENDED, and getting that wrong was
+        # STATE-CONSISTENCY-0004's F-RECOVERY-HANDSHAKE-AFTER-RECOVERY: constructing a GatewayService
+        # RUNS CRASH RECOVERY, so announcing readiness afterwards leaves the recovery itself outside
+        # the barrier and process startup serialises the very thing the test is about. The review
+        # called it "the same measurement-shape error the arc explicitly set out to eliminate", and it
+        # was right.
+        #
+        #   recover  the contended work IS the constructor, so the handshake comes FIRST
+        #   contend  the contended work is the explicit writes below, so the object is built first and
+        #            the handshake comes after it, which is what makes the writes overlap
+        # AND THE WINDOW IS RECORDED, because no product property can establish that two processes
+        # OVERLAPPED. STATE-CONSISTENCY-0004 doubted the recovery contest was a contest, and measuring
+        # it (raw/S19-03, cases C and D) showed the handshake order makes no difference to whether the
+        # test catches a second line -- the meter would refuse one even if the two recoveries never
+        # met. So overlap is its own measurement: each child says when its contended work began and
+        # ended, and the test asserts there was an instant when both were inside their own window.
+        said_began = said_ended = 0.0
+        if mode == "recover":
+            ready_and_wait()
+            said_began = time.time()
+            service = GatewayService(state, backend=StandInBackend(), recover=True)
+            said_ended = time.time()
+        else:
+            service = GatewayService(state, backend=StandInBackend(), recover=False)
+            ready_and_wait()
+            said_began = time.time()
 
         said = {"pid": os.getpid(), "mode": mode}
 
@@ -1500,6 +1659,10 @@ class TestTwoGatewayServicesInTwoRealProcesses:
         said["settled_after"] = after.get("settled_as") or ""
         said["cleanup_after"] = after.get("cleanup")
         said["quota_after"] = figures().get("dev-1")
+        if mode != "recover":
+            said_ended = time.time()
+        said["began"] = said_began
+        said["ended"] = said_ended
         print("RESULT " + json.dumps(said))
     ''')
 
@@ -1530,7 +1693,28 @@ class TestTwoGatewayServicesInTwoRealProcesses:
             said.append(json.loads(line[-1][len("RESULT "):]))
         assert len({s["pid"] for s in said}) == 2, "the children shared a process: %r" % (said,)
         assert str(os.getpid()) not in {str(s["pid"]) for s in said}, "a child ran in this test"
+        self._they_overlapped(said)
         return said
+
+    @staticmethod
+    def _they_overlapped(said):
+        """There was an instant when both children were inside their own contended window.
+
+        Without this the whole class could be measuring a sequence, and a sequence passing is not the
+        same statement as a contention passing. It is checked here rather than in each test so that
+        every contest gets it, including the recovery one -- which is where round four doubted it, and
+        rightly: no product property can establish overlap, because the meter would refuse a second
+        line even if the two recoveries never met.
+        """
+        windows = [(float(s.get("began") or 0.0), float(s.get("ended") or 0.0)) for s in said]
+        assert all(b > 0 and e >= b for b, e in windows), (
+            "a child did not report its window: %r" % (windows,))
+        latest_start = max(b for b, _ in windows)
+        earliest_end = min(e for _, e in windows)
+        assert latest_start <= earliest_end, (
+            "the two children did not overlap: windows %r. The later one began %.3fs after the "
+            "earlier one had finished, so this measured a sequence and not a contention."
+            % (windows, latest_start - earliest_end))
 
     def test_every_persisted_fact_is_monotone_across_two_gateway_processes(self, gateway, tmp_path):
         arrived = time.time() - 300.0
@@ -1586,6 +1770,28 @@ class TestTwoGatewayServicesInTwoRealProcesses:
                 float(s["quota_after"]) == float(line["seconds"]), (
                 "a process ended seeing %r while the line says %r" % (s["quota_after"],
                                                                      line["seconds"]))
+
+    def test_the_overlap_check_refuses_two_windows_that_do_not_meet(self):
+        """The control for the overlap assertion, and it needs no real serialisation to be engineered.
+
+        I first tried to control it by running the recovery contest with the old barrier, expecting the
+        children to be serialised and the assertion to refuse. It passed, and the passing was CORRECT:
+        in recovery mode the contended work comes after the wait in both shapes, so releasing early
+        does not serialise it. That expectation is recorded as wrong in `raw/S19-03`.
+
+        So the control is this instead -- hand the check two windows that do not meet and require it to
+        refuse, then two that do and require it to accept. An assertion that cannot fail is worth
+        nothing, and this is the cheapest honest way to show that it can.
+        """
+        apart = [{"began": 100.0, "ended": 101.0}, {"began": 102.0, "ended": 103.0}]
+        with pytest.raises(AssertionError, match="did not overlap"):
+            TestTwoGatewayServicesInTwoRealProcesses._they_overlapped(apart)
+        together = [{"began": 100.0, "ended": 103.0}, {"began": 102.0, "ended": 104.0}]
+        TestTwoGatewayServicesInTwoRealProcesses._they_overlapped(together)
+        # And a child that reported no window at all is refused rather than treated as overlapping.
+        with pytest.raises(AssertionError, match="did not report its window"):
+            TestTwoGatewayServicesInTwoRealProcesses._they_overlapped(
+                [{"began": 0.0, "ended": 0.0}, {"began": 102.0, "ended": 104.0}])
 
     def test_the_same_word_twice_is_a_no_op_in_both_processes(self, gateway, tmp_path):
         """Two processes that both read the one signed line pass the SAME word, and that has to be

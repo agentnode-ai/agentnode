@@ -1522,17 +1522,20 @@ class GatewayService:
         # one keeps the charge alive longer than the signed record says it should. The line is the
         # authority for this run's figures, and when it began to wait is one of them.
         #
-        # `0` is not a time, so it is not accepted from either -- and `the_figure_for` then reports
-        # `no arrival` rather than `outside the window`, which are different statements.
-        arrived = 0.0
-        for candidate in (line.get("queued_at"), entry.get("first_seen")):
-            try:
-                maybe = float(candidate or 0.0)
-            except (TypeError, ValueError):
-                maybe = 0.0
-            if maybe > 0.0:
-                arrived = maybe
-                break
+        # ONLY THE LINE, and ORDERING THE TWO SOURCES WAS NOT ENOUGH. `STATE-CONSISTENCY-0004`,
+        # F-SIGNED-ARRIVAL-INVALID-FALLS-BACK-TO-LEDGER: a line whose `queued_at` was absent, zero or
+        # unreadable sent this to the ledger anyway, so the arrival could still be derived from the
+        # cache while the authority sat right there. Putting the line first only moved the defect to
+        # the cases where the line's own value is unusable.
+        #
+        # Every path that reaches here has a line, so the ledger is not consulted at all. A line that
+        # cannot say when its run arrived is a line that cannot say it, and `the_figure_for` answers
+        # `no arrival` -- which is not the same statement as `outside the window`, and is why they are
+        # separate answers. The run keeps its unrepaired figure and the next start looks again.
+        try:
+            arrived = float(line.get("queued_at") or 0.0)
+        except (TypeError, ValueError):
+            arrived = 0.0
         try:
             did = self.use.the_figure_for(keys, run_id, seconds, arrived)
         except Exception:                                     # noqa: BLE001
