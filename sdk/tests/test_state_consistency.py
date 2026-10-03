@@ -51,6 +51,7 @@ from agentnode_sdk.gateway.server import GatewayService, make_server
 from tests import consent
 from tests.test_cancel_consistency import ABackendThatWaits
 from tests.test_em3c_gateway import _granted, _paired, _store_measurement
+from tests import the_lock_contention_child as child
 
 
 # ------------------------------------------------------------------ reading the four records
@@ -142,6 +143,188 @@ def release_when_both_are_ready(started, barrier, tmp_path, seconds=60.0):
         % (len(list(tmp_path.glob(barrier.name + ".ready.*"))), want, seconds))
 
 # ------------------------------------------------------------------ the stand
+
+
+# ------------------------------------------- the recovery contest, proved at the production lock
+#
+# `sdk (3.10)` on pull request #144 was red because the recovery contest established its
+# precondition -- that the two recoveries really met -- by comparing the wall-clock windows of two
+# child processes. That is a statement about the scheduler: on the runner the second child began 6ms
+# after the first had finished, and the test refused to pass on a sequence, correctly. What follows
+# replaces that instrument with a handshake at the lock the product actually serialises these two
+# recoveries with, `meter._writing(root)`. The reasoning is in `tests/the_lock_contention_child.py`,
+# which is the other half of it.
+
+
+def _read_the_journal(journal) -> list:
+    """Every event so far, in the order the file has them.
+
+    The order is the instrument. Each line was appended by a child under a lock of its own, so the
+    sequence is a real happened-before across the two processes, and nothing below subtracts one
+    number from another.
+    """
+    try:
+        text = pathlib.Path(journal).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            # A line caught half-written by this read. It will be whole on the next pass; the journal
+            # is append-only, so nothing is lost by skipping it here.
+            continue
+    return out
+
+
+def _release_the_parked_holder(started, journal, go, seconds=180.0):
+    """Release the parked holder once the journal says the contention happened, and not before.
+
+    Three outcomes, kept apart because they are three different findings:
+
+      * the holder is parked inside the production lock AND the other process has been refused that
+        lock while it is parked -- the precondition is established, so the holder is released;
+      * the other process is INSIDE the lock while the holder still holds it -- exclusion is not in
+        force. That is what removing the product's lock produces, and it is said as that rather than
+        as a precondition that failed to turn up;
+      * neither, until the deadline -- a hang, reported as a hang. Nothing is concluded from how long
+        it took.
+
+    This deadline is deliberately SHORTER than the one the parked child gives up on
+    (`the_lock_contention_child.HANG`). If the child gave up first, a handshake that never completed
+    would be reported as "a child ended before the contention was established", which is true but
+    names the symptom rather than the cause. The parent expiring first makes the sentence the right
+    one.
+    """
+    until = time.monotonic() + seconds
+    while True:
+        events = _read_the_journal(journal)
+        holding = [e for e in events if e["event"] == child.HOLDS]
+        parked = [e for e in events if e["event"] == child.PARKED]
+        let_go = [e for e in events if e["event"] == child.RELEASES]
+        if parked and not let_go:
+            holder = parked[0]["pid"]
+            trespass = [e for e in holding if not e.get("holder") and e["pid"] != holder]
+            assert not trespass, (
+                "EXCLUSION IS NOT IN FORCE: process %s was inside %s while process %s held it and "
+                "had not released it, so the two recoveries were not serialised at all. The "
+                "journal: %r" % (trespass[0]["pid"], trespass[0].get("lock"), holder, events))
+            refused = [e for e in events if e["event"] == child.REFUSED and e["pid"] != holder]
+            if refused:
+                pathlib.Path(go).write_text("go", encoding="utf-8")
+                return events
+        gone = [p for p in started if p.poll() is not None]
+        if gone:
+            out, err = gone[0].communicate()
+            raise AssertionError(
+                "a child ended before the contention was established, so there was none to measure. "
+                "exit=%r\nstdout:\n%s\nstderr:\n%s\njournal: %r"
+                % (gone[0].returncode, out[-800:], err[-1500:], events))
+        if time.monotonic() >= until:
+            raise AssertionError(
+                "THE CONTENTION PRECONDITION WAS NOT ESTABLISHED: no process was refused %s.lock "
+                "while another held it. This deadline says only that the handshake never completed; "
+                "no claim about contention is made from elapsed time. The journal: %r"
+                % (meter.METER_NAME, events))
+        time.sleep(0.002)
+
+
+def _what_the_journal_proves(events, said) -> dict:
+    """Read the order as the statement it makes, one established fact per assertion."""
+
+    def positions(event):
+        return [n for n, e in enumerate(events) if e["event"] == event]
+
+    held = [n for n in positions(child.HOLDS) if events[n].get("holder")]
+    assert held, (
+        "no process ever held %s, so there was nothing to contend over: %r"
+        % (meter.METER_NAME, events))
+    holder = events[held[0]]["pid"]
+    others = {e["pid"] for e in events} - {holder}
+    assert len(others) == 1, (
+        "exactly two processes should appear in the journal: %r" % (events,))
+    waiter = others.pop()
+
+    refused = [n for n in positions(child.REFUSED) if events[n]["pid"] == waiter]
+    assert refused, (
+        "the second process was never refused the lock, so nothing shows it reached the acquisition "
+        "while the first held it: %r" % (events,))
+    released = [n for n in positions(child.RELEASES) if events[n]["pid"] == holder]
+    assert released, "the holder never released the lock: %r" % (events,)
+    waited_then_held = [n for n in positions(child.HOLDS) if events[n]["pid"] == waiter]
+    assert waited_then_held, "the second process never got into the lock at all: %r" % (events,)
+
+    order = (held[0], refused[0], released[0], waited_then_held[0])
+    assert list(order) == sorted(order), (
+        "the four events are not in the order exclusion requires -- the holder holds it, the waiter "
+        "is refused it, the holder releases it, the waiter then holds it. Positions %r in: %r"
+        % (order, events))
+
+    wrote = [e["pid"] for e in events if e["event"] == child.WROTE]
+    assert wrote == [holder], (
+        "the one signed line was not written by the process that held the lock first: %r" % (events,))
+    refused_a_second = [e["pid"] for e in events if e["event"] == child.REFUSED_A_SECOND_LINE]
+    assert refused_a_second == [waiter], (
+        "the waiting process was not refused a second line by the product's own rule against the "
+        "file, so it never reached the write it was contending for: %r" % (events,))
+    entered = {e["pid"] for e in events if e["event"] == child.ENTERED}
+    assert entered == {holder, waiter}, (
+        "both processes must have entered the target run's own close: %r" % (events,))
+
+    assert {s["pid"] for s in said} == {holder, waiter}, (
+        "the children that reported are not the processes the journal describes: %r %r"
+        % (said, events))
+    assert os.getpid() not in {holder, waiter}, "a child ran inside this test process"
+    return {"holder": holder, "waiter": waiter}
+
+
+def two_recoveries_contending_at_the_lock(gateway, tmp_path, run_id, seconds=180.0):
+    """Two real gateway processes recovering one run, with the contention proved rather than hoped for.
+
+    Returns `(said, events, who)`: what each child reported, the journal in the order it happened,
+    and which pid held the lock first. The orchestration is here; what it establishes is in
+    `_what_the_journal_proves`, and the only deadlines anywhere in it detect hangs.
+    """
+    import subprocess
+
+    program = pathlib.Path(__file__).resolve().parent / "the_lock_contention_child.py"
+    journal = tmp_path / ("the-journal-" + run_id + ".jsonl")
+    claim = tmp_path / ("the-claim-" + run_id)
+    go = tmp_path / ("the-release-" + run_id)
+    barrier = tmp_path / ("go-" + run_id)
+    here = str(pathlib.Path(__file__).resolve().parents[1])
+    env = dict(os.environ)
+    env["PYTHONPATH"] = here
+    root = str(pathlib.Path(gateway.state.root))
+
+    started = [
+        subprocess.Popen(
+            [sys.executable, str(program), root, run_id, label, str(journal), str(claim), str(go),
+             str(barrier)],
+            cwd=here, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        for label in ("one", "two")]
+    try:
+        release_when_both_are_ready(started, barrier, tmp_path)
+        _release_the_parked_holder(started, journal, go, seconds=seconds)
+        said = []
+        for proc in started:
+            out, err = proc.communicate(timeout=seconds)
+            assert proc.returncode == 0, "a child failed:\n%s" % (err[-1500:],)
+            line = [x for x in out.splitlines() if x.startswith("RESULT ")]
+            assert line, "a child printed no result:\n%s\n%s" % (out[-800:], err[-800:])
+            said.append(json.loads(line[-1][len("RESULT "):]))
+    finally:
+        for proc in started:
+            if proc.poll() is None:
+                proc.kill()
+    events = _read_the_journal(journal)
+    who = _what_the_journal_proves(events, said)
+    return said, events, who
+
 
 
 @pytest.fixture()
@@ -2059,6 +2242,11 @@ class TestTwoGatewayServicesInTwoRealProcesses:
         print("RESULT " + json.dumps(said))
     ''')
 
+    # `mode="recover"` is no longer reached by any test. The recovery contest moved to
+    # `two_recoveries_contending_at_the_lock` above, which establishes its precondition at the
+    # production lock rather than by comparing wall-clock windows. The branch stays in this child
+    # program instead of being cut out of it, because the contend-mode contests below run the same
+    # program and editing a test that is not red is not part of this change.
     def _run_two(self, gateway, tmp_path, run_id, first, second, mode="contend",
                  slow_ms=0.0, force_apart=False, require_overlap=True):
         """Two real processes, released together, each reporting the window of its contended work.
@@ -2307,17 +2495,18 @@ class TestTwoGatewaysRecoveringAtOnce:
         assert not lines_for(gateway.state.root, "both-recovering"), (
             "premise: no signed line yet, so both children have one to write")
 
-        said = TestTwoGatewayServicesInTwoRealProcesses._run_two(
-            TestTwoGatewayServicesInTwoRealProcesses(), gateway, tmp_path, "both-recovering",
-            ("interrupted", True), ("interrupted", True), mode="recover", slow_ms=400.0)
+        said, events, who = two_recoveries_contending_at_the_lock(
+            gateway, tmp_path, "both-recovering")
 
         assert all(s["mode"] == "recover" for s in said), said
-        # BOTH children were inside the target run's own close, which is what `_run_two` asserted by
-        # overlap and this says in the plainest form: two regions, not one. The control below shows the
-        # same instrument reporting exactly one when the two are forced apart.
-        assert all(s.get("marks") for s in said), (
+        # The journal has already established the hard half: which process held the production lock,
+        # that the other one was refused it while that lasted, that neither could write until the
+        # first let go, and that the product's own one-line rule is what refused the second. All this
+        # adds is the plainest form of it -- both of them were in the target run's own close.
+        assert all(s.get("entered_the_close") for s in said), (
             "a child never entered the target run's close, so there was no contention to pass: %r"
             % (said,))
+        assert who["holder"] != who["waiter"], (events, who)
         # ONE line, written by one of two processes that both tried.
         got = lines_for(gateway.state.root, "both-recovering")
         assert len(got) == 1, (
@@ -2347,9 +2536,7 @@ class TestTwoGatewaysRecoveringAtOnce:
         arrived = time.time() - 300.0
         claimed(gateway, "third-time", when=arrived, started=arrived + 1.0)
         the_quota(gateway.state.root).note_every(["dev-1"], "third-time", now=arrived)
-        TestTwoGatewayServicesInTwoRealProcesses._run_two(
-            TestTwoGatewayServicesInTwoRealProcesses(), gateway, tmp_path, "third-time",
-            ("interrupted", True), ("interrupted", True), mode="recover")
+        two_recoveries_contending_at_the_lock(gateway, tmp_path, "third-time")
 
         ledger_then = digest_of(gateway.ledger.path)
         log_then = digest_of(pathlib.Path(gateway.state.root) / meter.METER_NAME)
