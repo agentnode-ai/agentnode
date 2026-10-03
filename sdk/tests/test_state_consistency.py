@@ -233,53 +233,113 @@ def _release_the_parked_holder(started, journal, go, seconds=180.0):
         time.sleep(0.002)
 
 
-def _what_the_journal_proves(events, said) -> dict:
-    """Read the order as the statement it makes, one established fact per assertion."""
+def the_partial_order_the_exclusion_requires(events, *, this_process=None) -> dict:
+    """What the journal has to say -- as the PARTIAL order the exclusion needs, not a total one.
 
-    def positions(event):
-        return [n for n, e in enumerate(events) if e["event"] == event]
+    FINDING-ORDER-1. The first version of this required the holder's announcement of holding the lock to
+    come before the waiter's refusal. It does not have to, and on the Linux lane it did not: positions
+    (3, 2, 6, 8), refusal first. A process ACQUIRES the lock and only then announces it -- the announcement
+    takes the journal's own lock, writes a line and fsyncs it -- so another process's attempt is refused by
+    the operating system inside that window and is journalled first. The journal is a faithful total order
+    of ANNOUNCEMENTS. The order of ACQUISITIONS is not visible in it, journal order and the underlying
+    causality are not the same thing here, and the assertion treated them as if they were.
 
-    held = [n for n in positions(child.HOLDS) if events[n].get("holder")]
-    assert held, (
+    Nothing of the exclusion claim is lost by dropping that requirement, because a refusal already carries
+    the fact it was standing in for. A refusal means SOME process held the lock at that instant; exactly two
+    processes are in this contest; a process cannot refuse itself; the parent holds nothing. So:
+
+        the waiter was refused        BEFORE   the holder let go     -- the two really met
+        the holder let go             BEFORE   the waiter got in     -- the exclusion itself
+
+    Those two, and the facts that each one is about a real acquisition of the real lock by a distinct
+    process, are the whole of what this asserts about order.
+    """
+    lock_name = meter.METER_NAME + ".lock"
+
+    def positions(event, pid=None):
+        return [n for n, e in enumerate(events)
+                if e["event"] == event and (pid is None or e["pid"] == pid)]
+
+    # ---- two processes, and roles that are unique and stay unique --------------------------------
+    claimed = [n for n in positions(child.HOLDS) if events[n].get("holder")]
+    assert claimed, (
         "no process ever held %s, so there was nothing to contend over: %r"
         % (meter.METER_NAME, events))
-    holder = events[held[0]]["pid"]
-    others = {e["pid"] for e in events} - {holder}
-    assert len(others) == 1, (
-        "exactly two processes should appear in the journal: %r" % (events,))
-    waiter = others.pop()
+    assert len(claimed) == 1, (
+        "the roles are not unique: %d processes claim to have been the holder, and the claim file is "
+        "created once with O_EXCL so exactly one can be: %r" % (len(claimed), events))
+    holder = events[claimed[0]]["pid"]
+    pids = {e["pid"] for e in events}
+    assert len(pids) == 2, (
+        "exactly two processes should appear in the journal, not %d: %r" % (len(pids), events))
+    waiter = (pids - {holder}).pop()
+    assert holder != waiter, "the holder and the waiter are the same process: %r" % (events,)
+    for n in positions(child.HOLDS):
+        was_holder = bool(events[n].get("holder"))
+        assert was_holder == (events[n]["pid"] == holder), (
+            "the roles are not unique: process %s entered the lock as %s, having been the other role "
+            "earlier: %r" % (events[n]["pid"], "the holder" if was_holder else "the waiter", events))
+    if this_process is not None:
+        assert this_process not in (holder, waiter), "a child ran inside this test process"
 
-    refused = [n for n in positions(child.REFUSED) if events[n]["pid"] == waiter]
+    # ---- the holder really acquired the real lock, and said so before letting go ------------------
+    assert events[claimed[0]].get("lock") == lock_name, (
+        "the holder's acquisition is not the production lock on the real path: %r" % (events,))
+    let_go = positions(child.RELEASES, holder)
+    assert let_go, "the holder never let the lock go: %r" % (events,)
+    assert claimed[0] < let_go[0], (
+        "the holder announced holding the lock only after letting it go: %r" % (events,))
+
+    # ---- the waiter really reached the acquisition and was really refused it ----------------------
+    refused = positions(child.REFUSED, waiter)
     assert refused, (
-        "the second process was never refused the lock, so nothing shows it reached the acquisition "
-        "while the first held it: %r" % (events,))
-    released = [n for n in positions(child.RELEASES) if events[n]["pid"] == holder]
-    assert released, "the holder never released the lock: %r" % (events,)
-    waited_then_held = [n for n in positions(child.HOLDS) if events[n]["pid"] == waiter]
-    assert waited_then_held, "the second process never got into the lock at all: %r" % (events,)
+        "THE CONTENTION PRECONDITION WAS NOT ESTABLISHED: the second process was never refused %s, so "
+        "nothing shows it reached the acquisition while the first held it: %r" % (lock_name, events))
+    assert events[refused[0]].get("lock") == lock_name, (
+        "the refusal the waiter recorded is not about the production lock: %r" % (events,))
 
-    order = (held[0], refused[0], released[0], waited_then_held[0])
-    assert list(order) == sorted(order), (
-        "the four events are not in the order exclusion requires -- the holder holds it, the waiter "
-        "is refused it, the holder releases it, the waiter then holds it. Positions %r in: %r"
-        % (order, events))
+    # ---- the two orderings that are the whole of the claim ---------------------------------------
+    assert refused[0] < let_go[0], (
+        "the waiter was refused the lock only AFTER the holder had let it go, so nothing shows that the "
+        "two ever met. Positions: refused %d, let go %d, in %r"
+        % (refused[0], let_go[0], events))
+    got_in = positions(child.HOLDS, waiter)
+    assert got_in, "the second process never got into the lock at all: %r" % (events,)
+    assert let_go[0] < got_in[0], (
+        "EXCLUSION IS NOT IN FORCE: the waiter was inside the lock before the holder let it go. "
+        "Positions: let go %d, waiter in %d, in %r" % (let_go[0], got_in[0], events))
 
+    # ---- and the holder was released by the parent, after the refusal was on record ---------------
+    parked = positions(child.PARKED, holder)
+    released_by_the_parent = positions(child.RELEASED, holder)
+    assert parked and released_by_the_parent, (
+        "the holder did not park inside the lock and wait to be released: %r" % (events,))
+    assert parked[0] < released_by_the_parent[0] < let_go[0], (
+        "the holder did not park, get released and then let go, in that order: %r" % (events,))
+    assert refused[0] < released_by_the_parent[0], (
+        "the parent released the holder before the waiter's refusal was on record, so the release was "
+        "not what the handshake says it is: %r" % (events,))
+
+    # ---- the product's own two facts --------------------------------------------------------------
     wrote = [e["pid"] for e in events if e["event"] == child.WROTE]
     assert wrote == [holder], (
         "the one signed line was not written by the process that held the lock first: %r" % (events,))
     refused_a_second = [e["pid"] for e in events if e["event"] == child.REFUSED_A_SECOND_LINE]
     assert refused_a_second == [waiter], (
-        "the waiting process was not refused a second line by the product's own rule against the "
-        "file, so it never reached the write it was contending for: %r" % (events,))
+        "the waiting process was not refused a second line by the product's own rule against the file, "
+        "so it never reached the write it was contending for: %r" % (events,))
     entered = {e["pid"] for e in events if e["event"] == child.ENTERED}
     assert entered == {holder, waiter}, (
         "both processes must have entered the target run's own close: %r" % (events,))
-
-    assert {s["pid"] for s in said} == {holder, waiter}, (
-        "the children that reported are not the processes the journal describes: %r %r"
-        % (said, events))
-    assert os.getpid() not in {holder, waiter}, "a child ran inside this test process"
     return {"holder": holder, "waiter": waiter}
+
+
+def _what_the_journal_proves(events, said) -> dict:
+    """The partial order above, plus the children that reported being the processes it describes."""
+    who = the_partial_order_the_exclusion_requires(events, this_process=os.getpid())
+    assert {s["pid"] for s in said} == {who["holder"], who["waiter"]}, (
+        "the children that reported are not the processes the journal describes: %r %r" % (said, events))
+    return who
 
 
 def two_recoveries_contending_at_the_lock(gateway, tmp_path, run_id, seconds=180.0):
@@ -2554,6 +2614,156 @@ class TestTwoGatewaysRecoveringAtOnce:
         finally:
             again.close()
             state.close()
+
+
+class TestTheVerifierItself:
+    """The verifier read by explicit traces, because FINDING-ORDER-1 was a defect IN the verifier.
+
+    A real run can only produce whatever order the operating system happens to produce, and on this
+    workstation that was the same order ten times running while the one on the Linux lane was different. So
+    the rule is stated here against written-down traces: the real order the lane produced, which the first
+    version wrongly rejected, and the orders that must stay rejected.
+
+    These are the traces, not the product: nothing here spawns a process. What they establish is what the
+    verifier MEANS, which is the thing that was wrong.
+    """
+
+    HOLDER = 101
+    WAITER = 202
+    LOCK = meter.METER_NAME + ".lock"
+
+    def _trace(self, *rows):
+        out = []
+        for pid, event, extra in rows:
+            one = {"pid": pid, "label": "one" if pid == self.HOLDER else "two", "event": event}
+            one.update(extra)
+            out.append(one)
+        return out
+
+    def _the_order_the_linux_lane_produced(self, holder=None, waiter=None):
+        """Exactly the journal of run 37129570860, which the first version of the verifier rejected."""
+        held, wait = holder or self.HOLDER, waiter or self.WAITER
+        return self._trace(
+            (wait, child.ENTERED, {}),
+            (held, child.ENTERED, {}),
+            (wait, child.REFUSED, {"lock": self.LOCK}),
+            (held, child.HOLDS, {"holder": True, "lock": self.LOCK, "refused_first": False}),
+            (held, child.PARKED, {}),
+            (held, child.RELEASED, {}),
+            (held, child.RELEASES, {"holder": True}),
+            (held, child.WROTE, {}),
+            (wait, child.HOLDS, {"holder": False, "lock": self.LOCK, "refused_first": True}),
+            (wait, child.RELEASES, {"holder": False}),
+            (wait, child.REFUSED_A_SECOND_LINE, {"said": "already has a metered line (seq 1)"}),
+        )
+
+    def _without(self, events, pid, event):
+        return [e for e in events if not (e["pid"] == pid and e["event"] == event)]
+
+    def _moved_after(self, events, pid, event, after_pid, after_event):
+        """Take one event out and put it back directly after ANOTHER NAMED ONE, keeping the rest in order.
+
+        The anchor is named by process as well as by event on purpose: an earlier version of this helper
+        anchored on the last event of a kind, which for `holds` is the waiter's own entry at the end of the
+        journal, so it moved the refusal somewhere nobody meant. The tests then failed and the verifier was
+        right -- which is the sort of thing a helper taking one argument too few does.
+        """
+        taken = [e for e in events if e["pid"] == pid and e["event"] == event]
+        assert len(taken) == 1, (pid, event, events)
+        rest = [e for e in events if not (e["pid"] == pid and e["event"] == event)]
+        anchors = [n for n, e in enumerate(rest)
+                   if e["pid"] == after_pid and e["event"] == after_event]
+        assert len(anchors) == 1, (after_pid, after_event, rest)
+        at = anchors[0] + 1
+        return rest[:at] + taken + rest[at:]
+
+    def test_the_order_the_linux_lane_produced_is_accepted(self):
+        """The refusal BEFORE the holder's announcement. This is the whole point of the repair."""
+        who = the_partial_order_the_exclusion_requires(
+            self._the_order_the_linux_lane_produced(), this_process=1)
+        assert who == {"holder": self.HOLDER, "waiter": self.WAITER}
+
+    def test_and_so_is_the_order_this_workstation_produced(self):
+        """The announcement before the refusal, which also has to stay valid: both are legitimate."""
+        events = self._moved_after(self._the_order_the_linux_lane_produced(),
+                                   self.WAITER, child.REFUSED, self.HOLDER, child.HOLDS)
+        assert events[2]["event"] == child.HOLDS and events[3]["event"] == child.REFUSED, events
+        who = the_partial_order_the_exclusion_requires(events, this_process=1)
+        assert who == {"holder": self.HOLDER, "waiter": self.WAITER}
+
+    def test_a_refusal_only_after_the_holder_let_go_is_rejected(self):
+        """Then the two never met: the waiter was refused by somebody else's hold, or by none."""
+        events = self._moved_after(self._the_order_the_linux_lane_produced(),
+                                   self.WAITER, child.REFUSED, self.HOLDER, child.WROTE)
+        with pytest.raises(AssertionError, match="only AFTER the holder had let it go"):
+            the_partial_order_the_exclusion_requires(events, this_process=1)
+
+    def test_the_waiter_inside_the_lock_before_the_holder_let_go_is_rejected(self):
+        """The exclusion itself. This is what a lock that does not exclude looks like."""
+        events = self._moved_after(self._the_order_the_linux_lane_produced(),
+                                   self.WAITER, child.HOLDS, self.HOLDER, child.PARKED)
+        with pytest.raises(AssertionError, match="EXCLUSION IS NOT IN FORCE"):
+            the_partial_order_the_exclusion_requires(events, this_process=1)
+
+    def test_one_process_cannot_be_both(self):
+        events = self._the_order_the_linux_lane_produced(holder=self.HOLDER, waiter=self.HOLDER)
+        with pytest.raises(AssertionError, match="exactly two processes"):
+            the_partial_order_the_exclusion_requires(events, this_process=1)
+
+    def test_a_process_in_both_roles_is_rejected(self):
+        """One pid holding and then entering as the other role: the claim file is created once."""
+        events = self._the_order_the_linux_lane_produced()
+        again = dict(events[3])
+        again["holder"] = False
+        with pytest.raises(AssertionError, match="the roles are not unique"):
+            the_partial_order_the_exclusion_requires(events + [again], this_process=1)
+
+    def test_two_holders_are_rejected(self):
+        two = [dict(e) for e in self._the_order_the_linux_lane_produced()]
+        for e in two:
+            if e["event"] == child.HOLDS:
+                e["holder"] = True
+        with pytest.raises(AssertionError, match="the roles are not unique"):
+            the_partial_order_the_exclusion_requires(two, this_process=1)
+
+    def test_the_labels_swapped_without_moving_the_refusal_is_rejected(self):
+        """The holder flag moved to the process that was refused, and the refusal left where it was.
+
+        Then the one process said to have held the lock is also the one said to have been refused it, and
+        nothing in the journal shows a process being kept out while another was inside. That is what a
+        swapped role looks like, and it has to be refused.
+
+        A journal in which the OTHER child legitimately held the lock -- the holder flag AND the refusal
+        both on the other process -- is a different thing and is NOT refused: which of the two wins the
+        lock is the lock's business, and a verifier that insisted on one of them would be reintroducing
+        exactly the dependence on scheduling that this whole change removes. That case is
+        `test_either_child_may_be_the_one_that_holds_it` below.
+        """
+        swapped = [dict(e) for e in self._the_order_the_linux_lane_produced()]
+        for e in swapped:
+            if e["event"] == child.HOLDS:
+                e["holder"] = not e["holder"]
+        with pytest.raises(AssertionError) as raised:
+            the_partial_order_the_exclusion_requires(swapped, this_process=1)
+        assert ("CONTENTION PRECONDITION WAS NOT ESTABLISHED" in str(raised.value)
+                or "the roles are not unique" in str(raised.value)), str(raised.value)
+
+    def test_either_child_may_be_the_one_that_holds_it(self):
+        """The same journal with the two processes exchanged is just as valid, and must stay valid."""
+        who = the_partial_order_the_exclusion_requires(
+            self._the_order_the_linux_lane_produced(holder=self.WAITER, waiter=self.HOLDER),
+            this_process=1)
+        assert who == {"holder": self.WAITER, "waiter": self.HOLDER}
+
+    def test_no_refusal_at_all_says_the_precondition_was_not_established(self):
+        events = self._without(self._the_order_the_linux_lane_produced(), self.WAITER, child.REFUSED)
+        with pytest.raises(AssertionError, match="CONTENTION PRECONDITION WAS NOT ESTABLISHED"):
+            the_partial_order_the_exclusion_requires(events, this_process=1)
+
+    def test_and_the_test_process_may_not_be_one_of_them(self):
+        events = self._the_order_the_linux_lane_produced()
+        with pytest.raises(AssertionError, match="a child ran inside this test process"):
+            the_partial_order_the_exclusion_requires(events, this_process=self.HOLDER)
 
 
 # ------------------------------------------- every read of the ledger, under the lock
