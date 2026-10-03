@@ -90,12 +90,18 @@ def this_boot() -> str:
 
     Linux publishes it. A platform that does not gets "", and the reason that is honest rather
     than a gap is that every use of this treats "" as "cannot be established" and says so.
+
+    THE READ ITSELF IS NOT HERE ANY MORE. It was, and the package then held two implementations
+    of one fact -- this one and `gateway/boot.py`'s -- which disagreed about a machine that has
+    no boot identifier: one answered "" and the other a per-process value. Two readers of one
+    fact drift. There is one now, in `machine.py`, and the difference that is real is kept right
+    here: this caller wants "cannot be established" rather than a stand-in, because a marker
+    compared against a per-process value would say the MACHINE went every time the process did.
     """
-    try:
-        with open("/proc/sys/kernel/random/boot_id", encoding="utf-8") as fh:
-            return fh.read().strip()
-    except OSError:
-        return ""
+    from agentnode_sdk import machine
+
+    value, method = machine.boot_identity()
+    return value if method == "kernel-boot-id" else ""
 
 
 def _path(root) -> Path:

@@ -51,8 +51,10 @@ def assert_all_else_is_valid(world: World) -> None:
 
     anchor = x509.load_pem_x509_certificate(world.anchor.read_bytes())
     rl.load(world.revocation_list, anchor, time.time())
-    for role in floors.ROLES:
-        floors.read(floors.path_for(world.floor_dir, role), role)
+    for role, instance in (("gateway", "g1"), ("worker", "w1")):
+        # Since format 2 a floor is read as somebody: the World's floors belong to g1 and w1.
+        floors.read(floors.path_for(world.floor_dir, role), role,
+                    "agentnode://%s/%s/%s" % (world.deployment, role, instance))
 
 
 def a_list(world: World, *, now: float, serials=(), number: int = 900, sign_with=None) -> bytes:

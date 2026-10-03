@@ -65,6 +65,14 @@ STOP_NAME = "stopped.json"
 #: ever would refuse a client that behaved perfectly a month ago.
 WINDOW_SECONDS = 24 * 60 * 60.0
 
+#: How far ahead of now a recorded arrival may be before it is refused rather than believed.
+#:
+#: A run cannot have arrived after now, so in principle this is zero. It is not zero because the stamp
+#: and the clock reading it can come from two processes and a second of jitter between them is
+#: ordinary. A minute is generous for that and nowhere near long enough for a wrong value to matter: a
+#: charge stamped in the future would sit in the customer's window until that time plus a whole day.
+AHEAD_OF_US = 60.0
+
 
 #: What every refusal of these two kinds begins with. A client is told in prose, like every
 #: other refusal, but the prose starts with something stable -- so "I am over a limit" can be
@@ -314,6 +322,71 @@ def why_it_is_stopped(root: str | os.PathLike[str]) -> str:
 
 # ------------------------------------------------------------------------------- the counting
 
+def how_many_figures_in(body: dict, keys, run_id: str) -> dict:
+    """How many entries each named scope holds for this run, in an ALREADY-READ document.
+
+    A pure function on a snapshot, so a caller looking at many runs reads the file once. Two entries
+    for one run is two billing figures however much they agree, and a value-only accessor cannot see
+    that -- which is why this is separate rather than folded into the one that returns the value.
+    """
+    out: dict = {}
+    for key in keys:
+        if not key:
+            continue
+        out[str(key)] = sum(
+            1 for entry in (body.get(str(key), []) if isinstance(body, dict) else [])
+            if isinstance(entry, dict) and entry.get("run_id") == str(run_id))
+    return out
+
+
+def what_a_run_was_charged_in(body: dict, keys, run_id: str) -> dict:
+    """What each named scope holds for this run in an ALREADY-READ document: {scope: seconds|None}.
+
+    A pure function on a snapshot, so a caller looking at many runs reads the file once and asks this
+    many times. `None` means that scope has no entry for the run, which is not the same as zero.
+    """
+    out: dict = {}
+    for key in keys:
+        if not key:
+            continue
+        found = None
+        for entry in (body.get(str(key), []) if isinstance(body, dict) else []):
+            if isinstance(entry, dict) and entry.get("run_id") == str(run_id):
+                found = entry.get("seconds")
+        out[str(key)] = found
+    return out
+
+
+def runs_with_a_substituted_arrival_in(body: dict) -> list[str]:
+    """Every run in an ALREADY-READ quota document whose figure was placed by a clock, not its arrival.
+
+    ## Why this reads the QUOTA and not the ledger, which is where it first looked
+
+    `STATE-CONSISTENCY-0006`, F-SUBSTITUTED-ARRIVAL-AUDIT-HAS-A-DURABLE-GAP. The first version derived
+    this from the ledger's `quota_repairs`, and that annotation is written AFTER the quota's own atomic
+    write and is best-effort -- its exceptions are swallowed, because a failed audit note must not fail
+    a repair. So a crash in the gap left the quota saying `arrival: substituted` for ever while the
+    listing said nothing, and the next start found the figure already correct and repaired nothing.
+    Two records, one claim, and a window in which they disagree permanently.
+
+    The substitution is a property OF THE ENTRY, and it is written in the same `_atomically` call as the
+    figure it describes. Reading it from there cannot have a gap: there is one write and one fact. The
+    ledger's repair note stays what it always was -- an audit trail of what a reconciliation did -- and
+    nothing derives a durable claim from it any more.
+
+    A placement is forgotten when its figure is: once the window drops the entry, there is no figure
+    whose placement could be in question, and the absence is the right answer rather than a loss.
+    """
+    out = []
+    for entries in (body.values() if isinstance(body, dict) else []):
+        for entry in (entries if isinstance(entries, list) else []):
+            if isinstance(entry, dict) and entry.get("arrival") == "substituted":
+                run_id = str(entry.get("run_id") or "")
+                if run_id and run_id not in out:
+                    out.append(run_id)
+    return sorted(out)
+
+
 class Use:
     """What each client has used lately. Durable, locked, and forgotten by time."""
 
@@ -433,7 +506,12 @@ class Use:
 
     def finished_every(self, keys, run_id: str, seconds: float,
                        now: float | None = None) -> None:
-        """How long it took, added to every scope that was counting it."""
+        """How long it took, SET on every scope that was counting it.
+
+        Set and not added, which is what makes it safe to call twice for one run -- and the reason
+        the repair of `state-consistency-r1` could reconcile this file from the signed line rather
+        than having to guarantee the call happens exactly once.
+        """
         at = time.time() if now is None else now
         with self._lock, ProcessLock(self.path):
             body = self._forget(self._load(), at)
@@ -444,6 +522,171 @@ class Use:
                     if entry.get("run_id") == str(run_id):
                         entry["seconds"] = float(seconds)
             _atomically(self.path, json.dumps(body, sort_keys=True))
+
+    def the_figure_for(self, keys, run_id: str, seconds: float, arrived_at: float,
+                       now: float | None = None) -> dict:
+        """Set this run's figure on every named scope, CREATING the entry when it is missing.
+
+        Returns one of six words per scope, so a caller can say what it did rather than that it did
+        something: `set`, `created`, `created without a usable arrival`, `deduplicated`,
+        `already right`, `outside the window`.
+
+        ## Why creating is right, which the first version of the repair got wrong
+
+        `finished_every` only sets what is already there, and the repair of `state-consistency-r1`
+        reasoned from that: a missing entry means the scope was not counting this run, so leave it
+        alone. **That reasoning was false, and an independent review found it.** `reserve` writes an
+        entry on every scope at admission either way --
+
+            if scopes:  self.use.claim_every(...)      # there ARE window ceilings
+            else:       self.use.note_every(...)       # there are not
+
+        -- and the `else` branch is the whole point: this product always records. So a missing entry
+        is not a scope that was not counting. It is an entry that was lost, or one the window has
+        forgotten. Leaving it alone let a signed line carry billed seconds while the quota carried no
+        figure at all, which is exactly the class of disagreement that arc exists to remove.
+
+        ## Why the created entry is stamped with the run's ARRIVAL and not with now
+
+        The window forgets by `at`. An entry stamped `now` would sit in the customer's window for
+        another full day from the moment of the repair -- a charge they did not incur then. Stamped
+        with the arrival, it is forgotten exactly when the original would have been.
+
+        ## And why the window is checked here rather than left to the prune
+
+        `_forget` runs on every write, so an entry created outside the window would be dropped in the
+        same call. Correct, but silent and not byte-stable: every start would create and lose it
+        again. Outside the window the absence is the right answer, and this says so.
+
+        ## EXACTLY ONE ENTRY PER SCOPE, and the first version of this only set whatever it found
+
+        `STATE-CONSISTENCY-0002`, F-QUOTA-DUPLICATES-SURVIVE: it iterated every matching entry and set
+        each one, so two entries for one run stayed two -- and when both already carried the wanted
+        value it said `already right` and left them. A scope holding two billing figures is a scope
+        that does not hold one, whatever the numbers are. Duplicates are now COLLAPSED: the earliest
+        `at` is kept, because that is the one nearest the real arrival, and the rest go.
+
+        ## EQUAL, not close
+
+        Same review, F-QUOTA-APPROXIMATE-NOT-EQUAL: this treated a figure within 0.0005 s of the
+        signed one as already right. Close is not the same number, and the comparison a reader makes
+        between the two records is equality. The tolerance is gone.
+
+        ## An arrival it cannot use is SAID -- and saying it was not enough
+
+        `0` is not a time, and nor is a stamp ahead of this clock. Both used to fall into
+        `outside the window`, a different statement: "this charge is too old to recreate" rather than
+        "nobody knows when this run arrived". `STATE-CONSISTENCY-0004` had them told apart, and
+        `STATE-CONSISTENCY-0005` then found what telling them apart left behind -- a scope with no
+        entry kept none, so the signed line's billed seconds sat beside no figure at all. Under
+        `DECISION-0004` the figure is now recorded at this recorder's own instant and the substituted
+        placement is the answer: `created without a usable arrival`. `outside the window` is unchanged,
+        because a USABLE arrival the window has forgotten is a different thing again and is not
+        resurrected.
+        """
+        at = time.time() if now is None else now
+        wanted = float(seconds)
+        arrived = float(arrived_at or 0.0)
+        out: dict = {}
+        with self._lock, ProcessLock(self.path):
+            body = self._forget(self._load(), at)
+            changed = False
+            for key in keys:
+                if not key:
+                    continue
+                scope = str(key)
+                here = [e for e in body.get(scope, []) if isinstance(e, dict)]
+                mine = [e for e in here if e.get("run_id") == str(run_id)]
+                if len(mine) > 1:
+                    # Keep the earliest, which is the one nearest the arrival, and drop the rest.
+                    keep = min(mine, key=lambda e: float(e.get("at") or 0.0))
+                    keep["seconds"] = wanted
+                    body[scope] = [e for e in here if e is keep or e.get("run_id") != str(run_id)]
+                    out[scope] = "deduplicated"
+                    changed = True
+                elif mine:
+                    only = mine[0]
+                    if float(only.get("seconds") or 0.0) == wanted:
+                        out[scope] = "already right"
+                        continue
+                    only["seconds"] = wanted
+                    out[scope] = "set"
+                    changed = True
+                elif arrived <= 0.0 or arrived > at + AHEAD_OF_US:
+                    # AN ARRIVAL THIS CANNOT USE -- AND THE FIGURE IS RECORDED ANYWAY.
+                    #
+                    # Two shapes, both decidable here without reading another record: not a time at
+                    # all, or ahead of this clock by more than `AHEAD_OF_US`, and a run cannot have
+                    # arrived after now.
+                    #
+                    # `STATE-CONSISTENCY-0004` asked for the second to be SAID rather than believed,
+                    # and saying it was right. `STATE-CONSISTENCY-0005` found what saying it left
+                    # behind -- F-FUTURE-ARRIVAL-BREAKS-EXACTLY-ONE-FIGURE: with no entry on the
+                    # scope, refusing left a signed line carrying billed seconds beside a scope
+                    # carrying NO FIGURE AT ALL, for ever, and `moved` came back empty so nothing
+                    # recorded that anything had been declined. A said refusal is still two records
+                    # disagreeing.
+                    #
+                    # `DECISION-0004`: the arrival places the figure in the window and is nothing
+                    # else. When it cannot place it, the figure is recorded at the instant this
+                    # recorder is running -- the one value this process measured itself -- and the
+                    # SUBSTITUTION is the answer, under its own word. `created` and `created without a
+                    # usable arrival` are different facts and a reader must be able to tell them
+                    # apart. The cost is in the decision and is not hidden here: a figure placed at
+                    # this instant is forgotten LATER than the real arrival would have had it
+                    # forgotten, by at most one window, and for a ceiling whose purpose is to limit,
+                    # counting a charge slightly too long is the conservative direction.
+                    body.setdefault(scope, []).append(
+                        {"run_id": str(run_id), "at": at, "seconds": wanted,
+                         "arrival": "substituted"})
+                    out[scope] = "created without a usable arrival"
+                    changed = True
+                elif arrived > at - self.window:
+                    body.setdefault(scope, []).append(
+                        {"run_id": str(run_id), "at": arrived, "seconds": wanted})
+                    out[scope] = "created"
+                    changed = True
+                else:
+                    out[scope] = "outside the window"
+            if changed:
+                _atomically(self.path, json.dumps(body, sort_keys=True))
+        return out
+
+    def how_many_figures_for(self, keys, run_id: str) -> dict:
+        """How many entries each named scope holds for this run: `{scope: count}`.
+
+        Exists because `what_a_run_was_charged` answers with ONE value -- the last matching entry --
+        and therefore cannot tell a scope holding one figure from a scope holding two that happen to
+        agree. A reconciliation that decides from that value alone leaves duplicates in place, which
+        is what `STATE-CONSISTENCY-0002` found.
+        """
+        return how_many_figures_in(self.snapshot(), keys, run_id)
+
+    def runs_with_a_substituted_arrival(self) -> list[str]:
+        """Every run whose figure was placed by this recorder's clock rather than by its own arrival.
+
+        Read from the quota itself, for the reason in `runs_with_a_substituted_arrival_in`: the fact and
+        the figure are written by the same atomic write, so there is no gap in which one can exist
+        without the other.
+        """
+        return runs_with_a_substituted_arrival_in(self.snapshot())
+
+    def what_a_run_was_charged(self, keys, run_id: str) -> dict:
+        """What each named scope currently holds for this run: {scope: seconds or None}.
+
+        Exists so a reconciliation can tell "already right" from "needs correcting" WITHOUT writing.
+        `finished_every` rewrites the whole document and prunes by window as it goes, so calling it
+        when nothing differs would change the file on every start -- and a repair that is not
+        byte-stable on repetition cannot be told apart from a repair that keeps finding something
+        wrong.
+        """
+        return what_a_run_was_charged_in(self.snapshot(), keys, run_id)
+
+    def snapshot(self) -> dict:
+        """The whole document, under one lock and one read. For a caller that has to look at many
+        runs: asking per run means a file lock and a full parse per run."""
+        with self._lock, ProcessLock(self.path):
+            return self._load()
 
     def forget_everything_about(self, key: str) -> bool:
         """Drop one scope's counters entirely. What deleting a customer has to imply."""

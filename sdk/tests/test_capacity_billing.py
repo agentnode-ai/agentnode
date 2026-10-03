@@ -225,21 +225,48 @@ class TestAgainstARealGateway:
         cut the source on the first `)` and landed inside a list comprehension, so it reported a
         failure about code that was correct -- a test that cannot read what it is judging is
         worse than none.
+
+        ## Adapted by `state-consistency-r1`, to assert the property instead of a shape
+
+        It looked for a call named `finished_every` and required `billed` to be its LAST positional
+        argument. Both moved. The charge goes through `Use.the_figure_for` now -- the one function
+        that knows how a quota figure is recorded, because `STATE-CONSISTENCY-0001` found that a
+        MISSING entry was being skipped and only that function creates one -- and `billed` is no
+        longer last, because a created entry also needs the run's arrival to stamp it with.
+
+        So it no longer pins a name and a position. It NAMES the functions that may record a quota
+        figure, requires one of them to be called, and asserts what this test is actually about: that
+        `billed` is handed over and that nothing derived from the WAIT is. The old form would have
+        passed a call that charged `waited` as long as `billed` happened to come last.
         """
         import ast
         import inspect
         import textwrap
 
+        #: The only functions that may record a quota figure. Named here so that adding a third is a
+        #: deliberate edit to this list rather than a silent way past this check.
+        may_charge = ("finished_every", "the_figure_for")
+
         tree = ast.parse(textwrap.dedent(inspect.getsource(capped.write_down_what_it_used)))
         charged = [node for node in ast.walk(tree)
                    if isinstance(node, ast.Call)
-                   and getattr(node.func, "attr", "") == "finished_every"]
-        assert charged, "nothing charges the window quota any more"
+                   and getattr(node.func, "attr", "") in may_charge]
+        assert charged, (
+            "nothing charges the window quota any more, or it is charged through something other "
+            "than %r" % (may_charge,))
         for call in charged:
-            assert call.args, "finished_every was called with no duration at all"
-            duration = ast.unparse(call.args[-1])
-            assert duration == "billed", (
-                "the window quota is charged %r rather than the billed figure" % duration)
+            handed = [ast.unparse(a) for a in call.args]
+            assert handed, "the quota was charged with no arguments at all"
+            assert "billed" in handed, (
+                "the window quota is charged %r and none of it is the billed figure" % (handed,))
+            # `waited` is the WAIT AS A DURATION, and charging it is the mistake this test exists
+            # for. A timestamp is not a duration: the arrival is handed over as well, so that a
+            # created entry can be stamped with the moment the run came in rather than with the
+            # moment it was repaired -- and that argument legitimately reads `record.queued_at`.
+            # Forbidding every mention of the queue would forbid the stamp along with the charge.
+            assert "waited" not in handed, (
+                "the window quota is handed the wait as a duration, which charges the customer "
+                "twice for this gateway's own queue: %r" % (handed,))
 
 
 def _limits():

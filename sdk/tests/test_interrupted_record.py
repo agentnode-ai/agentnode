@@ -131,7 +131,7 @@ def claim(service, run_id: str, *, when: float, started: float | None = None) ->
                                 now=when, owner_account_id="acct-" + "1" * 16,
                                 admitted=ADMITTED)
     if started is not None:
-        service.ledger.note_state(run_id, "running", at=started)
+        service.ledger.note_lifecycle(run_id, "running", at=started)
 
 
 def lifecycle_module():

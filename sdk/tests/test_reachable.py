@@ -711,12 +711,27 @@ class TestARestartDoesNotLeaveASandboxRunning:
         assert service.runs[run_id].cleanup_verified is False
 
     def test_a_run_that_had_already_finished_is_left_alone(self, tmp_path):
-        """Nothing is asked about runs that ended, or the sweep would reach every old run."""
+        """Nothing is asked about runs that ended AND whose cleanup was confirmed.
+
+        ## What changed here, and why it is not a weakening
+
+        This used to set the run up with `note_state(run_id, "finished")` alone, because the sweep
+        selected on that word: a run whose ledger said anything other than `interrupted` was out of
+        reach whatever its cleanup said. `state-consistency-r1` is about exactly that -- the word was
+        overwritable, so a run with a live container could be written out of the only set that would
+        ever have asked about it again.
+
+        The sweep now selects on the fact it is actually about, `cleanup is not True`. So "it had
+        already finished" is no longer on its own a reason to stop asking, and the setup says the
+        other half out loud: the container was confirmed gone. A run that ended with its cleanup
+        UNCONFIRMED is now asked about again, deliberately -- which is the next test but one.
+        """
         from tests.test_socket_worker import AWorkerThatAnswers
 
         first = self._a_gateway(tmp_path, AWorkerThatAnswers())
         run_id = self._cut_short(first)
-        first.ledger.note_state(run_id, "finished")
+        first.ledger.note_it_settled(run_id, "finished")
+        first.ledger.note_cleanup(run_id, True)
 
         second = AWorkerThatAnswers()
         self._a_gateway(tmp_path, second)

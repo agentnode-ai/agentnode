@@ -79,3 +79,6 @@ scripts/import_candidates.py
 scripts/.mcp_cache/
 candidates*.json
 *.lock.lk
+
+# Counter-check and exercise output: evidence for a review bundle, not source.
+sdk/remote-worker-counter-check-results/

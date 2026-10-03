@@ -1,0 +1,38 @@
+1 serving or handler thread(s) outlived the session and every fixture that could have owned one.
+
+--- Thread-102 (serve_forever)  (daemon=True, alive=True)
+    started during: tests/test_mtls_parity.py::TestTheRecordIsBoundToWhoTheConnectionProved::test_the_signed_line_names_the_instance_the_handshake_checked (call)
+    started at:
+        File "C:\Users\User\Desktop\a1e_review\venvs\remote-worker-421b693\Lib\site-packages\pluggy\_hooks.py", line 512, in __call__
+          return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+        File "C:\Users\User\Desktop\a1e_review\venvs\remote-worker-421b693\Lib\site-packages\pluggy\_manager.py", line 120, in _hookexec
+          return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+        File "C:\Users\User\Desktop\a1e_review\venvs\remote-worker-421b693\Lib\site-packages\pluggy\_callers.py", line 121, in _multicall
+          res = hook_impl.function(*args)
+        File "C:\Users\User\Desktop\a1e_review\venvs\remote-worker-421b693\Lib\site-packages\_pytest\runner.py", line 184, in pytest_runtest_call
+          item.runtest()
+        File "C:\Users\User\Desktop\a1e_review\venvs\remote-worker-421b693\Lib\site-packages\_pytest\python.py", line 1707, in runtest
+          self.ihook.pytest_pyfunc_call(pyfuncitem=self)
+        File "C:\Users\User\Desktop\a1e_review\venvs\remote-worker-421b693\Lib\site-packages\pluggy\_hooks.py", line 512, in __call__
+          return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+        File "C:\Users\User\Desktop\a1e_review\venvs\remote-worker-421b693\Lib\site-packages\pluggy\_manager.py", line 120, in _hookexec
+          return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+        File "C:\Users\User\Desktop\a1e_review\venvs\remote-worker-421b693\Lib\site-packages\pluggy\_callers.py", line 121, in _multicall
+          res = hook_impl.function(*args)
+        File "C:\Users\User\Desktop\a1e_review\venvs\remote-worker-421b693\Lib\site-packages\_pytest\python.py", line 167, in pytest_pyfunc_call
+          result = testfunction(**testargs)
+        File "C:\Users\User\Desktop\a1e_review\wt-crosshost-repair\sdk\tests\test_mtls_parity.py", line 200, in test_the_signed_line_names_the_instance_the_handshake_checked
+          door = Door(world, w2, {"g1"}, label="w1")
+        File "C:\Users\User\Desktop\a1e_review\wt-crosshost-repair\sdk\tests\test_mtls_transport.py", line 246, in __init__
+          threading.Thread(target=self.listener.serve_forever, daemon=True).start()
+    doing now:
+        File "C:\Users\User\AppData\Local\Programs\Python\Python311-agentnode\Lib\threading.py", line 1002, in _bootstrap
+          self._bootstrap_inner()
+        File "C:\Users\User\AppData\Local\Programs\Python\Python311-agentnode\Lib\threading.py", line 1045, in _bootstrap_inner
+          self.run()
+        File "C:\Users\User\AppData\Local\Programs\Python\Python311-agentnode\Lib\threading.py", line 982, in run
+          self._target(*self._args, **self._kwargs)
+        File "C:\Users\User\Desktop\a1e_review\wt-crosshost-repair\sdk\agentnode_sdk\worker\tls.py", line 509, in serve_forever
+          raw, _ = self._socket.accept()
+        File "C:\Users\User\AppData\Local\Programs\Python\Python311-agentnode\Lib\socket.py", line 294, in accept
+          fd, addr = self._accept()

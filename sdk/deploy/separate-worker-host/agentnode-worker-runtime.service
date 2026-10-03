@@ -1,0 +1,81 @@
+# Rebuild the worker account's rootless container namespace, once, before the worker starts.
+#
+# WHY THIS IS A UNIT OF ITS OWN AND NOT A STEP INSIDE THE WORKER.
+#
+# Rootless podman keeps state that refers to the user namespace of the boot it was created in.
+# After a reboot that state is stale and the FIRST container cannot be created at all:
+#
+#     crun: mount `proc` to `proc`: Operation not permitted: OCI permission denied
+#
+# `podman system migrate` rebuilds it -- but migrating is itself an operation that creates a
+# user namespace, and it cannot be done from inside the worker's own mount namespace. The
+# worker's unit masks parts of /proc (ProtectKernelTunables, ProtectProc and the rest each add
+# their own read-only bind), and the kernel refuses to mount a fresh procfs in a user namespace
+# whose /proc is not fully visible. Measured on two machines: run from inside the worker unit
+# it fails in under a second; run outside it, it succeeds and the worker then comes up and its
+# ceiling binds.
+#
+# The worker cannot escape its own namespace to do this -- it runs unprivileged and cannot ask
+# the system manager for a transient unit. So it is a separate unit, deliberately WITHOUT the
+# worker's protections, doing one small thing and exiting.
+#
+# WHAT IT ACTUALLY DOES, SAID PLAINLY, because this is a new trust boundary and an earlier
+# version of this comment described it wrongly. It DOES start a container: that is the whole
+# point, since starting one is what leaves the namespace behind. What it starts is:
+#
+#   * the image pinned by digest in the SDK, and nothing else -- no customer's code, no job,
+#     nothing from the wire;
+#   * as `agentnode-worker`, the same unprivileged account as the worker, and as uid 1000
+#     inside;
+#   * with `--network none`;
+#   * running `/bin/true`, which exits immediately;
+#   * with `--rm`, so it leaves no container behind -- only the namespace.
+#
+# So the thing running without the worker's protections is one short-lived process from an
+# image this build names, with no network and no input. That is a smaller claim than "it
+# starts no container", which is what this comment used to say and which was simply untrue.
+# It opens no port.
+#
+# It is ordered before the worker rather than being something an operator remembers, because
+# "reboot the machine and it comes back" is the property this exists for.
+
+[Unit]
+Description=AgentNode worker rootless runtime namespace
+Documentation=https://agentnode.ai/docs/sandbox
+# The account's session is ordered in by a drop-in the installer writes, for the same reason
+# the worker has one: %U in a system unit is the manager's uid, not the account in User=, so
+# a unit cannot name it for itself.
+After=network-online.target
+Before=agentnode-worker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=agentnode-worker
+Group=agentnode-worker
+EnvironmentFile=/etc/agentnode/worker.env
+WorkingDirectory=/var/lib/agentnode-worker
+
+# Deliberately no ProtectSystem, ProtectKernelTunables or ProtectProc here. Those are exactly
+# what stop a fresh procfs being mounted in a new user namespace, and creating that namespace
+# is this unit's entire job. It runs one command, as an unprivileged account, and exits.
+NoNewPrivileges=no
+
+# TWO STEPS, AND THE SECOND IS THE ONE THAT MATTERS. Measured on the pair: `migrate` alone
+# repairs the stored state and the worker STILL could not start a container. What fixes it is
+# actually starting one from out here, because that is what leaves podman's pause process
+# (`catatonit -P`) alive. The worker's own containers then JOIN that namespace instead of
+# creating one, and joining works from inside the masked mount namespace where creating does
+# not. That is also why it worked before the first reboot and not after: the installer had
+# started a container from outside, and the reboot took that process with it.
+#
+# The image is the pinned one, asked of the SDK rather than written down twice.
+#
+# `|| true` on both: a machine where this is unnecessary must not be one where the worker
+# refuses to start. If the runtime is genuinely unusable the worker's own ceiling proof
+# refuses, and it says why -- that is the right place for it, not here.
+ExecStart=/bin/sh -c '/usr/bin/podman system migrate || true'
+ExecStart=/bin/sh -c 'IMG=$$(/opt/agentnode/venv/bin/python3 -c "from agentnode_sdk.sandbox.container_backend import _BASE_IMAGE; print(_BASE_IMAGE)") && /usr/bin/podman run --rm --network none --user 1000:1000 "$$IMG" /bin/true || true'
+
+[Install]
+WantedBy=multi-user.target

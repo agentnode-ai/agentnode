@@ -197,7 +197,12 @@ class TestTheRecordIsBoundToWhoTheConnectionProved:
         # w2 answers the describe calling itself "w1". Both are accepted by the gateway, so no
         # identity check refuses anything: the ONLY thing that can put w2 in the record is the
         # binding to the connection.
-        door = Door(world, w2, {"g1"}, label="w1")
+        # Two workers on one machine is a thing no deployment does, and since a floor belongs to
+        # one identity, w2 needs its own. Giving it one is what a second machine would have; the
+        # shared role floor belongs to w1.
+        door = Door(world, w2, {"g1"}, label="w1",
+                    settings=world.settings(w2, {"g1"},
+                                            floor=world.floor_for("worker", "w2")))
         client = TlsWorker(door.address, KEY, world.settings(gateway_dir, {"w1", "w2"}))
         gw = a_gateway_over(tmp_path / "gw", client)
         try:

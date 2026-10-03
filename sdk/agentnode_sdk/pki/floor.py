@@ -67,7 +67,11 @@ DEFAULT_TOLERANCE_SECONDS = 600.0
 #: interval (60 s in the shipped timer), so a late tick does nothing and a dead writer shows.
 DEFAULT_MAX_AGE_SECONDS = 900.0
 
-FORMAT = 1
+#: Format 2 adds `identity`. A floor that names no identity cannot be told from one copied off
+#: another machine, and on two hosts that is the difference between a check and a decoration.
+#: A format-1 file is not read as though it were a format-2 file with the identity missing:
+#: `adopt` exists for that, deliberately, as a step somebody takes.
+FORMAT = 2
 ROLES = ("gateway", "worker")
 
 # Why a floor was not usable, as a refusal states it.
@@ -77,6 +81,12 @@ NOT_WRITTEN = "time-floor-not-written-in-this-boot"
 OTHER_BOOT = "time-floor-from-another-boot"
 TOO_OLD = "time-floor-too-old"
 NO_BOOT = "time-floor-no-boot-identity"
+#: The floor belongs to somebody else. On one host this could not happen; on two it is the
+#: first thing a carried file looks like.
+OTHER_IDENTITY = "time-floor-for-another-identity"
+#: This side does not know who it is, so it cannot tell whether the floor is its own. Refused
+#: rather than accepted, because the alternative is accepting any floor at all.
+NO_IDENTITY = "time-floor-no-identity-to-judge-by"
 
 
 # -- the three clocks, as seams. A test sets them; nothing else does. -------------------------
@@ -90,9 +100,16 @@ def _monotonic() -> float:
 
 
 def _boot() -> str:
-    from agentnode_sdk.gateway.lifecycle import this_boot
+    """The kernel's boot id, or "" where the machine offers none.
 
-    return this_boot()
+    Read from `machine.py` rather than through `gateway.lifecycle`, which is where this used to
+    go: a floor is written and read on BOTH hosts, and a worker on its own machine has no
+    control-plane package to ask. Same value, same "" for a machine that cannot answer.
+    """
+    from agentnode_sdk import machine
+
+    value, method = machine.boot_identity()
+    return value if method == "kernel-boot-id" else ""
 
 
 class FloorUnusable(Exception):
@@ -107,6 +124,11 @@ class FloorUnusable(Exception):
 @dataclass(frozen=True)
 class FloorState:
     role: str
+    #: Whose floor this is: the full identity URI, `agentnode://<deployment>/<role>/<instance>`.
+    #: Taken from the certificate the side presents, so it survives a renewal -- a serial or a
+    #: fingerprint would not, and a floor that had to be rebuilt on every renewal would hand out
+    #: a fresh tolerance each time.
+    identity: str
     generation: int
     floor: float
     #: The anchor of the boot this file was last written in. "" before the first write.
@@ -130,7 +152,7 @@ class FloorState:
         return (json.dumps(body, indent=1, sort_keys=True) + "\n").encode("ascii")
 
 
-_FIELDS = {"role": str, "generation": int, "floor": float, "boot_id": str,
+_FIELDS = {"role": str, "identity": str, "generation": int, "floor": float, "boot_id": str,
            "anchor_monotonic": float, "elapsed_at_boot_start": float, "elapsed_total": float,
            "granted_total": float, "tolerance_s": float, "max_age_s": float}
 
@@ -164,21 +186,32 @@ def parse(data: bytes) -> FloorState:
             stamps[name] = value
         if values["role"] not in ROLES:
             raise ValueError("unknown role")
+        if not values["identity"]:
+            raise ValueError("the floor names no identity")
         return FloorState(**stamps, **values)
     except (ValueError, UnicodeDecodeError, TypeError) as exc:
         raise FloorUnusable(UNREADABLE, "the floor file does not parse (%s)" % exc) from exc
 
 
-def initial(role: str, ca_not_before: float, *, tolerance_s: float = DEFAULT_TOLERANCE_SECONDS,
+def initial(role: str, ca_not_before: float, identity: str, *,
+            tolerance_s: float = DEFAULT_TOLERANCE_SECONDS,
             max_age_s: float = DEFAULT_MAX_AGE_SECONDS) -> FloorState:
-    """The state at setup: the floor at the CA certificate's notBefore -- signed and local, not a
+    """The state at setup: the floor at the TRUST ANCHOR's notBefore -- signed and local, not a
     clock reading -- both counters at zero, no anchor, never written in any boot. The first case
-    is this CONTENT, not the absence of a file."""
+    is this CONTENT, not the absence of a file.
+
+    The anchor's notBefore and not the side's own certificate's: a renewal must not move the
+    floor or start its counters again, and the anchor is the one bound every side of the
+    deployment already trusts and already holds.
+    """
     if role not in ROLES:
         raise ValueError("a floor belongs to the gateway or the worker")
+    if not identity:
+        raise ValueError("a floor belongs to an identity, and none was given")
     if not float(max_age_s) > 0 or float(tolerance_s) < 0:
         raise ValueError("the maximum age must be positive and the tolerance not negative")
-    return FloorState(role=role, generation=0, floor=float(ca_not_before), boot_id="",
+    return FloorState(role=role, identity=str(identity),
+                      generation=0, floor=float(ca_not_before), boot_id="",
                       anchor_monotonic=0.0, elapsed_at_boot_start=0.0, elapsed_total=0.0,
                       granted_total=0.0, tolerance_s=float(tolerance_s),
                       max_age_s=float(max_age_s), written_monotonic=None, written_at=None)
@@ -244,7 +277,8 @@ def newer(staged: bytes, current: bytes | None) -> bool:
 
 # ---------------------------------------------------------------------- the services' side
 
-def judge(data: bytes | None, *, role: str, boot: str, monotonic_now: float) -> float:
+def judge(data: bytes | None, *, role: str, identity: str, boot: str,
+          monotonic_now: float) -> float:
     """The floor in `data`, if this side may use it now; `FloorUnusable` saying why not.
 
     Nothing here writes, and nothing here repairs: every reason below is a refusal.
@@ -255,6 +289,15 @@ def judge(data: bytes | None, *, role: str, boot: str, monotonic_now: float) -> 
     if state.role != role:
         raise FloorUnusable(UNREADABLE, "the floor file belongs to the %s, not the %s"
                             % (state.role, role))
+    # Whose floor it is, before how old it is. A file carried from the other machine passes every
+    # check below this one -- same role, same format, a perfectly good age in ITS boot -- and this
+    # is the only line that stops it.
+    if not identity:
+        raise FloorUnusable(NO_IDENTITY, "this side was not told which identity it is, so it "
+                            "cannot tell its own floor from one that was copied here")
+    if state.identity != identity:
+        raise FloorUnusable(OTHER_IDENTITY, "the floor belongs to %s and this side is %s"
+                            % (state.identity, identity))
     if not boot:
         raise FloorUnusable(NO_BOOT, "this machine gives no boot identity, so the floor's age "
                             "cannot be established")
@@ -274,7 +317,7 @@ def judge(data: bytes | None, *, role: str, boot: str, monotonic_now: float) -> 
     return state.floor
 
 
-def read(path, role: str) -> float:
+def read(path, role: str, identity: str) -> float:
     """`judge` on the file at `path`, now. Opens it for reading and for nothing else."""
     try:
         with open(path, "rb") as handle:
@@ -284,7 +327,31 @@ def read(path, role: str) -> float:
     except OSError as exc:
         raise FloorUnusable(UNREADABLE, "the floor file could not be read (%s)"
                             % type(exc).__name__) from exc
-    return judge(data, role=role, boot=_boot(), monotonic_now=_monotonic())
+    return judge(data, role=role, identity=identity, boot=_boot(), monotonic_now=_monotonic())
+
+
+def adopt(data: bytes, identity: str) -> FloorState:
+    """A format-1 floor, carried forward into format 2 under `identity`, counters untouched.
+
+    An upgrade must not be a way to get a fresh tolerance. Re-initialising would give one --
+    `initial` starts both counters at zero -- so a deployment upgrading into format 2 adopts its
+    existing floor instead, keeping `elapsed_total` and `granted_total` exactly as they stand.
+    It is a step somebody takes, on the machine the floor is already on, naming the identity it
+    belongs to; nothing does it automatically, because "this file is probably mine" is the
+    reasoning the identity field exists to end.
+    """
+    if not identity:
+        raise ValueError("a floor belongs to an identity, and none was given")
+    try:
+        body = json.loads(data.decode("ascii"))
+        if not isinstance(body, dict) or body.get("format") != 1:
+            raise ValueError("not a floor of format 1")
+        body["format"] = FORMAT
+        body["identity"] = str(identity)
+        return parse((json.dumps(body, indent=1, sort_keys=True) + "\n").encode("ascii"))
+    except (ValueError, UnicodeDecodeError, TypeError) as exc:
+        raise FloorUnusable(UNREADABLE, "this is not a format-1 floor to adopt (%s)"
+                            % exc) from exc
 
 
 def effective_time(floor_value: float) -> float:
@@ -298,6 +365,6 @@ def path_for(directory, role: str) -> Path:
 
 
 __all__ = ["DEFAULT_DIR", "DEFAULT_MAX_AGE_SECONDS", "DEFAULT_TOLERANCE_SECONDS", "FloorState",
-           "FloorUnusable", "MISSING", "NOT_WRITTEN", "NO_BOOT", "OTHER_BOOT", "ROLES", "TOO_OLD",
-           "UNREADABLE", "advance", "effective_time", "initial", "judge", "newer", "parse",
-           "path_for", "read", "recover"]
+           "FloorUnusable", "MISSING", "NOT_WRITTEN", "NO_BOOT", "NO_IDENTITY", "OTHER_BOOT",
+           "OTHER_IDENTITY", "ROLES", "TOO_OLD", "UNREADABLE", "adopt", "advance",
+           "effective_time", "initial", "judge", "newer", "parse", "path_for", "read", "recover"]

@@ -143,12 +143,16 @@ class TestTheRequestContributesOnlyItsKey:
         # What the peer check judges by since stage 5: this issuer's list, and a floor its root
         # run wrote in this (one) boot. Both valid, so only the certificate's fields decide.
         monkeypatch.setattr(floors, "_boot", lambda: "test-boot")
-        place.issuer().floor_init(place.root / "floor")
+        # Whose floor it is has to be said now; the check below is about the certificate's
+        # fields, so the floor is made out to the identity that certificate carries.
+        who = "agentnode://alpha/worker/w1"
+        place.issuer().floor_init(place.root / "floor", roles=("worker",),
+                                  identities={"worker": who})
         place.issuer().tick(place.root / "floor")
         trust = TrustView.read(anchor=place.trust / "ca.pem",
                                revocation_list=place.trust / "revoked.crl",
                                floor=floors.path_for(place.root / "floor", "worker"),
-                               role="worker")
+                               role="worker", identity=who)
 
         key = serialization.load_pem_private_key((place.folder / "key.pem").read_bytes(), None)
         greedy = (x509.CertificateSigningRequestBuilder()

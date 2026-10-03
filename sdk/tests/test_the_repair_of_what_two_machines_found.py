@@ -1,0 +1,494 @@
+"""The six defects the cross-host run of 2026-09-29 found, and whether they are gone.
+
+Profile `remote-worker-cross-host-repair-r1` (sha256 97c4c456...), criteria D1-D9. Every test
+here names the defect it is about, because a repair whose test does not say what broke is a test
+nobody can judge later.
+
+WHAT THESE TESTS ARE NOT. None of them establishes that two machines work. They establish that
+the things which stopped two machines from being tried are fixed. The measurement itself needs
+the hardware and is a separate run.
+"""
+from __future__ import annotations
+
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from agentnode_sdk.pki import floor as floors
+from agentnode_sdk.pki import localfloor
+
+DEPLOY = Path(__file__).resolve().parent.parent / "deploy" / "separate-worker-host"
+BUILDER = DEPLOY / "build_artefacts.py"
+
+
+# =============================================================== D6: the worker's own floor
+
+class TestAWorkerCanEstablishItsOwnFloor:
+    """Defect 6, the one that stopped the run: a worker refuses every connection without a
+    floor, a floor must be made on the machine it is for, and making one asked for the CA's
+    private key -- the single file a worker must never hold."""
+
+    def test_the_floor_is_made_from_the_public_anchor_and_the_worker_s_own_certificate(
+            self, tmp_path, monkeypatch):
+        world = _a_deployment(tmp_path)
+        monkeypatch.setattr(floors, "_boot", lambda: "this-boot")
+
+        # Exactly what a worker host has: its certificate, the public anchor. No ca.key, no
+        # inventory -- and the test proves that by deleting them before the call.
+        assert not (world["worker_dir"] / "ca.key").exists()
+        path = localfloor.init(tmp_path / "floor", "worker",
+                               certificate=world["worker_cert"], anchor=world["anchor"])
+        state = floors.parse(Path(path).read_bytes())
+        assert state.identity == world["worker_uri"]
+        assert state.role == "worker"
+        assert state.floor == pytest.approx(localfloor.anchor_not_before(world["anchor"]))
+
+    def test_and_it_can_be_kept_without_the_issuer(self, tmp_path, monkeypatch):
+        world = _a_deployment(tmp_path)
+        monkeypatch.setattr(floors, "_boot", lambda: "this-boot")
+        localfloor.init(tmp_path / "floor", "worker",
+                        certificate=world["worker_cert"], anchor=world["anchor"])
+        report = localfloor.settle_and_advance(tmp_path / "floor", "worker",
+                                               certificate=world["worker_cert"],
+                                               anchor=world["anchor"])
+        assert report["written"].startswith("generation ")
+        assert report["identity"] == world["worker_uri"]
+        # And the service can now use it -- which is the whole point of the exercise.
+        assert floors.read(floors.path_for(tmp_path / "floor", "worker"), "worker",
+                           world["worker_uri"])
+
+    def test_a_floor_carried_from_the_other_machine_is_refused(self, tmp_path, monkeypatch):
+        """The negative half D6 asks for. Before the identity field this file was
+        indistinguishable from the worker's own: right role, right format, and -- had it been
+        written in this boot -- a perfectly good age."""
+        world = _a_deployment(tmp_path)
+        monkeypatch.setattr(floors, "_boot", lambda: "this-boot")
+
+        # A floor belonging to the GATEWAY's identity, in the worker's role slot -- and written
+        # NOW, in this boot. The age has to be irreproachable or the refusal below could be the
+        # floor being stale rather than the floor being somebody else's. The first version of
+        # this test got that wrong and the counter-check caught it: with the identity check
+        # removed it still went red, on `time-floor-too-old`, which proves nothing at all.
+        now = floors._monotonic()
+        carried = floors.initial("worker", 1.0, world["gateway_uri"])
+        carried = floors.advance(carried, system_now=2.0, monotonic_now=now, boot="this-boot",
+                                 list_this_update=None)
+        where = floors.path_for(tmp_path / "floor", "worker")
+        where.parent.mkdir(parents=True, exist_ok=True)
+        where.write_bytes(carried.to_bytes())
+
+        # THE CONTROL: judged as the identity it actually belongs to, this very file is usable.
+        # So age, boot, role and format are all fine, and only one thing can refuse it below.
+        assert floors.read(where, "worker", world["gateway_uri"]) == carried.floor
+
+        with pytest.raises(floors.FloorUnusable) as refused:
+            floors.read(where, "worker", world["worker_uri"])
+        assert refused.value.check == floors.OTHER_IDENTITY
+
+    def test_setting_a_floor_up_twice_does_not_grant_a_second_tolerance(self, tmp_path,
+                                                                        monkeypatch):
+        world = _a_deployment(tmp_path)
+        monkeypatch.setattr(floors, "_boot", lambda: "this-boot")
+        localfloor.init(tmp_path / "floor", "worker",
+                        certificate=world["worker_cert"], anchor=world["anchor"])
+        with pytest.raises(localfloor.FloorRefused) as refused:
+            localfloor.init(tmp_path / "floor", "worker",
+                            certificate=world["worker_cert"], anchor=world["anchor"])
+        assert "second tolerance" in str(refused.value)
+
+    def test_an_upgrade_carries_the_counters_instead_of_starting_them_again(self, tmp_path,
+                                                                           monkeypatch):
+        """Format 2 names an identity and format 1 does not. Re-initialising would be the easy
+        migration and the wrong one: it starts both counters at zero, which hands out a fresh
+        tolerance -- the one thing the counters exist to prevent."""
+        world = _a_deployment(tmp_path)
+        monkeypatch.setattr(floors, "_boot", lambda: "this-boot")
+        spent = floors.FloorState(role="worker", identity=world["worker_uri"], generation=9,
+                                  floor=1000.0, boot_id="old", anchor_monotonic=1.0,
+                                  elapsed_at_boot_start=0.0, elapsed_total=500.0,
+                                  granted_total=400.0, tolerance_s=600.0, max_age_s=900.0,
+                                  written_monotonic=5.0, written_at=1000.0)
+        old = spent.to_bytes().replace(b'"format": 2', b'"format": 1')
+        old = old.replace(b'"identity": "%s",\n ' % world["worker_uri"].encode(), b"")
+
+        where = floors.path_for(tmp_path / "floor", "worker")
+        where.parent.mkdir(parents=True, exist_ok=True)
+        where.write_bytes(old)
+        localfloor.adopt(tmp_path / "floor", "worker", certificate=world["worker_cert"])
+
+        after = floors.parse(where.read_bytes())
+        assert after.identity == world["worker_uri"]
+        assert after.granted_total == 400.0, "the spent tolerance was given back"
+        assert after.elapsed_total == 500.0
+
+
+# =============================================================== D2: an artefact that installs
+
+class TestAnArtefactCanInstallItself:
+    """Defect 1 and 2: every .sh shipped at mode 666 from a Windows build, and six path
+    references that resolved only in the repository."""
+
+    def _built(self, tmp_path):
+        wheel = tmp_path / "agentnode_sdk-0.0.0-py3-none-any.whl"
+        wheel.write_bytes(b"not a real wheel, and nothing here opens it")
+        out = tmp_path / "out"
+        done = subprocess.run([sys.executable, str(BUILDER), "--wheel", str(wheel),
+                               "--out", str(out), "--version", "0.0.0"],
+                              capture_output=True, text=True)
+        return done, out
+
+    def test_every_script_is_executable_whatever_built_it(self, tmp_path):
+        done, out = self._built(tmp_path)
+        assert done.returncode == 0, done.stdout + done.stderr
+        for artefact in sorted(out.glob("*.tar.gz")):
+            with tarfile.open(artefact) as tar:
+                scripts = [m for m in tar.getmembers() if m.name.endswith(".sh")]
+                assert scripts, artefact.name
+                for member in scripts:
+                    assert member.mode & 0o111, "%s in %s is not executable" % (member.name,
+                                                                                artefact.name)
+
+    def test_every_unit_a_script_asks_for_is_in_the_artefact_it_ships_with(self, tmp_path):
+        done, out = self._built(tmp_path)
+        assert done.returncode == 0, done.stdout + done.stderr
+        for artefact in sorted(out.glob("*.tar.gz")):
+            with tarfile.open(artefact) as tar:
+                root = tar.getnames()[0].split("/")[0]
+                names = set(tar.getnames())
+                text = tar.extractfile(root + "/install.sh").read().decode()
+                sys.path.insert(0, str(DEPLOY))
+                import build_artefacts
+
+                for alternatives in build_artefacts._units_a_script_needs(text):
+                    assert any("%s/unit/%s" % (root, name) in names for name in alternatives), \
+                        "%s: none of %s is in %s" % (artefact.name, alternatives, root)
+
+    def test_it_says_which_commit_it_was_built_from(self, tmp_path):
+        """A worker refuses to start without a runtime pin, and the pin needs a commit. Asking
+        the operator for it -- which is what deploy-pinned.sh does -- makes the person
+        installing the artefact the source of truth about what they are installing. The
+        artefact says it itself, and the installer reads it."""
+        done, out = self._built(tmp_path)
+        assert done.returncode == 0, done.stdout + done.stderr
+        for artefact in sorted(out.glob("*.tar.gz")):
+            with tarfile.open(artefact) as tar:
+                root = tar.getnames()[0].split("/")[0]
+                import json
+
+                build = json.loads(tar.extractfile(root + "/BUILD.json").read().decode())
+                assert len(build["commit"]) == 40, build
+                assert len(build["wheel_sha256"]) == 64, build
+                assert "tree_was_clean" in build
+                # And the manifest covers it. The installer's pin is written FROM this file, so
+                # a provenance record the manifest left out would be the one file in the
+                # artefact that could be changed without the check noticing.
+                manifest = tar.extractfile(root + "/MANIFEST.sha256").read().decode()
+                assert "BUILD.json" in manifest, manifest
+
+    def test_the_worker_installer_writes_the_pin_the_worker_demands(self):
+        """The install used to finish and leave a machine that could never start: `Not started.
+        This worker has no runtime pin.` A finished install must produce a startable service or
+        stop and say why."""
+        script = (DEPLOY / "install-worker-host.sh").read_text(encoding="utf-8")
+        code = "\n".join(l for l in script.splitlines() if not l.strip().startswith("#"))
+        assert "runtime_pin.write_pin" in code, "the installer writes no pin"
+        assert "BUILD.json" in code, "the pin's commit must come from the artefact, not a person"
+        assert "AGENTNODE_ALLOW_UNPINNED" not in code, \
+            "starting unpinned would be the easy way out and removes the check entirely"
+
+    def test_the_worker_is_never_given_the_issuer_s_timer(self, tmp_path):
+        done, out = self._built(tmp_path)
+        assert done.returncode == 0, done.stdout + done.stderr
+        with tarfile.open(next(out.glob("*worker*.tar.gz"))) as tar:
+            assert not [n for n in tar.getnames() if "pki-tick" in n], \
+                "the issuer's root run reads the inventory and publishes the revocation list; " \
+                "a worker can do neither, and being given the timer is why it had no floor"
+            assert [n for n in tar.getnames() if "floor-advance" in n]
+
+
+# ------------------------------------------------------------------ the counter-check for D2
+
+def test_the_build_refuses_an_artefact_whose_script_asks_for_a_missing_unit(tmp_path):
+    """The check above is worth nothing if it cannot fail. This breaks exactly one thing -- a
+    script asking for a unit the artefact does not carry -- and requires the BUILD to stop."""
+    staged = tmp_path / "deploy"
+    staged.mkdir()
+    for name in sorted(p.name for p in DEPLOY.iterdir() if p.is_file()):
+        (staged / name).write_bytes((DEPLOY / name).read_bytes())
+    (staged.parent / "agentnode-pki-tick.service").write_text("[Unit]\n", encoding="utf-8")
+    (staged.parent / "agentnode-pki-tick.timer").write_text("[Timer]\n", encoding="utf-8")
+
+    broken = staged / "install-worker-host.sh"
+    text = broken.read_text(encoding="utf-8")
+    assert "unit_file agentnode-floor-advance.service" in text, "the anchor for this mutation moved"
+    broken.write_text(text.replace("unit_file agentnode-floor-advance.service",
+                                   "unit_file agentnode-nowhere.service"), encoding="utf-8")
+
+    wheel = tmp_path / "agentnode_sdk-0.0.0-py3-none-any.whl"
+    wheel.write_bytes(b"not a real wheel")
+    # --commit explicitly: this copy is outside the repository, so without it the build would
+    # stop on provenance instead of on the missing unit, and the mutation would prove nothing.
+    # A control first, to show the copy builds at all when nothing is broken.
+    control = subprocess.run([sys.executable, str(DEPLOY / "build_artefacts.py"),
+                              "--wheel", str(wheel), "--out", str(tmp_path / "control"),
+                              "--version", "0.0.0", "--commit", "0" * 40],
+                             capture_output=True, text=True)
+    assert control.returncode == 0, "the control build failed, so the mutation below shows " \
+                                    "nothing: " + control.stdout + control.stderr
+
+    done = subprocess.run([sys.executable, str(staged / "build_artefacts.py"),
+                           "--wheel", str(wheel), "--out", str(tmp_path / "out"),
+                           "--version", "0.0.0", "--commit", "0" * 40],
+                          capture_output=True, text=True)
+    assert done.returncode != 0, "the build produced an artefact that cannot install itself"
+    assert "agentnode-nowhere.service" in (done.stdout + done.stderr), done.stdout + done.stderr
+
+
+# =============================================================== D1/D5: the documented order
+
+class TestWhatTheDocumentationSays:
+
+    def _readme(self) -> str:
+        return (DEPLOY / "README.md").read_text(encoding="utf-8")
+
+    def test_it_names_the_scripts_the_artefact_actually_contains(self):
+        """Defect 1: it told the operator to run `./install-control-plane.sh`, and the artefact
+        holds `install.sh`. Following it literally could not work."""
+        readme = self._readme()
+        assert "`install.sh`" in readme
+        assert "./install-control-plane.sh" not in readme
+        assert "./install-worker-host.sh" not in readme
+
+    def test_it_names_the_variable_the_script_refuses_to_run_without(self):
+        """Defect 1, the other half: AGENTNODE_DEPLOYMENT is required and was in no example."""
+        readme = self._readme()
+        for block in readme.split("```sh")[1:]:
+            body = block.split("```")[0]
+            if "install.sh" in body and "--verify" not in body:
+                assert "AGENTNODE_DEPLOYMENT" in body, body
+
+    def test_it_documents_the_two_phases_rather_than_a_circle(self):
+        """Defect 5: install the control plane first because it is the CA -- but its last gate
+        needed the worker to be answering already. Neither side could finish first."""
+        readme = self._readme()
+        assert "--verify" in readme
+        assert "install.sh --verify" in readme
+
+    def test_it_does_not_ask_the_worker_to_run_the_issuer(self):
+        """Defect 6's documentation half: `sudo agentnode pki tick  # ON THE WORKER HOST`."""
+        readme = self._readme()
+        worker_tick = [line for line in readme.splitlines()
+                       if "pki tick" in line and "WORKER" in line.upper()
+                       and "not the issuer" not in line.lower()]
+        assert not worker_tick, worker_tick
+
+
+# =============================================================== D6/D7: what preflight asks
+
+class TestPreflightAsksTheSameQuestionTheServiceWill:
+    """Found by bringing a real pair up, not by reading: preflight assembled its OWN trust view
+    and left the identity out, so a perfectly healthy worker was told it could not serve --
+    `time-floor-no-identity-to-judge-by`, against its own floor. Two views of the same thing
+    drifted apart the moment one of them grew an argument."""
+
+    def test_a_side_s_trust_view_knows_which_identity_it_is(self, tmp_path):
+        from agentnode_sdk.worker.tls import TlsSettings
+
+        world = _a_deployment(tmp_path)
+        settings = TlsSettings(certificate=str(world["worker_cert"]),
+                               key=str(world["worker_dir"] / "key.pem"),
+                               anchor=str(world["anchor"]), deployment="repair",
+                               accept=frozenset({"g1"}),
+                               revocation_list=str(world["anchor"]),
+                               floor=str(tmp_path / "nothing.floor"))
+        assert settings.own_identity() == world["worker_uri"]
+        assert settings.trust("worker").identity == world["worker_uri"], \
+            "a view built without an identity refuses every floor, including its own"
+
+    def test_preflight_does_not_build_a_second_view_of_its_own(self):
+        source = (Path(__file__).resolve().parent.parent / "agentnode_sdk" / "cli" /
+                  "worker_commands.py").read_text(encoding="utf-8")
+        assert "TrustView.read(" not in source, \
+            "preflight must ask settings.trust(), or it will drift from what the service uses"
+
+    def test_the_worker_is_never_advised_to_run_the_issuer_s_run(self):
+        """D7's documentation half, in the product's own words this time. The advice printed
+        when a worker's floor is unusable used to be `Run agentnode pki tick as root ON THIS
+        HOST` -- the one command a worker host cannot run."""
+        source = (Path(__file__).resolve().parent.parent / "agentnode_sdk" / "cli" /
+                  "worker_commands.py").read_text(encoding="utf-8")
+        for number, line in enumerate(source.splitlines(), 1):
+            if "pki tick" in line and not line.strip().startswith("#"):
+                raise AssertionError("worker_commands.py:%d still sends a worker to the "
+                                     "issuer's run: %s" % (number, line.strip()))
+
+
+# ====================================================== D5/D7: the unit and the installer agree
+
+class TestTheUnitCannotNameAFileTheInstallerDoesNot:
+    """Found by starting the service on a real worker host, which nothing had ever done. The
+    unit spelled out `--tombstones /etc/agentnode/trust/withdrawn.json` -- a file the control
+    plane does not write; it writes `revoked-identities.json` -- and `--key
+    /etc/agentnode/worker.key`, the single global worker key that per-pair keys replaced. The
+    installer's own preflight passed, because it used the right paths. The unit's failed, fail
+    closed, on every start. A correctly installed worker could not run."""
+
+    def _unit(self) -> str:
+        return (DEPLOY / "worker-host.service").read_text(encoding="utf-8")
+
+    def _unit_code(self) -> str:
+        """The unit with its comments removed. Both files here EXPLAIN the defect they fixed, in
+        prose, naming the wrong paths -- so a test that scans the whole text finds the
+        explanation and calls it the defect. It did, twice, before this helper existed."""
+        return "\n".join(line for line in self._unit().splitlines()
+                         if not line.strip().startswith("#"))
+
+    def test_the_unit_spells_out_no_path_of_its_own(self):
+        offenders = []
+        for number, line in enumerate(self._unit().splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("--") and ("/etc/" in stripped or "/var/" in stripped):
+                offenders.append("%d: %s" % (number, stripped))
+        assert not offenders, ("these take a literal path instead of one the installer wrote "
+                               "into worker.env, which is how two of them came to name files "
+                               "that do not exist:\n  " + "\n  ".join(offenders))
+
+    def test_every_variable_the_unit_uses_is_written_by_the_installer(self):
+        import re
+
+        unit = self._unit_code()
+        installer = (DEPLOY / "install-worker-host.sh").read_text(encoding="utf-8")
+        used = set(re.findall(r"\$\{(AGENTNODE_[A-Z_]+)\}", unit))
+        assert used, "the unit takes no paths from the environment at all"
+        for name in sorted(used):
+            assert re.search(r"^%s=" % name, installer, re.M), \
+                "the unit uses ${%s} and install-worker-host.sh never writes it" % name
+
+    def test_the_global_worker_key_is_gone_from_the_unit(self):
+        """R5 replaced one key for everybody with one key per pair. The unit still handed the
+        worker the old path, which is both wrong and a name nobody should reintroduce."""
+        assert "worker.key" not in self._unit_code()
+
+
+# ============================================ the lease nobody took, because nobody was told
+
+class TestALeaseIsTakenWhenTheWorkerKeepsThem:
+    """`lease_from_the_worker()` existed, was documented as idempotent, and had NO CALLER --
+    not in the product and not in a test. So `_leasing` was never true, no `lease_epoch` was
+    ever attached, and a worker on its own machine refused every job-bearing call with "this
+    worker holds no lease, so nothing may give it work". The worker was right; this side had
+    never asked. Found when a real control plane's very first act -- measuring its worker --
+    was refused, and invisible on one host, where a socket worker keeps no leases at all."""
+
+    def _a_client(self, said):
+        from agentnode_sdk.worker import protocol as wire
+        from agentnode_sdk.worker.remote import SocketWorker
+
+        answer = {"protocol_versions": list(wire.SUPPORTED)}
+        answer.update(said)
+
+        class Answering(SocketWorker):
+            def _ask(self, method, params, *, wait=None, run_id=""):  # noqa: D102
+                assert method == "describe"
+                return dict(answer)
+
+        return Answering("unix:///nowhere.sock", b"k" * 48)
+
+    def test_a_worker_that_keeps_leases_is_leased_from(self):
+        client = self._a_client({"leases": True})
+        client._describe()
+        assert client._leasing is True
+
+    def test_and_one_that_does_not_is_not(self):
+        """A socket worker on the gateway's own host keeps none, and a lease there would be
+        ceremony. Attaching one anyway used to end in `AttributeError` inside the worker."""
+        client = self._a_client({"leases": False})
+        client._describe()
+        assert client._leasing is False
+
+    def test_a_worker_from_before_the_field_is_treated_as_keeping_none(self):
+        """The old behaviour, for a build that speaks a version this side still accepts. Reading
+        a missing field as 'yes' would refuse work that used to run."""
+        client = self._a_client({})
+        client._describe()
+        assert client._leasing is False
+
+    def test_the_worker_says_so_in_its_own_describe(self, tmp_path):
+        """The other end of the same fact, so the two cannot disagree."""
+        source = (Path(__file__).resolve().parent.parent / "agentnode_sdk" / "worker" /
+                  "service.py").read_text(encoding="utf-8")
+        assert '"leases": self.leases is not None,' in source
+        # And asking for a lease where there is none is a named refusal, not an AttributeError.
+        assert "this worker keeps no leases" in source
+
+
+# =============================================================== D4: the ownership model
+
+def test_the_installer_runs_the_gateway_s_own_check_as_the_gateway():
+    """Defect 4: `gateway doctor` was run as root against a directory the same script had just
+    made 0700 to agentnode-gateway. `securedir._judge` requires st_uid == getuid(), so the
+    installer's final gate refused by construction, on every host."""
+    script = (DEPLOY / "install-control-plane.sh").read_text(encoding="utf-8")
+    doctor = [line for line in script.splitlines() if "gateway doctor" in line]
+    assert doctor, "the check is gone entirely, which is not the repair either"
+    for line in doctor:
+        assert "runuser -u" in line, line
+
+
+# =============================================================== D3: resuming a partial install
+
+def test_the_floor_step_is_guarded_like_every_other_step():
+    """Defect 3: the script's header promises every step checks before it acts. `pki floor init`
+    was the one that did not, so a partially completed install could never be resumed."""
+    for name in ("install-control-plane.sh", "install-worker-host.sh"):
+        script = (DEPLOY / name).read_text(encoding="utf-8")
+        lines = script.splitlines()
+        seen = 0
+        for number, line in enumerate(lines):
+            # The CALL, not a comment that mentions it. Both scripts explain in prose why the
+            # floor is made the way it is, and the first version of this test matched the prose.
+            if "pki floor init" in line and not line.strip().startswith("#"):
+                seen += 1
+                # The guard must be the nearest piece of CODE above the call, not merely
+                # somewhere above it: comments in between are fine, another statement is not.
+                above = [earlier.strip() for earlier in lines[:number]
+                         if earlier.strip() and not earlier.strip().startswith("#")]
+                assert above and above[-1].startswith("if [ ! -f"), \
+                    "%s: floor init at line %d is not guarded; the statement above it is %r" \
+                    % (name, number + 1, above[-1] if above else None)
+        assert seen == 1, "%s: expected exactly one `pki floor init` call, found %d" % (name,
+                                                                                        seen)
+
+
+# ====================================================================== the shared builder
+
+def _a_deployment(tmp_path) -> dict:
+    """A real issuer, a real worker certificate, and the public anchor -- nothing simulated.
+
+    The point of several tests here is that a worker can do something with ONLY its certificate
+    and the anchor, so those have to be real files a real issuer produced.
+    """
+    import json
+
+    from agentnode_sdk.pki.issuer import Issuer
+
+    root = Path(tempfile.mkdtemp(dir=tmp_path))
+    issuer = Issuer(root / "ca", root / "trust")
+    issuer.initialise("repair")
+    worker_dir = root / "worker"
+    worker_dir.mkdir()
+    issuer.add("worker", "w1", secret_at=worker_dir / "secret",
+               deliver_to=worker_dir / "cert.pem")
+    from tests.test_mtls_transport import make_request
+
+    request = json.loads(make_request(worker_dir, (worker_dir / "secret").read_text()).read_text())
+    issuer.enroll(request["csr"].encode("ascii"), request["secret"])
+    return {"anchor": root / "trust" / "ca.pem",
+            "worker_cert": worker_dir / "cert.pem",
+            "worker_dir": worker_dir,
+            "worker_uri": "agentnode://repair/worker/w1",
+            "gateway_uri": "agentnode://repair/gateway/g1"}

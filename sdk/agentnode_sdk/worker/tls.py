@@ -63,6 +63,8 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from agentnode_sdk.pki import identity as _identity
+from agentnode_sdk.worker import pairkeys as _pairkeys
+from agentnode_sdk.worker import topology as _topology
 from agentnode_sdk.pki.trust import TrustView
 from agentnode_sdk.worker import WorkerUnreachable
 
@@ -85,6 +87,11 @@ STOP_APPEAR_SECONDS = 10.0
 
 
 class NotLoopback(ValueError):
+    #: Set when the refusal came from the topology rule, so a caller can distinguish "you asked
+    #: for another machine without declaring one" from "that is not an address at all".
+    cause = _topology.DISAGREES
+    what_to_do = ""
+
     """An address this transport will not use, because it could leave the machine."""
 
 
@@ -102,6 +109,13 @@ class TlsSettings:
     accept: frozenset = field(default_factory=frozenset)
     revocation_list: str = ""
     floor: str = ""
+    #: The signed list of identities this deployment has permanently withdrawn. Optional on one
+    #: machine, where the issuer's inventory is the authority and is on the same disk; required
+    #: once a verifier is elsewhere and has no inventory to consult.
+    identity_tombstones: str = ""
+    #: Whether a missing list is a refusal. Set for the separate-host arrangement, where a
+    #: verifier that cannot tell whether an identity was withdrawn must not accept it.
+    tombstones_required: bool = False
     reload_seconds: float = DEFAULT_RELOAD_SECONDS
     reevaluate_seconds: float = DEFAULT_REEVALUATE_SECONDS
 
@@ -114,36 +128,56 @@ class TlsSettings:
         if not float(self.reload_seconds) > 0 or not float(self.reevaluate_seconds) > 0:
             raise ValueError("the reload and re-evaluation intervals must be positive")
 
+    def own_identity(self) -> str:
+        """The identity URI in this side's OWN certificate, or "" if it cannot be read.
+
+        Read at the moment it is needed rather than cached: the certificate is renewed under a
+        running service, and a cached name would outlive the file it came from. Empty is not a
+        pass -- `floor.judge` refuses a side that cannot say who it is.
+        """
+        from agentnode_sdk.pki import localfloor as _localfloor
+
+        try:
+            return _localfloor.identity_in(self.certificate)
+        except _localfloor.FloorRefused:
+            return ""
+
     def trust(self, role: str) -> TrustView:
         """The anchor, the list and the floor, read now, for a side of `role`."""
         return TrustView.read(anchor=self.anchor, revocation_list=self.revocation_list,
-                              floor=self.floor, role=role)
+                              floor=self.floor, role=role, identity=self.own_identity(),
+                              identity_tombstones=self.identity_tombstones,
+                              tombstones_required=self.tombstones_required)
 
     def promised_seconds(self) -> float:
         """The longest a published revocation takes to cut an open connection."""
         return float(self.reload_seconds) + float(self.reevaluate_seconds)
 
 
-def endpoint(address: str) -> tuple[str, int]:
-    """Host and port of a `tcps://` address, or `NotLoopback` for anything that is not a literal
-    loopback address. A name is refused too: a name resolves to wherever its owner points it."""
-    parsed = urlparse(address or "")
-    if parsed.scheme != SCHEME:
-        raise NotLoopback("not a %s:// address: %r" % (SCHEME, (address or "")[:60]))
-    host = (parsed.hostname or "").strip("[]")
+def endpoint(address: str, *, topology: str = _topology.SINGLE_HOST_DEVELOPMENT
+             ) -> tuple[str, int]:
+    """Host and port of a `tcps://` address, judged against the DECLARED topology.
+
+    The judgement moved to `worker/topology.py`; this is the place that applies it to a socket.
+    The default is the strict one this transport has always had -- a literal loopback address or
+    nothing -- so a caller that does not pass a topology gets exactly the old behaviour, and
+    reaching another machine requires the caller to have been told, in as many words, that the
+    machine is where the worker is meant to be.
+
+    `NotLoopback` is still what is raised, because that is what callers and tests catch, and it
+    now carries `cause` and `what_to_do` from the underlying refusal so a caller can tell the
+    kinds apart without reading the sentence.
+    """
     try:
-        literal = ipaddress.ip_address(host)
-    except ValueError as exc:
-        raise NotLoopback(
-            "this transport is loopback only, and %r is not a literal loopback address. Crossing "
-            "a machine boundary is a separate decision, not a setting." % host) from exc
-    if not literal.is_loopback:
-        raise NotLoopback(
-            "this transport is loopback only, and %s is not a loopback address. Crossing a "
-            "machine boundary is a separate decision, not a setting." % host)
-    if parsed.port is None:
-        raise NotLoopback("a %s:// address names its port" % SCHEME)
-    return str(literal), int(parsed.port)
+        _topology.check(topology, address, where="this transport")
+    except _topology.TopologyRefused as refused:
+        raised = NotLoopback(refused.because)
+        raised.cause = refused.cause
+        raised.what_to_do = refused.what_to_do
+        raise raised from refused
+    parsed = urlparse(address or "")
+    host = (parsed.hostname or "").strip("[]")
+    return str(ipaddress.ip_address(host)), int(parsed.port)
 
 
 def _context(side: int, settings: TlsSettings) -> ssl.SSLContext:
@@ -292,6 +326,19 @@ class Watch:
     def _loop(self) -> None:
         while not self._stopped:
             time.sleep(float(self.settings.reevaluate_seconds))
+            # NOTHING LEFT TO WATCH, SO IT STOPS WATCHING. `add` starts a fresh one when a
+            # connection next needs watching, which is the same code path as the first time.
+            #
+            # It used to run until `stop()`, and on the CLIENT side nothing ever called that:
+            # a gateway that finished with a worker left a thread re-reading the anchor, the
+            # revocation list and the floor every few seconds, for the life of the process.
+            # Invisible in production, where the gateway IS the process -- and CI found it as
+            # file descriptors appearing and disappearing underneath a test about a gateway
+            # giving everything back. A watch with nothing to watch is only reading files.
+            with self._lock:
+                if not self._open:
+                    self._thread = None
+                    return
             try:
                 self.pass_once()
             except Exception as exc:                          # noqa: BLE001 - keep watching
@@ -338,7 +385,8 @@ class Watch:
 # ---------------------------------------------------------------------- the gateway's end
 
 def open_to_worker(address: str, settings: TlsSettings, contexts: Contexts,
-                   connect_timeout: float, budget: float | None = None):
+                   connect_timeout: float, budget: float | None = None, *,
+                   topology: str = _topology.SINGLE_HOST_DEVELOPMENT):
     """Connect, shake hands, check the worker. Returns (connection, identity, der). Raises
     `WorkerUnreachable` with the failed check named, and never falls back to anything.
 
@@ -349,7 +397,7 @@ def open_to_worker(address: str, settings: TlsSettings, contexts: Contexts,
     seconds, which is longer than the detection window the machine promises. Without a budget
     nothing changes and a job keeps the allowances it has always had.
     """
-    host, port = endpoint(address)
+    host, port = endpoint(address, topology=topology)
     context = contexts.current()
     ends = None if budget is None else time.monotonic() + budget
 
@@ -399,10 +447,20 @@ class TlsListener:
     """The worker's second door. Shares the worker, the nonce memory and the replay floor with
     the socket's `Bench`, so a message accepted through one door is a replay at the other."""
 
-    def __init__(self, bench, address: str, settings: TlsSettings, say=None) -> None:
+    def __init__(self, bench, address: str, settings: TlsSettings, say=None,
+                 topology: str = _topology.SINGLE_HOST_DEVELOPMENT) -> None:
         self.bench = bench
         self.address = address
         self.settings = settings
+        #: Which arrangement this worker was STARTED for. Checked against the address it was
+        #: given, here and not only on the gateway, because a worker that has been placed on its
+        #: own machine and a gateway that thinks it is local are exactly the disagreement worth
+        #: refusing -- and only one of the two would notice if only one of them looked.
+        self.topology = topology
+        #: Per-pair keys, when this worker has them. Set by `use_keyring`, because the key for a
+        #: connection can only be chosen once the handshake has proved who is on it.
+        self._keyring = None
+        self._own_instance = ""
         #: Where a refusal is said. Flushed line by line: under systemd stdout is a pipe, and a
         #: refusal that waits in a buffer for the next few kilobytes -- or for the process to
         #: exit -- is not a log anybody can read when it matters. The first alpha run found
@@ -413,8 +471,27 @@ class TlsListener:
         self._socket: socket.socket | None = None
         self._stopped = False
 
+    def use_keyring(self, keyring, own_instance: str) -> None:
+        """Authenticate each caller's frames with the key belonging to that caller and this
+        worker, instead of one key shared with everybody."""
+        self._keyring = keyring
+        self._own_instance = str(own_instance)
+
+    def _keys_for(self, gateway_identity):
+        """The pair's keys, or a refusal. The gateway's name comes from the certificate the
+        handshake proved -- never from anything the caller sent."""
+        if self._keyring is None:
+            return None
+        pair = self._keyring.for_pair(
+            gateway=str(getattr(gateway_identity, "instance", "") or ""),
+            worker=self._own_instance)
+        return pair.accepted()
+
     def open(self) -> tuple[str, int]:
-        host, port = endpoint(self.address)
+        # INDEPENDENTLY, not because the gateway said so. Each side is told which arrangement it
+        # is in and each refuses on its own; a worker that has been told it is on its own machine
+        # will not bind a loopback address just because whoever dialled it thinks otherwise.
+        host, port = endpoint(self.address, topology=self.topology)
         family = socket.AF_INET6 if ":" in host else socket.AF_INET
         listener = socket.socket(family, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -495,8 +572,29 @@ class TlsListener:
 
         handle = self.watch.add(connection, connection.gateway_der, connection.gateway, on_cut)
         try:
-            # From here it is the socket's code, unchanged: MAC, nonce, floor, the closed list.
-            self.bench.converse(connection, noted=noted)
+            # From here it is the socket's code, unchanged: MAC, nonce, floor, the closed list
+            # -- with the key chosen for the caller the handshake proved, when this worker holds
+            # per-pair keys. A caller it holds no key for is refused here rather than
+            # authenticated with somebody else's.
+            # WHO IS CALLING, from the certificate the handshake proved and from nothing the
+            # caller sent. The lease is held by a named gateway, so the name has to come from
+            # the same place the key does.
+            self.bench._caller = str(getattr(connection.gateway, "instance", "") or "")
+            try:
+                for_this_caller = self._keys_for(connection.gateway)
+            except _pairkeys.KeyringRefused as refused:
+                # Closed without a word, as the wrong account on the socket is -- and the thread
+                # ENDS here rather than letting the refusal out of it. It used to escape into
+                # the connection thread, where Python printed a traceback naming every pair this
+                # worker does hold. A caller it holds no key for should learn nothing at all,
+                # and whoever reads the log should not be handed the keyring's index either.
+                self.say("  a caller this worker holds no key for was closed: " + refused.cause)
+                try:
+                    connection.close()
+                except OSError:                               # pragma: no cover
+                    pass
+                return
+            self.bench.converse(connection, noted=noted, key=for_this_caller)
         finally:
             self.watch.remove(handle)
 

@@ -53,6 +53,19 @@ from typing import Any
 #: something it did not mean to.
 PROTOCOL = "agentnode-worker/1"
 
+#: EVERY WIRE VERSION THIS BUILD HAS BEEN TESTED AGAINST, and the one it speaks is the first.
+#:
+#: A singleton today, deliberately. Compatibility is earned by a test that exercises the pair,
+#: not inferred from version numbers being close together, so a version appears here when
+#: something proves it works and not before. An empty intersection between two sides is a
+#: refusal, never a downgrade to whatever both happen to understand.
+#:
+#: This is NOT the build. Two hosts running different builds of the same wire version are
+#: compatible and must stay that way: requiring identical builds would mean a security update
+#: could not be applied to one host without the other, which is a worse failure than the one it
+#: would be preventing.
+SUPPORTED = (PROTOCOL,)
+
 #: The most a single frame may be. Read before anything is allocated, so a length nobody meant is
 #: refused rather than reserved. Large enough for an artefact and a job's whole output; a job that
 #: produces more than this is a job whose output was never going to be read by a person.
@@ -72,7 +85,8 @@ NONCE_MEMORY_SECONDS = FRESHNESS_SECONDS * 4
 #: field, so that adding one is a decision somebody makes in a place a reviewer reads.
 FIELDS = ("protocol", "request_id", "nonce", "method", "issued_at", "deadline", "params")
 
-METHODS = ("describe", "run", "stop", "gone", "measure", "measure_egress")
+METHODS = ("describe", "take_lease", "renew_lease", "run", "result", "stop", "gone",
+           "measure", "measure_egress")
 
 #: Every way this can go wrong, named. A caller gets one of these and never a sentence to parse.
 #: `EM3C-EVIDENCE-0002`: the difference between "the answer is no" and "there was no answer" is
@@ -89,10 +103,39 @@ DEADLINE_PASSED = "deadline-passed"          # it was already too late when it a
 RUNTIME_ABSENT = "runtime-absent"            # there is nothing here that can isolate anything
 JOB_FAILED = "job-failed"                    # it was run and it did not work
 NETWORK_UNAVAILABLE = "network-unavailable"  # the restricted network could not be built
+NO_COMMON_PROTOCOL = "no-common-protocol"    # the two sides share no tested wire version
+NO_LEASE = "no-lease"                        # nothing entitles this caller to give work
 INTERNAL = "internal"                        # the worker broke, and says so rather than hanging
+# A RUN ID IS AN IDENTITY, and these are what the worker's journal says about one. They are
+# separate codes rather than one "refused", because they send a caller to three different
+# places: wait, read the outcome it already has, or fix whatever is minting run ids.
+ALREADY_RUNNING = "already-running"          # this run id is in flight here; it was not started again
+OUTCOME_UNKNOWN = "outcome-unknown"          # it was started and how it ended cannot be established
+RUN_ID_CONFLICT = "run-id-conflict"          # the same run id carrying different work
+JOURNAL_REFUSED = "journal-refused"          # the worker cannot write down what it is doing
 
+#: EVERY code that may cross the wire. A code that is raised but missing from here is
+#: silently rewritten to INTERNAL by `refusal` below, which destroys the one fact a caller
+#: needs to act on -- and does it under a guard marked `pragma: no cover`, so nothing noticed.
+#:
+#: NO_LEASE and NO_COMMON_PROTOCOL were both in exactly that state. Every lease refusal --
+#: the ordinary, expected, recoverable kind -- arrived at the gateway as "internal", so the
+#: client could not tell a lapsed lease from the worker having broken, and the operator was
+#: told the worker had an internal error when it was doing precisely its job. Measured on two
+#: machines: "refused the request (internal): this instruction names epoch 1 and the live
+#: lease is epoch 3".
+#:
+#: `test_every_code_that_is_raised_can_cross_the_wire` is the guard against the next one.
+#: SIX were missing, not two. The general guard found the other four as soon as it was
+#: written, and the four are the ones the comment above says are separate codes precisely
+#: so that a caller can tell them apart -- wait, read the outcome you already have, or fix
+#: whatever is minting run ids. All four arrived as "internal", which sends a caller
+#: nowhere.
 ERRORS = (UNAUTHENTICATED, MALFORMED, STALE, REPLAY, ROLLED_BACK, TOO_LARGE, UNKNOWN_METHOD,
-          BAD_PARAMS, DEADLINE_PASSED, RUNTIME_ABSENT, JOB_FAILED, NETWORK_UNAVAILABLE, INTERNAL)
+          BAD_PARAMS, DEADLINE_PASSED, RUNTIME_ABSENT, JOB_FAILED, NETWORK_UNAVAILABLE,
+          NO_LEASE, NO_COMMON_PROTOCOL,
+          ALREADY_RUNNING, OUTCOME_UNKNOWN, RUN_ID_CONFLICT, JOURNAL_REFUSED,
+          INTERNAL)
 
 
 class ProtocolError(Exception):
@@ -152,14 +195,30 @@ def seal(body: dict[str, Any], key: bytes) -> bytes:
     return struct.pack(">I", len(payload)) + mac + payload
 
 
-def unseal(payload: bytes, mac: bytes, key: bytes) -> dict[str, Any]:
+def _keys(key: "bytes | tuple[bytes, ...] | list[bytes]") -> tuple[bytes, ...]:
+    """One key, or the two a rotation's overlap allows. Always a tuple from here on."""
+    return (key,) if isinstance(key, (bytes, bytearray)) else tuple(key)
+
+
+def unseal(payload: bytes, mac: bytes,
+           key: "bytes | tuple[bytes, ...] | list[bytes]") -> dict[str, Any]:
     """The message these bytes are, once they have been shown to be ours.
 
     In this order and no other: the MAC first, over the bytes as they arrived, and only then the
     parser. A comparison in constant time, because a MAC compared byte by byte tells whoever is
     guessing how far they got.
+
+    MORE THAN ONE KEY IS ALLOWED, and it is the rotation overlap and nothing else: while a pair
+    is changing its key, a frame may legitimately carry either the new one or the one it is
+    replacing. EVERY candidate is compared, and compared in constant time, rather than stopping
+    at the first that matches -- so the number of comparisons does not depend on which key was
+    used, and a caller cannot learn from the timing whether the old key is still live.
     """
-    if not hmac.compare_digest(mac, hmac.new(key, payload, hashlib.sha256).digest()):
+    matched = False
+    for candidate in _keys(key):
+        if hmac.compare_digest(mac, hmac.new(candidate, payload, hashlib.sha256).digest()):
+            matched = True
+    if not matched:
         raise ProtocolError(UNAUTHENTICATED,
                             "this message was not written by something holding the key")
     try:
@@ -171,7 +230,7 @@ def unseal(payload: bytes, mac: bytes, key: bytes) -> dict[str, Any]:
     return body
 
 
-def read_frame(stream, key: bytes) -> dict[str, Any]:
+def read_frame(stream, key: "bytes | tuple[bytes, ...] | list[bytes]") -> dict[str, Any]:
     """One frame off a stream, bounded before it is allocated for.
 
     `stream` is anything with `recv`-like `read`. A short read is not a small message: it is a
@@ -384,11 +443,15 @@ def check(body: dict[str, Any], seen: Seen, now: float | None = None,
           floor: "Floor | None" = None) -> None:
     """Everything about a request that is true before its method is even looked up."""
     at = time.time() if now is None else now
-    if body.get("protocol") != PROTOCOL:
+    if body.get("protocol") not in SUPPORTED:
+        # NAMED ON BOTH SIDES, because an operator holding one half of a mismatch cannot act on
+        # "it did not match". No downgrade is attempted: a receiver that fell back to whatever
+        # both sides happened to understand would be choosing a version nobody tested.
         raise ProtocolError(
-            MALFORMED,
+            NO_COMMON_PROTOCOL,
             "this message says it speaks " + repr(str(body.get("protocol"))[:40]) + " and this "
-            "build speaks " + PROTOCOL + ". A receiver that guessed would one day guess wrong")
+            "build has been tested against " + ", ".join(SUPPORTED) + ". A receiver that "
+            "guessed would one day guess wrong")
     for field in ("request_id", "nonce", "method"):
         if not isinstance(body.get(field), str) or not body.get(field):
             raise ProtocolError(MALFORMED, "a message has a " + field)

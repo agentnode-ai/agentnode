@@ -79,10 +79,12 @@ import time
 import uuid
 from pathlib import Path
 
+from agentnode_sdk.pki import enrolment as _enrolment
 from agentnode_sdk.pki import files as _files
 from agentnode_sdk.pki import floor as _floor
 from agentnode_sdk.pki import identity as _identity
 from agentnode_sdk.pki import revocation as _revocation
+from agentnode_sdk.pki import tombstones as _tombstones
 
 DEFAULT_CA_DIR = "/etc/agentnode/ca"
 DEFAULT_TRUST_DIR = "/etc/agentnode/trust"
@@ -287,7 +289,7 @@ class Issuer:
                 raise IssuanceRefused(
                     "entry %s already has a certificate; a new key for it is a renewal, or a "
                     "new entry" % name)
-            secret = secrets.token_hex(32)
+            secret = _enrolment.mint_a_secret()
             inventory["entries"][name] = {
                 "role": ident.role, "instance": ident.instance, "uri": ident.uri(),
                 "usage": _identity.USAGE_OF[ident.role], "days": DAYS,
@@ -366,6 +368,75 @@ class Issuer:
         if self.files.exists(leftover):
             self.files.remove(leftover)
         _files.durable_replace(self.files, target, pem, mode=0o644, label="deliver")
+        # AND THE ENROLMENT IS OVER. Once the certificate is where the service reads it, the
+        # one-shot secret and the request that carries it IN CLEAR are of no use to anybody but
+        # an attacker. They were left on disk indefinitely, 0400 and 0600 -- which is a
+        # permission, not a lifetime. Removing them here rather than documenting the removal is
+        # the difference between a procedure somebody may follow and a property the product has.
+        #
+        # THIS CALL ONLY EVER CLEANED ONE OF THE TWO PLACES, and the claim above was false on the
+        # other. `forget_the_enrolment` waits for cert.pem AND key.pem, which is correct on the
+        # SERVICE's host and impossible on the ISSUER's: the private key stays with the requester
+        # and never crosses. On a two-host deployment this directory is the issuer's, so the
+        # guard never passed and the plaintext secret survived every issuance. Found by
+        # enumerating both disks in the acceptance run of 2026-09-30 (X6-F). The issuer's side is
+        # now cleaned by `_forget_a_spent_secret`, called from `enroll` AFTER the consumption is
+        # committed -- the order matters and is argued there.
+        _enrolment.forget_the_enrolment(target.parent)
+
+    def _forget_a_spent_secret(self, entry: dict) -> list:
+        """Remove the plaintext of a secret whose consumption is already committed.
+
+        Called only from `enroll`, and only after `_commit`, so that a crash between the two
+        leaves a spent secret whose replay the inventory already refuses -- rather than a live
+        secret with no record of it, which is the dangerous way round. Never raises.
+
+        The entry's own consumed digests go with it: the removal is decided by what the file
+        CONTAINS, never by the path that reached it. See `forget_a_spent_secret`.
+        """
+        return _enrolment.forget_a_spent_secret(Path(entry["deliver_to"]).parent,
+                                                self._spent_digests(entry))
+
+    @staticmethod
+    def _spent_digests(entry: dict) -> set:
+        """What this entry has already spent, as digests. The inventory never holds the values."""
+        return {used.get("secret_sha256") for used in entry.get("consumed", [])
+                if used.get("secret_sha256")}
+
+    def _forget_every_spent_secret(self, inventory: dict) -> list:
+        """Also remove plaintext left behind by issuances THIS CODE DID NOT MAKE.
+
+        The per-entry cleanup above closes the defect for every issuance from here on. It does
+        nothing about copies the old code already left on disk, so a host upgraded across the fix
+        keeps them until somebody deletes them by hand. The review of the first submission called
+        that out: S1 asks for no plaintext anywhere the product wrote one, and "anywhere" is not
+        "the entry currently being issued".
+
+        Every directory here is one the product wrote down itself, in `deliver_to`, when the entry
+        was created. **But the directory is only where to look. What decides a removal is the
+        CONTENT of the file**: it goes if and only if it hashes to a digest this entry's own
+        `consumed` list records. `forget_a_spent_secret` carries the long version of why, and it is
+        worth reading, because three earlier designs of this check compared paths instead and each
+        of them could destroy a live secret -- one by sharing a directory, one through a junction,
+        one through a directory that appeared after the comparison. Two of those were rated CRITICAL
+        by review.
+
+        Deciding on content ends that series instead of extending it. Whatever path games are
+        played, the worst this can be handed is a file whose bytes are a spent secret, and removing
+        a spent secret is the entire point. A live secret has different bytes and is never touched,
+        so no comparison of directories is needed at all. Never raises.
+        """
+        gone = []
+        for name, entry in inventory.get("entries", {}).items():
+            if not entry.get("deliver_to"):           # pragma: no cover - inventory damage
+                continue
+            spent = self._spent_digests(entry)
+            if not spent:
+                continue                              # nothing recorded as spent for this entry
+            folder = Path(entry["deliver_to"]).parent
+            for removed in _enrolment.forget_a_spent_secret(folder, spent):
+                gone.append(name + "/" + removed)
+        return gone
 
     def enroll(self, csr_pem: bytes, secret: str) -> bytes:
         """First issuance, against the entry the secret belongs to. Returns the certificate."""
@@ -395,6 +466,10 @@ class Issuer:
                             raise self._refused("the inventory lost the certificate it issued",
                                                 name, public_key)
                         self._deliver(entry, pem)
+                        # Already consumed and committed, so the plaintext is spent. A run that
+                        # crashed between its commit and its removal, or one that predates the
+                        # removal existing at all, leaves a copy here; it goes now. Idempotent.
+                        self._forget_a_spent_secret(entry)
                         return pem
 
             matches = [(n, e) for n, e in inventory["entries"].items()
@@ -422,7 +497,18 @@ class Issuer:
                 "not_after": _not_after(certificate),
                 "pem": pem.decode("ascii")})
             self._commit(inventory, "issue")
+            # COMMIT FIRST, THEN FORGET, and never the other way round. After the commit the
+            # inventory refuses this secret for any other key, so a crash before the removal
+            # leaves a spent plaintext -- untidy and harmless. Removing first and crashing before
+            # the commit would leave a LIVE secret nobody can present and no record that it was
+            # used, which is worse than either.
             self._deliver(entry, pem)
+            self._forget_a_spent_secret(entry)
+            # And the leftovers of issuances made by code that predates this cleanup, so a host
+            # upgraded across the fix does not need a manual migration. Same order argument: this
+            # runs after the commit, and it only touches entries the inventory already records as
+            # spent.
+            self._forget_every_spent_secret(inventory)
             return pem
 
     def renew(self, csr_pem: bytes, current_pem: bytes, signature: bytes) -> bytes:
@@ -556,6 +642,57 @@ class Issuer:
             _files.durable_publish(self.files, self._list_path(), data, mode=0o644, label="list")
         except OSError:
             return False
+        # AND THE IDENTITIES, beside the serials. A serial says "not this certificate"; an
+        # identity says "not this name, ever". Without the second, revoking a worker and
+        # issuing it a new certificate brings it straight back, and a verifier on another
+        # machine has no inventory to notice with.
+        return self._publish_tombstones(inventory, ca_key)
+
+    def _tombstone_path(self):
+        return self.trust_dir / _tombstones.LIST_NAME
+
+    def _withdrawn_identities(self, inventory: dict) -> set:
+        """Every identity this deployment has taken away for good.
+
+        Two shapes, and both are permanent:
+
+          * an entry whose renewal is LOCKED -- `recover_entry` does that when an entry is
+            recovered from a compromise, and it is exactly the case where re-issuing under the
+            same name must not bring the holder back;
+          * an entry that has had certificates and has none left that is current or
+            overlapping, i.e. every certificate it ever had is revoked.
+
+        An entry that was created and never claimed is NOT withdrawn: nothing was ever issued
+        for it, so there is nothing to take away.
+        """
+        out = set()
+        for entry in (inventory.get("entries") or {}).values():
+            if not isinstance(entry, dict) or not entry.get("uri"):
+                continue
+            certificates = entry.get("certificates") or []
+            if entry.get("renewal_locked"):
+                out.add(str(entry["uri"]))
+                continue
+            if certificates and not any(
+                    c.get("status") in (CURRENT, OVERLAPPING) for c in certificates):
+                out.add(str(entry["uri"]))
+        return out
+
+    def _publish_tombstones(self, inventory: dict, ca_key) -> bool:
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives import hashes
+
+        def sign(body: bytes) -> bytes:
+            return ca_key.sign(body, ec.ECDSA(hashes.SHA256()))
+
+        data = _tombstones.publish(str(inventory.get("deployment") or ""),
+                                   self._withdrawn_identities(inventory),
+                                   now=_now(), signer=sign)
+        try:
+            _files.durable_publish(self.files, self._tombstone_path(), data, mode=0o644,
+                                   label="identities")
+        except OSError:
+            return False
         return True
 
     def revoke(self, serial: str, reason: str = BY_ROOT) -> dict:
@@ -608,7 +745,7 @@ class Issuer:
                 if record["status"] in (CURRENT, OVERLAPPING):
                     record["status"] = REVOKED
             entry["renewal_locked"] = True
-            secret = secrets.token_hex(32)
+            secret = _enrolment.mint_a_secret()
             entry["secret_sha256"] = _sha256(secret.encode("ascii"))
             entry["secret_expires"] = round(now + SECRET_HOURS * 3600, 3)
             self._commit(inventory, "recover")
@@ -756,7 +893,24 @@ class Issuer:
 
     # ------------------------------------------------------------------ the floor's lifecycle
 
-    def floor_init(self, floor_dir, roles=_floor.ROLES, *,
+    def _identity_for(self, role: str) -> str:
+        """Whose floor this role's floor is, taken from the inventory.
+
+        Exactly one entry of that role, or a refusal. Two instances of a role on one host is a
+        deployment this cannot guess about, and a guess would write a floor under a name the
+        service does not present -- which the service would then rightly refuse, at start, with
+        a message about identities rather than about installation.
+        """
+        named = sorted(entry.get("uri", "") for name, entry in self._inventory().items()
+                       if name.split("/")[0] == role and entry.get("uri"))
+        if len(named) != 1:
+            raise IssuanceRefused(
+                "the inventory holds %d identities of role %s, and a floor belongs to exactly "
+                "one of them. Name it: `agentnode pki floor init --identity <uri>`."
+                % (len(named), role))
+        return named[0]
+
+    def floor_init(self, floor_dir, roles=_floor.ROLES, *, identities: dict | None = None,
                    tolerance_s: float = _floor.DEFAULT_TOLERANCE_SECONDS,
                    max_age_s: float = _floor.DEFAULT_MAX_AGE_SECONDS,
                    after_loss: bool = False) -> dict:
@@ -765,6 +919,10 @@ class Issuer:
         A floor that exists and parses is never replaced here: that would grant a second
         tolerance. One that is missing or unreadable after it had existed is replaced only with
         `after_loss`, and that is written down in the issuer's log.
+
+        `identities` maps a role to the identity URI its floor belongs to; anything not named is
+        looked up in the inventory. On a machine that is NOT the issuer there is no inventory and
+        no key: `pki/localfloor.py` does the same job there, from the trust anchor alone.
         """
         floor_dir = Path(floor_dir)
         floor_dir.mkdir(parents=True, exist_ok=True)
@@ -796,7 +954,8 @@ class Issuer:
                                 "again, which is a root decision: repeat with --after-loss"
                                 % role) from None
                         self._note("floor re-initialised after loss", role)
-                state = _floor.initial(role, not_before, tolerance_s=tolerance_s,
+                who = (identities or {}).get(role) or self._identity_for(role)
+                state = _floor.initial(role, not_before, who, tolerance_s=tolerance_s,
                                        max_age_s=max_age_s)
                 _files.durable_publish(self.files, path, state.to_bytes(), mode=0o644,
                                        label="init-floor-" + role)

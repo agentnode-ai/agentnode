@@ -263,7 +263,13 @@ class TestARestartTellsAWaitingJobApartFromARunningOne:
 
     def test_the_ledger_records_that_a_run_started(self, capped):
         """WITHOUT THIS THERE IS NOTHING TO TELL THEM APART. The ledger held `accepted` from
-        submission to a terminal state; nothing wrote anything in between."""
+        submission to a terminal state; nothing wrote anything in between.
+
+        The method it looks for is `note_lifecycle` since `state-consistency-r1`. It was `note_state`,
+        and it was renamed because the field it writes carries the LIFECYCLE and not an outcome -- two
+        paths used to write outcome words into it and the last one to run decided what the file said.
+        What this test is about is unchanged: something must mark the moment a slot was held.
+        """
         import ast
         import inspect
         import textwrap
@@ -271,20 +277,38 @@ class TestARestartTellsAWaitingJobApartFromARunningOne:
         tree = ast.parse(textwrap.dedent(inspect.getsource(capped._run)))
         noted = [ast.unparse(node).replace(" ", "") for node in ast.walk(tree)
                  if isinstance(node, ast.Call)
-                 and getattr(node.func, "attr", "") == "note_state"]
+                 and getattr(node.func, "attr", "") == "note_lifecycle"]
         assert any("'running'" in call for call in noted), (
             "nothing marks a run as started, so a restart cannot tell a job that ran from one "
             "that only waited: %r" % noted)
 
-    def test_a_job_that_only_waited_is_told_it_never_started(self, capped, tmp_path):
+    def test_a_job_that_only_waited_is_not_told_it_was_running(self, capped, tmp_path):
+        """Adapted by `DECISION-0002`, which is recorded beside this change rather than taken quietly.
+
+        This used to assert the words "waiting" and, by its name, that such a job is told it never
+        started. `DECISION-0001`'s answer A9 forbids the second: `note_lifecycle('running')` is
+        attempted before the container is asked for and its failure is SWALLOWED, so a run that did
+        hold a slot can read `accepted` with no `started_at`, and "your job never started" is then a
+        false statement. There is no durable way to tell the two apart -- anything that would record
+        the failure is a write to the file that just failed.
+
+        What this test was written for is unchanged and is still the first assertion: a job that never
+        left the queue is not told it was running. What it gives up is the usually-true specific claim
+        that it only waited, in exchange for not making an occasionally-false one. The full reasoning,
+        the cost, and the question put back to the reviewer are in
+        `state-consistency/DECISION-0002-what-a-queued-run-is-told.md`.
+        """
         self._a_claimed_run(capped, "only-ever-waited", nonce="n1")
         again, state = self._restarted(capped, tmp_path)
         try:
             record = again.runs["only-ever-waited"]
             assert record.state == "interrupted"
-            assert "waiting" in record.refusal, record.refusal
             assert "while your job was running" not in record.refusal, (
                 "a job that never left the queue was told it was running")
+            assert "never started" not in record.refusal, (
+                "it claims the job never started, which the ledger cannot establish: the write that "
+                "would have recorded a start is best-effort and its failure is swallowed")
+            assert "not something this gateway can now establish" in record.refusal, record.refusal
             assert "nothing was charged" in record.refusal
         finally:
             again.close()
@@ -314,7 +338,7 @@ class TestARestartTellsAWaitingJobApartFromARunningOne:
     def test_a_job_that_was_running_still_gets_the_answer_it_had(self, capped, tmp_path):
         """The fix must not make the case it did not break any quieter."""
         self._a_claimed_run(capped, "was-really-running", nonce="n2")
-        capped.ledger.note_state("was-really-running", "running")
+        capped.ledger.note_lifecycle("was-really-running", "running")
         again, state = self._restarted(capped, tmp_path)
         try:
             record = again.runs["was-really-running"]
@@ -333,7 +357,7 @@ class TestARestartTellsAWaitingJobApartFromARunningOne:
         twice for one request and runs somebody's code without being asked to."""
         self._a_claimed_run(capped, "only-ever-waited", nonce="n1")
         self._a_claimed_run(capped, "was-really-running", nonce="n2")
-        capped.ledger.note_state("was-really-running", "running")
+        capped.ledger.note_lifecycle("was-really-running", "running")
         again, state = self._restarted(capped, tmp_path)
         try:
             for run_id in ("only-ever-waited", "was-really-running"):
@@ -665,7 +689,7 @@ class TestAnInterruptedRunIsStillInTheRecord:
                                     now=when, owner_account_id="acct-" + "1" * 16,
                                     admitted=self.ADMITTED)
         if started is not None:
-            service.ledger.note_state(run_id, "running", at=started)
+            service.ledger.note_lifecycle(run_id, "running", at=started)
 
     def _restarted(self, service):
         from tests.test_em3c_gateway import StandInBackend
@@ -738,8 +762,14 @@ class TestAnInterruptedRunIsStillInTheRecord:
             state.close()
 
     def test_a_second_restart_does_not_write_a_second_line(self, capped):
-        """Enforced, not hoped: `unfinished_runs` selects `accepted` and `running`, and the entry
-        says `interrupted` once the line is written. A second restart cannot see it again."""
+        """Enforced, not hoped: `unfinished_runs` selects runs with NO established ending, and the
+        entry carries `settled_as` once the line is written. A second restart cannot see it again.
+
+        The selection used to read `state in ("accepted", "running")`. `state-consistency-r1` moved
+        it onto the absence of a fact rather than the presence of a word, because the word was one a
+        later path could overwrite. What this test asserts -- one line however many restarts -- is
+        unchanged; only the mechanism underneath it is named differently.
+        """
         self._claimed(capped, "only-once", nonce="n1", when=time.time() - 10.0)
         again, state = self._restarted(capped)
         once, state2 = self._restarted(again)
@@ -786,7 +816,7 @@ class TestAnOperatorCommandIsNotAGatewayTakingOver:
     def _an_unfinished_run(self, service, run_id="left-in-flight"):
         assert service.ledger.claim(run_id, "nonce-" + run_id, "s" * 64, "dev",
                                     owner_account_id="acct-" + "2" * 16)
-        service.ledger.note_state(run_id, "running")
+        service.ledger.note_lifecycle(run_id, "running")
         return run_id
 
     def _another_service(self, service, recover):

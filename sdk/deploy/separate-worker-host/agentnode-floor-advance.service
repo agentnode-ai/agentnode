@@ -1,0 +1,37 @@
+[Unit]
+# The periodic run on a machine that is NOT the issuer.
+#
+# A worker host used to be given `agentnode-pki-tick.service` -- the issuer's root run -- and the
+# README told the operator to run `agentnode pki tick` here. Three of that run's four steps are
+# issuer work: it reads the inventory, ends overlaps, and publishes the revocation list. A worker
+# holds none of those things and must not, so on a real worker host it did not merely do less
+# than intended; it failed outright, and the worker never got a floor at all. The cross-host run
+# of 2026-09-29 stopped exactly there.
+#
+# This is the part that is the worker's own: resolve what a crash left of ITS floor, then move
+# that floor on, using its own certificate for identity, the public trust anchor for the initial
+# bound, and -- if a signed list happens to be present and valid -- that list's thisUpdate. No
+# CA key. No inventory. Nothing published.
+#
+# If it stops, nothing is silently kept alive: the floor ages out and this worker stops serving
+# over TLS. That is the point of it.
+Description=AgentNode worker time floor (this machine's own, no issuer)
+Documentation=https://agentnode.ai/docs/sandbox
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/agentnode/venv/bin/agentnode pki floor advance \
+    --role worker \
+    --certificate /var/lib/agentnode-worker/tls/cert.pem \
+    --anchor /etc/agentnode/trust/ca.pem \
+    --revocation-list /etc/agentnode/trust/revoked.crl \
+    --floor-dir /var/lib/agentnode-floor
+# What it writes, and nothing else. Note what is NOT here: /etc/agentnode/ca. There is no CA on
+# this machine, and if one ever appeared this unit still could not write to it.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/agentnode-floor
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes

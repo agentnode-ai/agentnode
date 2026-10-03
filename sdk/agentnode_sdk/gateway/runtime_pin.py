@@ -286,7 +286,28 @@ def check(root, *, artefact_sha256: str = "", commit: str = "") -> dict:
     return said
 
 
-def refuse_unless_pinned(root, what: str, say=print, bold=str) -> int:
+def _said_at_once(text: str = "") -> None:
+    """Printed AND FLUSHED, because this is the line that says which build is serving.
+
+    Under systemd stdout is a pipe, so Python block-buffers it. Measured on the pair: the
+    gateway was started at 07:57:20 and its `Running as managed-...` reached the journal at
+    08:01:16 -- nearly four minutes later, in the same second it was stopped, because that is
+    when the buffer was flushed.
+
+    A build identity nobody can read while the service runs is not one anybody can act on. It
+    is what an operator greps for, and it is what `upgrade.sh` and `rollback.sh` compare to
+    prove the right code came up -- both of which read a line belonging to the OUTGOING
+    process, because the incoming one had not flushed yet. The upgrade reported the old build
+    as serving and the rollback reported that nothing had said anything, about operations
+    that had both worked.
+
+    The worker looked fine only by luck: it prints a lot of other flushed output immediately
+    afterwards, which pushed this line out with it.
+    """
+    print(text, flush=True)
+
+
+def refuse_unless_pinned(root, what: str, say=_said_at_once, bold=str) -> int:
     """0 when this service is what its pin says, 1 after saying why not. THE ONE COPY.
 
     Called before anything is opened or served. The alpha ran its gateway on python 3.14 while CI

@@ -51,8 +51,15 @@ def _no_gateway() -> int:
 
 def _explain_protection(hello: dict) -> None:
     if hello.get("ready"):
+        # "AND WILL BE CLEANED UP AFTERWARDS" was an unconditional promise, and the product does
+        # not make one: a sandbox is CLEANED, or its cleanup is PENDING, or it is UNPROVEN --
+        # three states the worker keeps apart on purpose, because "nobody could establish it" is
+        # not "it is gone". A reader told the stronger thing has been told something this
+        # service cannot always stand behind. `remote-worker-r1` R8.
         print("  Your code will run inside a container on that machine, as a user with no")
-        print("  privileges, and will be cleaned up afterwards. The gateway has measured this.")
+        print("  privileges. The gateway has measured this. The sandbox is removed afterwards,")
+        print("  and each run's record says whether that was confirmed -- where it could not be,")
+        print("  the record says so rather than assuming it.")
     else:
         print(f"  {bold('That sandbox is not ready')} -- {hello.get('reason') or 'it did not say why'}")
         print("  It will refuse work until whoever runs it fixes that.")

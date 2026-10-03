@@ -13,6 +13,9 @@ Run as root:
     agentnode pki publish
     agentnode pki tick    [--floor-dir /var/lib/agentnode-floor]      (the root run, on a timer)
     agentnode pki floor init    [--floor-dir ...] [--tolerance S] [--max-age S] [--after-loss]
+                              [--role R --certificate C --anchor A]   <- on a NON-issuer machine
+  agentnode pki floor advance --role R --certificate C --anchor A [--revocation-list L]
+  agentnode pki floor adopt   --role R --certificate C     <- a format-1 floor, counters kept
     agentnode pki floor recover --role worker|gateway [--floor-dir ...]
     agentnode pki floor show    [--floor-dir ...]
 
@@ -192,11 +195,56 @@ def cmd_floor(args) -> int:
     from agentnode_sdk.pki import floor as _floor
     from agentnode_sdk.pki.issuer import IssuanceRefused
 
+    from agentnode_sdk.pki import localfloor as _localfloor
+
     action = getattr(args, "floor_command", None)
-    if action == "init":
+
+    # A machine that is not the issuer sets its own floor up from its certificate and the trust
+    # anchor -- no CA key, no inventory. This is the path a worker host takes, and the reason the
+    # two-machine install could not finish before it existed.
+    certificate = getattr(args, "certificate", "")
+    anchor = getattr(args, "anchor", "")
+    if action in ("init", "advance", "adopt") and certificate:
+        role = str(getattr(args, "role", "") or "")
         try:
-            done = _issuer(args).floor_init(_floor_dir(args), tolerance_s=float(args.tolerance),
+            if action == "init":
+                if not anchor:
+                    print("  Not set up: --anchor is needed; the floor starts at the deployment "
+                          "anchor's notBefore, which is signed, public, and already on this "
+                          "machine.")
+                    return 1
+                path = _localfloor.init(_floor_dir(args), role, certificate=certificate,
+                                        anchor=anchor, tolerance_s=float(args.tolerance),
+                                        max_age_s=float(args.max_age))
+                print(f"  {role}: {path} (root's, read-only to the services). This machine keeps")
+                print("  it with `agentnode pki floor advance`, on a timer. It is not the")
+                print("  issuer's run and does not need the CA.")
+                return 0
+            if action == "advance":
+                report = _localfloor.settle_and_advance(
+                    _floor_dir(args), role, certificate=certificate, anchor=anchor,
+                    revocation_list=getattr(args, "revocation_list", "") or "")
+                print(json.dumps(report, indent=1, sort_keys=True))
+                return 0
+            path = _localfloor.adopt(_floor_dir(args), role, certificate=certificate)
+            print(f"  adopted: {path} -- counters untouched, identity now named")
+            return 0
+        except _localfloor.FloorRefused as refused:
+            print(f"  Refused: {refused}")
+            return 1
+
+    if action == "init":
+        # `--role` narrows it to that one. A control plane whose worker is on another machine
+        # has no worker floor to set up, and setting one up there would be a file nothing reads.
+        chosen = str(getattr(args, "role", "") or "")
+        try:
+            done = _issuer(args).floor_init(_floor_dir(args),
+                                            roles=(chosen,) if chosen else _floor.ROLES,
+                                            tolerance_s=float(args.tolerance),
                                             max_age_s=float(args.max_age),
+                                            identities=({chosen: str(args.identity)}
+                                                        if getattr(args, "identity", "") and
+                                                        chosen else None),
                                             after_loss=bool(args.after_loss))
         except IssuanceRefused as refused:
             print(f"  Not set up: {refused}")
@@ -205,6 +253,10 @@ def cmd_floor(args) -> int:
             print(f"  {role}: {path} (root's, read-only to the services). It is written by")
             print("  `agentnode pki tick`; until then the services do not serve over TLS.")
         return 0
+    if action == "advance":
+        print("  Refused: `floor advance` is the run for a machine that is NOT the issuer. Give "
+              "--certificate and --anchor, or use `agentnode pki tick` here.")
+        return 1
     if action == "recover":
         done = _issuer(args).floor_recover(_floor_dir(args), str(args.role))
         print(json.dumps(done, indent=1, sort_keys=True))
@@ -215,7 +267,8 @@ def cmd_floor(args) -> int:
             path = _floor.path_for(_floor_dir(args), role)
             try:
                 state = _floor.parse(path.read_bytes())
-                shown[role] = {"floor": state.floor, "generation": state.generation,
+                shown[role] = {"floor": state.floor, "identity": state.identity,
+                               "generation": state.generation,
                                "elapsed_total": state.elapsed_total,
                                "granted_total": state.granted_total,
                                "tolerance_s": state.tolerance_s, "max_age_s": state.max_age_s,
@@ -307,6 +360,27 @@ def add_parser(subparsers) -> None:
     f.add_argument("--tolerance", type=float, default=600.0)
     f.add_argument("--max-age", dest="max_age", type=float, default=900.0)
     f.add_argument("--after-loss", dest="after_loss", action="store_true")
+    # The two that make this runnable on a machine that is NOT the issuer. With --certificate the
+    # identity comes from that certificate and the lower bound from --anchor; no CA key is opened
+    # and no inventory is read, which is the whole reason a worker host can do this at all.
+    f.add_argument("--role", default="", choices=("", "gateway", "worker"))
+    f.add_argument("--certificate", default="",
+                   help="this side's own certificate; its URI name is whose floor this is")
+    f.add_argument("--anchor", default="", help="the deployment's trust anchor (public)")
+    f.add_argument("--identity", default="",
+                   help="on the issuer: name the identity when the inventory holds more than one")
+    where(f)
+    f = floor_actions.add_parser("advance", help="Keep this machine's own floor (not the issuer)")
+    f.add_argument("--role", required=True, choices=("gateway", "worker"))
+    f.add_argument("--certificate", required=True)
+    f.add_argument("--anchor", required=True)
+    f.add_argument("--revocation-list", dest="revocation_list", default="")
+    f.add_argument("--floor-dir", dest="floor_dir", default=None)
+    where(f)
+    f = floor_actions.add_parser("adopt", help="Carry a format-1 floor forward, counters kept")
+    f.add_argument("--role", required=True, choices=("gateway", "worker"))
+    f.add_argument("--certificate", required=True)
+    f.add_argument("--floor-dir", dest="floor_dir", default=None)
     where(f)
     f = floor_actions.add_parser("recover", help="Move a floor that stands too far ahead")
     f.add_argument("--role", required=True, choices=("gateway", "worker"))

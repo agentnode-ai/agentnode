@@ -393,7 +393,7 @@ class TestTheStopAndSuspensionReachEveryDoor:
 class TestAMeasurementDescribesWhatItWasTakenUnder:
 
     @pytest.mark.parametrize("field_name", [
-        "gateway_id", "gateway_version", "backend", "image_digest", "boot_id",
+        "gateway_id", "gateway_version", "backend", "image_digest", "worker_boot_id",
         "backend_version", "conformance_schema", "operator_policy_digest",
         "operator_policy_version", "worker_topology", "worker_configuration_sha256",
     ])

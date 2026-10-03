@@ -81,6 +81,90 @@ _BASE_IMAGE = (
     "6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
 )
 
+def ask_the_runtime_for_no_kernel_tunables(home: str = "") -> str:
+    """Make sure this account's podman asks for no sysctl. Returns the path written, or "".
+
+    WHY THIS IS IN THE CODE AND NOT ONLY IN THE INSTALLER. Podman sets
+    `net.ipv4.ping_group_range` on every rootless container by default, and crun writes it
+    inside the container's network namespace. The worker unit runs with
+    `ProtectKernelTunables=yes`, which mounts /proc/sys read-only for the service and for
+    everything it spawns, so that write fails with EROFS and NO container starts -- including
+    the one that proves the memory ceiling binds. The worker then refuses, correctly, and a
+    rebooted host never comes back.
+
+    The installer writes this file too. That is not enough, and the pair proved it: a host
+    that is UPGRADED rather than installed never receives it, and upgrading is how an
+    existing deployment gets a fix. A fix that only reaches new installations is not
+    delivered. So the property travels with the code, which is what an upgrade does carry.
+
+    Written only when absent. An operator who has their own containers.conf keeps it; if
+    theirs leaves the sysctl in place the ceiling proof fails and names it, which is the
+    fail-closed end of this rather than a surprise edit to somebody else's file.
+    """
+    import os
+
+    where = os.path.join(home or os.path.expanduser("~"), ".config", "containers")
+    path = os.path.join(where, "containers.conf")
+    try:
+        if os.path.exists(path):
+            return ""
+        os.makedirs(where, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(
+                "# Written by the worker itself, because an upgrade carries code and not\n"
+                "# installer steps. Podman sets net.ipv4.ping_group_range on every rootless\n"
+                "# container; crun writes it inside the container's network namespace; and\n"
+                "# this service runs with ProtectKernelTunables=yes, which makes /proc/sys\n"
+                "# read-only for it and everything it spawns. Emptying the list removes the\n"
+                "# write. What it costs is unprivileged ping inside a sandbox that has no\n"
+                "# network at all; what it keeps is the unit's hardening.\n"
+                "[containers]\n"
+                "default_sysctls = []\n")
+        os.chmod(path, 0o600)
+        return path
+    except OSError:
+        # Deliberately not fatal here. If it could not be written, the ceiling proof a few
+        # lines later fails and names the reason, which is a better place to refuse from
+        # than this one -- and refusing here would stop a worker whose operator had made
+        # their own arrangements that work.
+        return ""
+
+
+def recover_a_runtime_that_lost_its_namespace(runtime: str = "podman", home: str = "") -> bool:
+    """Ask a rootless runtime to rebuild the user namespace its stored state refers to.
+
+    WHAT THIS IS FOR, and it is narrow. Rootless podman keeps state that refers to the user
+    namespace and runtime directory of the boot it was created in. After a reboot that state
+    is stale, and the FIRST attempt to create a container fails:
+
+        crun: mount `proc` to `proc`: Operation not permitted: OCI permission denied
+
+    Measured on the pair, and measured carefully: it is not the unit's hardening. Every one
+    of `ProtectProc`, `ProtectKernelTunables`, `ProtectSystem` and `PrivateTmp` was relaxed
+    on the real unit, one at a time, and it failed identically with each. `podman system
+    migrate` fixed it, and the worker came up and its ceiling bound.
+
+    `podman system migrate` is the documented remedy and it is idempotent. It is run only
+    when a container could not be STARTED AT ALL -- never when one started and the ceiling
+    failed to bind, because that is a different fault and recovering from it would be
+    papering over exactly what the proof exists to catch.
+    """
+    import os
+    import subprocess
+
+    if os.path.basename(str(runtime or "")) != "podman":
+        return False
+    environment = dict(os.environ)
+    if home:
+        environment["HOME"] = home
+    try:
+        done = subprocess.run([runtime, "system", "migrate"], capture_output=True,
+                              text=True, timeout=120, env=environment, cwd="/")
+        return done.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 # Hardened flags, mirrored from backend/app/verification/sandbox.py (proven recipe).
 # Never --privileged; never mount the docker socket.
 _HARDENED_FLAGS = [

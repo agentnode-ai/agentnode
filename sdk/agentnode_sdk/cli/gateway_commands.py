@@ -163,8 +163,12 @@ def _say_protected(readiness, runtime_available: bool, live=None) -> None:
         print(f"  {bold(headline)} -- {live.reason}")
         return
     if readiness.ready:
+        # The same correction as the client's message: the sandbox is removed afterwards, and
+        # whether that was CONFIRMED is a per-run fact the worker records three ways. Saying it
+        # unconditionally promises the operator something the product is careful not to claim.
         print(f"  {bold('Protected')} -- code sent here runs inside a container, as a user with no")
-        print("  privileges, and is cleaned up afterwards. This has been measured, not assumed.")
+        print("  privileges, and the sandbox is removed afterwards. This has been measured, not")
+        print("  assumed; each run's record says whether its cleanup was confirmed.")
     else:
         print(f"  {bold('Not protecting anything yet')} -- {readiness.reason}")
 
@@ -267,7 +271,7 @@ def _refuse_unless_pinned(root, what: str) -> int:
     """
     from agentnode_sdk.gateway import runtime_pin
 
-    return runtime_pin.refuse_unless_pinned(root, what, say=print, bold=bold)
+    return runtime_pin.refuse_unless_pinned(root, what, bold=bold)
 
 def cmd_start(args) -> int:
     from agentnode_sdk.gateway.server import make_server

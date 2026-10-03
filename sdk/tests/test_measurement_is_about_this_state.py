@@ -44,7 +44,7 @@ class TestTheBindingCoversWhatTheWorkOrderNames:
         for named in ("operator_policy_digest", "operator_policy_version",
                       "worker_configuration_sha256", "backend", "backend_version",
                       "image_digest", "worker_topology", "gateway_id", "gateway_version",
-                      "boot_id", "conformance_schema"):
+                      "worker_boot_id", "gateway_boot_id", "conformance_schema"):
             assert named in BOUND, "%s is not part of what a measurement is about" % named
 
     def test_and_the_gateway_fills_in_everything_it_can_answer(self, gateway):

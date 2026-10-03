@@ -420,7 +420,22 @@ class ActivationLock:
     than any activation could reasonably take, and breaking it is reported.
     """
 
-    def __init__(self, state_root, stale_after: float = 1800.0) -> None:
+    #: How long a lock held by a LIVE process may stand before it is judged stale.
+    #:
+    #: THIS MUST EXCEED THE LONGEST CALL THE LOCK GUARDS, and it used to equal it: this and
+    #: the gateway's measure budget were both 1800.0. A transport loss that produced no reset
+    #: left the measurement blocked in `recv` for the full half hour, so the holder really was
+    #: alive, `_still_running` said so, and the backstop could not fire before the thing it
+    #: backstops had given up. Every later measurement was refused for thirty minutes --
+    #: correctly, which is exactly what made it hard to see, and why the first diagnosis of it
+    #: was "the lock leaked". The lock never leaked; it is released in `__exit__` on every
+    #: path including BaseException.
+    #:
+    #: `worker/remote.py:MEASURE_SECONDS` is 600 and this is 900. The test asserts the
+    #: INEQUALITY rather than either number, so moving one without the other goes red.
+    STALE_AFTER_SECONDS = 900.0
+
+    def __init__(self, state_root, stale_after: float = STALE_AFTER_SECONDS) -> None:
         self.path = Path(state_root) / LOCK_NAME
         self.stale_after = stale_after
         self._fd: int | None = None

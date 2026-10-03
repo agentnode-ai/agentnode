@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import pathlib
 
+import base64
 import os
 import sys
 from pathlib import Path
 
 from agentnode_sdk.cli.output import bold
+from agentnode_sdk.worker import (SEPARATE_WORKER_HOST, SINGLE_HOST_DEVELOPMENT, TOPOLOGIES)
 
 
 def cmd_key(args) -> int:
@@ -32,6 +34,10 @@ def cmd_key(args) -> int:
     makes the protocol the same when the worker moves to a machine where that is not true.
     """
     from agentnode_sdk.worker import protocol as wire
+
+    pair = str(getattr(args, "pair", "") or "").strip()
+    if pair:
+        return _pair_key(args, pair)
 
     # The string, not the path: `Path("")` is the current directory, which exists -- so asking
     # the path whether it is empty would answer a different question than the one being asked.
@@ -60,6 +66,74 @@ def cmd_key(args) -> int:
     return 0
 
 
+def _pair_key(args, pair: str) -> int:
+    """Add or rotate the key for ONE gateway-and-worker pair.
+
+    Separate from the shared key above rather than replacing it, because the shared key is
+    still the right thing on one machine and the wrong thing across two. A rotation keeps the
+    previous key alongside the new one so that work already in flight stays readable; ending
+    that overlap is `--retire-overlap`, a second command, so it is something an operator does
+    on purpose.
+    """
+    from agentnode_sdk.worker import pairkeys as _pairkeys
+    from agentnode_sdk.worker import protocol as wire
+
+    if pair.count(":") != 1 or not all(pair.split(":")):
+        print()
+        print("  A pair is <gateway-instance>:<worker-instance>, for example  g1:w1")
+        return 2
+    gateway, worker = pair.split(":")
+    named = str(getattr(args, "at", "") or "").strip()
+    if not named:
+        print()
+        print("  Where should it go? Pass --at <path>.")
+        return 2
+    at = Path(named)
+    at.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        ring = _pairkeys.Keyring.read(at) if at.exists() else _pairkeys.empty()
+    except _pairkeys.KeyringRefused as refused:
+        print()
+        print("  " + refused.because)
+        print("  " + refused.what_to_do)
+        return 1
+
+    held = (gateway, worker) in ring.pairs()
+    if getattr(args, "retire_overlap", False):
+        if not held:
+            print()
+            print(f"  There is no key for {gateway}<->{worker} at {at}.")
+            return 1
+        ring = ring.retire_overlap(gateway=gateway, worker=worker)
+        ring.write(at)
+        print()
+        print(f"  The overlap for {gateway}<->{worker} has ended. Only the current key is")
+        print("  accepted from now on; anything still sealed with the previous one is refused.")
+        return 0
+
+    fresh = base64.urlsafe_b64decode(wire.new_key())
+    if held and not getattr(args, "force", False):
+        ring = ring.rotate(gateway=gateway, worker=worker, key=fresh)
+        now = ring.for_pair(gateway=gateway, worker=worker)
+        ring.write(at)
+        print()
+        print(f"  Rotated the key for {gateway}<->{worker} at {at} (generation {now.generation}).")
+        print("  The previous key is still accepted, so work already in flight is not lost.")
+        print("  When both sides hold the new one, end the overlap:")
+        print(f"    agentnode worker key --pair {pair} --at {at} --retire-overlap")
+        return 0
+
+    ring = ring.add(gateway=gateway, worker=worker, key=fresh)
+    ring.write(at)
+    print()
+    print(f"  A key for {gateway}<->{worker} only is at {at}.")
+    print("  It authenticates that one pair. It is not shared with any other worker, and a")
+    print("  worker holding it cannot use it to speak as, or to, a different one.")
+    print("  Copy this file to BOTH sides of that pair and to nowhere else.")
+    return 0
+
+
 def _this_account() -> str:
     """The account this process is running as, for a message that tells an operator what to fix."""
     try:
@@ -82,7 +156,222 @@ def _refuse_unless_pinned(root, what: str) -> int:
     """
     from agentnode_sdk.gateway import runtime_pin
 
-    return runtime_pin.refuse_unless_pinned(root, what, say=print, bold=bold)
+    return runtime_pin.refuse_unless_pinned(root, what, bold=bold)
+
+def _tls_from(args):
+    """The TLS settings these arguments describe, or None, or a refusal.
+
+    Shared by `preflight` and `serve` so the two cannot judge the same arguments differently. A
+    unit that validated its configuration with a second implementation would eventually permit
+    something the product refuses, or refuse something it permits, and the operator would have
+    no way to tell which.
+    """
+    from agentnode_sdk.worker.tls import TlsSettings
+
+    listen = str(getattr(args, "listen", "") or "")
+    parts = [getattr(args, name, None) for name in
+             ("tls_dir", "trust", "deployment", "revocation_list", "floor")]
+    if not (listen or any(parts) or getattr(args, "accept_gateway", None)):
+        return None
+    if not (listen and all(parts) and getattr(args, "accept_gateway", None)):
+        raise ValueError(
+            "a TLS door needs --listen, --tls-dir, --trust, --deployment, --revocation-list, "
+            "--floor and at least one --accept-gateway. Part of that is refused rather than "
+            "started without its checks.")
+    folder = pathlib.Path(args.tls_dir)
+    remote = str(getattr(args, "topology", "") or "") == SEPARATE_WORKER_HOST
+    tombstones = str(getattr(args, "tombstones", "") or "")
+    if remote and not tombstones:
+        raise ValueError(
+            "a worker on its own machine has no issuer inventory to consult, so it needs the "
+            "signed list of withdrawn identities: --tombstones <file>. Without it, revoking a "
+            "gateway and issuing it a new certificate under the same name brings it back.")
+    return TlsSettings(certificate=str(folder / "cert.pem"), key=str(folder / "key.pem"),
+                       anchor=str(args.trust), deployment=str(args.deployment),
+                       accept=frozenset(args.accept_gateway),
+                       revocation_list=str(args.revocation_list), floor=str(args.floor),
+                       identity_tombstones=tombstones,
+                       # Required exactly where it can be met: across the boundary. On one host
+                       # the issuer's inventory is the authority and is right here.
+                       tombstones_required=remote,
+                       reload_seconds=float(args.trust_reload_seconds),
+                       reevaluate_seconds=float(args.reevaluate_seconds))
+
+
+def cmd_preflight(args) -> int:
+    """Everything `serve` checks about its configuration, without opening anything.
+
+    A worker that refuses at start is correct and expensive: it has already proved a memory
+    ceiling, and the reason is at the end of a page of output in a journal somebody has to know
+    to read. This answers the same questions before any of that, in order, and says which one
+    failed -- and it is what the unit runs as ExecStartPre, so the two cannot drift.
+
+    It opens no socket, binds no address, starts no container and prints no key material. A key
+    appears as the pair it belongs to and a generation; a certificate appears as the identity
+    URI on it, which is a name.
+    """
+    say, bad = [], []
+
+    def good(line):
+        say.append("  ok      " + line)
+
+    def refuse(line, what_to_do=""):
+        bad.append((line, what_to_do))
+        say.append("  REFUSED " + line)
+
+    topology = str(getattr(args, "topology", "") or SINGLE_HOST_DEVELOPMENT)
+    listen = str(getattr(args, "listen", "") or "")
+    socket_at = str(getattr(args, "socket", "") or "")
+    remote = topology == SEPARATE_WORKER_HOST
+
+    print()
+    print(f"  {bold('Would this worker start?')}  topology: {topology}")
+    print()
+
+    # 1. THE DOOR, and whether the address agrees with the arrangement. Checked first because
+    #    every other answer is about a worker that is in one arrangement or the other.
+    from agentnode_sdk.worker import topology as _topology
+
+    if not (listen or socket_at):
+        refuse("no door: a worker needs --socket, --listen, or both",
+               "Give it one. Started with neither it would hold a container runtime and answer "
+               "nobody.")
+    if listen:
+        try:
+            _topology.check(topology, listen, where="--listen")
+            good(f"the address agrees with the topology: {listen}")
+        except _topology.TopologyRefused as refused:
+            refuse(f"{refused.cause}: {refused.because}", refused.what_to_do)
+    if socket_at and remote:
+        refuse("a unix socket on a worker that is on its own machine can only be opened by "
+               "something already on that machine, and nothing there is entitled to give work",
+               "Leave --socket out.")
+
+    # 2. THE PER-PAIR KEY. A key shared with everything means reaching one worker is reaching
+    #    all of them, so across the boundary there is one key per pair and it is selected by the
+    #    identity TLS proved -- never by anything the caller sent.
+    keyring_at = str(getattr(args, "keyring", "") or "")
+    if remote and not keyring_at:
+        refuse("no --keyring, and a worker on its own machine does not authenticate its control "
+               "plane with a key shared by everything",
+               "agentnode worker key --pair <gateway>:<worker> --at <file>")
+    elif keyring_at:
+        from agentnode_sdk.worker import pairkeys as _pairkeys
+
+        try:
+            keyring = _pairkeys.Keyring.read(keyring_at)
+            good("keyring readable: %d pair(s)" % len(keyring.pairs()))
+        except _pairkeys.KeyringRefused as refused:
+            refuse(f"{refused.cause}: {refused.because}", refused.what_to_do)
+
+    # 3. THE JOURNAL. Over a network a retry is ordinary and every retry carries a fresh nonce,
+    #    so nothing else would stop the same job running twice.
+    journal_at = str(getattr(args, "journal", "") or "")
+    if remote and not journal_at:
+        refuse("no --journal, and a worker reached over a network must be able to say whether it "
+               "has already run a job",
+               "Start it with --journal <directory> on this machine's own disk.")
+    elif journal_at:
+        from agentnode_sdk.worker import journal as _journal
+
+        try:
+            book = _journal.Journal(journal_at)
+            good("journal writable at %s: %d record(s), %d unsettled"
+                 % (journal_at, book.count(), len(book.unsettled())))
+        except _journal.JournalRefused as refused:
+            refuse(f"{refused.cause}: {refused.because}", refused.what_to_do)
+        except OSError as exc:
+            refuse("the journal directory cannot be used: %s" % exc,
+                   "It must be writable by the account this worker runs as.")
+
+    # 4. THE TLS DOOR, judged the way the gateway will judge it. Not "do the files exist": the
+    #    question worth answering is whether a control plane dialling this worker right now
+    #    would accept the certificate it is about to present -- valid at the effective time, the
+    #    right usage, the right name, not revoked and not withdrawn.
+    try:
+        tls = _tls_from(args)
+    except ValueError as exc:
+        refuse(str(exc))
+        tls = None
+    if tls is not None:
+        from agentnode_sdk.pki import identity as _identity
+        from agentnode_sdk.pki.trust import TrustView
+        from agentnode_sdk.worker.tls import own_instance
+
+        # `identity` and not just `role`: since a floor names whose it is, a view built without
+        # one refuses every floor, including this worker's own. Preflight built one that way and
+        # therefore reported a healthy worker as unable to serve -- found by bringing a real pair
+        # up, not by reading. `settings.trust()` is the one place that knows how to answer this,
+        # so preflight asks it rather than assembling a second, subtly different view.
+        view = tls.trust("worker")
+        try:
+            instance = own_instance(tls)
+            good("this worker's certificate names it %s" % instance)
+            from cryptography import x509
+
+            with open(tls.certificate, "rb") as handle:
+                mine = x509.load_pem_x509_certificate(handle.read())
+            _identity.check_peer(mine.public_bytes(_serialization().Encoding.DER),
+                                 deployment=tls.deployment, expected_role="worker",
+                                 accept_instances={instance}, trust=view)
+            good("a control plane dialling now would accept it")
+        except _identity.PeerRefused as refused:
+            refuse("this worker's own certificate would be refused: %s" % refused,
+                   "Until this is fixed the worker will start and every connection will fail.")
+        except FileNotFoundError as missing:
+            refuse("a TLS file is missing: %s" % missing.filename,
+                   "Enrol this worker before starting it.")
+        except OSError as exc:
+            refuse("a TLS file cannot be read: %s" % exc)
+
+        # WHAT ENROLMENT LEFT. Reported, not removed: a check that changes what it is checking
+        # is not a check, and this one runs as ExecStartPre where a surprise deletion would be
+        # the last thing anybody expects. `serve` removes them, and says so.
+        from agentnode_sdk.pki.enrolment import ENROLMENT_RESIDUES
+
+        here = pathlib.Path(str(getattr(args, "tls_dir", "") or ""))
+        left = [n for n in ENROLMENT_RESIDUES if (here / n).is_file()]
+        if left:
+            say.append("  note    enrolment left %s here; the worker removes %s when it starts"
+                       % (", ".join(left), "them" if len(left) > 1 else "it"))
+        else:
+            good("nothing is left of the enrolment")
+
+        # The floor, named separately, because it is the one thing that is written by root on
+        # THIS machine and is the step most often forgotten -- a floor copied from the control
+        # plane is keyed to that kernel's boot and is unusable here.
+        try:
+            view.effective_time()
+            good("the time floor at %s is usable" % tls.floor)
+        except Exception as exc:                              # noqa: BLE001 - reported, not raised
+            # NOT `pki tick`. That is the issuer's run: it reads the inventory and publishes the
+            # revocation list, neither of which a worker host has, and telling an operator to
+            # run it here is how a worker ended up with no floor at all.
+            refuse("the time floor is not usable: %s" % exc,
+                   "As root ON THIS HOST: `agentnode pki floor advance --role worker "
+                   "--certificate %s --anchor %s`, and check that "
+                   "agentnode-floor-advance.timer is enabled here."
+                   % (tls.certificate, tls.anchor))
+
+    print("\n".join(say))
+    print()
+    if bad:
+        print(f"  {bold('This configuration would not serve.')}")
+        for line, what_to_do in bad:
+            if what_to_do:
+                print("    - " + what_to_do)
+        print()
+        return 1
+    print("  Nothing was opened, bound or started. Every answer above is about configuration.")
+    print()
+    return 0
+
+
+def _serialization():
+    from cryptography.hazmat.primitives import serialization
+
+    return serialization
+
 
 def cmd_serve(args) -> int:
     """Serve one socket, for one account, until something stops this process."""
@@ -101,7 +390,20 @@ def cmd_serve(args) -> int:
     # A door is required, and the socket is no longer the only one that counts as one: a
     # deployment that has moved to mutual TLS should not have to keep a second way in.
     a_tls_door = bool(getattr(args, "listen", "") or "")
-    if not (address or a_tls_door) or not key or not for_whom:
+    remote = str(getattr(args, "topology", "") or "") == SEPARATE_WORKER_HOST
+    keyring_at = str(getattr(args, "keyring", "") or "")
+    # --key NAMES THE KEY SHARED WITH ONE GATEWAY ON THIS MACHINE, and a worker on its own
+    # machine does not have one: it holds a key per pair, in the keyring, chosen by the identity
+    # the handshake proved. Requiring it there would be asking for a file whose only use would
+    # be as a fallback nobody wants.
+    needs_a_shared_key = not (remote and keyring_at)
+    # --for-user names the ONE LOCAL ACCOUNT allowed to open the unix socket, checked with
+    # SO_PEERCRED. With no socket there is no local peer to name: the caller is on another
+    # machine and what decides who may speak is the certificate. Required where it does
+    # something, which is where there is a socket.
+    needs_an_account = bool(address)
+    if (not (address or a_tls_door) or (needs_a_shared_key and not key)
+            or (needs_an_account and not for_whom)):
         print()
         print("  A worker needs a door, something to authenticate messages with, and the one")
         print("  account that may speak to it. The door is a unix socket, mutual TLS, or both:")
@@ -114,19 +416,27 @@ def cmd_serve(args) -> int:
         print("                           --accept-gateway <instance> --revocation-list <file> \\")
         print("                           --floor <file> --key /etc/agentnode/worker.key \\")
         print("                           --for-user agentnode-gateway")
+        print("  or, on its own machine, where the keyring replaces the shared key and there is")
+        print("  no local account to name:")
+        print("    agentnode worker serve --topology %s \\" % SEPARATE_WORKER_HOST)
+        print("                           --listen tcps://<private-ip>:8443 --tls-dir <dir> \\")
+        print("                           --keyring <file> --journal <dir> ...")
         return 2
-    try:
-        uid = int(for_whom)
-    except ValueError:
-        import pwd
-
+    uid = None
+    if for_whom is not None and str(for_whom) != "":
         try:
-            uid = pwd.getpwnam(str(for_whom)).pw_uid
-        except KeyError:
-            print()
-            print(f"  There is no account called {for_whom} on this machine, so there is nobody")
-            print("  to serve. A worker is started for one account and refuses to guess.")
-            return 1
+            uid = int(for_whom)
+        except ValueError:
+            import pwd
+
+            try:
+                uid = pwd.getpwnam(str(for_whom)).pw_uid
+            except KeyError:
+                print()
+                print(f"  There is no account called {for_whom} on this machine, so there is "
+                      "nobody")
+                print("  to serve. A worker is started for one account and refuses to guess.")
+                return 1
 
     print()
     print(f"  {bold('AgentNode sandbox worker')}")
@@ -137,27 +447,20 @@ def cmd_serve(args) -> int:
     # promised a socket to every worker, including one whose only door is mutual TLS.
     print("  Before any door opens it hits a memory ceiling, to see whether one binds.")
     listen = str(getattr(args, "listen", "") or "")
-    tls = None
-    tls_parts = [getattr(args, n, None) for n in ("tls_dir", "trust", "deployment",
-                                                  "revocation_list", "floor")]
-    if listen or any(tls_parts) or getattr(args, "accept_gateway", None):
-        if not (listen and all(tls_parts) and getattr(args, "accept_gateway", None)):
-            print()
-            print("  A TLS door needs --listen, --tls-dir, --trust, --deployment,")
-            print("  --revocation-list, --floor and at least one --accept-gateway. Part of that")
-            print("  is refused rather than started without its checks.")
-            return 2
-        from agentnode_sdk.worker.tls import TlsSettings
-
-        folder = Path(args.tls_dir)
-        tls = TlsSettings(certificate=str(folder / "cert.pem"), key=str(folder / "key.pem"),
-                          anchor=str(args.trust), deployment=str(args.deployment),
-                          accept=frozenset(args.accept_gateway),
-                          revocation_list=str(args.revocation_list), floor=str(args.floor),
-                          reload_seconds=float(args.trust_reload_seconds),
-                          reevaluate_seconds=float(args.reevaluate_seconds))
+    # The same reading of the same arguments `preflight` does, in one place. It was written out
+    # twice, which is how an ExecStartPre ends up validating a different configuration from the
+    # one ExecStart uses -- and then the check passes and the service does not start.
     try:
-        serve(address, key, uid, tls_address=listen, tls=tls)
+        tls = _tls_from(args)
+    except ValueError as refusal:
+        print()
+        print("  " + str(refusal))
+        return 2
+    try:
+        serve(address, key, uid, tls_address=listen, tls=tls,
+              topology=str(getattr(args, "topology", "") or SINGLE_HOST_DEVELOPMENT),
+              keyring_path=str(getattr(args, "keyring", "") or ""),
+              journal_at=str(getattr(args, "journal", "") or ""))
     except KeyboardInterrupt:                                 # pragma: no cover - operator
         print("\n  stopped.")
         return 0
@@ -191,11 +494,13 @@ def cmd_serve(args) -> int:
 
 def dispatch(args) -> int:
     action = getattr(args, "worker_command", None)
-    handlers = {"key": cmd_key, "serve": cmd_serve}
+    handlers = {"key": cmd_key, "serve": cmd_serve, "preflight": cmd_preflight}
     if action not in handlers:
         print()
-        print("  agentnode worker key   --at <path>")
-        print("  agentnode worker serve --socket <unix://...> --key <path> --for-user <account>")
+        print("  agentnode worker key       --at <path>")
+        print("  agentnode worker serve     --socket <unix://...> --key <path> "
+              "--for-user <account>")
+        print("  agentnode worker preflight <the same arguments as serve>")
         return 2
     return handlers[action](args)
 
@@ -208,39 +513,78 @@ def add_parser(subparsers) -> None:
 
     key = actions.add_parser("key", help="Make the key the gateway and this worker share")
     key.add_argument("--at", default="", metavar="PATH")
+    key.add_argument("--pair", default="", metavar="GATEWAY:WORKER",
+                     help="make a key for ONE pair instead of a key shared with everything; "
+                          "required once the worker is on another machine")
+    key.add_argument("--retire-overlap", dest="retire_overlap", action="store_true",
+                     help="with --pair: stop accepting the previous key after a rotation")
     key.add_argument("--force", action="store_true",
                      help="Replace a key that is already there, and stop every gateway holding "
                           "the old one from reaching this worker")
 
-    serve = actions.add_parser("serve", help="Listen on a socket for one account")
-    serve.add_argument("--socket", default="", metavar="ADDRESS",
+    # ONE SET OF ARGUMENTS, TWO COMMANDS. `preflight` answers "would this configuration serve"
+    # and `serve` serves it, and they have to be told the same things in the same words -- a
+    # check that takes a slightly different set is a check of a slightly different deployment.
+    def the_same_arguments(p):
+        p.add_argument("--socket", default="", metavar="ADDRESS",
                        help="unix:///run/agentnode/worker.sock")
-    serve.add_argument("--key", default="", metavar="PATH")
-    serve.add_argument("--for-user", dest="for_user", default=None, metavar="ACCOUNT",
-                       help="the account the gateway runs as; nothing else may speak here")
-    # The mutual-TLS door on loopback. It may stand beside the socket or replace it; what it
-    # may not do is stand half-configured. All of
-    # these together or none of them.
-    serve.add_argument("--listen", default="", metavar="ADDRESS",
-                       help="tcps://127.0.0.1:<port> -- loopback only")
-    serve.add_argument("--tls-dir", dest="tls_dir", default="", metavar="DIR",
+        p.add_argument("--key", default="", metavar="PATH",
+                       help="the key shared with one gateway on this machine; not used, and not "
+                            "required, with --topology %s and a --keyring"
+                            % SEPARATE_WORKER_HOST)
+        p.add_argument("--for-user", dest="for_user", default=None, metavar="ACCOUNT",
+                       help="the account the gateway runs as; nothing else may open the socket. "
+                            "Required only where there IS a socket: with no socket the caller is "
+                            "on another machine and there is no local account to name")
+        # The mutual-TLS door. It may stand beside the socket or replace it; what it may not do
+        # is stand half-configured. All of these together or none of them.
+        p.add_argument("--listen", default="", metavar="ADDRESS",
+                       help="tcps://<literal-ip>:<port> -- loopback unless --topology says "
+                            "otherwise")
+        # WHICH ARRANGEMENT THIS WORKER IS IN, in its own words rather than the gateway's. The
+        # worker judges its own address against this and refuses a disagreement on its own, so a
+        # worker placed on its own machine will not quietly bind a loopback address because
+        # whoever dials it believes it is local.
+        p.add_argument("--journal", default="", metavar="DIR",
+                       help="where this worker writes down what it has been asked to run; "
+                            "required with --topology %s" % SEPARATE_WORKER_HOST)
+        p.add_argument("--keyring", default="", metavar="FILE",
+                       help="per-pair keys; required with --topology %s"
+                            % SEPARATE_WORKER_HOST)
+        p.add_argument("--topology", default=SINGLE_HOST_DEVELOPMENT, metavar="NAME",
+                       choices=list(TOPOLOGIES),
+                       help="%s (default) or %s -- must agree with --listen"
+                            % (SINGLE_HOST_DEVELOPMENT, SEPARATE_WORKER_HOST))
+        p.add_argument("--tls-dir", dest="tls_dir", default="", metavar="DIR",
                        help="where this worker's cert.pem and key.pem are")
-    serve.add_argument("--trust", default="", metavar="FILE",
+        p.add_argument("--trust", default="", metavar="FILE",
                        help="the deployment's CA certificate, and nothing else")
-    serve.add_argument("--deployment", default="", metavar="ID")
-    serve.add_argument("--accept-gateway", dest="accept_gateway", action="append", default=[],
+        p.add_argument("--deployment", default="", metavar="ID")
+        p.add_argument("--accept-gateway", dest="accept_gateway", action="append", default=[],
                        metavar="INSTANCE", help="a gateway instance this worker accepts")
-    # Stage 5: what the TLS door judges a caller by, besides its certificate. Required with it.
-    serve.add_argument("--revocation-list", dest="revocation_list", default="", metavar="FILE",
+        # Stage 5: what the TLS door judges a caller by, besides its certificate. Required with it.
+        p.add_argument("--revocation-list", dest="revocation_list", default="", metavar="FILE",
                        help="the deployment's signed revocation list")
-    serve.add_argument("--floor", default="", metavar="FILE",
+        # Stage 9, reachable from stage 12. Revocation is by serial, so a gateway that is given a
+        # new certificate under the same name comes straight back; this is the signed list of
+        # names that were taken away for good. Required across the boundary, where there is no
+        # issuer inventory to consult instead.
+        p.add_argument("--tombstones", default="", metavar="FILE",
+                       help="the deployment's signed list of withdrawn identities; required "
+                            "with --topology %s" % SEPARATE_WORKER_HOST)
+        p.add_argument("--floor", default="", metavar="FILE",
                        help="this worker's time floor, written by root and read here")
-    serve.add_argument("--trust-reload-seconds", dest="trust_reload_seconds", type=float,
+        p.add_argument("--trust-reload-seconds", dest="trust_reload_seconds", type=float,
                        default=10.0, metavar="S",
                        help="reread the list and the floor at least this often")
-    serve.add_argument("--reevaluate-seconds", dest="reevaluate_seconds", type=float,
+        p.add_argument("--reevaluate-seconds", dest="reevaluate_seconds", type=float,
                        default=5.0, metavar="S",
                        help="judge every open TLS connection again this often")
 
+    the_same_arguments(actions.add_parser(
+        "serve", help="Listen for the one account, or the one gateway, that may speak here"))
+    the_same_arguments(actions.add_parser(
+        "preflight", help="Would this configuration serve? Opens nothing, starts nothing"))
 
-__all__ = ["add_parser", "dispatch", "cmd_key", "cmd_serve", "sys"]
+
+__all__ = ["add_parser", "dispatch", "cmd_key", "cmd_preflight", "cmd_serve", "sys"]

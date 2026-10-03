@@ -92,8 +92,16 @@ def adv(state, *, system_now, monotonic_now, boot=TEST_BOOT, list_this_update=No
 START = 1_790_000_000.0
 
 
-def fresh(tolerance=600.0, max_age=900.0, role="worker"):
-    return floors.initial(role, START, tolerance_s=tolerance, max_age_s=max_age)
+#: A floor belongs to one identity since format 2, so every floor these tests build is made out
+#: to somebody. The arithmetic below does not depend on WHICH identity -- only on there being
+#: one -- so a single name serves, and the tests about identity mismatch name their own.
+WHO = "agentnode://alpha/worker/w1"
+WHO_GATEWAY = "agentnode://alpha/gateway/g1"
+
+
+def fresh(tolerance=600.0, max_age=900.0, role="worker", who=None):
+    return floors.initial(role, START, who or (WHO if role == "worker" else WHO_GATEWAY),
+                          tolerance_s=tolerance, max_age_s=max_age)
 
 
 # ====================================================================== (l) (m) (n) (o) (q)
@@ -175,9 +183,16 @@ class TestTheArithmetic:
 
 # ====================================================================== (p1) (p2) (j2)
 
-def _judge(state, *, boot=TEST_BOOT, monotonic_now):
-    return floors.judge(state.to_bytes(), role=state.role, boot=boot,
-                        monotonic_now=monotonic_now)
+#: `None` means "this side is whoever the floor says", "" means "this side cannot say who it is"
+#: -- and those are different questions, so `or` would be the wrong default and did in fact hide
+#: the empty case the first time this helper was written.
+_ITS_OWN = object()
+
+
+def _judge(state, *, boot=TEST_BOOT, monotonic_now, identity=_ITS_OWN):
+    who = state.identity if identity is _ITS_OWN else identity
+    return floors.judge(state.to_bytes(), role=state.role, identity=who,
+                        boot=boot, monotonic_now=monotonic_now)
 
 
 class TestTheAgeAndTheBoot:
@@ -216,14 +231,29 @@ class TestTheAgeAndTheBoot:
     def test_j2_a_missing_or_unreadable_floor_is_never_a_fresh_start(self, damage):
         state = adv(fresh(), system_now=START, monotonic_now=10.0)
         good = state.to_bytes()
-        assert floors.judge(good, role="worker", boot=TEST_BOOT, monotonic_now=11.0)  # control
+        assert floors.judge(good, role="worker", identity=WHO, boot=TEST_BOOT,
+                            monotonic_now=11.0)  # control
         data = {"missing": None, "empty": b"", "torn": good[: len(good) // 2],
                 "extra-field": good.replace(b'"floor"', b'"extra": 1, "floor"'),
                 "wrong-role": good}[damage]
         role = "gateway" if damage == "wrong-role" else "worker"
         with pytest.raises(floors.FloorUnusable) as caught:
-            floors.judge(data, role=role, boot=TEST_BOOT, monotonic_now=11.0)
+            floors.judge(data, role=role, identity=WHO, boot=TEST_BOOT, monotonic_now=11.0)
         assert caught.value.check in (floors.MISSING, floors.UNREADABLE)
+
+    @pytest.mark.parametrize("wrong", ["agentnode://alpha/worker/w2",
+                                       "agentnode://other/worker/w1", ""])
+    def test_a_floor_made_out_to_somebody_else_is_not_this_side_s_floor(self, wrong):
+        """The check the two-machine run needed and one host could not have asked for: a floor
+        that is perfectly valid -- right role, right boot, well inside its age -- and belongs to
+        another identity. Before format 2 this file was indistinguishable from one's own, which
+        is exactly what a copied floor looks like."""
+        state = adv(fresh(), system_now=START, monotonic_now=10.0)
+        assert _judge(state, monotonic_now=11.0) == state.floor            # the control
+        with pytest.raises(floors.FloorUnusable) as caught:
+            _judge(state, monotonic_now=11.0, identity=wrong)
+        assert caught.value.check == (floors.NO_IDENTITY if wrong == ""
+                                      else floors.OTHER_IDENTITY)
 
     def test_j2_the_root_run_does_not_start_a_floor_that_went_missing(self, tmp_path):
         world = World(tmp_path)
