@@ -1872,8 +1872,46 @@ class TestWhatTheWorkerIsToldAndWhatItIsNot:
 
     def test_a_job_carries_the_job_and_nothing_else(self):
         carried = set(a_job().as_message())
+        # `owner_label` and `epoch` were added for OWNERSHIP of what running a job creates: a network
+        # and a proxy have to belong to a run, an owner and a worker epoch readably, or a sweep cannot
+        # tell one account's leftovers from another's. They are in this list because they are in the
+        # message, and the two tests below are why they are allowed to be: neither is an account id,
+        # and this check caught the first attempt, which sent one.
         assert carried == {"run_id", "container_name", "command", "artifact", "stdin",
-                           "network", "allowed_domains", "limits"}, carried
+                           "network", "allowed_domains", "limits", "owner_label", "epoch"}, carried
+
+    def test_and_the_owner_label_is_not_the_account(self):
+        """The field that was an account id, and must never be one again.
+
+        The worker is the machine that runs other people's code. It needs to tell one owner's
+        leftovers from another's; it does not need to know whose they are, and this product says so
+        about the pair key a few hundred lines away. So what crosses is a label.
+        """
+        from agentnode_sdk.worker import label_for_the_owner
+
+        account = "acct-a-real-customer-0001"
+        label = label_for_the_owner("a-deployment", account)
+        assert label and label != account
+        assert account not in label
+        # Opaque to read, 16 hex characters, and it is a LABEL: short enough to go on a container.
+        assert len(label) == 16 and all(c in "0123456789abcdef" for c in label)
+
+    def test_and_the_label_is_stable_for_one_account_and_differs_between_two(self):
+        """Both properties, because each alone would be useless.
+
+        Unstable, and a sweep cannot find what an earlier run of the same account left. Identical
+        across accounts, and it cannot tell two accounts apart, which is the whole purpose.
+        """
+        from agentnode_sdk.worker import label_for_the_owner
+
+        one = label_for_the_owner("dep", "acct-one")
+        assert one == label_for_the_owner("dep", "acct-one")
+        assert one != label_for_the_owner("dep", "acct-two")
+        # And the deployment is in it, so one account in two deployments does not label alike.
+        assert one != label_for_the_owner("another-dep", "acct-one")
+        # No account, no label -- rather than a label for the empty string, which would be one
+        # value every unattributed run shared.
+        assert label_for_the_owner("dep", "") == ""
 
     def test_and_no_field_of_it_is_named_like_a_secret(self):
         for field in a_job().as_message():
