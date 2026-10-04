@@ -484,12 +484,33 @@ runuser -u "$WORKER_USER" -- env XDG_RUNTIME_DIR="/run/user/$WORKER_UID" HOME="$
 
 systemctl enable agentnode-worker.service >/dev/null
 systemctl restart agentnode-worker.service
-sleep 3
+# WAIT FOR THE UNIT'S OWN VERDICT, do not read it three seconds in. Measured on a real worker
+# four times: the rootless runtime's stored namespace can be stale when the service starts, the
+# service repairs it -- `podman system migrate` -- and that repair takes effect only in the NEXT
+# start. The unit is configured to restart on failure, so the host converges by itself in a few
+# seconds. Reading the state at three seconds reported "the worker did not start" on a host that
+# was fine moments later, and every such run spent one of the unit's five allowed start attempts
+# until systemd refused to start it at all and replaced the real message with "Start request
+# repeated too quickly".
+#
+# So: wait for active, bounded, and SAY how long it took and how many attempts it needed. A worker
+# that needed two attempts is worth saying out loud, not hiding behind a longer sleep. A worker
+# that never becomes active still fails here, exactly as before.
+WAITED=0
+while [ "$WAITED" -lt 90 ]; do
+  systemctl is-active --quiet agentnode-worker.service && break
+  sleep 3
+  WAITED=$((WAITED + 3))
+done
+ATTEMPTS="$(systemctl show -p NRestarts --value agentnode-worker.service 2>/dev/null)"
 if ! systemctl is-active --quiet agentnode-worker.service; then
-  printf '\n!! the worker did not start. What it said:\n\n'
-  journalctl -u agentnode-worker.service -n 30 --no-pager | sed 's/^/   /'
+  printf '\n!! it is still not up after %ss and %s restart(s). What it said:\n\n' \
+    "$WAITED" "${ATTEMPTS:-unknown}"
+  journalctl -u agentnode-worker.service -n 40 --no-pager | sed 's/^/   /'
   die "not going any further while the worker is down"
 fi
+[ "$WAITED" = 0 ] || printf '   it took %ss to come up\n' "$WAITED"
+[ "${ATTEMPTS:-0}" = 0 ] || printf '   and %s restart(s) on the way -- the unit repaired something and the repair landed on the next start\n' "$ATTEMPTS"
 ok "worker is running, which means it hit a ceiling and the ceiling held"
 
 # ---------------------------------------------------------------------------------------------
