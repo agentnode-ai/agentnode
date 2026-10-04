@@ -25,6 +25,12 @@ a job does not depend on the channel.
 from __future__ import annotations
 
 import base64
+# hashlib is for the egress digest in the metering tail. It was MISSING, and the real two-host
+# run is what found it: a job ran, the tail raised NameError, the gateway could not write down
+# what the run used and -- correctly -- stopped taking work rather than run anything else it
+# could not account for. The unit test for the two new meter fields called meter.record itself
+# instead of driving this path, so it never executed this line.
+import hashlib
 import hmac
 import urllib.parse
 import json

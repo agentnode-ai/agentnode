@@ -430,12 +430,102 @@ class TestTwoRunsDoNotShareAnything:
         assert first.owner.run != second.owner.run
 
 
+def _limits_for_the_tail():
+    """What the gateway granted, which the usage line records beside the route out."""
+    from agentnode_sdk.sandbox.contract import Limits, SandboxPolicy
+
+    return SandboxPolicy(limits=Limits(cpu=1.0, memory_mb=256, wall_clock_s=30))
+
+
 class TestTheSignedLineHasSomewhereToSayIt:
     def test_the_two_egress_fields_are_part_of_the_declared_schema(self):
         from agentnode_sdk.gateway import meter
 
         assert "egress" in meter.FIELDS
         assert "egress_sha256" in meter.FIELDS
+
+    def test_the_gateway_writes_the_line_itself_without_raising(self, tmp_path):
+        """THE ONE THIS FILE WAS MISSING, and the real two-host run is what found it.
+
+        The test below calls `meter.record` directly. That proves the schema accepts the two fields
+        and proves nothing about the code that fills them -- which lives in the gateway's own
+        `write_down_what_it_used`, computes the word, computes the digest, and did so with a `hashlib`
+        that was not imported. On the two machines a job ran, this tail raised NameError, the gateway
+        could not write down what the run used, and it stopped taking work rather than run anything
+        else it could not account for. That was the product behaving correctly about my defect.
+
+        So this drives the gateway's own method, with a route out on the record, and asserts the line
+        it wrote. A missing import, a renamed field or a digest over the wrong bytes all fail here.
+        """
+        import json
+
+        from agentnode_sdk.gateway import meter
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.server import GatewayService, RunRecord
+        from tests.test_em3c_gateway import StandInBackend, _store_measurement
+
+        root = tmp_path / "state"
+        root.mkdir(parents=True, exist_ok=True)
+        state = GatewayState(str(root), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        try:
+            the_route_out = {"owner": {"run": "r-tail", "account": "a1b2c3d4e5f60718",
+                                      "epoch": "g9"},
+                             "networks": ["int-id", "ext-id"], "proxy": "proxy-id",
+                             "readings": [{"what": "the proxy", "kind": "reached"}],
+                             "verified_before_the_payload": True, "gone_afterwards": True}
+            record = RunRecord(run_id="r-tail", job_id="j", owner_client_id="c",
+                               owner_account_id="acct-1")
+            record.started_at = 1000.0
+            record.finished_at = 1001.0
+            record.queued_at = 999.5
+            record.route_out = dict(the_route_out)
+            service.runs[record.run_id] = record
+            # The gateway's own tail. If it raises, this is the failure the two machines saw.
+            service.write_down_what_it_used(record, _limits_for_the_tail(), "finished")
+            lines = meter.read(state.root)
+            mine = [line for line in lines if line.get("run_id") == "r-tail"]
+            assert mine, "the gateway wrote no line at all for a run that finished"
+            line = mine[-1]
+            assert line["egress"] == "allowlist", line
+            # The digest is over the worker's own account of what it built, canonically. Recomputed
+            # here rather than copied from the line, so a digest over the wrong bytes fails.
+            import hashlib
+
+            expected = hashlib.sha256(json.dumps(
+                the_route_out, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+            assert line["egress_sha256"] == expected, (line["egress_sha256"], expected)
+        finally:
+            service.close()
+            state.close()
+
+    def test_and_a_run_that_never_started_gets_neither_field(self, tmp_path):
+        """The other half of the same tail: no enforcement happened, so neither field says one did."""
+        from agentnode_sdk.gateway import meter
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.server import GatewayService, RunRecord
+        from tests.test_em3c_gateway import StandInBackend, _store_measurement
+
+        root = tmp_path / "state"
+        root.mkdir(parents=True, exist_ok=True)
+        state = GatewayState(str(root), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        _store_measurement(service)
+        try:
+            record = RunRecord(run_id="r-refused", job_id="j", owner_client_id="c",
+                               owner_account_id="acct-1")
+            record.queued_at = 999.0
+            # started_at stays 0.0: this run never ran.
+            service.runs[record.run_id] = record
+            service.write_down_what_it_used(record, _limits_for_the_tail(), "refused")
+            line = [x for x in meter.read(state.root) if x.get("run_id") == "r-refused"][-1]
+            assert line["egress"] == "", (
+                "a job that never ran is recorded as having had a boundary of %r" % line["egress"])
+            assert line["egress_sha256"] == ""
+        finally:
+            service.close()
+            state.close()
 
     def test_a_line_carries_them_and_the_schema_check_binds_it(self, tmp_path):
         from agentnode_sdk.gateway import meter
