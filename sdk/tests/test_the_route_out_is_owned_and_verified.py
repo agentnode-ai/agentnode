@@ -192,7 +192,10 @@ class TestWhatIsCreatedIsReadBack:
 
 class TestWhatNoRunIsWaitingForIsRemoved:
     def test_it_selects_by_label_and_keeps_a_live_run(self, monkeypatch):
-        rt = _Runtime(containers_listed="cid-1 run-live\ncid-2 run-dead\n",
+        # THREE FIELDS: the id, the COMPONENT label and the run label. The component is there because
+        # the sweep no longer trusts `--filter` to have been honoured -- see the test below, and the
+        # finding in test_endings that produced it.
+        rt = _Runtime(containers_listed="cid-1 egress run-live\ncid-2 egress run-dead\n",
                       networks_listed="netid-1\n")
         monkeypatch.setattr(egress, "_run", rt)
         got = egress.remove_what_no_run_is_waiting_for("podman", keep_runs=["run-live"])
@@ -202,8 +205,30 @@ class TestWhatNoRunIsWaitingForIsRemoved:
         # the listing asked by label, never by a name pattern
         listing = next(c for c in rt.calls if c[1:3] == ["ps", "-a"])
         assert "label=agentnode.component=egress" in listing
+        # and it asked for the label back as well, which is what makes the check below possible
+        assert any('agentnode.component' in str(part) for part in listing), listing
         # the network it found belongs to run-7 in this double, which is not live, so it goes
         assert got["networks"] == ["netid-1"], got
+
+    def test_a_container_that_does_not_say_it_is_ours_is_left_alone(self, monkeypatch):
+        """The fail-open `test_a_sweep_leaves_alone_what_this_sdk_did_not_name` found.
+
+        The first version asked the runtime to filter by label and removed whatever came back. A
+        runtime that ignored the filter, did not support it, or was asked by something that did not pass
+        it would have had this remove containers belonging to whoever else uses that account's runtime.
+        The label is read BACK now, and a candidate that does not say it is this component's is left
+        alone and recorded as such.
+        """
+        rt = _Runtime(containers_listed="mine egress run-dead\nsomebody-elses  \nalso-theirs other\n",
+                      networks_listed="")
+        monkeypatch.setattr(egress, "_run", rt)
+        got = egress.remove_what_no_run_is_waiting_for("podman")
+
+        assert got["containers"] == ["mine"], got
+        assert sorted(got["left_alone"]) == ["also-theirs", "somebody-elses"], got
+        # And nothing was removed for the two that were left alone.
+        removals = [c for c in rt.calls if c[1:2] == ["rm"]]
+        assert all("somebody-elses" not in c and "also-theirs" not in c for c in removals), removals
 
     def test_a_network_of_a_live_run_is_kept(self, monkeypatch):
         rt = _Runtime(networks_listed="netid-1\n")
@@ -428,6 +453,163 @@ class TestTwoRunsDoNotShareAnything:
         others = {second.int_net, second.ext_net, second.proxy_name}
         assert not (names & others), (names, others)
         assert first.owner.run != second.owner.run
+
+
+class TestTheMatrixMeasuresTheBoundaryAndNotTheDestination:
+    """The gateway could not activate ANY policy naming more than one destination, and the reason was
+    in the matrix probe: a destination that answered with an HTTP error status was recorded as
+    `refused`, as though the boundary had not let it through.
+
+    Measured on the two machines: a two-host policy of example.com and example.net failed its
+    measurement because example.net answers with an error status on `/`. An operator could not have
+    allowed an artefact host that answers 403 on `/`, which is most of them. `google.com` failed for a
+    second reason: it answers 301 to `www.google.com`, the probe followed the redirect, and nobody had
+    allowed where it went -- so the matrix measured a host the policy had not named.
+
+    These read the probe's SOURCE, because it runs inside a container by design and what is under test
+    is which answer it records for which outcome.
+    """
+
+    def _the_source(self):
+        from agentnode_sdk.conformance import probe
+
+        return probe.egress_matrix_source(["example.com"], "example.net")
+
+    def test_an_http_status_from_the_destination_counts_as_reached(self):
+        source = self._the_source()
+        assert "except urllib.error.HTTPError as exc:" in source, (
+            "the probe does not tell an HTTP status from a refused tunnel, so a destination's 404 is "
+            "recorded as a boundary that does not work")
+        after = source.split("except urllib.error.HTTPError as exc:", 1)[1]
+        assert 'R[key] = "ALLOWED:" + str(exc.code)' in after, after[:300]
+
+    def test_a_refused_tunnel_is_still_refused(self):
+        """The clause that must NOT be widened. A proxy refusal fails the CONNECT, which raises
+        URLError, and that has to stay `refused` or the whole matrix means nothing."""
+        source = self._the_source()
+        assert 'R[key] = "refused:" + type(exc).__name__' in source
+        assert source.index("except urllib.error.HTTPError") < source.rindex(
+            'R[key] = "refused:" + type(exc).__name__')
+
+    def test_a_redirect_is_not_followed(self):
+        source = self._the_source()
+        assert "class _TheNamedHostAndNoOther" in source, (
+            "the probe follows redirects, so it measures wherever the named host chose to send it")
+        assert "def redirect_request" in source
+        assert "_TheNamedHostAndNoOther()" in source, (
+            "the handler exists and is not given to the opener, so nothing changed")
+
+    def test_the_probe_imports_what_that_clause_needs(self):
+        """`import urllib.request` happens to make urllib.error reachable. A clause that depends on
+        another module's imports is one line away from an AttributeError inside a container, where the
+        traceback goes to a log nobody reads."""
+        source = self._the_source()
+        assert "urllib.error" in source.split("def via_proxy", 1)[0], (
+            "urllib.error is used and never imported by name")
+
+    def test_and_the_check_that_reads_the_matrix_still_needs_the_denied_control_refused(self):
+        """The safety net under all of the above: if the HTTPError clause ever did swallow a proxy
+        refusal, the DENIED control would come back ALLOWED and the property would fail, not pass."""
+        from agentnode_sdk.conformance import checks
+
+        matrix = {"allowed_hosts": ["example.com"], "allowed:example.com": "ALLOWED:404",
+                  "denied_via_proxy": "ALLOWED:200"}
+
+        class _Ctx:
+            host = {"egress_matrix": matrix, "egress_expected": ["example.com"]}
+            readings = {}
+            probe_failure = None
+            inspect = {}
+            argv = []
+            declared = {}
+            stress = {}
+
+        from agentnode_sdk.conformance.report import Outcome
+
+        assert checks.check_egress_allowlist(_Ctx()).outcome is Outcome.FAIL, (
+            "a matrix whose denied control came back ALLOWED passed; the net under the HTTPError "
+            "clause is not there")
+        # The same matrix with the control refused passes, so the assertion above is about the control
+        # and not about something else in the matrix being wrong.
+        matrix["denied_via_proxy"] = "refused:URLError"
+        assert checks.check_egress_allowlist(_Ctx()).outcome is Outcome.PASS
+
+
+class TestNoHostNetworkAndNoOtherJobsNetwork:
+    """EG10, which had no test. The stand shows every container on a named bridge of its own run
+    (`E0149`, `E0177`), and that is what it looks like when this holds -- but a reading of two runs is
+    not the same as a property, and the two ways it could stop holding are both one word long.
+
+    `--network host` puts a payload on the host's own stack, where the allowlist is not a boundary at
+    all and loopback, the gateway and the metadata endpoint are all simply there. And a payload put on
+    ANOTHER run's network is inside that run's boundary, which is somebody else's.
+    """
+
+    def _argv_for(self, network, egress=None, backend_runtime="podman"):
+        from agentnode_sdk.sandbox.container_backend import ContainerBackend
+        from agentnode_sdk.sandbox.types import ProcessSpec
+
+        backend = ContainerBackend.__new__(ContainerBackend)
+        backend._runtime = backend_runtime
+        backend._image = "an-image"
+        spec = ProcessSpec(command=["true"], network=network, egress=egress, clean_home=True,
+                           name="agentnode-test-one")
+        return backend.wrap_command(spec)
+
+    def test_nothing_the_backend_builds_ever_asks_for_the_host_network(self):
+        from agentnode_sdk.sandbox.types import EgressSpec
+
+        handle = EgressSpec(network_name="agentnode-egress-aaaa-int",
+                            proxy_url="http://10.89.0.1:8888",
+                            allowed_domains=("example.com",))
+        for network, eg in (("none", None), ("egress", handle)):
+            argv = self._argv_for(network, eg)
+            flat = " ".join(argv)
+            assert "--network host" not in flat and "--net=host" not in flat, flat
+            assert "--privileged" not in flat, flat
+            # And the one that is easy to miss: `host` as the VALUE of --network, however it is spelled.
+            for i, word in enumerate(argv):
+                if word in ("--network", "--net"):
+                    assert argv[i + 1] != "host", argv
+                if word.startswith("--network=") or word.startswith("--net="):
+                    assert word.split("=", 1)[1] != "host", argv
+
+    def test_the_network_a_payload_is_put_on_is_its_own_runs(self):
+        """The name comes from the handle this run built, so there is no path by which one run's argv
+        carries another run's network."""
+        from agentnode_sdk.sandbox.types import EgressSpec
+
+        mine = EgressSpec(network_name="agentnode-egress-1111-int",
+                          proxy_url="http://10.89.0.1:8888",
+                          allowed_domains=("example.com",))
+        theirs = EgressSpec(network_name="agentnode-egress-2222-int",
+                            proxy_url="http://10.89.1.1:8888",
+                            allowed_domains=("example.com",))
+        argv = self._argv_for("egress", mine)
+        flat = " ".join(argv)
+        assert mine.network_name in flat
+        assert theirs.network_name not in flat
+        # Exactly one network is named, so a payload cannot be on two.
+        assert flat.count("--network") == 1, argv
+
+    def test_and_a_source_that_asks_for_the_host_network_is_not_in_the_product(self):
+        """Read over the modules that build an argv, because the test above exercises one path and a
+        second path could be added that this one would not see."""
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parent.parent / "agentnode_sdk"
+        offenders = []
+        for path in sorted(root.rglob("*.py")):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                if '"host"' in stripped and ("--network" in stripped or "--net" in stripped):
+                    offenders.append("%s: %s" % (path.name, stripped[:120]))
+                if "--network=host" in stripped or "--net=host" in stripped:
+                    offenders.append("%s: %s" % (path.name, stripped[:120]))
+        assert offenders == [], offenders
 
 
 class TestTheProxyWritesDownWhatItDecided:

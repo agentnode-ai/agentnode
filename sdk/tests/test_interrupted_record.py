@@ -1366,3 +1366,72 @@ class TestTheChainStillVerifies:
         a_line(tmp_path, "declared-only")
         line = the_one_line_for(tmp_path, "declared-only")
         assert set(line) - set(meter.SEALED) == set(meter.FIELDS)
+
+
+class TestAnInterruptedRunStillBindsTheBoundaryItHad:
+    """The two-host acceptance run found this one.
+
+    The gateway was restarted mid-run. The ledger closed the run as interrupted and KEPT the worker's
+    account of the boundary -- the networks, the proxy, `gone_afterwards`, the readings taken before
+    the payload started -- with a digest that recomputes. And the signed line for that same run carried
+    neither egress field.
+
+    The recovery writes its line through a different `meter.record` call, in a process that never saw
+    the run start, so the record it rebuilds has no route out on it: the fields have to come from the
+    ledger entry the recovery is already reading. An interrupted run is exactly the one an auditor asks
+    about, so a tamper-evident record that says nothing about its boundary is the wrong way round.
+    """
+
+    THE_ROUTE = {"owner": {"run": "r-interrupted", "account": "0f1e2d3c4b5a6978", "epoch": "g1"},
+                 "internal_network": {"id": "i" * 64, "name": "agentnode-egress-abcd-int"},
+                 "external_network": {"id": "e" * 64, "name": "agentnode-egress-abcd-ext"},
+                 "proxy": {"id": "p" * 64, "name": "agentnode-egress-abcd-proxy"},
+                 "allowed_destinations": ["example.com"],
+                 "verified_before_the_payload": {"boundary_probe_exit": 0},
+                 "gone_afterwards": True}
+
+    def test_the_recovery_carries_the_word_and_the_digest_from_the_ledger(self, gateway):
+        import hashlib
+
+        from agentnode_sdk.gateway import meter
+
+        service = gateway
+        run_id = "r" * 31 + "1"
+        now = time.time() - 30.0
+        claim(service, run_id, when=now, started=now + 1.0)
+        service.ledger.note_the_route_out(run_id, dict(self.THE_ROUTE))
+
+        service, state = restart(service, went="killed")
+        try:
+            lines = [x for x in meter.read(state.root) if x.get("run_id") == run_id]
+            assert lines, "the recovery wrote no usage line for a run that had started"
+            line = lines[-1]
+            assert line["state"] == "interrupted", line
+            assert line["egress"] == "allowlist", (
+                "the signed line says %r about a run whose ledger entry carries a route out"
+                % line["egress"])
+            expected = hashlib.sha256(json.dumps(
+                self.THE_ROUTE, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+            assert line["egress_sha256"] == expected, (line["egress_sha256"], expected)
+        finally:
+            service.close()
+            state.close()
+
+    def test_and_an_interrupted_run_that_had_no_boundary_binds_nothing(self, gateway):
+        """The other direction, so the fix cannot be "always say allowlist"."""
+        from agentnode_sdk.gateway import meter
+
+        service = gateway
+        run_id = "r" * 31 + "2"
+        now = time.time() - 30.0
+        claim(service, run_id, when=now, started=now + 1.0)
+
+        service, state = restart(service, went="killed")
+        try:
+            lines = [x for x in meter.read(state.root) if x.get("run_id") == run_id]
+            assert lines
+            assert lines[-1]["egress"] == "", lines[-1]
+            assert lines[-1]["egress_sha256"] == ""
+        finally:
+            service.close()
+            state.close()

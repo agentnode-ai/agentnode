@@ -1716,10 +1716,31 @@ class GatewayService:
         sandbox = self.what_became_of_the_sandbox(
             asked_for_a_sandbox=bool(entry.get("asked_for_a_sandbox")),
             cleanup_verified=getattr(record, "cleanup_verified", None))
+        # THE ROUTE OUT OF A RUN THAT WAS INTERRUPTED, from the ledger entry this recovery is reading.
+        #
+        # Found on the two machines: the gateway was restarted mid-run, the ledger closed the run as
+        # interrupted and kept the worker's account of the boundary -- networks, proxy,
+        # gone_afterwards, the readings taken before the payload started, with a digest that
+        # recomputes -- and the SIGNED line for that same run carried neither field. So the one record
+        # that is tamper-evident said nothing about a boundary that had in fact been built and torn
+        # down, for exactly the kind of run an auditor would ask about.
+        #
+        # It is read from the entry rather than from `record`, because this path runs in a process that
+        # never saw the run start: `record` is reconstructed here and its `route_out` is empty.
+        _left_route = entry.get("route_out") if isinstance(entry, dict) else None
+        _left_route = _left_route if isinstance(_left_route, dict) and _left_route else None
+        _left_word = "allowlist" if _left_route else ""
+        _left_digest = ""
+        if _left_route:
+            _left_digest = hashlib.sha256(
+                json.dumps(_left_route, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
         try:
             transport, identity, worker_id = self._who_ran(record.run_id)
             meter.record(
                 self.state.root,
+                egress=_left_word,
+                egress_sha256=_left_digest,
                 run_id=record.run_id,
                 client_id=record.owner_client_id or meter.UNATTRIBUTED,
                 account_id=record.owner_account_id or meter.UNATTRIBUTED,
