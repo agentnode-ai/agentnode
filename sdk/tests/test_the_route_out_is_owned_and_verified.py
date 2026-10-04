@@ -643,11 +643,20 @@ class TestTheProxyWritesDownWhatItDecided:
             self.closed = True
 
     def _decisions(self, request: bytes, allow=("example.com",), capsys=None, monkeypatch=None):
+        """Returns the socket, the recognised lines, and EVERYTHING that was printed.
+
+        The third one exists because of counter-check 15. A mutation that appended the whole request
+        to the decision line left the secrets on the CONTINUATION lines -- which do not start with
+        `egress-proxy ` and were therefore filtered out, so the leak test passed against a proxy that
+        was printing a customer's cookie. A check that only inspects the lines it recognises cannot
+        see a leak that spills past them.
+        """
         from agentnode_sdk.sandbox import egress_proxy
 
         sock = self._Socket(request)
         egress_proxy._handle(sock, set(allow))
         printed = capsys.readouterr().out
+        self.everything_printed = printed
         return sock, [line for line in printed.splitlines() if line.startswith("egress-proxy ")]
 
     def test_a_refused_destination_is_written_down_with_its_name(self, capsys):
@@ -728,10 +737,12 @@ class TestTheProxyWritesDownWhatItDecided:
                    b"Host: example.com\r\n"
                    b"X-Where: /a-secret-path?token=SHOULD-NOT-APPEAR\r\n"
                    b"Cookie: sess-abcdef\r\n\r\n")
-        _sock, lines = self._decisions(request, capsys=capsys)
-        joined = " ".join(lines)
+        _sock, _lines = self._decisions(request, capsys=capsys)
+        # EVERYTHING that was printed, not only the lines this test recognises. See `_decisions`.
+        everything = self.everything_printed
         for leak in secrets:
-            assert leak not in joined, "the proxy log carries %r out of the request" % leak
+            assert leak not in everything, (
+                "the proxy log carries %r out of the request" % leak)
 
     def test_every_decision_the_handler_can_reach_writes_exactly_one_line(self, capsys,
                                                                          monkeypatch):
