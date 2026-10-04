@@ -430,6 +430,149 @@ class TestTwoRunsDoNotShareAnything:
         assert first.owner.run != second.owner.run
 
 
+class TestTheProxyWritesDownWhatItDecided:
+    """EG17: a refusal has to be evidenced from the worker's side, not only from the job's own account.
+
+    The kernel's half of that is strong by itself -- the payload's namespace has no default route at
+    all, which the live observation on the two machines read with nsenter from outside the container.
+    But a refusal BY NAME happens in the proxy, and until it wrote these lines the only record of one
+    was the refused program saying it had been refused. That is a boundary taking its own word for it.
+
+    The lines are driven here through the proxy's own handler with a socket double, because the
+    alternative is a container and this property is about what the code says, not about podman.
+    """
+
+    class _Socket:
+        """Just enough socket for one request: it hands over bytes once, then takes an answer."""
+
+        def __init__(self, request: bytes):
+            self._request = request
+            self.sent = b""
+            self.closed = False
+
+        def recv(self, _n):
+            out, self._request = self._request, b""
+            return out
+
+        def sendall(self, data):
+            self.sent += data
+
+        def close(self):
+            self.closed = True
+
+    def _decisions(self, request: bytes, allow=("example.com",), capsys=None, monkeypatch=None):
+        from agentnode_sdk.sandbox import egress_proxy
+
+        sock = self._Socket(request)
+        egress_proxy._handle(sock, set(allow))
+        printed = capsys.readouterr().out
+        return sock, [line for line in printed.splitlines() if line.startswith("egress-proxy ")]
+
+    def test_a_refused_destination_is_written_down_with_its_name(self, capsys):
+        sock, lines = self._decisions(
+            b"CONNECT nobody-allowed.invalid:443 HTTP/1.1\r\nHost: nobody-allowed.invalid\r\n\r\n",
+            capsys=capsys)
+        assert b"403" in sock.sent
+        assert len(lines) == 1, lines
+        assert "REFUSED" in lines[0] and "nobody-allowed.invalid:443" in lines[0], lines[0]
+
+    def test_the_allowed_host_on_a_port_nobody_allowed_is_written_down_too(self, capsys):
+        sock, lines = self._decisions(
+            b"CONNECT example.com:22 HTTP/1.1\r\nHost: example.com:22\r\n\r\n", capsys=capsys)
+        assert b"403" in sock.sent
+        assert lines and "REFUSED" in lines[0] and "example.com:22" in lines[0], lines
+
+    def test_something_that_is_not_a_connect_is_written_down_as_rejected(self, capsys):
+        sock, lines = self._decisions(
+            b"GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n", capsys=capsys)
+        assert lines and "REJECTED" in lines[0], lines
+
+    def test_a_name_that_resolves_somewhere_it_may_not_reach_says_SCREENED(self, capsys,
+                                                                          monkeypatch):
+        """The rebinding case, and it earns its own word: allowed by name, refused by address.
+
+        "refused" and "refused although it was allowed" send a reader to different places, and this
+        is the one that means somebody pointed a permitted name at something private.
+        """
+        from agentnode_sdk.sandbox import egress_proxy
+
+        def _blocked(host, port):
+            raise egress_proxy.EgressBlocked("it resolves to 127.0.0.1")
+
+        monkeypatch.setattr(egress_proxy, "resolve_and_screen", _blocked)
+        sock, lines = self._decisions(
+            b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n", capsys=capsys)
+        assert b"403" in sock.sent
+        assert lines and "SCREENED" in lines[0], lines
+        assert "example.com:443" in lines[0]
+
+    def test_an_allowed_one_says_so_and_names_the_address_it_went_to(self, capsys, monkeypatch):
+        from agentnode_sdk.sandbox import egress_proxy
+
+        monkeypatch.setattr(egress_proxy, "resolve_and_screen",
+                            # (family, sockaddr) pairs, which is what `screen_addrinfos` returns -- NOT raw
+        # addrinfo tuples. The first version of this double handed over the raw shape, the handler
+        # took element [1][0] of it, the TypeError was swallowed by its own outer guard, and the
+        # result looked like a proxy that had silently stopped answering. The shape is read off the
+        # function rather than guessed.
+        lambda host, port: [(2, ("93.184.216.34", 443))])
+        monkeypatch.setattr(egress_proxy.socket, "create_connection",
+                            lambda *a, **k: self._Socket(b""))
+        monkeypatch.setattr(egress_proxy, "_tunnel", lambda a, b: None)
+        sock, lines = self._decisions(
+            b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n", capsys=capsys)
+        assert b"200" in sock.sent
+        assert lines and "ALLOWED" in lines[0], lines
+        assert "93.184.216.34" in lines[0], (
+            "the line does not say which address it actually connected to, which is the one fact "
+            "that distinguishes a vetted connection from a second unchecked resolution")
+
+    def test_and_nothing_of_the_request_itself_is_ever_written(self, capsys, monkeypatch):
+        """The log is a record of DECISIONS, not of what somebody's code was doing.
+
+        A proxy log that grew headers, paths or query strings would be a record of a customer's
+        traffic on the machine that runs other people's code. The request below carries a path, a
+        query, a header and a cookie; none of them may appear.
+        """
+        from agentnode_sdk.sandbox import egress_proxy
+
+        monkeypatch.setattr(egress_proxy, "resolve_and_screen",
+                            lambda host, port: [(2, ("93.184.216.34", 443))])
+        monkeypatch.setattr(egress_proxy.socket, "create_connection",
+                            lambda *a, **k: self._Socket(b""))
+        monkeypatch.setattr(egress_proxy, "_tunnel", lambda a, b: None)
+        secrets = ("/a-secret-path", "token=SHOULD-NOT-APPEAR", "Cookie:", "sess-abcdef")
+        request = (b"CONNECT example.com:443 HTTP/1.1\r\n"
+                   b"Host: example.com\r\n"
+                   b"X-Where: /a-secret-path?token=SHOULD-NOT-APPEAR\r\n"
+                   b"Cookie: sess-abcdef\r\n\r\n")
+        _sock, lines = self._decisions(request, capsys=capsys)
+        joined = " ".join(lines)
+        for leak in secrets:
+            assert leak not in joined, "the proxy log carries %r out of the request" % leak
+
+    def test_every_decision_the_handler_can_reach_writes_exactly_one_line(self, capsys,
+                                                                         monkeypatch):
+        """Not "it logs": one line per decision, so a reader counting refusals counts requests.
+
+        Two lines for one request would double every figure drawn from this log; none would make the
+        refusal invisible again.
+        """
+        from agentnode_sdk.sandbox import egress_proxy
+
+        monkeypatch.setattr(egress_proxy, "resolve_and_screen",
+                            lambda host, port: [(2, ("93.184.216.34", 443))])
+
+        def _refuses(*a, **k):
+            raise OSError("the destination did not answer")
+
+        monkeypatch.setattr(egress_proxy.socket, "create_connection", _refuses)
+        sock, lines = self._decisions(
+            b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n", capsys=capsys)
+        assert b"502" in sock.sent
+        assert len(lines) == 1 and "UNREACHED" in lines[0], lines
+
+
 def _limits_for_the_tail():
     """What the gateway granted, which the usage line records beside the route out."""
     from agentnode_sdk.sandbox.contract import Limits, SandboxPolicy
