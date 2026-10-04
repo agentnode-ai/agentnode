@@ -191,48 +191,34 @@ class TestTheTableIsDerivedAndNotRemembered:
         "which": "prose: the English word appears in several comments. Nothing invokes it",
     }
 
-    #: THE VOCABULARY the scan looks for: programs a host either has or does not. It is explicit
-    #: because the alternative was a regular expression deciding what a command position is, and two
-    #: attempts at that reported the installers' own refusal messages as programs -- `address`,
-    #: `and`, `artefact`, `refusing`. A scan that reports English words gets ignored, which is worse
-    #: than not scanning. The cost of an explicit vocabulary is that a program nobody listed here is
-    #: invisible to it, so it is long, it is reviewed when a script starts using something new, and
-    #: `test_a_program_the_vocabulary_does_not_know_is_invisible_and_that_is_said` states the limit.
-    A_PROGRAM_IS_ONE_OF_THESE = {
-        "awk", "basename", "bash", "cat", "chcon", "chgrp", "chmod", "chown", "cp", "crun",
-        "curl", "cut", "date", "dd", "df", "dirname", "dnf", "du", "env", "find", "firewall-cmd",
-        "getenforce", "getent", "getsebool", "git", "grep", "groupadd", "gzip", "head", "hostname",
-        "id", "install", "ip", "iptables", "journalctl", "kill", "ln", "loginctl", "ls", "mkdir",
-        "mktemp", "mount", "mv", "netavark", "nft", "nproc", "openssl", "pasta", "pip", "podman",
-        "printf", "ps", "python", "python3", "readlink", "restorecon", "rm", "rmdir", "rpm",
-        "runuser", "sed", "semanage", "sestatus", "setpriv", "setsebool", "sha256sum", "sleep",
-        "sort", "ss", "stat", "subscription-manager", "systemctl", "systemd-run", "tail", "tar",
-        "tee", "timedatectl", "touch", "tr", "umount", "uniq", "useradd", "usermod", "wc", "wget",
-        "which", "xargs", "xz", "yum",
-    }
-
     def _what_the_files_invoke(self):
-        """Read the deploy files and return {program: {files}} for the vocabulary above.
+        """Every external program the deploy scripts invoke, tokenised rather than looked up.
 
-        Re-derived from the files rather than read out of the arc recorded scan, so that editing a
-        script without re-running that scan cannot leave this test agreeing with a stale answer.
+        REPLACED, and the reason is a review finding rather than a preference. This used to search for an
+        explicit vocabulary of program names, and a scan like that cannot establish the criterion's
+        "every external program": a program nobody listed is invisible to it. `tests/shell_commands.py`
+        tokenises instead -- quotes, escapes, comments, heredocs, command substitution, arithmetic, case
+        patterns -- and returns the word in every command position, classified as a shell builtin, a
+        function defined in the same file, or EXTERNAL. Nothing is filtered out of the last group.
 
-        Comment lines are skipped. A name inside a refusal message is still counted -- the scan
-        cannot tell a quoted instruction from an invocation without parsing shell, and counting one
-        too many only ever makes this test ASK for a table entry, never let one through.
+        Two earlier attempts at this without a vocabulary used regular expressions and were worse: they
+        read prose out of the installers' own refusal messages and reported programs called `address`,
+        `and` and `refusing`. The lesson was that a regular expression cannot do this, not that a
+        vocabulary was needed.
         """
-        import re
+        from tests.shell_commands import what_one_file_invokes
 
         deploy = SDK / "deploy" / "separate-worker-host"
-        found = {}
-        for path in sorted(deploy.glob("*.sh")) + sorted(deploy.glob("*.service")):
-            for line in path.read_text(encoding="utf-8").splitlines():
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                for name in re.findall(r"[A-Za-z][A-Za-z0-9_.-]*", stripped):
-                    if name in self.A_PROGRAM_IS_ONE_OF_THESE:
-                        found.setdefault(name, set()).add(path.name)
+        found, self.not_understood, self.from_a_variable = {}, {}, {}
+        for path in sorted(deploy.glob("*.sh")):
+            text = path.read_text(encoding="utf-8")
+            externals, _functions, _builtins, variable, not_a_name = what_one_file_invokes(text)
+            for program in externals:
+                found.setdefault(program, set()).add(path.name)
+            if not_a_name:
+                self.not_understood[path.name] = sorted(not_a_name)
+            if variable:
+                self.from_a_variable[path.name] = sorted(variable)
         return found
 
     def test_everything_the_table_claims_we_invoke_is_really_invoked(self, table):
@@ -261,42 +247,59 @@ class TestTheTableIsDerivedAndNotRemembered:
         unexplained = sorted(name for name in invoked
                              if name not in in_table and name not in self.NOT_PREREQUISITES)
         assert unexplained == [], (
-            "the deploy path mentions %s and the table neither requires them nor says why not. "
-            "That is the shape of the gap tar was: used by upgrade and rollback, checked by "
+            "the deploy path invokes %s and the table neither requires them nor says why not. "
+            "That is the shape of the gap tar was: invoked by upgrade and rollback, checked by "
             "nothing, absent on both machines." % unexplained)
 
-    def test_the_scan_would_notice_the_next_tar(self, table):
+    def test_and_what_the_tokeniser_could_not_understand_is_small_and_known(self):
+        """The honest limit, asserted rather than described.
+
+        A word that reaches a command position and is not a plausible command name is something the
+        tokeniser did not understand, and it is handed back rather than dropped. These are the ones it
+        hands back today: fragments of `$(cd "$(dirname "$0")" && pwd)`, where the inner substitution
+        sits inside a double-quoted string, and two redirection digits. If that set grows, this test
+        fails and whoever changed a script finds out here rather than never.
+        """
+        self._what_the_files_invoke()
+        everything = sorted({w for words in self.not_understood.values() for w in words})
+        assert everything == ["1", "2"], everything
+        # And neither could be a program: a command name is not a bare number. These two are the file
+        # descriptors of redirections the tokeniser splits at.
+        for word in everything:
+            assert word.isdigit(), word
+
+    def test_the_derivation_would_notice_the_next_tar(self, table):
         """THE CONTROL for the two tests above. `tar` is the program this whole arc exists because of.
 
-        If the scan cannot find it in the files that use it, neither test above means anything: both
-        would pass against a table that had drifted away from the code entirely.
+        If the derivation cannot find it in the files that use it, neither test above means anything:
+        both would pass against a table that had drifted away from the code entirely.
+
+        `podman` is here for a second reason. It is reached as
+        `runuser -u X -- env HOME=... TMPDIR=... podman image exists`, through two nested privilege
+        wrappers -- and a tokeniser that stopped at the first of them reported `env` and left the
+        program that matters most on a worker invisible. That it is found, and found in the file that
+        invokes it, is what says the wrappers are followed.
         """
         invoked = self._what_the_files_invoke()
-        assert "tar" in invoked, "the scan cannot see tar, so it cannot see the next one either"
+        assert "tar" in invoked, "the derivation cannot see tar, so it cannot see the next one either"
         assert {"upgrade-one-host.sh", "rollback-one-host.sh"} <= invoked["tar"], (
-            "the scan found tar but not in the two scripts that actually unpack with it: %s"
+            "it found tar but not in the two scripts that actually unpack with it: %s"
             % sorted(invoked["tar"]))
-        assert "podman" in invoked and "systemctl" in invoked
+        assert "podman" in invoked, (
+            "podman is not found, so the privilege wrappers are not being followed")
+        assert invoked["podman"] == {"install-worker-host.sh"}, sorted(invoked["podman"])
+        assert "sha256sum" in invoked, (
+            "sha256sum is not found, so a command substitution inside a quoted string is still hiding "
+            "its programs")
+        assert "systemctl" in invoked
 
-    def test_a_program_the_vocabulary_does_not_know_is_invisible_and_that_is_said(self, table):
-        """The honest limit of the instrument, asserted rather than left for a reader to discover.
-
-        A script that started calling, say, `rsync` would not be noticed by the scan at all, because
-        the vocabulary does not contain it. That is a real gap and it is recorded here as one.
-        """
-        assert "rsync" not in self.A_PROGRAM_IS_ONE_OF_THESE
-        deploy = SDK / "deploy" / "separate-worker-host"
-        for path in deploy.glob("*.sh"):
-            assert "rsync" not in path.read_text(encoding="utf-8"), (
-                "%s now uses rsync, which the vocabulary does not know about: add it there, decide "
-                "whether it is a prerequisite, and this test stops being about a hypothetical"
-                % path.name)
-
-    def test_the_two_that_were_invented_are_gone(self, table):
+    def test_the_three_that_were_invented_are_gone(self, table):
         """Named, because removing them is the finding and a later edit could put them back.
 
-        Nothing in this repository calls either, and both are present on both real hosts -- which is
-        precisely why requiring them read as correct for as long as it did.
+        Nothing in this repository calls any of the three, and all three are present on both real hosts
+        -- which is precisely why requiring them read as correct for as long as it did. The first two
+        were found by reading; `nft` only by an instrument that did not have to be told what to look
+        for, which is the whole reason the derivation was rewritten.
         """
         for role, needs in table.NEEDS.items():
             programs = {need.program for need in needs}
@@ -305,6 +308,10 @@ class TestTheTableIsDerivedAndNotRemembered:
                 "and no module runs the command." % role)
             assert "getent" not in programs, (
                 "getent is back in the %s table. No script invokes it." % role)
+            assert "nft" not in programs, (
+                "nft is back in the %s table. The only nft in the deploy path is inside a printed "
+                "instruction about a firewall the script says is somebody else's responsibility, and "
+                "diagnose.sh -- which the old reason named -- does not mention it at all." % role)
 
     def test_an_indirect_need_says_so_rather_than_passing_as_ours(self, table):
         """crun, conmon, netavark and pasta are invoked by nothing we wrote. Listing them as if they

@@ -10,11 +10,22 @@ deploy path, and the merge plan named that as owed.
 
 ## Where the list comes from
 
-Not from memory. Every program below is here because a file in this repository invokes it, and the scan that
-says which file and which line is recorded beside this arc's evidence. Two entries were in an earlier draft
-of this file and are NOT here, because that scan says nothing calls them: `openssl` -- the PKI uses the
-`cryptography` library, not the command -- and `getent`, which no script invokes. Both are present on the
-real hosts, which is exactly why believing they were needed cost nothing until something changed.
+Not from memory. Every program below is here because a file in this repository invokes it, and the
+derivation that says which file is recorded beside this arc's evidence -- by TOKENISING the shell rather
+than by looking for names it already knows, because a scan that only finds what it was told to look for
+cannot establish "every external program".
+
+THREE entries were in earlier drafts of this file and are NOT here, because nothing calls them:
+
+  * `openssl` -- the PKI uses the `cryptography` library, not the command;
+  * `getent` -- no script invokes it;
+  * `nft` -- the only `nft` in the deploy path is inside a printed INSTRUCTION, telling the operator
+    which firewall rule to add on a network the script says is somebody else's responsibility. The
+    reason this table gave for it was "read by diagnose.sh", and diagnose.sh does not mention it.
+
+All three are present on the real hosts, which is exactly why believing they were needed cost nothing
+until something changed. The first two were found by reading; the third only by an instrument that did
+not need to be told what to look for.
 
 A few programs are marked `through the runtime`: nothing of ours invokes them, podman does. They are listed
 because a podman that cannot find its OCI runtime or its network backend cannot start a container or build
@@ -144,10 +155,6 @@ NEEDS = {
              "on this machine"),
         Need("ss", "iproute",
              "diagnose.sh reads which sockets are listening"),
-        Need("nft", "nftables",
-             "read by diagnose.sh to say what the host firewall holds. The egress boundary does NOT "
-             "write host firewall rules -- that would need a privileged helper reachable from the "
-             "component that runs foreign code -- so this is for reading, not for enforcing"),
         Need("useradd", "shadow-utils",
              "the service account is created if it is not there"),
         Need("usermod", "shadow-utils",

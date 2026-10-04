@@ -173,14 +173,19 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -rs -p no:randomly tests/test_socket_worker.py 2>&1 | tee socket.txt
-          grep -qE "^113 passed, 11 skipped" socket.txt || {
+          grep -qE "^115 passed, 11 skipped" socket.txt || {
             echo "the socket tests did not come out as this lane expects"; exit 1; }
-          # Eleven now, not ten: this branch adds one test that binds a unix socket, so Windows
-          # skips one more. The count is still exact rather than a floor -- the point of it is
-          # that a test quietly disappearing is a failure -- and the number is checkable: on
-          # Linux this file runs 124 with nothing skipped, and 113 + 11 is 124. The comment used
-          # to say "all six skips", which had been wrong since before this change; the skips are
-          # one thing, and how many of them there are is written above.
+          # 113 -> 115: this branch adds two tests to that file, about the label that now crosses to
+          # the worker in place of an account id -- that it is not the account, and that it is stable
+          # for one account while differing between two. Neither binds a unix socket, so the eleven
+          # skips do not move.
+          #
+          # The count stays EXACT rather than becoming a floor. The point of it is that a test quietly
+          # disappearing is a failure, and a floor cannot see that. The number is checkable the same
+          # way it was before: on Linux this file runs 126 with nothing skipped, and 115 + 11 is 126.
+          #
+          # Eleven, not ten, dates from the change before this one, which added a test that does bind
+          # a unix socket so Windows skips one more.
           grep -q "no unix sockets" socket.txt || {
             echo "the skipped cases are not the ones this lane expects"; exit 1; }
 
