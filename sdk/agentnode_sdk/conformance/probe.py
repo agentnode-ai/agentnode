@@ -255,10 +255,19 @@ def parse(stdout: str) -> dict:
 EGRESS_MATRIX_SOURCE = r'''
 import json, os, socket, ssl, urllib.request
 
+# WHERE THE PROXY IS, read BEFORE the proxy variables are removed below -- and they are removed on
+# purpose, so that `direct_name` is really direct. It is read from the environment rather than written
+# here as a name because the payload network no longer carries a resolver: FINDING-EGRESS-1 is that a
+# resolver on that network is a host-side process a payload can reach, so the network is created with
+# DNS disabled and the backend sets this variable from the proxy's own address. The literal stays as the
+# fallback for the runtime where an alias is still how it works, which is Docker.
+WHERE_THE_PROXY_IS = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+                      or "http://egress-proxy:8888")
+
 for key in list(os.environ):
     if key.lower() in ("http_proxy", "https_proxy", "no_proxy"):
         os.environ.pop(key, None)
-R = {}
+R = {"proxy_was_reached_at": WHERE_THE_PROXY_IS}
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
@@ -286,7 +295,7 @@ def direct_name(url, key):
 def via_proxy(url, key):
     try:
         opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"https": "http://egress-proxy:8888"}),
+            urllib.request.ProxyHandler({"https": WHERE_THE_PROXY_IS}),
             urllib.request.HTTPSHandler(context=ctx))
         r = opener.open(url, timeout=15)
         R[key] = "ALLOWED:" + str(r.status)

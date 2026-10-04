@@ -759,6 +759,15 @@ class Bench:
                 stdin=str(said.get("stdin") or ""),
                 network=str(said.get("network") or "none"),
                 allowed_domains=tuple(domains),
+                # Read with a default rather than required: an older control plane does not send them
+                # and a job still runs without them. What they are for is OWNERSHIP of what running it
+                # creates -- a network and a proxy have to belong to a run, an owner and an epoch
+                # readably, or a sweep cannot tell whose leftovers are whose.
+                #
+                # A LABEL, NOT AN ACCOUNT. What arrives is opaque and this side never learns whose it
+                # is; it only ever needs to tell it apart from another owner's.
+                owner_label=str(said.get("owner_label") or ""),
+                epoch=str(said.get("epoch") or ""),
                 limits=Limits(
                     cpu=float(limits.get("cpu", 1.0)),
                     memory_mb=int(limits.get("memory_mb", 512)),

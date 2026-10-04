@@ -62,6 +62,7 @@ from agentnode_sdk.gateway.transport import TlsFiles, check_bind_address
 from agentnode_sdk.gateway.allowance import OverTheCeiling, Stopped, why_it_is_stopped
 from agentnode_sdk.worker import CouldNotRestrictTheNetwork, JobFailed, Job as WorkerJob
 from agentnode_sdk.worker import Limits as WorkerLimits
+from agentnode_sdk.worker import label_for_the_owner
 from agentnode_sdk.worker import WorkerUnreachable
 from agentnode_sdk.gateway.protocol import (
     refusal,
@@ -169,6 +170,12 @@ class RunRecord:
     billed_from_the_workers_clock: bool = False
     stderr: str = ""
     refusal: str = ""
+    #: The WORKER's own account of the route out it built for this run: the networks and the proxy by
+    #: runtime id, the labels that own them, and the readings it took before the payload started. Empty
+    #: for a run with no route out, and empty for a worker that does not report it -- in which case the
+    #: signed line's egress digest stays empty too, because a gateway must not claim an arrangement that
+    #: the machine which built it did not describe.
+    route_out: dict = field(default_factory=dict)
     #: WHICH refusal, by the contract's name, when this record is one. A record carrying only
     #: prose meant the contract door answered "it is refused, here is a sentence" -- so a client
     #: that branches on the closed list of refusals could not tell "over a ceiling" from
@@ -2945,6 +2952,18 @@ class GatewayService:
             stdin=payload,
             network=mode,
             allowed_domains=tuple(domains or ()),
+            # WHOSE RUN IT IS, AS A LABEL. A network and a proxy that belong to a run, an owner and
+            # an epoch readably are ones a sweep can tell apart from another account's; ones named
+            # after a token are not. The epoch is this gateway's own instance label, which is what a
+            # worker's lease is held against.
+            #
+            # The ACCOUNT ID IS NOT SENT. It was, until the suite's own rule about what a job carries
+            # caught it: this is the machine that runs other people's code, and it needs to tell one
+            # owner's leftovers from another's, not to know whose they are.
+            owner_label=label_for_the_owner(
+                str(getattr(getattr(self, "state", None), "deployment", "") or ""),
+                str(getattr(record, "owner_account_id", "") or "")),
+            epoch=str(getattr(self, "instance", "") or ""),
             limits=WorkerLimits(
                 cpu=float(granted.limits.cpu),
                 memory_mb=int(granted.limits.memory_mb),
@@ -2953,6 +2972,10 @@ class GatewayService:
             ),
         )
         left_behind = None
+        # What the WORKER says it built and measured as this run's route out. None until it says so,
+        # and it stays None for a worker that predates saying it -- in which case the signed line's
+        # egress fields stay empty rather than claiming an arrangement nobody reported.
+        the_route_out = None
         terminal = "refused"
         # WRITTEN BEFORE THE WORKER IS ASKED, because a closing line has to be able to say
         # whether this run ever had a sandbox at all.
@@ -2981,6 +3004,9 @@ class GatewayService:
             # was not the enforced one. EM3C-GATEWAY-0004 found it.
             outcome = self.worker.run(job)
             left_behind = outcome.egress_gone
+            the_route_out = outcome.egress_record or the_route_out
+            if isinstance(the_route_out, dict) and the_route_out:
+                record.route_out = the_route_out
             rc, platform = outcome.exit_code, outcome.native_platform
             record.termination_reason = outcome.reason
             record.native_status = outcome.native_status
@@ -3036,6 +3062,9 @@ class GatewayService:
                 # a different kind of run, and its line must not look like one.
                 outcome = self._outcome_from(settled.outcome)
                 left_behind = outcome.egress_gone
+                the_route_out = outcome.egress_record or the_route_out
+                if isinstance(the_route_out, dict) and the_route_out:
+                    record.route_out = the_route_out
                 record.termination_reason = outcome.reason
                 record.native_status = outcome.native_status
                 record.native_platform = outcome.native_platform
@@ -3300,8 +3329,48 @@ class GatewayService:
                 pass
 
             transport, identity, worker_id = self._who_ran(record.run_id)
+            # WHERE THIS RUN COULD REACH, bound into the line as a word and a digest.
+            #
+            # The word comes from what was GRANTED, so a run with no route out says so even when the
+            # worker said nothing. The digest is of the worker's own account of what it built and
+            # measured -- so a gateway cannot claim an enforced allowlist on its own say-so: with no
+            # account from the other machine there is no digest and the field stays empty.
+            #
+            # The account itself goes beside the ledger entry, where a reader can recompute the digest.
+            _route = record.route_out if isinstance(record.route_out, dict) else None
+            _route = _route or None
+            if _route:
+                try:
+                    self.ledger.note_the_route_out(record.run_id, _route)
+                except Exception:                             # noqa: BLE001
+                    # A record of what was enforced is worth having and is not worth failing a
+                    # finished run over. The digest below is written either way.
+                    pass
+            _egress_word = ""
+            if _route:
+                _egress_word = "allowlist"
+            elif (record.started_at
+                  and not bool(getattr(getattr(granted, "network", None), "enabled", False))):
+                # `started_at` AND NOT JUST THE GRANTED POLICY. Both words here are statements
+                # about a boundary that was actually put in place: "allowlist" that one was built
+                # and measured, "none" that the sandbox ran with no way out at all. A job that
+                # never started -- cancelled in the queue, its device withdrawn, the machine
+                # stopped, its account suspended when the slot came -- enforced nothing, and
+                # writing "none" for it would describe a boundary that never existed and put a
+                # job that was refused in the same column as one that ran sealed off. Blank is
+                # the honest answer, and `test_a_waiting_job_has_no_network` is where this showed:
+                # the word was read off the granted policy alone, which is false for every job
+                # that was refused before it ran.
+                _egress_word = "none"
+            _egress_digest = ""
+            if _route:
+                _egress_digest = hashlib.sha256(
+                    json.dumps(_route, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
             meter.record(
                 self.state.root,
+                egress=_egress_word,
+                egress_sha256=_egress_digest,
                 run_id=record.run_id,
                 # A run whose device was withdrawn while it was going has no owner left to
                 # name. That is a real state and it is said rather than left blank.

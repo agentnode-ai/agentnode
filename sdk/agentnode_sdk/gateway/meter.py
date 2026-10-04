@@ -67,7 +67,8 @@ FIELDS = ("run_id", "client_id", "account_id", "queued_at", "started_at", "finis
           "exit_code", "sandbox", "bytes_out",
           "worker_topology", "worker_topology_means", "worker_id",
           "worker_transport", "worker_identity", "allowance_sha256",
-          "allowance_admitted_under", "operator_policy_sha256", "operator_policy_version")
+          "allowance_admitted_under", "operator_policy_sha256", "operator_policy_version",
+          "egress", "egress_sha256")
 
 #: The three times a line carries, and what each one is for. Written out because a reader who
 #: mistakes one for another mis-reads a bill.
@@ -430,7 +431,8 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
            allowance_admitted_under: dict | None = None,
            account_id: str, worker_id: str,
            operator_policy_sha256: str, operator_policy_version: int,
-           worker_transport: str = "", worker_identity: str = "") -> Path:
+           worker_transport: str = "", worker_identity: str = "",
+           egress: str = "", egress_sha256: str = "") -> Path:
     """Write one line about one run.
 
     Every value is named. There is deliberately no parameter that takes free-form content: a
@@ -552,6 +554,21 @@ def record(root: str | os.PathLike[str], *, run_id: str, client_id: str, started
         # edited -- otherwise the binding proves only that something was bound.
         "allowance_admitted_under": {k: v for k, v in sorted(
             dict(allowance_admitted_under or {}).items())},
+        # WHERE THIS RUN COULD REACH, in two values and no free text.
+        #
+        # `egress` is the word for what was in force: `none` for a run with no route out at all,
+        # `allowlist` for one that had a proxy and a named set of destinations, and empty for a line
+        # written by a path that has not been taught to say. A reader who finds `none` knows the run
+        # could reach nothing; one who finds `allowlist` knows to look at the digest.
+        #
+        # `egress_sha256` is the digest of the OTHER machine's own account of what it built and
+        # measured before the payload started -- the networks and the proxy by runtime id, the labels
+        # that own them, and the readings of the boundary probe. The detail lives in the ledger beside
+        # this line, and this binds it: a decision taken on the gateway and an arrangement built on the
+        # worker are two different statements, and only the second one is enforcement. A digest rather
+        # than the account itself, because this module deliberately has nowhere to put "anything else".
+        "egress": str(egress or ""),
+        "egress_sha256": str(egress_sha256 or ""),
     }
     assert set(line) == set(FIELDS), "a line has exactly the fields this module declares"
     path = Path(root) / METER_NAME

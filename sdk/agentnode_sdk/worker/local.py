@@ -183,18 +183,40 @@ class LocalWorker(Worker):
         from agentnode_sdk.sandbox.types import ProcessSpec
 
         egress = None
+        record = None
         if job.network == "egress":
             # The same mechanism the local runners use: an --internal network with no route out,
             # plus a dual-homed CONNECT proxy that is the only way through. The job does not get a
             # filtered internet -- it gets no route at all, and one door.
-            from agentnode_sdk.sandbox.egress import start_egress_proxy
+            from agentnode_sdk.sandbox.egress import EgressOwner, start_egress_proxy
+            from agentnode_sdk.sandbox.egress_verify import verify_the_boundary
 
+            # Whose it is, in LABELS. A name is a string anybody can choose; this is what a sweep and a
+            # restart select on, and what the run's record binds.
+            owner = EgressOwner(run=job.run_id or "unattributed",
+                                account=job.owner_label or "unattributed",
+                                epoch=job.epoch or "unattributed")
             try:
-                egress = start_egress_proxy(list(job.allowed_domains))
+                egress = start_egress_proxy(list(job.allowed_domains), owner=owner)
             except Exception as exc:                          # noqa: BLE001
                 # Nothing has started, so there is nothing to clean up and nothing to report
                 # about a route out that was never opened.
                 raise CouldNotRestrictTheNetwork(str(exc)) from exc
+            # MEASURED BEFORE THE FIRST FOREIGN PROCESS, and the run is refused if it cannot be
+            # measured. The arrangement having been built is not the same statement as the boundary
+            # being there, and only one of the two is worth starting somebody's code on.
+            try:
+                readings = verify_the_boundary(egress)
+            except Exception as exc:                          # noqa: BLE001
+                from agentnode_sdk.sandbox.egress import stop_egress_proxy
+
+                try:
+                    stop_egress_proxy(egress)
+                finally:
+                    egress = None
+                raise CouldNotRestrictTheNetwork(str(exc)) from exc
+            record = egress.as_record()
+            record["verified_before_the_payload"] = dict(readings)
 
         spec = ProcessSpec(
             command=list(job.command),
@@ -221,6 +243,8 @@ class LocalWorker(Worker):
                 except Exception:                             # noqa: BLE001
                     pass
         left = self._egress_gone(egress) if egress is not None else None
+        if record is not None:
+            record["gone_afterwards"] = left
         if trouble is not None:
             # A job that could not be run is still a run whose route out has to be accounted for,
             # so what was established about that travels with the failure rather than being lost
@@ -240,6 +264,7 @@ class LocalWorker(Worker):
             native_platform=str(platform or ""),
             egress_gone=left,
             runtime_platform=str(getattr(self.backend, "native_platform", "") or ""),
+            egress_record=record,
         )
 
     # ------------------------------------------------------------------ stopping one
@@ -296,8 +321,24 @@ class LocalWorker(Worker):
         except Exception as exc:                                    # noqa: BLE001
             return {"runtime": runtime, "found": found, "removed": removed, "failed": failed,
                     "why": "%s: %s" % (type(exc).__name__, str(exc)[:160])}
+        # A CONTAINER IS NOT THE ONLY THING A DEAD WORKER LEAVES. An egress run creates two networks
+        # and a proxy as well, and the sweep above cannot see them: a network is not listed by
+        # `ps`, and the proxy's name carries a per-run token rather than one of the prefixes above.
+        # Before this, a worker that died mid-run left a route out standing that nothing was using
+        # and nobody was watching -- which is the one leftover that is worse than a stale container.
+        #
+        # Selected by LABEL rather than by name, so a network that happens to be called something
+        # familiar is not adopted and one that was renamed is not orphaned. No run of this worker can
+        # be in flight at this moment, so nothing labelled as this component's is wanted.
+        egress = {"asked": False}
+        try:
+            from agentnode_sdk.sandbox.egress import remove_what_no_run_is_waiting_for
+
+            egress = remove_what_no_run_is_waiting_for(runtime)
+        except Exception as exc:                                    # noqa: BLE001
+            egress = {"asked": False, "reason": "%s: %s" % (type(exc).__name__, str(exc)[:160])}
         return {"runtime": runtime, "found": found, "removed": removed, "failed": failed,
-                "why": ""}
+                "egress": egress, "why": ""}
 
     def stop(self, run_id: str, container_name: str, appear_seconds: float) -> bool:
         """Remove this run's container by the identity the backend actually gave it.
