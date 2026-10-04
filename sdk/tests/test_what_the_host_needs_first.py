@@ -14,6 +14,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -819,53 +820,76 @@ class TestASecondInstallWritesTheSameBytecode:
             assert "-m compileall" in text, "%s has no compile step at all" % name
 
 
-class TestNoScriptJudgesAServiceThreeSecondsIn:
-    """Four times on a real worker, the install path reported "the worker did not start" on a host
-    that was serving a few seconds later. The rootless runtime's stored namespace can be stale at
-    start, the service repairs it, and the repair takes effect in the NEXT start -- which the unit
-    performs by itself, because it restarts on failure. Each premature verdict also spent one of
-    the unit's five allowed start attempts, and after the fifth systemd refused to start it at all
-    and replaced the real message with "Start request repeated too quickly".
+class TestNoScriptJudgesAServiceBeforeItHasAnswered:
+    """Two things measured on a real worker, four runs apart, and this class is the second version
+    of itself because the first was fitted to a variable name rather than to the property:
 
-    This holds the shape of the fix rather than its wording: after a restart, each script waits
-    for the unit's own verdict and reports how long it waited. A bare `sleep` followed by
-    `is-active` is the thing that was wrong, so it is the thing named here.
+      * reading `is-active` three seconds after a restart returns a verdict about a host
+        mid-convergence. The rootless runtime's stored namespace can be stale at start, the service
+        repairs it, and the repair lands on the NEXT start -- which the unit performs itself. Every
+        premature verdict also spent one of the unit's five allowed start attempts, after which
+        systemd refused to start it at all and said only "Start request repeated too quickly".
+
+      * `is-active` is not serving either. The main process starts, so the unit is active for the
+        two seconds its memory-ceiling probe takes, and then exits 1 because the ceiling did not
+        bind. A wait for `active` is satisfied by a worker that is already doomed -- which is how
+        the install reported success on a host listening on nothing.
+
+    So: a bounded wait, for the address in the worker's case, and a failure path that still fails.
     """
 
     SCRIPTS = ("install-worker-host.sh", "install-control-plane.sh", "upgrade-one-host.sh")
 
-    def _lines(self, name):
-        text = io.open(SDK / "deploy" / "separate-worker-host" / name, encoding="utf-8").read()
-        return text, text.splitlines()
+    def _text(self, name):
+        return io.open(SDK / "deploy" / "separate-worker-host" / name, encoding="utf-8").read()
 
-    def test_every_start_is_followed_by_a_bounded_wait_and_not_a_bare_sleep(self):
+    def test_no_script_sleeps_and_then_judges_a_service(self):
+        """The shape that was wrong: `systemctl restart`, `sleep N`, `is-active`. A sleep inside a
+        bounded loop is fine; a sleep standing between a start and a verdict is not."""
         for name in self.SCRIPTS:
-            text, lines = self._lines(name)
+            lines = self._text(name).splitlines()
             starts = [i for i, line in enumerate(lines)
                       if "systemctl restart" in line or "systemctl start agentnode" in line]
             assert starts, "no service start in %s; this test has stopped seeing it" % name
             for i in starts:
-                after = lines[i + 1:i + 4]
-                bare = [line for line in after
-                        if line.strip().startswith("sleep ") and "WAITED" not in line]
-                assert not bare, (
-                    "%s sleeps and then judges the service: %r" % (name, bare))
-            assert 'while [ "$WAITED" -lt' in text, (
-                "%s never waits for the unit to reach its own verdict" % name)
-            assert "NRestarts" in text, (
-                "%s does not say how many attempts the service needed, so a host that needed"
-                " three would look like one that needed none" % name)
+                window = lines[i + 1:i + 4]
+                for offset, line in enumerate(window):
+                    if not line.strip().startswith("sleep "):
+                        continue
+                    rest = " ".join(window[offset:])
+                    assert "while" in rest or "wait_until" in rest or "WAITED" in rest, (
+                        "%s sleeps and then judges the service, at %r" % (name, line.strip()))
 
-    def test_the_wait_is_bounded_and_still_fails_when_the_service_never_comes_up(self):
-        """A wait that cannot give up would turn a dead service into a hanging install."""
+    def test_every_wait_is_a_loop_with_a_finite_bound(self):
+        """A wait that cannot give up turns a dead service into a hanging install."""
         for name in self.SCRIPTS:
-            text, _ = self._lines(name)
-            bounds = [int(part.split()[0]) for part in text.split('"$WAITED" -lt ')[1:]]
-            assert bounds, "%s has no bound on its wait" % name
+            text = self._text(name)
+            bounds = [int(found) for found in re.findall(r'-lt (\d+) \]; do', text)]
+            assert bounds, "%s has no bounded wait loop at all" % name
             for bound in bounds:
-                assert 0 < bound <= 300, "%s waits up to %ss, which is not a bound" % (name, bound)
-            assert ("die " in text or "died " in text), (
+                assert 0 < bound <= 300, "%s waits up to %s, which is not a bound" % (name, bound)
+            assert "die " in text or "died " in text, (
                 "%s has no failure path left after waiting" % name)
+
+    def test_the_worker_install_waits_for_the_address_and_not_merely_for_is_active(self):
+        """The property the second measurement added. The installer knows the address it was told
+        to bind; that is the thing worth waiting for."""
+        text = self._text("install-worker-host.sh")
+        assert "ss -tln" in text, (
+            "install-worker-host.sh never looks at what is listening, so it cannot tell a worker"
+            " that serves from one that started and exited")
+        assert "$BIND_IP:$BIND_PORT" in text, (
+            "it looks at the sockets but not at the one it was told to bind")
+
+    def test_the_one_repair_is_bounded_and_announced(self):
+        """It restarts the runtime helper once on exactly the failure that unit exists for. A
+        silent retry would hide a host that needs it; an unbounded one would hide a broken one."""
+        text = self._text("install-worker-host.sh")
+        assert text.count("systemctl restart agentnode-worker-runtime.service") >= 1
+        assert "limits do not bind" in text, (
+            "the repair is not tied to the failure it is for, so it would run on any failure")
+        assert "said out loud" in text or "This is said" in text, (
+            "a repair the operator is not told about is a repair that hides a host")
 
 
 def test_the_table_is_stdlib_only_so_the_first_reader_can_use_it():
