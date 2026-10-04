@@ -88,10 +88,21 @@ finish. Run it again -- every step of it checks before it acts."
   fi
 
   systemctl start agentnode-gateway.service
-  sleep 1
+  # WAIT FOR THE UNIT'S OWN VERDICT, for the reason install-worker-host.sh records at length: a
+  # service read one second in is a service nobody asked. One second is not enough for this one to
+  # have failed, let alone to have been restarted by systemd and succeeded.
+  WAITED=0
+  while [ "$WAITED" -lt 60 ]; do
+    systemctl is-active --quiet agentnode-gateway.service && break
+    sleep 3
+    WAITED=$((WAITED + 3))
+  done
   if systemctl is-active --quiet agentnode-gateway.service; then
-    ok "gateway started"
+    ok "gateway started$([ "$WAITED" = 0 ] || printf ', after %ss' "$WAITED")"
   else
+    printf '\n!! still not up after %ss and %s restart(s):\n\n' "$WAITED" \
+      "$(systemctl show -p NRestarts --value agentnode-gateway.service 2>/dev/null)"
+    journalctl -u agentnode-gateway.service -n 40 --no-pager | sed 's/^/   /'
     die "the gateway did not stay up; systemctl status agentnode-gateway.service"
   fi
   printf '\n   Phase 2 done. The client port is still closed: open %s when a client should\n' "$PORT"

@@ -249,10 +249,33 @@ step "5. restart, and check it is THIS code that came up"
 # earlier start would answer the question about the wrong process.
 RESTARTED_AT="$(date -u +%s)"
 systemctl restart "$UNIT".service || died "the service did not restart"
-sleep 3
-systemctl is-active --quiet "$UNIT".service || {
+# WAIT FOR THE UNIT'S OWN VERDICT, do not read it three seconds in. Measured on a real worker
+# four times: the rootless runtime's stored namespace can be stale when the service starts, the
+# service repairs it -- `podman system migrate` -- and that repair takes effect only in the NEXT
+# start. The unit is configured to restart on failure, so the host converges by itself in a few
+# seconds. Reading the state at three seconds reported "the worker did not start" on a host that
+# was fine moments later, and every such run spent one of the unit's five allowed start attempts
+# until systemd refused to start it at all and replaced the real message with "Start request
+# repeated too quickly".
+#
+# So: wait for active, bounded, and SAY how long it took and how many attempts it needed. A worker
+# that needed two attempts is worth saying out loud, not hiding behind a longer sleep. A worker
+# that never becomes active still fails here, exactly as before.
+WAITED=0
+while [ "$WAITED" -lt 90 ]; do
+  systemctl is-active --quiet "$UNIT".service && break
+  sleep 3
+  WAITED=$((WAITED + 3))
+done
+ATTEMPTS="$(systemctl show -p NRestarts --value "$UNIT".service 2>/dev/null)"
+if ! systemctl is-active --quiet "$UNIT".service; then
+  printf '\n!! it is still not up after %ss and %s restart(s). What it said:\n\n' \
+    "$WAITED" "${ATTEMPTS:-unknown}"
   journalctl -u "$UNIT".service -n 40 --no-pager | sed 's/^/   /'
-  died "it did not come back. Roll back with: rollback-one-host.sh $KEEP"; }
+  died "it did not come back. Roll back with: rollback-one-host.sh $KEEP"
+fi
+[ "$WAITED" = 0 ] || printf '   it took %ss to come up\n' "$WAITED"
+[ "${ATTEMPTS:-0}" = 0 ] || printf '   and %s restart(s) on the way -- the unit repaired something and the repair landed on the next start\n' "$ATTEMPTS"
 
 # RUNNING IS NOT RUNNING THIS CODE, and a timestamp cannot tell two builds apart -- only two
 # orders of events. This used to compare the service's start time against the mtime of the

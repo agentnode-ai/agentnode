@@ -819,6 +819,55 @@ class TestASecondInstallWritesTheSameBytecode:
             assert "-m compileall" in text, "%s has no compile step at all" % name
 
 
+class TestNoScriptJudgesAServiceThreeSecondsIn:
+    """Four times on a real worker, the install path reported "the worker did not start" on a host
+    that was serving a few seconds later. The rootless runtime's stored namespace can be stale at
+    start, the service repairs it, and the repair takes effect in the NEXT start -- which the unit
+    performs by itself, because it restarts on failure. Each premature verdict also spent one of
+    the unit's five allowed start attempts, and after the fifth systemd refused to start it at all
+    and replaced the real message with "Start request repeated too quickly".
+
+    This holds the shape of the fix rather than its wording: after a restart, each script waits
+    for the unit's own verdict and reports how long it waited. A bare `sleep` followed by
+    `is-active` is the thing that was wrong, so it is the thing named here.
+    """
+
+    SCRIPTS = ("install-worker-host.sh", "install-control-plane.sh", "upgrade-one-host.sh")
+
+    def _lines(self, name):
+        text = io.open(SDK / "deploy" / "separate-worker-host" / name, encoding="utf-8").read()
+        return text, text.splitlines()
+
+    def test_every_start_is_followed_by_a_bounded_wait_and_not_a_bare_sleep(self):
+        for name in self.SCRIPTS:
+            text, lines = self._lines(name)
+            starts = [i for i, line in enumerate(lines)
+                      if "systemctl restart" in line or "systemctl start agentnode" in line]
+            assert starts, "no service start in %s; this test has stopped seeing it" % name
+            for i in starts:
+                after = lines[i + 1:i + 4]
+                bare = [line for line in after
+                        if line.strip().startswith("sleep ") and "WAITED" not in line]
+                assert not bare, (
+                    "%s sleeps and then judges the service: %r" % (name, bare))
+            assert 'while [ "$WAITED" -lt' in text, (
+                "%s never waits for the unit to reach its own verdict" % name)
+            assert "NRestarts" in text, (
+                "%s does not say how many attempts the service needed, so a host that needed"
+                " three would look like one that needed none" % name)
+
+    def test_the_wait_is_bounded_and_still_fails_when_the_service_never_comes_up(self):
+        """A wait that cannot give up would turn a dead service into a hanging install."""
+        for name in self.SCRIPTS:
+            text, _ = self._lines(name)
+            bounds = [int(part.split()[0]) for part in text.split('"$WAITED" -lt ')[1:]]
+            assert bounds, "%s has no bound on its wait" % name
+            for bound in bounds:
+                assert 0 < bound <= 300, "%s waits up to %ss, which is not a bound" % (name, bound)
+            assert ("die " in text or "died " in text), (
+                "%s has no failure path left after waiting" % name)
+
+
 def test_the_table_is_stdlib_only_so_the_first_reader_can_use_it():
     """It runs on a host where nothing of ours is installed, before the virtual environment
     exists. One third-party import would make it unrunnable exactly when it is needed."""
