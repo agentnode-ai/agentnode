@@ -253,7 +253,7 @@ def parse(stdout: str) -> dict:
 # Direct routes must be gone, the sealed name must work through the proxy, and an unsealed one
 # must not. "BYPASS" is the word for a direct route that survived; nothing else is.
 EGRESS_MATRIX_SOURCE = r'''
-import json, os, socket, ssl, urllib.request
+import json, os, socket, ssl, urllib.error, urllib.request
 
 # WHERE THE PROXY IS, read BEFORE the proxy variables are removed below -- and they are removed on
 # purpose, so that `direct_name` is really direct. It is read from the environment rather than written
@@ -292,13 +292,43 @@ def direct_name(url, key):
         R[key] = "blocked:" + type(exc).__name__
 
 
+class _TheNamedHostAndNoOther(urllib.request.HTTPRedirectHandler):
+    """Do not follow a redirect. The matrix is about the host the policy NAMED.
+
+    Following one measured wherever that host chose to send the probe: `google.com` on an allowlist
+    came back refused because it answers 301 to `www.google.com`, which nobody allowed -- so a working
+    boundary was reported as unable to hold a job to its own list. A 3xx is an answer FROM the named
+    host, and that is what this is asking about.
+    """
+
+    def redirect_request(self, *argv, **kwargs):
+        return None
+
+
 def via_proxy(url, key):
     try:
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({"https": WHERE_THE_PROXY_IS}),
-            urllib.request.HTTPSHandler(context=ctx))
+            urllib.request.HTTPSHandler(context=ctx), _TheNamedHostAndNoOther())
         r = opener.open(url, timeout=15)
         R[key] = "ALLOWED:" + str(r.status)
+    except urllib.error.HTTPError as exc:
+        # THE TUNNEL WAS ESTABLISHED AND THE DESTINATION ANSWERED. That is what "reachable through
+        # the proxy" means, and it is the only thing this matrix can honestly say about a third
+        # party's web server: whether the boundary let the connection through.
+        #
+        # Measured, not assumed: with the previous version, a two-host policy of example.com and
+        # example.net could not be activated at all, because example.net answers with an error status
+        # and that was recorded as `refused:HTTPError` -- a destination's 404 reported as a boundary
+        # that does not work. An operator could not have allowed an artefact host that answers 403 on
+        # `/`, which is most of them.
+        #
+        # A PROXY REFUSAL DOES NOT COME THROUGH HERE. For an https URL the proxy is asked for a
+        # CONNECT, and a refusal fails the tunnel: http.client raises OSError and urllib wraps it in
+        # URLError, which the clause below records as refused. And the check that reads this matrix
+        # requires the DENIED control to be refused in the same run, so if this clause ever did swallow
+        # a proxy refusal, that control would turn ALLOWED and the property would fail rather than pass.
+        R[key] = "ALLOWED:" + str(exc.code)
     except Exception as exc:
         R[key] = "refused:" + type(exc).__name__
 

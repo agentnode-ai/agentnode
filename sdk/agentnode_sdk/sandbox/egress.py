@@ -65,6 +65,9 @@ _PROXY_PORT = 8888
 #: Every resource this module creates carries this. Reconciliation selects on it, so it never has to
 #: guess from a name.
 _COMPONENT = "agentnode.component=egress"
+#: Just the value, for reading a label BACK off a candidate rather than asking a runtime to
+#: filter on it. One place writes the word; both uses read it from here.
+_COMPONENT_VALUE = _COMPONENT.split("=", 1)[1]
 _UNATTRIBUTED = "unattributed"
 
 
@@ -363,17 +366,32 @@ def remove_what_no_run_is_waiting_for(runtime: str = "", *, keep_runs=()) -> dic
         rt = avail.backend
     keep = {str(r) for r in keep_runs}
     removed = {"asked": True, "containers": [], "networks": [], "kept": sorted(keep)}
+    # THE FILTER IS ASKED FOR AND THE LABEL IS READ BACK, and the second part is not belt and braces.
+    #
+    # `test_a_sweep_leaves_alone_what_this_sdk_did_not_name` found this: the first version trusted
+    # `--filter label=` and removed whatever came back, so a runtime that ignored the filter, or did not
+    # support it, or was asked by something that did not pass it, would have had this remove containers
+    # belonging to whoever else uses that account's runtime. The label is in the format string now and a
+    # candidate is removed only when it SAYS it is ours.
     try:
         listed = _run([rt, "ps", "-a", "--filter", "label=" + _COMPONENT,
-                       "--format", '{{.ID}} {{index .Labels "agentnode.run"}}']).stdout
+                       "--format", '{{.ID}} {{index .Labels "agentnode.component"}} '
+                                   '{{index .Labels "agentnode.run"}}']).stdout
     except Exception as exc:                                      # noqa: BLE001
         return {"asked": False, "reason": str(exc)}
+    removed["left_alone"] = []
     for line in listed.splitlines():
         parts = line.split()
         if not parts:
             continue
         cid = parts[0]
-        run = parts[1] if len(parts) > 1 else ""
+        component = parts[1] if len(parts) > 1 else ""
+        run = parts[2] if len(parts) > 2 else ""
+        if component != _COMPONENT_VALUE:
+            # Not ours, whatever the filter said. Recorded rather than passed over, because a sweep
+            # that is being handed foreign containers is itself worth knowing about.
+            removed["left_alone"].append(cid)
+            continue
         if run and run in keep:
             continue
         _safe(lambda cid=cid: _run([rt, "rm", "-f", cid]))
@@ -388,7 +406,12 @@ def remove_what_no_run_is_waiting_for(runtime: str = "", *, keep_runs=()) -> dic
             facts = _network_facts(rt, nid)
         except Exception:                                         # noqa: BLE001
             facts = {}
-        if str(facts.get("labels", {}).get("agentnode.run", "")) in keep and keep:
+        labels = facts.get("labels") or {}
+        # The same read-back as above: the network has to say it is this component's.
+        if str(labels.get("agentnode.component", "")) != _COMPONENT_VALUE:
+            removed["left_alone"].append(nid)
+            continue
+        if str(labels.get("agentnode.run", "")) in keep and keep:
             continue
         _safe(lambda nid=nid: _run([rt, "network", "rm", "-f", nid]))
         removed["networks"].append(nid)
