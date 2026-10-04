@@ -44,6 +44,11 @@ HERE = pathlib.Path(__file__).resolve().parent
 CONTROL_PLANE = {
     "unit/agentnode-gateway.service": HERE / "control-plane.service",
     "install.sh": HERE / "install-control-plane.sh",
+    # The one statement of what this role needs on the host. It ships in the artefact because
+    # install.sh reads it BEFORE there is a virtual environment to read anything from -- `tar`
+    # is how this very artefact was unpacked -- and the installer puts a copy where the
+    # product's own preflight can find it, so the check and the install path cannot drift.
+    "prerequisites.py": HERE / "prerequisites.py",
     "upgrade.sh": HERE / "upgrade-one-host.sh",
     "rollback.sh": HERE / "rollback-one-host.sh",
     "diagnose.sh": HERE / "diagnose.sh",
@@ -55,6 +60,9 @@ CONTROL_PLANE = {
 WORKER = {
     "unit/agentnode-worker.service": HERE / "worker-host.service",
     "install.sh": HERE / "install-worker-host.sh",
+    # Same file, and deliberately the same file: the roles differ inside it, by a table, and
+    # not by two scripts that would answer the same question differently.
+    "prerequisites.py": HERE / "prerequisites.py",
     "upgrade.sh": HERE / "upgrade-one-host.sh",
     "rollback.sh": HERE / "rollback-one-host.sh",
     "diagnose.sh": HERE / "diagnose.sh",
