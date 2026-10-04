@@ -745,6 +745,80 @@ class TestAnUpgradedHostGetsTheTableToo:
         assert "carries no prerequisite table" in text
 
 
+class TestASecondInstallWritesTheSameBytecode:
+    """A second run of the install path changed 188 files on a real host and nothing else: every
+    .pyc under the virtualenv. The code was identical. pip compiles with the default
+    mtime-and-size invalidation, and a reinstall gives every source file a new mtime, so the
+    derived bytecode moved while the sources did not -- and an install path whose second run
+    cannot be shown to change nothing is not idempotent, whatever the reason.
+
+    Two tests, because one alone would be worth little: the first is about the mechanism and
+    would notice if a Python release stopped behaving this way; the second is about the three
+    installers actually using it.
+    """
+
+    INSTALLERS = ("install-worker-host.sh", "install-control-plane.sh", "upgrade-one-host.sh")
+
+    def _text(self, name):
+        return io.open(SDK / "deploy" / "separate-worker-host" / name, encoding="utf-8").read()
+
+    def test_checked_hash_bytecode_survives_a_new_mtime_and_the_default_does_not(self, tmp_path):
+        """The mechanism itself. Compile, give the source a new mtime as a reinstall does,
+        compile again, and compare the bytes -- in both invalidation modes, so the test says
+        which one the difference comes from."""
+        import compileall
+        import os
+        import py_compile
+
+        source = tmp_path / "a_module.py"
+        source.write_text("VALUE = 1" + chr(10), encoding="utf-8")
+
+        def compile_it(mode):
+            for leftover in tmp_path.rglob("*.pyc"):
+                leftover.unlink()
+            assert compileall.compile_dir(
+                str(tmp_path), quiet=2, force=True, invalidation_mode=mode)
+            written = list(tmp_path.rglob("*.pyc"))
+            assert len(written) == 1, written
+            return written[0].read_bytes()
+
+        def touch_it():
+            was = os.stat(source)
+            os.utime(source, (was.st_atime + 10, was.st_mtime + 10))
+
+        checked = py_compile.PycInvalidationMode.CHECKED_HASH
+        timestamp = py_compile.PycInvalidationMode.TIMESTAMP
+
+        before = compile_it(timestamp)
+        touch_it()
+        after = compile_it(timestamp)
+        assert before != after, (
+            "the default mode no longer depends on the mtime; this test is now measuring nothing"
+            " and the installers' reason for compiling by hash needs re-reading")
+
+        before = compile_it(checked)
+        touch_it()
+        after = compile_it(checked)
+        assert before == after, "checked-hash bytecode moved although the source did not"
+
+    def test_every_installer_stops_pip_compiling_and_compiles_by_hash_itself(self):
+        """The three installers of this topology. Each one must take BOTH halves: pip not
+        compiling, and the installer compiling afterwards -- because --no-compile alone would
+        leave a host with no bytecode at all, which it would then write as root at the first
+        run, unverifiable and at a moment nobody is watching."""
+        for name in self.INSTALLERS:
+            text = self._text(name)
+            installs = [line for line in text.splitlines()
+                        if "/venv/bin/pip" in line and " install " in line]
+            assert installs, "no pip install line in %s; this test has stopped seeing it" % name
+            for line in installs:
+                assert "--no-compile" in line, (
+                    "%s lets pip compile: %s" % (name, line.strip()))
+            assert "--invalidation-mode checked-hash" in text, (
+                "%s never compiles the code it installed" % name)
+            assert "-m compileall" in text, "%s has no compile step at all" % name
+
+
 def test_the_table_is_stdlib_only_so_the_first_reader_can_use_it():
     """It runs on a host where nothing of ours is installed, before the virtual environment
     exists. One third-party import would make it unrunnable exactly when it is needed."""

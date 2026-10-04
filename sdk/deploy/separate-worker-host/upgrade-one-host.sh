@@ -118,8 +118,18 @@ step "3. the new code"
 # --force-reinstall because a development wheel keeps its version number while its contents
 # change, and "already satisfied" would leave the previous code running while every check said
 # the upgrade had happened.
-"$PREFIX/venv/bin/pip" install --quiet --force-reinstall --no-deps "$WHEEL" || died "pip refused the wheel"
-"$PREFIX/venv/bin/pip" install --quiet "$WHEEL" || died "pip could not resolve its dependencies"
+"$PREFIX/venv/bin/pip" install --quiet --no-compile --force-reinstall --no-deps "$WHEEL" || died "pip refused the wheel"
+"$PREFIX/venv/bin/pip" install --quiet --no-compile "$WHEEL" || died "pip could not resolve its dependencies"
+# BYTECODE THAT DOES NOT MOVE. Running this installer twice used to change 188 files and nothing
+# else: every .pyc under the virtualenv, because pip compiles with the default mtime-and-size
+# invalidation and a reinstall gives every source file a new mtime. The code was identical; the
+# derived bytecode was not, so a second run of the whole path could not be shown to change
+# nothing. --no-compile plus checked-hash invalidation makes a .pyc a function of its source's
+# CONTENT alone, so the second run writes the same bytes -- and the files stay verifiable, which
+# an interpreter silently recompiling at runtime as root would not be.
+"$PREFIX/venv/bin/python" -m compileall -q -f --invalidation-mode checked-hash \
+  "$PREFIX/venv/lib" > /dev/null 2>&1 \
+  || died "the installed code could not be compiled, so this host would compile it at run time"
 echo "   now: $("$PREFIX/venv/bin/agentnode" --version 2>/dev/null || echo unknown)"
 
 # AND THE TWO THINGS PIP JUST INVALIDATED. `AGENTNODE_ARTEFACT` lives inside the dist-info
