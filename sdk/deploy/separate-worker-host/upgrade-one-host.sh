@@ -197,8 +197,10 @@ if [ -n "$THE_TABLE" ]; then
   # for should stop here, with the one command that fixes it, rather than at the first job.
   python3 "$PREFIX/deploy/prerequisites.py" --role "$THE_ROLE" \
     || died "this host is missing something the $THE_ROLE role needs. The report above names each
-  one and the single command that installs them from the repositories this host already has. The
-  service was NOT restarted."
+  one and the single command that installs them from the repositories this host already has.
+  The service was NOT restarted -- but the code on disk and the runtime pin are ALREADY the new
+  ones, so a restart for any other reason would bring the new build up.
+  Put it back with: rollback-one-host.sh $KEEP"
 else
   # ABSENT FROM THE ARTEFACT is not the same as a host that is missing something. An artefact built
   # before the table existed carries none, and saying nothing about it would hide which checks ran.
