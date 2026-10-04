@@ -496,21 +496,65 @@ systemctl restart agentnode-worker.service
 # So: wait for active, bounded, and SAY how long it took and how many attempts it needed. A worker
 # that needed two attempts is worth saying out loud, not hiding behind a longer sleep. A worker
 # that never becomes active still fails here, exactly as before.
-WAITED=0
-while [ "$WAITED" -lt 90 ]; do
-  systemctl is-active --quiet agentnode-worker.service && break
-  sleep 3
-  WAITED=$((WAITED + 3))
-done
-ATTEMPTS="$(systemctl show -p NRestarts --value agentnode-worker.service 2>/dev/null)"
-if ! systemctl is-active --quiet agentnode-worker.service; then
-  printf '\n!! it is still not up after %ss and %s restart(s). What it said:\n\n' \
-    "$WAITED" "${ATTEMPTS:-unknown}"
+# IS-ACTIVE IS NOT SERVING. Measured on a real worker: the main process starts, so the unit is
+# `active` for the two seconds it takes to probe its memory ceiling, and then it exits 1 because the
+# ceiling did not bind. A wait for `active` is therefore satisfied by a worker that is already
+# doomed -- which is how this script reported success on a host that was in a restart loop and
+# listening on nothing. The thing worth waiting for is the address it was told to bind.
+#
+# AND ONE REPAIR, ONCE, NAMED. The failure this keeps hitting is the rootless runtime's stored
+# namespace going stale: `crun: mount 'proc' to 'proc': Operation not permitted`, after which the
+# worker refuses, correctly, because a worker whose ceilings do not bind runs foreign code with no
+# ceiling. What repairs it is `podman system migrate`, which is the whole job of
+# agentnode-worker-runtime.service -- a unit this script has already installed and started. So on
+# exactly that failure it restarts that unit once and tries the worker again, and SAYS that it did.
+# It is not a retry loop and it is not silent: a second failure fails the install.
+serving() {
+  systemctl is-active --quiet agentnode-worker.service \
+    && ss -tln 2>/dev/null | grep -q "$BIND_IP:$BIND_PORT"
+}
+
+wait_until_serving() {
+  local waited=0
+  while [ "$waited" -lt 90 ]; do
+    serving && { printf '%s' "$waited"; return 0; }
+    sleep 3
+    waited=$((waited + 3))
+  done
+  printf '%s' "$waited"
+  return 1
+}
+
+WAITED="$(wait_until_serving)" || DID_NOT_SERVE=1
+
+if [ -n "${DID_NOT_SERVE:-}" ]; then
+  printf '\n   not serving after %ss. What it said:\n\n' "$WAITED"
+  journalctl -u agentnode-worker.service -n 25 --no-pager | sed 's/^/   /'
+  if journalctl -u agentnode-worker.service -n 60 --no-pager 2>/dev/null \
+       | grep -q 'limits do not bind'; then
+    printf '\n   That is the rootless runtime, not this host being unfit: its stored namespace is\n'
+    printf '   stale. Restarting agentnode-worker-runtime.service, which exists to rebuild it, and\n'
+    printf '   trying the worker once more. This is said out loud because a host that needed it is\n'
+    printf '   a host worth knowing about.\n'
+    systemctl restart agentnode-worker-runtime.service || true
+    systemctl reset-failed agentnode-worker.service 2>/dev/null || true
+    systemctl restart agentnode-worker.service
+    AGAIN="$(wait_until_serving)" && unset DID_NOT_SERVE
+    printf '   the second attempt waited %ss\n' "$AGAIN"
+  fi
+fi
+
+if [ -n "${DID_NOT_SERVE:-}" ]; then
+  printf '\n!! it is not serving on %s:%s after %s restart(s) of the unit.\n\n' \
+    "$BIND_IP" "$BIND_PORT" \
+    "$(systemctl show -p NRestarts --value agentnode-worker.service 2>/dev/null)"
   journalctl -u agentnode-worker.service -n 40 --no-pager | sed 's/^/   /'
   die "not going any further while the worker is down"
 fi
-[ "$WAITED" = 0 ] || printf '   it took %ss to come up\n' "$WAITED"
-[ "${ATTEMPTS:-0}" = 0 ] || printf '   and %s restart(s) on the way -- the unit repaired something and the repair landed on the next start\n' "$ATTEMPTS"
+
+[ "${WAITED:-0}" = 0 ] || printf '   it took %ss before it was listening\n' "$WAITED"
+ATTEMPTS="$(systemctl show -p NRestarts --value agentnode-worker.service 2>/dev/null)"
+[ "${ATTEMPTS:-0}" = 0 ] || printf '   and %s restart(s) of the unit on the way\n' "$ATTEMPTS"
 ok "worker is running, which means it hit a ceiling and the ceiling held"
 
 # ---------------------------------------------------------------------------------------------
