@@ -325,9 +325,16 @@ class TestAProgramIsNotOnlyFoundOnPath:
     worse than no check, because the refusal is believed."""
 
     def test_the_two_that_live_off_path_say_where_they_are(self, table):
+        # WITH A MESSAGE, and the reason is about counter-checks rather than about readability: an
+        # assertion with none leaves the failure text up to pytest, which truncated it, so no
+        # prediction derived from this source could be matched against the run. A named message is
+        # what makes the property predictable from here.
         by_name = {need.program: need for need in table.NEEDS[table.WORKER]}
-        assert by_name["netavark"].at == ("/usr/libexec/podman/netavark",)
-        assert by_name["aardvark-dns"].at == ("/usr/libexec/podman/aardvark-dns",)
+        assert by_name["netavark"].at == ("/usr/libexec/podman/netavark",), (
+            "netavark does not say where podman keeps it, so a PATH-only check refuses a host that "
+            "has it")
+        assert by_name["aardvark-dns"].at == ("/usr/libexec/podman/aardvark-dns",), (
+            "aardvark-dns does not say where podman keeps it")
 
     def test_a_program_off_path_is_found_there(self, table, tmp_path, monkeypatch):
         helper = tmp_path / "netavark"
@@ -684,7 +691,16 @@ class TestAnUpgradedHostGetsTheTableToo:
         from agentnode_sdk.cli import worker_commands
 
         text = self._upgrade()
-        assert '"$PREFIX/deploy/prerequisites.py"' in text
+        # THE INSTALL, not a mention of the path. The upgrade names that path twice -- once to put the
+        # table there and once to run it -- so asking whether the path appears was answered by the
+        # second one even with the first removed. Counter-check 12 stayed green on exactly that, which
+        # is a counter-check saying the test cannot see what it is about.
+        assert 'install -o root -g root -m 0644 "$THE_TABLE" "$PREFIX/deploy/prerequisites.py"' \
+            in text, (
+                "the upgrade does not install the prerequisite table, so an upgraded host never gets "
+                "one and its preflight reports that nothing was checked for ever")
+        assert 'install -d -o root -g root -m 0755 "$PREFIX/deploy"' in text, (
+            "the directory the table goes in is not made, so installing it would fail")
         assert worker_commands.WHERE_THE_TABLE_IS == "/opt/agentnode/deploy/prerequisites.py"
 
     def test_it_installs_the_table_before_it_runs_the_preflight(self):
