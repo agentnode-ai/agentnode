@@ -198,6 +198,11 @@ def _tls_from(args):
                        reevaluate_seconds=float(args.reevaluate_seconds))
 
 
+#: Where install.sh puts the table of what a role needs on the host. A path and not an import:
+#: the table is read by the install scripts before there is anything of ours installed to import.
+WHERE_THE_TABLE_IS = "/opt/agentnode/deploy/prerequisites.py"
+
+
 def cmd_preflight(args) -> int:
     """Everything `serve` checks about its configuration, without opening anything.
 
@@ -227,6 +232,36 @@ def cmd_preflight(args) -> int:
     print()
     print(f"  {bold('Would this worker start?')}  topology: {topology}")
     print()
+
+    # 0. WHAT THE HOST ITSELF NEEDS, before any question about configuration. A configuration
+    #    can be perfect on a host that cannot unpack an artefact or start a container, and the
+    #    two machines of the cross-host run were exactly that: `tar` absent on both, no runtime
+    #    on the worker, installed by hand because nothing checked.
+    #
+    #    The table is the install path's own table, installed beside it, so this check and the
+    #    install cannot disagree about what the role needs.
+    _prereq = _the_prerequisite_table()
+    if _prereq is None:
+        # ABSENT IS NOT THE SAME STATEMENT AS UNREADABLE. Absent means this host was not set up
+        # by the deploy path -- a checkout, a developer's machine -- and a missing checker is not
+        # a missing prerequisite, so saying "refused" here would be a lie about the host. It is
+        # said out loud rather than passed over, because an operator reading a clean preflight is
+        # entitled to know which checks ran.
+        say.append("  note    no prerequisite table at %s, so what this host has was not checked. "
+                   "A host installed by the deploy path has one." % WHERE_THE_TABLE_IS)
+    elif isinstance(_prereq, str):
+        # Present and unusable. That is this host's problem and not a reason to continue: a table
+        # that cannot be read is the one case where carrying on would hide a real answer.
+        refuse("the prerequisite table at %s cannot be read: %s" % (WHERE_THE_TABLE_IS, _prereq),
+               "It is installed by install.sh from the artefact. Re-run the installer, or "
+               "restore the file from the artefact this host was installed from.")
+    else:
+        for entry in _prereq["required_missing"]:
+            refuse("%s is not on this host, and %s" % (entry["program"], entry["why"]),
+                   "On this host, as root: %s" % " ".join(_prereq["to_install"]))
+        if not _prereq["required_missing"]:
+            good("every program this role needs is here (table version %d, %d checked)"
+                 % (_prereq["table_version"], len(_prereq["present"]) + len(_prereq["missing"])))
 
     # 1. THE DOOR, and whether the address agrees with the arrangement. Checked first because
     #    every other answer is about a worker that is in one arrangement or the other.
@@ -365,6 +400,33 @@ def cmd_preflight(args) -> int:
     print("  Nothing was opened, bound or started. Every answer above is about configuration.")
     print()
     return 0
+
+
+def _the_prerequisite_table():
+    """The installed table's answer for the worker role, or None if no table is installed here.
+
+    Returns the report dict on success, the reason as a STRING when the table is there and cannot
+    be used, and None when there is no table at all -- three answers, because the caller must
+    treat them differently and a single falsy value would collapse two of them.
+
+    It is loaded from a path rather than imported, because it is deliberately not part of the
+    package: the install scripts read it before a virtual environment exists, so it lives in the
+    artefact and is installed beside it. One file, two readers.
+    """
+    import importlib.util
+
+    where = pathlib.Path(WHERE_THE_TABLE_IS)
+    if not where.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("agentnode_host_prerequisites", str(where))
+        if spec is None or spec.loader is None:
+            return "it is not loadable as a python module"
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.inspect("worker")
+    except Exception as exc:                        # noqa: BLE001 - reported as a refusal, above
+        return "%s: %s" % (type(exc).__name__, exc)
 
 
 def _serialization():

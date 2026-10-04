@@ -170,6 +170,41 @@ step "4. would it still start?"
 # ever been run across two machines. Measured here on the pair: the plain doctor reported
 # "the stored measurement describes something else (artefact_sha256, commit, build_id differ)"
 # and the upgrade stopped.
+# THE PREREQUISITE TABLE COMES WITH THE UPGRADE, and it has to arrive BEFORE the gate below.
+#
+# A gap found while preparing the acceptance run: the table was wired into install.sh only, so a host
+# that was UPGRADED rather than installed afresh would never receive one -- and its preflight, which
+# treats an absent table as "this host was not set up by the deploy path", would say so for ever
+# without anybody noticing the check had stopped happening. The two hosts of this arc are exactly
+# that case: both were installed before the table existed.
+#
+# ROLE-CORRECT, from $UNIT, which this script has already worked out from what is on the host. The
+# worker gets the worker's table and the control plane gets the control plane's; neither is given the
+# other's, which is the one thing about this file that must not become convenient.
+if [ "$UNIT" = "agentnode-worker" ]; then THE_ROLE=worker; else THE_ROLE=control-plane; fi
+# WHERE IT IS: beside this script, or beside the wheel it was given. This script takes a WHEEL and
+# does not unpack anything itself, so the artefact it came from is already open somewhere and the
+# table is in it. Both places are asked rather than one guessed.
+THE_TABLE=""
+for candidate in "$(cd "$(dirname "$0")" && pwd)/prerequisites.py"                  "$(cd "$(dirname "$WHEEL")" && pwd)/prerequisites.py"                  "$(cd "$(dirname "$WHEEL")/.." && pwd)/prerequisites.py"; do
+  [ -f "$candidate" ] && { THE_TABLE="$candidate"; break; }
+done
+if [ -n "$THE_TABLE" ]; then
+  install -d -o root -g root -m 0755 "$PREFIX/deploy"
+  install -o root -g root -m 0644 "$THE_TABLE" "$PREFIX/deploy/prerequisites.py"
+  echo "   the prerequisite table is at $PREFIX/deploy/prerequisites.py"
+  # Reported, and it GATES: an upgrade onto a host that is missing something the new build reaches
+  # for should stop here, with the one command that fixes it, rather than at the first job.
+  python3 "$PREFIX/deploy/prerequisites.py" --role "$THE_ROLE" \
+    || died "this host is missing something the $THE_ROLE role needs. The report above names each
+  one and the single command that installs them from the repositories this host already has. The
+  service was NOT restarted."
+else
+  # ABSENT FROM THE ARTEFACT is not the same as a host that is missing something. An artefact built
+  # before the table existed carries none, and saying nothing about it would hide which checks ran.
+  echo "   this artefact carries no prerequisite table, so nothing was checked about this host"
+fi
+
 if [ "$UNIT" = "agentnode-worker" ]; then
   set -a; . /etc/agentnode/worker.env; set +a
   runuser -u agentnode-worker -- "$PREFIX/venv/bin/agentnode" worker preflight \

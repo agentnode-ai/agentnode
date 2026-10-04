@@ -128,6 +128,23 @@ unit_file() {
   die "no unit file named $* is in this artefact or beside this script"
 }
 
+# THE UNIT LOOKUP IS NOT USED FOR THIS, and the reason is worth the paragraph: that function means
+# "a systemd unit this artefact ships", and the build's own self-check scans this script for every
+# name asked of it and refuses to build an artefact that does not carry that name under unit/, where
+# units live. Asking it for the table made the build refuse itself -- correctly -- with "install.sh
+# asks for a unit named one of prerequisites.py and the control-plane artefact carries none of them".
+# So the table, which is not a unit and does not live under unit/, gets its own lookup.
+#
+# (This comment deliberately does not write that function's name followed by a placeholder: the
+# build's scanner reads this file as text, and a mention in a comment was taken for a request.)
+beside_me() {
+  local candidate
+  for candidate in "$HERE/$1" "$(dirname "$HERE")/$1"; do
+    if [ -f "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+  done
+  return 1
+}
+
 cd /
 
 # ---------------------------------------------------------------------------------------------
@@ -141,6 +158,41 @@ for runtime in docker podman; do
   fi
 done
 ok "no container runtime on this host"
+
+# ---------------------------------------------------------------------------------------------
+say "what this host needs before any of this works"
+
+# The same table the worker reads, and the role is what differs. This host is NOT given podman,
+# crun, netavark or passt: the check above refuses this host if it has a runtime at all, and the
+# table for this role does not ask for one. A control plane that acquires a runtime "because the
+# other half needs it" is how the two-machine arrangement quietly becomes one machine.
+#
+# `tar` is in the table because upgrade.sh and rollback.sh both unpack and repack with it, and it
+# was absent on this very machine during the cross-host run while nothing checked.
+PREREQ="$(beside_me prerequisites.py || true)"
+if [ -z "$PREREQ" ]; then
+  # ABSENT FROM THE ARTEFACT is not the same as a host that is missing something. An
+  # artefact built before this table existed carries none; saying nothing would hide which
+  # checks ran, and dying would make an older artefact uninstallable.
+  ok "this artefact carries no prerequisite table, so nothing was checked about this host"
+elif python3 "$PREREQ" --role control-plane; then
+  :
+else
+  if [ "${AGENTNODE_INSTALL_PREREQUISITES:-}" = "yes" ]; then
+    say "installing what is missing, from this host's own repositories"
+    python3 "$PREREQ" --role control-plane --install || die "the packages this role needs could not be installed"
+  else
+    die "this host is missing something this role needs. Run the command the report names, or
+    re-run this script with AGENTNODE_INSTALL_PREREQUISITES=yes to install exactly those
+    packages from the repositories this host already has."
+  fi
+fi
+
+if [ -n "$PREREQ" ]; then
+  install -d -o root -g root -m 0755 "$PREFIX/deploy"
+  install -o root -g root -m 0644 "$PREREQ" "$PREFIX/deploy/prerequisites.py"
+  ok "the table is at $PREFIX/deploy/prerequisites.py"
+fi
 
 # ---------------------------------------------------------------------------------------------
 say "the one account"

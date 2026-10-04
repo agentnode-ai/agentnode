@@ -41,7 +41,7 @@ stop_here() { printf '\n-- %s\n\n' "$1"; exit 0; }
 
 [ "$(id -u)" = "0" ] || die "this makes system accounts and units, so it needs root"
 command -v systemctl >/dev/null || die "there is no systemd here"
-command -v podman    >/dev/null || die "podman is not installed, and this worker runs rootless podman"
+# python3 is checked by hand because it is what reads the table of everything else.
 command -v python3   >/dev/null || die "python3 is not installed"
 [ -n "$LISTEN" ]     || die "set AGENTNODE_LISTEN to this host's PRIVATE address, e.g. tcps://10.0.1.5:8443"
 [ -n "$DEPLOYMENT" ] || die "set AGENTNODE_DEPLOYMENT to the same deployment id the control plane was given"
@@ -62,7 +62,65 @@ unit_file() {
   die "no unit file named $* is in this artefact or beside this script"
 }
 
+# THE UNIT LOOKUP IS NOT USED FOR THIS, and the reason is worth the paragraph: that function means
+# "a systemd unit this artefact ships", and the build's own self-check scans this script for every
+# name asked of it and refuses to build an artefact that does not carry that name under unit/, where
+# units live. Asking it for the table made the build refuse itself -- correctly -- with "install.sh
+# asks for a unit named one of prerequisites.py and the control-plane artefact carries none of them".
+# So the table, which is not a unit and does not live under unit/, gets its own lookup.
+#
+# (This comment deliberately does not write that function's name followed by a placeholder: the
+# build's scanner reads this file as text, and a mention in a comment was taken for a request.)
+beside_me() {
+  local candidate
+  for candidate in "$HERE/$1" "$(dirname "$HERE")/$1"; do
+    if [ -f "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+  done
+  return 1
+}
+
 cd /
+
+# ---------------------------------------------------------------------------------------------
+say "what this host needs before any of this works"
+
+# THE FIRST THING, and before it had been written the two machines of the cross-host run could
+# not run this script as they came: `tar` was absent on both -- which is how this artefact was
+# unpacked -- and the worker had no container runtime. Both were installed by hand, and a step
+# somebody typed once is not a deploy path.
+#
+# One table, in prerequisites.py, read here and read again by `agentnode worker preflight` on
+# every start. Per role: the worker is the only host that gets a container runtime, because it
+# is the only host that runs foreign code.
+PREREQ="$(beside_me prerequisites.py || true)"
+if [ -z "$PREREQ" ]; then
+  # ABSENT FROM THE ARTEFACT is not the same as a host that is missing something. An
+  # artefact built before this table existed carries none; saying nothing would hide which
+  # checks ran, and dying would make an older artefact uninstallable.
+  ok "this artefact carries no prerequisite table, so nothing was checked about this host"
+elif python3 "$PREREQ" --role worker; then
+  :
+else
+  # The report above already names each missing program, what it is for, and the ONE command
+  # that installs exactly the missing ones from the repositories this host already has.
+  if [ "${AGENTNODE_INSTALL_PREREQUISITES:-}" = "yes" ]; then
+    say "installing what is missing, from this host's own repositories"
+    python3 "$PREREQ" --role worker --install || die "the packages this role needs could not be installed"
+  else
+    die "this host is missing something this role needs. Run the command the report names, or
+    re-run this script with AGENTNODE_INSTALL_PREREQUISITES=yes to install exactly those
+    packages from the repositories this host already has."
+  fi
+fi
+
+# WHERE THE PRODUCT'S OWN PREFLIGHT WILL LOOK. The same bytes, installed, so the check that runs
+# as ExecStartPre on every start is reading the table this install was judged against and not a
+# second copy of it.
+if [ -n "$PREREQ" ]; then
+  install -d -o root -g root -m 0755 "$PREFIX/deploy"
+  install -o root -g root -m 0644 "$PREREQ" "$PREFIX/deploy/prerequisites.py"
+  ok "the table is at $PREFIX/deploy/prerequisites.py, table version $(python3 "$PREREQ" --role worker --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["table_version"])')"
+fi
 
 # ---------------------------------------------------------------------------------------------
 say "the address this worker will bind"
