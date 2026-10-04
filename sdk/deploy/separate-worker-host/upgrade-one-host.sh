@@ -255,8 +255,22 @@ SAID_IT_IS="$(wait_for_the_build_id "$UNIT" "$RESTARTED_AT")"
   Roll back with: rollback-one-host.sh $KEEP"
 [ "$SAID_IT_IS" = "$WILL_BE_BUILD_ID" ] || died "$UNIT is serving $SAID_IT_IS and this upgrade
   installed $WILL_BE_BUILD_ID. Roll back with: rollback-one-host.sh $KEEP"
-[ "$SAID_IT_IS" != "$WAS_BUILD_ID" ] || died "$UNIT is serving the build it was serving before
-  ($WAS_BUILD_ID), so nothing changed. Roll back with: rollback-one-host.sh $KEEP"
+# WHETHER THE BUILD MOVED IS REPORTED, AND IS NOT A FAILURE. This used to `died` when the running
+# build equalled the one that was running before, as "nothing changed". It cost an upgrade: the first
+# attempt on the control plane got as far as writing the new wheel and the new pin and then stopped at
+# the measurement gate because its worker was parked and unreachable -- which is the product being
+# right. The second attempt, on the host that now already had the new code on disk, found before and
+# after equal and refused an upgrade that had in fact succeeded.
+#
+# The property worth protecting is that the restart brought up the build THIS RUN INSTALLED, and the
+# two checks above are exactly that: it must say a build id, and that id must be the one installed. A
+# restart that silently came up on the old code fails the second of them. "It is the same as before"
+# adds nothing to those and is true of every resumed upgrade and every reinstall of one build.
+if [ "$SAID_IT_IS" = "$WAS_BUILD_ID" ]; then
+  echo "   the build did not change: it was already $WAS_BUILD_ID before this run."
+  echo "   That is not a failure -- it is what a resumed upgrade, or installing one build twice,"
+  echo "   looks like. What matters is that it is serving what THIS run installed, and it is."
+fi
 echo "   $UNIT is up and says it is $SAID_IT_IS, which is what was installed"
 
 printf '\n=== upgraded. What it was is kept at %s\n' "$KEEP"
