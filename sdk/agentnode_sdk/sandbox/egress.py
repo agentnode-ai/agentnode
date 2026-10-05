@@ -177,20 +177,33 @@ def _is_podman(runtime: str) -> bool:
 
 #: Lines a runtime writes that are not rows. Checked as a prefix on the first token, so a row whose id
 #: happens to contain one of these words is still a row.
-_NOT_A_ROW = ("time=", "level=", "WARN", "WARNING", "ERRO", "ERROR", "Error:", "error:", "msg=")
+#: WHAT A ROW LOOKS LIKE, as an allow-list. Every listing this module reads is asked for ONE field, so
+#: a row is one token of the shape asked for, and anything else is output nobody can place. This used
+#: to be a DENY-list -- a line was a row unless its first token began with one of a handful of runtime
+#: notice prefixes -- and an independent review found the hole that shape always has: `Cannot connect
+#: to the runtime` begins with none of them, so it counted as a resource. CU7 says a listing is parsed
+#: into rows that match what the thing looks like and that anything else makes the answer UNKNOWN; a
+#: deny-list cannot say that, because it is a list of the surprises somebody has already had.
+_AN_ID = re.compile(r"^[0-9a-fA-F]{6,64}$")
+_A_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,126}$")
 
 
-def _rows_of(text: str) -> tuple:
-    """``(rows, unreadable)``: rows are lines that look like a listing's line, and nothing is guessed."""
+def _rows_of(text: str, looks_like=None) -> tuple:
+    """``(rows, unreadable)``: one token per row, matching the shape asked for. Nothing is guessed.
+
+    `looks_like` is the shape the CALLER asked the runtime for -- an id where it asked for ids, a name
+    where it asked for names -- because only the caller knows which of the two it requested.
+    """
+    shape = looks_like if looks_like is not None else _A_NAME
     rows, unreadable = [], []
     for line in (text or "").splitlines():
         if not line.strip():
             continue
-        first = line.split()[0]
-        if len(first) > 128 or any(first.startswith(p) for p in _NOT_A_ROW):
+        tokens = line.split()
+        if len(tokens) != 1 or not shape.match(tokens[0]):
             unreadable.append(line.strip()[:200])
             continue
-        rows.append(line)
+        rows.append(tokens[0])
     return rows, unreadable
 
 
@@ -206,13 +219,15 @@ def _state_of(rt: str, kind: str, name: str) -> str:
         said = _run(argv).stdout
     except Exception:                                             # noqa: BLE001
         return UNKNOWN
-    rows, unreadable = _rows_of(said)
+    rows, unreadable = _rows_of(said, _A_NAME)
     if unreadable:
         return UNKNOWN
-    for row in rows:
-        if row.strip() == name or row.split()[0] == name:
-            return PRESENT
-    return ABSENT
+    # The listing was FILTERED by this name, and both runtimes filter by substring, so every row the
+    # filter can have produced contains it. A row that does not is output nobody can place -- and
+    # reading it as "another container, so mine is absent" is the same mistake as counting it as mine.
+    if any(name not in row for row in rows):
+        return UNKNOWN
+    return PRESENT if any(row == name for row in rows) else ABSENT
 
 
 def state_of(runtime: str, kind: str, name: str) -> str:
@@ -233,21 +248,35 @@ def _resolver_dir() -> str:
 _OUR_NETWORK_NAME = re.compile(r"^agentnode-egress-[0-9a-f]{4,32}-(int|ext)$")
 
 
-def _resolver_entries() -> list:
-    """``[(name, path)]`` for entries belonging to networks this module names. Never anybody else's."""
+def _resolver_entries(runtime: str = "") -> tuple:
+    """``([(name, path)], unreadable)`` for entries belonging to networks this module names.
+
+    THREE OUTCOMES, not two. A directory that is not there is an ANSWER -- nothing is in it, which is
+    the ordinary case on a host whose runtime is docker and which has no such resolver at all. A
+    directory that IS there and cannot be listed is not an answer, and neither is a rootless podman
+    whose runtime directory cannot even be located, because that is exactly where its resolver keeps
+    one file per network. Both of those used to return an empty list, which made an unreadable
+    inventory look provably empty and would let a migration through: CU7, and the second half of the
+    independent review's RR-01.
+    """
     where = _resolver_dir()
-    if not where or not os.path.isdir(where):
-        return []
+    if not where:
+        if "podman" in (runtime or "").lower():
+            return [], ["the resolver directory could not be located: XDG_RUNTIME_DIR is not set, "
+                        "and a rootless podman keeps one file per network under it"]
+        return [], []
+    if not os.path.isdir(where):
+        return [], []
     out = []
     try:
         names = sorted(os.listdir(where))
-    except OSError:
-        return []
+    except OSError as exc:
+        return [], ["the resolver directory %s could not be listed: %s" % (where, str(exc)[:120])]
     for name in names:
         if name == "aardvark.pid" or not _OUR_NETWORK_NAME.match(name):
             continue
         out.append((name, os.path.join(where, name)))
-    return out
+    return out, []
 
 
 def _remove_one(rt: str, kind: str, name: str) -> dict:
@@ -326,7 +355,7 @@ def what_is_left_of_ours(runtime: str = "") -> dict:
         out["asked"] = False
         out["reason"] = "the runtime would not list its containers: %s" % str(exc)[:200]
         return out
-    rows, unreadable = _rows_of(listed)
+    rows, unreadable = _rows_of(listed, _AN_ID)
     out["unreadable"] += ["containers: " + u for u in unreadable]
     for row in rows:
         cid = row.split()[0]
@@ -347,7 +376,7 @@ def what_is_left_of_ours(runtime: str = "") -> dict:
     except Exception as exc:                                      # noqa: BLE001
         out["unreadable"].append("networks: could not be listed: %s" % str(exc)[:160])
         nets = ""
-    rows, unreadable = _rows_of(nets)
+    rows, unreadable = _rows_of(nets, _AN_ID)
     out["unreadable"] += ["networks: " + u for u in unreadable]
     for row in rows:
         nid = row.split()[0]
@@ -361,7 +390,9 @@ def what_is_left_of_ours(runtime: str = "") -> dict:
             out["left_alone"].append(nid)
             continue
         out["networks"].append({"id": nid, "run": str(labels.get("agentnode.run", ""))})
-    for name, path in _resolver_entries():
+    entries, cannot_read = _resolver_entries(rt)
+    out["unreadable"] += ["resolver: " + u for u in cannot_read]
+    for name, path in entries:
         out["resolver_entries"].append({"name": name, "path": path})
     return out
 
@@ -405,7 +436,9 @@ def remove_everything_of_ours(runtime: str = "", *, keep_runs=()) -> dict:
     # The entries are re-read AFTER the networks have gone: an entry whose network still exists is not
     # a leftover, and removing it would take the resolver away from a live network.
     live = {str(n.get("id")) for n in what_is_left_of_ours(rt).get("networks") or []}
-    for name, path in _resolver_entries():
+    entries, cannot_read = _resolver_entries(rt)
+    out["unreadable"] = list(out.get("unreadable") or []) + ["resolver: " + u for u in cannot_read]
+    for name, path in entries:
         if _state_of(rt, "network", name) == "present" or name in live:
             continue
         said = _remove_resolver_entry(name, path)
@@ -524,7 +557,8 @@ def _teardown(rt: str, proxy_name, nets) -> dict:
         if n:
             said.append(_remove_one(rt, "network", n))
     # The resolver entries of exactly these networks, and only once their network is gone.
-    for name, path in _resolver_entries():
+    entries, _cannot_read = _resolver_entries(rt)
+    for name, path in entries:
         if name not in set(nets or ()):
             continue
         if _state_of(rt, "network", name) == "present":

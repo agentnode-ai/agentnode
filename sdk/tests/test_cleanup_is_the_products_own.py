@@ -124,7 +124,9 @@ class _Runtime:
 @pytest.fixture()
 def no_resolver(monkeypatch):
     """No resolver entries unless a test asks for them."""
-    monkeypatch.setattr(egress, "_resolver_entries", lambda: [])
+    # Two channels, because the real one has two: the entries, and what could not be read. A fixture
+    # that answered only the first is how an unreadable directory used to look like an empty one.
+    monkeypatch.setattr(egress, "_resolver_entries", lambda runtime="": ([], []))
 
 
 class TestAReadBackIsTheAnswer:
@@ -132,11 +134,11 @@ class TestAReadBackIsTheAnswer:
 
     def test_a_removal_the_runtime_refused_is_not_reported_as_removed(self, monkeypatch,
                                                                      no_resolver):
-        rt = _Runtime(containers=["cid-stuck"], refuses=["cid-stuck"])
+        rt = _Runtime(containers=["c57c6b000001"], refuses=["c57c6b000001"])
         monkeypatch.setattr(egress, "_run", rt)
         got = egress.remove_everything_of_ours("podman")
         assert got["removed"] == [], got
-        assert [x["name"] for x in got["failed"]] == ["cid-stuck"], got
+        assert [x["name"] for x in got["failed"]] == ["c57c6b000001"], got
         assert got["clean"] is False
         # the runtime's own words travel with it, because "it failed" is not actionable
         assert "operation not permitted" in got["failed"][0]["why"]
@@ -144,20 +146,20 @@ class TestAReadBackIsTheAnswer:
 
     def test_a_removal_that_worked_is_reported_once_and_the_thing_is_gone(self, monkeypatch,
                                                                          no_resolver):
-        rt = _Runtime(containers=["cid-1"], networks=["net-1"])
+        rt = _Runtime(containers=["c1d100000001"], networks=["e7e100000001"])
         monkeypatch.setattr(egress, "_run", rt)
         got = egress.remove_everything_of_ours("podman")
-        assert sorted(x["name"] for x in got["removed"]) == ["cid-1", "net-1"], got
+        assert sorted(x["name"] for x in got["removed"]) == ["c1d100000001", "e7e100000001"], got
         assert got["failed"] == []
         assert got["clean"] is True
         assert rt.containers == [] and rt.networks == []
 
     def test_the_old_shape_still_answers_for_callers_that_only_read_it(self, monkeypatch,
                                                                       no_resolver):
-        rt = _Runtime(containers=["cid-1"], networks=["net-1"])
+        rt = _Runtime(containers=["c1d100000001"], networks=["e7e100000001"])
         monkeypatch.setattr(egress, "_run", rt)
         got = egress.remove_what_no_run_is_waiting_for("podman")
-        assert got["containers"] == ["cid-1"] and got["networks"] == ["net-1"]
+        assert got["containers"] == ["c1d100000001"] and got["networks"] == ["e7e100000001"]
         assert got["clean"] is True
 
 
@@ -201,7 +203,7 @@ class TestTheResolverEntriesAreCleanedToo:
     def test_only_entries_this_module_names_are_seen(self, tmp_path, monkeypatch):
         self._entries(tmp_path, "agentnode-egress-abcd1234-int", "somebody-elses-network")
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-        seen = [name for name, _p in egress._resolver_entries()]
+        seen = [name for name, _p in egress._resolver_entries()[0]]
         assert seen == ["agentnode-egress-abcd1234-int"], seen
 
     def test_an_entry_whose_network_is_gone_is_removed(self, tmp_path, monkeypatch):
@@ -286,12 +288,12 @@ class TestAMigrationWaitsForTheCleanup:
         from agentnode_sdk.worker import reconcile as rc
 
         tried: list = []
-        worker = self._Worker(clean=False, failed=[{"name": "cid-stuck", "state": PRESENT,
+        worker = self._Worker(clean=False, failed=[{"name": "c57c6b000001", "state": PRESENT,
                                                     "why": "operation not permitted"}])
         got = rc.reconcile_then_rebuild(worker, rebuild=lambda rt: tried.append(rt) or True)
         assert tried == [], "it migrated while something of ours was still there"
         assert got.clean is False and got.rebuilt is False
-        assert "cid-stuck" in got.why and "operation not permitted" in got.why
+        assert "c57c6b000001" in got.why and "operation not permitted" in got.why
 
     def test_it_rebuilds_on_a_clean_answer_and_asks_again_afterwards(self):
         from agentnode_sdk.worker import reconcile as rc
@@ -318,11 +320,11 @@ class TestAMigrationWaitsForTheCleanup:
         from agentnode_sdk.worker import reconcile as rc
 
         worker = TestAMigrationWaitsForTheCleanup._Worker(
-            clean=False, failed=[{"kind": "container", "name": "cid-stuck", "state": PRESENT,
+            clean=False, failed=[{"kind": "container", "name": "c57c6b000001", "state": PRESENT,
                                   "why": "operation not permitted"}])
         said = rc.reconcile(worker)
         assert said.clean is False
-        assert "cid-stuck" in said.why and "operation not permitted" in said.why
+        assert "c57c6b000001" in said.why and "operation not permitted" in said.why
         for word in ("403", "forbidden", "allowlist", "destination", "policy"):
             assert word not in said.why.lower(), said.why
 
@@ -465,18 +467,32 @@ class TestAnAbortedCleanupIsFinishedByTheNextStart:
     def test_a_network_left_without_its_container_is_removed_at_the_next_reconciliation(
             self, monkeypatch, no_resolver):
         # The shape an abort leaves: the proxy container went, the networks did not.
-        rt = _Runtime(containers=[], networks=["agentnode-egress-dead1234-int",
-                                              "agentnode-egress-dead1234-ext"])
+        rt = _Runtime(containers=[], networks=["d3ad12340001", "d3ad12340002"])
         monkeypatch.setattr(egress, "_run", rt)
         got = egress.remove_everything_of_ours("podman")
         assert sorted(x["name"] for x in got["removed"]) == [
-            "agentnode-egress-dead1234-ext", "agentnode-egress-dead1234-int"], got
+            "d3ad12340001", "d3ad12340002"], got
         assert got["clean"] is True
         assert rt.networks == []
 
 
 class TestEveryEndingTearsTheRouteOutDown:
-    """CU10: one cleanup path, reached by a normal exit, a failure and a timeout."""
+    """CU10: one cleanup path, and each of the five endings DRIVEN into it, not asserted about.
+
+    An independent review found that cancel was the exception -- named first by the criterion and
+    the only one of the five not driven anywhere. It is driven below, through the entry point a
+    gateway's cancel actually uses. Where each of the five is driven:
+
+    * a timeout and an error -- the parametrised test here, through `LocalWorker.run`;
+    * a cancel -- `test_a_cancellation_is_driven_into_the_same_cleanup`, through `stop()`;
+    * a killed process -- `TestAnAbortedCleanupIsFinishedByTheNextStart`, where the process is gone
+      between two cleanup steps and the next start finishes it;
+    * a restart -- `test_a_rebooted_worker_comes_back.py`, where the unit's own start reconciles
+      before anything else, and the acceptance drives it on a real worker with no root help.
+
+    A normal exit is driven here too. It is not one of the five, but a cleanup that only happens
+    when something went wrong is the other way to get this wrong.
+    """
 
     class _Handle:
         int_net = "agentnode-egress-aaaa1111-int"
@@ -699,24 +715,25 @@ class TestTheInventoryAsksAQuestionBothRuntimesAnswer:
     remove. On a host that owned nothing. One template turned a clean machine into an unavailable one.
     """
 
-    def test_a_runtime_that_rejects_a_map_template_can_still_be_inventoried(self, monkeypatch):
-        rt = _Runtime(containers=["agentnode-egress-abcd-proxy"], docker_like=True)
+    def test_a_runtime_that_rejects_a_map_template_can_still_be_inventoried(self, monkeypatch,
+                                                                           no_resolver):
+        rt = _Runtime(containers=["abcd00000001"], docker_like=True)
         monkeypatch.setattr(egress, "_run", rt)
 
         got = egress.what_is_left_of_ours("docker")
 
         assert got["asked"] is True, (
             "the inventory could not be asked of a docker-shaped runtime: %s" % got.get("reason"))
-        assert [c["id"] for c in got["containers"]] == ["agentnode-egress-abcd-proxy"]
+        assert [c["id"] for c in got["containers"]] == ["abcd00000001"]
         assert got["unreadable"] == [], got["unreadable"]
 
-    def test_and_it_never_sends_that_template_at_all(self, monkeypatch):
+    def test_and_it_never_sends_that_template_at_all(self, monkeypatch, no_resolver):
         """Not a check on the source: the double RAISES on it, so a send would fail the test above.
 
         This one states the narrower fact that no call carried it, which is what makes the test above
         pass for the right reason rather than because the error was swallowed somewhere.
         """
-        rt = _Runtime(containers=["agentnode-egress-abcd-proxy"], docker_like=True)
+        rt = _Runtime(containers=["abcd00000001"], docker_like=True)
         monkeypatch.setattr(egress, "_run", rt)
 
         egress.what_is_left_of_ours("docker")
@@ -725,9 +742,10 @@ class TestTheInventoryAsksAQuestionBothRuntimesAnswer:
                      if any("index .Labels" in str(part) for part in argv)]
         assert offending == [], "a podman-only template was sent: %r" % (offending[:1],)
 
-    def test_and_a_container_whose_labels_cannot_be_read_is_unreadable_not_foreign(self, monkeypatch):
+    def test_and_a_container_whose_labels_cannot_be_read_is_unreadable_not_foreign(
+            self, monkeypatch, no_resolver):
         """CU7 at the new seam. An id that cannot be placed is not an id that belongs to somebody else."""
-        rt = _Runtime(containers=["agentnode-egress-abcd-proxy"])
+        rt = _Runtime(containers=["abcd00000001"])
         real = rt.__call__
 
         def refusing_inspect(argv, timeout=30.0, **kw):
@@ -819,3 +837,183 @@ class TestTheRefusalSaysWhichOfTheTwoStatesThisIs:
             _code, said = self._what_it_said(report, tmp_path, capsys, monkeypatch)
             assert "not a policy refusal and not a 403" in said
             assert "NOT rebuilt" in said
+
+
+class TestACancellationIsDrivenIntoTheSameCleanup:
+    """RR-02 of the independent review: CU10 names cancel, and nothing drove a cancel anywhere.
+
+    A cancel is the one ending the run does not choose for itself. It arrives from outside, through
+    `LocalWorker.stop`, which removes this run's container from under the run that is still in flight --
+    and the run then ends the way a run whose container has gone ends. Both halves are real here: the
+    worker's own `stop()` is called, with its deadline loop and its `rm`, and the run is a real
+    `LocalWorker.run` in a thread. Only the runtime underneath is doubled.
+    """
+
+    def test_the_route_out_is_torn_down_when_a_run_is_cancelled(self, monkeypatch):
+        import threading
+
+        from agentnode_sdk.sandbox import egress as eg
+        from agentnode_sdk.sandbox import egress_verify as ev
+        from agentnode_sdk.worker import local as wl
+
+        handle = TestEveryEndingTearsTheRouteOutDown._Handle()
+        torn: list = []
+        monkeypatch.setattr(eg, "start_egress_proxy", lambda *a, **k: handle)
+        monkeypatch.setattr(ev, "verify_the_boundary", lambda *a, **k: ())
+        monkeypatch.setattr(eg, "stop_egress_proxy",
+                            lambda h: torn.append(h.proxy_name) or
+                            {"resources": [], "complete": True, "still_there": []})
+
+        running = threading.Event()
+        cancelled = threading.Event()
+
+        class _Backend:
+            runtime = "podman"
+            native_platform = "linux"
+
+            def check_available(self):
+                return type("A", (), {"backend": "podman", "available": True, "reason": ""})()
+
+            def run_process(self, spec, input_text=None, timeout=120.0):
+                # The payload is in flight when the cancel arrives, and comes back the way a payload
+                # whose container was taken out from under it comes back.
+                running.set()
+                assert cancelled.wait(timeout=20), "the cancel never arrived"
+                raise RuntimeError("the container was removed from under the run")
+
+        worker = wl.LocalWorker(_Backend())
+        monkeypatch.setattr(worker, "_egress_gone", lambda h: True)
+
+        job = TestEveryEndingTearsTheRouteOutDown()._job()
+
+        # What the RUNTIME answers while the cancel is carried out: the container is there, and `rm`
+        # takes it away. `stop()` itself is not doubled -- its loop, its listing and its removal run.
+        removals: list = []
+
+        def _runtime_said(argv, *rest, **kw):
+            argv = list(argv)
+            if argv[1:2] == ["rm"]:
+                removals.append(argv)
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        monkeypatch.setattr(wl.subprocess, "run", _runtime_said)
+        monkeypatch.setattr(worker, "gone",
+                            lambda container_name, patiently=True: wl.Gone(
+                                answered=True, left=(container_name,)))
+
+        ended: list = []
+
+        def _run_it():
+            try:
+                ended.append(worker.run(job))
+            except BaseException as exc:                          # noqa: BLE001 - reported below
+                ended.append(exc)
+
+        thread = threading.Thread(target=_run_it, daemon=True)
+        thread.start()
+        assert running.wait(timeout=20), "the payload never started"
+
+        # THE CANCEL, through the product's own entry point.
+        assert worker.stop(job.run_id, job.container_name, 1.0) is True, (
+            "the cancel did not remove this run's container")
+        assert removals, "stop() issued no removal"
+        cancelled.set()
+        thread.join(timeout=30)
+        assert not thread.is_alive(), "the cancelled run never ended"
+
+        assert torn == [handle.proxy_name], (
+            "a cancelled run did not reach the one cleanup path: %r" % (torn,))
+
+
+class TestADiagnosticIsNotAResource:
+    """RR-01 of the independent review, first half: CU7 as an allow-list rather than a deny-list.
+
+    A listing was parsed by EXCLUDING lines whose first token began with one of a handful of runtime
+    notice prefixes. Any other line was a row -- so `Cannot connect to the runtime` was a container, and
+    an inventory that reported a resource on an empty host was the mild version of the fault. The severe
+    one is the reverse, which the second test here is about: a single word that happens to look like a
+    name used to be read as somebody ELSE's container, and that is an inventory saying the host is clean.
+    """
+
+    def test_a_diagnostic_sentence_is_unreadable_and_not_a_container(self, monkeypatch, no_resolver):
+        said = {"ps": "Cannot connect to the runtime: is the daemon running?\n"}
+
+        def _run(argv, timeout=30.0, **kw):
+            argv = list(argv)
+            text = said["ps"] if argv[1:3] == ["ps", "-a"] else ""
+            return type("R", (), {"returncode": 0, "stdout": text, "stderr": ""})()
+
+        monkeypatch.setattr(egress, "_run", _run)
+        got = egress.what_is_left_of_ours("podman")
+
+        assert got["containers"] == [], "a diagnostic was counted as a container"
+        assert any("Cannot connect" in u for u in got["unreadable"]), got["unreadable"]
+        clean, _inventory = egress.nothing_of_ours_is_left("podman")
+        assert clean is False, "an unreadable listing was read as provably empty"
+
+    def test_and_one_word_that_is_not_an_id_does_not_make_a_resource_absent(self, monkeypatch):
+        """`state_of` asks a listing FILTERED by one name. A row that does not contain that name cannot
+        have come from the filter, so it says nothing about the resource -- in either direction."""
+        from agentnode_sdk.sandbox.container_backend import UNKNOWN
+
+        def _run(argv, timeout=30.0, **kw):
+            return type("R", (), {"returncode": 0, "stdout": "Error\n", "stderr": ""})()
+
+        monkeypatch.setattr(egress, "_run", _run)
+        assert egress.state_of("podman", "container", "agentnode-egress-aaaa1111-proxy") == UNKNOWN
+        assert egress.state_of("podman", "network", "agentnode-egress-aaaa1111-int") == UNKNOWN
+
+
+class TestAnUnlistableResolverDirectoryIsNotAnEmptyOne:
+    """RR-01, second half: three outcomes where there were two.
+
+    A directory that is not there is an answer -- nothing is in it, which is the ordinary case under
+    docker. A directory that is there and cannot be listed is not an answer, and neither is a rootless
+    podman whose runtime directory cannot even be located. Both of those returned an empty list, so an
+    inventory nobody could read looked provably empty and would have let a migration through.
+    """
+
+    def test_a_directory_that_is_not_there_is_an_answer(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))      # exists, holds no resolver directory
+        entries, cannot_read = egress._resolver_entries("podman")
+        assert entries == [] and cannot_read == [], cannot_read
+
+    def test_a_directory_that_cannot_be_listed_is_not(self, monkeypatch, tmp_path):
+        where = tmp_path / "containers" / "networks" / "aardvark-dns"
+        where.mkdir(parents=True)
+        real = egress.os.listdir
+
+        def _refusing(path):
+            if str(path) == str(where):
+                raise OSError(13, "Permission denied")
+            return real(path)
+
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.setattr(egress.os, "listdir", _refusing)
+
+        entries, cannot_read = egress._resolver_entries("podman")
+        assert entries == []
+        assert any("could not be listed" in u for u in cannot_read), cannot_read
+
+    def test_and_a_podman_whose_runtime_directory_is_unknown_is_not_either(self, monkeypatch):
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        entries, cannot_read = egress._resolver_entries("podman")
+        assert entries == []
+        assert any("could not be located" in u for u in cannot_read), cannot_read
+        # and docker, which has no such resolver at all, is not made unreadable by the same absence
+        entries, cannot_read = egress._resolver_entries("docker")
+        assert entries == [] and cannot_read == [], cannot_read
+
+    def test_and_the_inventory_carries_it_so_nothing_is_provably_empty(self, monkeypatch):
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+
+        def _run(argv, timeout=30.0, **kw):
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        monkeypatch.setattr(egress, "_run", _run)
+        got = egress.what_is_left_of_ours("podman")
+
+        assert got["asked"] is True
+        assert any("resolver" in u for u in got["unreadable"]), got["unreadable"]
+        clean, _inventory = egress.nothing_of_ours_is_left("podman")
+        assert clean is False, "an inventory with an unreadable part was called provably empty"
