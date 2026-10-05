@@ -37,13 +37,18 @@ class _Runtime:
     """
 
     def __init__(self, containers=(), networks=(), refuses=(), garbles=False,
-                 component="egress", run_label=""):
+                 component="egress", run_label="", docker_like=False):
         self.containers = list(containers)
         self.networks = list(networks)
         self.refuses = set(refuses)
         self.garbles = garbles
         self.component = component
         self.run_label = run_label
+        #: Answer `ps --format` the way DOCKER does: `.Labels` is a comma-separated string there, so a
+        #: template that indexes it as a map is an error and the whole command exits non-zero. Podman
+        #: accepts it. A runtime double that accepts both cannot tell the two apart, and the Linux lane
+        #: could -- see test_the_inventory_asks_a_question_both_runtimes_answer.
+        self.docker_like = docker_like
         self.calls: list = []
 
     # -- what a listing answers -------------------------------------------------
@@ -79,7 +84,18 @@ class _Runtime:
                                         "labels": {"agentnode.component": self.component,
                                                    "agentnode.run": self.run_label}}))
         if argv[1:3] == ["ps", "-a"]:
-            return self._cp(self._rows(self.containers, argv, labelled=labelled))
+            if self.docker_like and any("index .Labels" in str(part) for part in argv):
+                raise subprocess.CalledProcessError(
+                    1, argv, output="",
+                    stderr=('template parsing error: template: :1:8: executing "" at <.Labels>: '
+                            "can't give argument to non-function .Labels"))
+            return self._cp(self._rows(self.containers, argv, labelled=False))
+        if argv[1] == "inspect":
+            # What both runtimes answer for a container: `.Config.Labels` is a mapping in each.
+            import json
+
+            return self._cp(json.dumps({"agentnode.component": self.component,
+                                        "agentnode.run": self.run_label}))
         if argv[1:3] == ["network", "rm"]:
             return self._cp(self._remove(self.networks, argv[-1]))
         if argv[1] == "rm":
@@ -671,3 +687,135 @@ class TestWhatIsPendingIsNamedAndWhatIsClosedIsReadBack:
         assert "store.clear_pending()" in branch, (
             "the unmeasured activation leaves its pending record behind, so every later report says "
             "a change is proposed and not in force")
+
+
+class TestTheInventoryAsksAQuestionBothRuntimesAnswer:
+    """The Docker lane found this, and the frozen profile is why it was looked for there.
+
+    The container inventory used to read its labels out of `ps --format '{{index .Labels "k"}}'`.
+    `.Labels` is a MAP in podman and a comma-separated STRING in docker, so that template makes docker
+    exit non-zero; the inventory then reported that it could not be asked, and the gate -- correctly, for
+    what it was told -- refused to serve on the grounds that this worker owned something it could not
+    remove. On a host that owned nothing. One template turned a clean machine into an unavailable one.
+    """
+
+    def test_a_runtime_that_rejects_a_map_template_can_still_be_inventoried(self, monkeypatch):
+        rt = _Runtime(containers=["agentnode-egress-abcd-proxy"], docker_like=True)
+        monkeypatch.setattr(egress, "_run", rt)
+
+        got = egress.what_is_left_of_ours("docker")
+
+        assert got["asked"] is True, (
+            "the inventory could not be asked of a docker-shaped runtime: %s" % got.get("reason"))
+        assert [c["id"] for c in got["containers"]] == ["agentnode-egress-abcd-proxy"]
+        assert got["unreadable"] == [], got["unreadable"]
+
+    def test_and_it_never_sends_that_template_at_all(self, monkeypatch):
+        """Not a check on the source: the double RAISES on it, so a send would fail the test above.
+
+        This one states the narrower fact that no call carried it, which is what makes the test above
+        pass for the right reason rather than because the error was swallowed somewhere.
+        """
+        rt = _Runtime(containers=["agentnode-egress-abcd-proxy"], docker_like=True)
+        monkeypatch.setattr(egress, "_run", rt)
+
+        egress.what_is_left_of_ours("docker")
+
+        offending = [argv for argv in rt.calls
+                     if any("index .Labels" in str(part) for part in argv)]
+        assert offending == [], "a podman-only template was sent: %r" % (offending[:1],)
+
+    def test_and_a_container_whose_labels_cannot_be_read_is_unreadable_not_foreign(self, monkeypatch):
+        """CU7 at the new seam. An id that cannot be placed is not an id that belongs to somebody else."""
+        rt = _Runtime(containers=["agentnode-egress-abcd-proxy"])
+        real = rt.__call__
+
+        def refusing_inspect(argv, timeout=30.0, **kw):
+            if list(argv)[1] == "inspect":
+                raise subprocess.CalledProcessError(125, list(argv), output="", stderr="no such object")
+            return real(argv, timeout=timeout, **kw)
+
+        monkeypatch.setattr(egress, "_run", refusing_inspect)
+
+        got = egress.what_is_left_of_ours("podman")
+
+        assert got["containers"] == [], "it must not claim a container it could not place"
+        assert got["left_alone"] == [], "and must not write it off as somebody else's"
+        assert any("could not be inspected" in u for u in got["unreadable"]), got["unreadable"]
+        assert egress.nothing_of_ours_is_left("podman")[0] is False
+
+
+class TestTheRefusalSaysWhichOfTheTwoStatesThisIs:
+    """CU6: the refusal is reported as the state it IS, and there are two of them.
+
+    `it owns something it could not remove` and `it cannot say what is on this host` send an operator to
+    different places. The first is a container to go and look at; the second is a runtime to go and fix.
+    Printing the first for the second is what happened when a listing template docker rejects made the
+    inventory unaskable: the headline named a container, and there was no container.
+
+    What is driven here is the COMMAND, so the sentences a reader will actually see are the ones
+    asserted. Two other gates of `cmd_serve` are stood down because they are not what this is about and
+    each has its own tests: the runtime pin, which refuses on any machine whose installed artefact
+    records no digest, and `serve` itself, which is replaced by the refusal it would raise.
+    """
+
+    OWNS = {"runtime": "podman", "found": ["agentnode-run-stuck"], "removed": [],
+            "failed": [{"kind": "container", "name": "agentnode-run-stuck",
+                        "state": PRESENT, "why": "operation not permitted"}],
+            "unreadable": [],
+            "egress": {"asked": True, "clean": True, "failed": [], "removed": [], "unreadable": []},
+            "clean": False, "why": ""}
+
+    CANNOT_SAY = {"runtime": "docker", "found": [], "removed": [], "failed": [], "unreadable": [],
+                  "egress": {"asked": False, "clean": False, "failed": [], "removed": [],
+                             "unreadable": [],
+                             "reason": "the runtime would not list its containers"},
+                  "clean": False, "why": ""}
+
+    def _what_it_said(self, report, tmp_path, capsys, monkeypatch):
+        import agentnode_sdk.worker.service as svc
+        from agentnode_sdk.cli import worker_commands
+        from agentnode_sdk.worker.reconcile import LeftoversRemain, _why_not
+
+        class Args:
+            socket = "unix://" + str(tmp_path / "worker.sock")
+            key = str(tmp_path / "key")
+            for_user = 1000
+            listen = ""
+            tls_config = ""
+            topology = ""
+            keyring = ""
+            journal = ""
+
+        def refusing(*_rest, **_kw):
+            raise LeftoversRemain(_why_not(report), report)
+
+        monkeypatch.setattr(worker_commands, "_refuse_unless_pinned", lambda *a, **k: False)
+        monkeypatch.setattr(svc, "serve", refusing)
+        code = worker_commands.cmd_serve(Args())
+        return code, capsys.readouterr().out
+
+    def test_a_worker_that_owns_something_says_so(self, tmp_path, capsys, monkeypatch):
+        code, said = self._what_it_said(self.OWNS, tmp_path, capsys, monkeypatch)
+        assert code == 1
+        assert "it owns something it could not remove" in said, said[-900:]
+        assert "agentnode-run-stuck" in said
+        assert "operation not permitted" in said
+
+    def test_a_worker_that_could_not_ask_does_not_claim_to_own_anything(
+            self, tmp_path, capsys, monkeypatch):
+        code, said = self._what_it_said(self.CANNOT_SAY, tmp_path, capsys, monkeypatch)
+        assert code == 1
+        assert "it owns something it could not remove" not in said, (
+            "it named a resource it does not have:" + said[-900:])
+        assert "cannot say what is on this host" in said, said[-900:]
+        # Asserted as the two printed lines it is, not as one phrase: it is wrapped in the output.
+        assert "Nothing is named above because nothing could be listed" in said, said[-900:]
+        assert "An answer nobody can give" in said, said[-900:]
+        assert "the runtime would not list its containers" in said, said[-900:]
+
+    def test_and_either_way_it_is_not_a_policy_refusal(self, tmp_path, capsys, monkeypatch):
+        for report in (self.OWNS, self.CANNOT_SAY):
+            _code, said = self._what_it_said(report, tmp_path, capsys, monkeypatch)
+            assert "not a policy refusal and not a 403" in said
+            assert "NOT rebuilt" in said

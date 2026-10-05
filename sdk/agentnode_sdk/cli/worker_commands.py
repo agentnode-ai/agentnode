@@ -533,7 +533,17 @@ def cmd_serve(args) -> int:
         # from an allowlist refusal -- while the real condition was that the account could not remove
         # its own containers and nothing on any custom network could resolve a name.
         print()
-        print(f"  {bold('This worker will not serve: it owns something it could not remove.')}")
+        # THE HEADLINE HAS TO BE TRUE OF THIS REFUSAL, not of the family it belongs to. There are two
+        # states here and they are not the same thing to act on: a resource this account still owns and
+        # could not remove, and a runtime that could not be ASKED what is there. Printing the first when
+        # the second happened sends an operator looking for a container that does not exist -- which is
+        # what it did when a listing template podman accepts and docker rejects made the whole inventory
+        # unaskable, and a lane with nothing of ours on it read as a lane that owned something.
+        owned = [row for row in refusal.resources if row.get("name")]
+        if owned:
+            print(f"  {bold('This worker will not serve: it owns something it could not remove.')}")
+        else:
+            print(f"  {bold('This worker will not serve: it cannot say what is on this host.')}")
         print()
         print("  " + str(refusal.reason))
         print()
@@ -544,6 +554,10 @@ def cmd_serve(args) -> int:
             if row.get("why"):
                 print("      and said: %s" % row["why"])
         print()
+        if not owned:
+            print("  Nothing is named above because nothing could be listed. An answer nobody can give")
+            print("  is not an empty one, so this refuses rather than assuming the host is clean.")
+            print()
         print("  Nothing was opened and no job can reach this machine, and the runtime's namespace")
         print("  was NOT rebuilt. That order is deliberate: rebuilding it is what takes away this")
         print("  account's ability to remove its own containers, and a worker that serves with a")

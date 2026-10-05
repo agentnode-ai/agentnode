@@ -312,10 +312,16 @@ def what_is_left_of_ours(runtime: str = "") -> dict:
         rt = avail.backend
     out = {"asked": True, "runtime": rt, "containers": [], "networks": [],
            "resolver_entries": [], "unreadable": [], "left_alone": [], "reason": ""}
+    # IDS FROM THE LISTING, LABELS FROM `inspect` -- the same two steps the networks below use, and
+    # for the same reason. `ps --format '{{index .Labels "k"}}'` works on podman, where `.Labels` is a
+    # map, and FAILS on docker, where it is a comma-separated string: the runtime exits non-zero, the
+    # whole inventory becomes unaskable, and the gate then refuses to serve saying this worker owns
+    # something it could not remove -- on a host where it owns nothing. The Docker lane found exactly
+    # that, which is what the profile asked it to be checked against. `inspect`'s `.Config.Labels` is
+    # a map in both runtimes, and the `--filter` is a label filter both accept.
     try:
         listed = _run([rt, "ps", "-a", "--filter", "label=" + _COMPONENT,
-                       "--format", '{{.ID}} {{index .Labels "agentnode.component"}} '
-                                   '{{index .Labels "agentnode.run"}}']).stdout
+                       "--format", "{{.ID}}"]).stdout
     except Exception as exc:                                      # noqa: BLE001
         out["asked"] = False
         out["reason"] = "the runtime would not list its containers: %s" % str(exc)[:200]
@@ -323,14 +329,18 @@ def what_is_left_of_ours(runtime: str = "") -> dict:
     rows, unreadable = _rows_of(listed)
     out["unreadable"] += ["containers: " + u for u in unreadable]
     for row in rows:
-        parts = row.split()
-        cid = parts[0]
-        component = parts[1] if len(parts) > 1 else ""
-        run = parts[2] if len(parts) > 2 else ""
-        if component != _COMPONENT_VALUE:
+        cid = row.split()[0]
+        try:
+            labels = _container_labels(rt, cid)
+        except Exception:                                         # noqa: BLE001
+            # Not "it is not ours". A container whose labels cannot be read is one nobody can place,
+            # and CU7 says an answer that could not be read is not an empty one.
+            out["unreadable"].append("containers: %s could not be inspected" % cid)
+            continue
+        if str(labels.get("agentnode.component", "")) != _COMPONENT_VALUE:
             out["left_alone"].append(cid)
             continue
-        out["containers"].append({"id": cid, "run": run})
+        out["containers"].append({"id": cid, "run": str(labels.get("agentnode.run", ""))})
     try:
         nets = _run([rt, "network", "ls", "--filter", "label=" + _COMPONENT,
                      "--format", "{{.ID}}"]).stdout
@@ -428,6 +438,16 @@ def _first(mapping: dict, *names, default=None):
         if name in mapping:
             return mapping[name]
     return default
+
+
+def _container_labels(rt: str, cid: str) -> dict:
+    """The labels of one container, asked a way BOTH runtimes answer.
+
+    Deliberately not from `ps --format`: see the comment at the listing in `what_is_left_of_ours`.
+    A container with no labels at all answers null, which is an empty mapping and not a failure.
+    """
+    raw = _json_of([rt, "inspect", cid, "--format", "{{json .Config.Labels}}"])
+    return raw if isinstance(raw, dict) else {}
 
 
 def _network_facts(rt: str, name: str) -> dict:
