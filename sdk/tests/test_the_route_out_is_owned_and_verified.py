@@ -253,20 +253,20 @@ class TestWhatNoRunIsWaitingForIsRemoved:
         # THREE FIELDS: the id, the COMPONENT label and the run label. The component is there because
         # the sweep no longer trusts `--filter` to have been honoured -- see the test below, and the
         # finding in test_endings that produced it.
-        rt = _Runtime(containers_listed="cid-1 egress run-live\ncid-2 egress run-dead\n",
-                      networks_listed="netid-1\n")
+        rt = _Runtime(containers_listed="c1d100000001 egress run-live\nc1d200000002 egress run-dead\n",
+                      networks_listed="e7e1d0000001\n")
         monkeypatch.setattr(egress, "_run", rt)
         got = egress.remove_what_no_run_is_waiting_for("podman", keep_runs=["run-live"])
 
         assert got["asked"] is True
-        assert got["containers"] == ["cid-2"], got
+        assert got["containers"] == ["c1d200000002"], got
         # the listing asked by label, never by a name pattern
         listing = next(c for c in rt.calls if c[1:3] == ["ps", "-a"])
         assert "label=agentnode.component=egress" in listing
         # and it asked for the label back as well, which is what makes the check below possible
         assert any('agentnode.component' in str(part) for part in listing), listing
         # the network it found belongs to run-7 in this double, which is not live, so it goes
-        assert got["networks"] == ["netid-1"], got
+        assert got["networks"] == ["e7e1d0000001"], got
 
     def test_a_container_that_does_not_say_it_is_ours_is_left_alone(self, monkeypatch):
         """The fail-open `test_a_sweep_leaves_alone_what_this_sdk_did_not_name` found.
@@ -277,19 +277,19 @@ class TestWhatNoRunIsWaitingForIsRemoved:
         The label is read BACK now, and a candidate that does not say it is this component's is left
         alone and recorded as such.
         """
-        rt = _Runtime(containers_listed="mine egress run-dead\nsomebody-elses  \nalso-theirs other\n",
+        rt = _Runtime(containers_listed="a11e0f000001 egress run-dead\nb0b0b0000002  \nc0c0c0000003 other\n",
                       networks_listed="")
         monkeypatch.setattr(egress, "_run", rt)
         got = egress.remove_what_no_run_is_waiting_for("podman")
 
-        assert got["containers"] == ["mine"], got
-        assert sorted(got["left_alone"]) == ["also-theirs", "somebody-elses"], got
+        assert got["containers"] == ["a11e0f000001"], got
+        assert sorted(got["left_alone"]) == ["b0b0b0000002", "c0c0c0000003"], got
         # And nothing was removed for the two that were left alone.
         removals = [c for c in rt.calls if c[1:2] == ["rm"]]
-        assert all("somebody-elses" not in c and "also-theirs" not in c for c in removals), removals
+        assert all("b0b0b0000002" not in c and "c0c0c0000003" not in c for c in removals), removals
 
     def test_a_network_of_a_live_run_is_kept(self, monkeypatch):
-        rt = _Runtime(networks_listed="netid-1\n")
+        rt = _Runtime(networks_listed="e7e1d0000001\n")
         monkeypatch.setattr(egress, "_run", rt)
         got = egress.remove_what_no_run_is_waiting_for("podman", keep_runs=["r-7"])
         assert got["networks"] == [], got

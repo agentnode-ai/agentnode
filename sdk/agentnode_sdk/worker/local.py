@@ -491,7 +491,11 @@ class LocalWorker(Worker):
         from agentnode_sdk.sandbox.egress import _resolver_entries
 
         ours = {handle.int_net, handle.ext_net}
-        for name, _path in _resolver_entries():
+        entries, cannot_read = _resolver_entries(runtime)
+        if cannot_read:
+            # CU7: an answer nobody could read is not an answer that the route out is gone.
+            return False
+        for name, _path in entries:
             if name in ours:
                 return False
         for kind, field, name in (("container", "{{.Names}}", handle.proxy_name),
