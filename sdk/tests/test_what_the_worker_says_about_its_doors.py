@@ -106,6 +106,19 @@ def a_stand_in_worker():
         def prove_its_ceilings(self):
             return Held()
 
+        def remove_what_a_previous_worker_left(self):
+            """A clean answer: this host has nothing of a previous worker on it.
+
+            `serve()` refuses a worker that cannot SAY what a previous one left, because an answer
+            nobody can give is not an empty one. A stand-in without this method would therefore be
+            refused before either door opened, and these tests are about what the banner says once
+            they are open. The refusal has its own tests in test_cleanup_is_the_products_own.py.
+            """
+            return {"runtime": "none", "found": [], "removed": [], "failed": [], "unreadable": [],
+                    "egress": {"asked": True, "clean": True, "failed": [], "removed": [],
+                               "unreadable": []},
+                    "clean": True, "why": ""}
+
         def run(self, job):                                   # pragma: no cover - not reached
             raise AssertionError("no job should reach this stand-in")
 
