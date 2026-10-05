@@ -37,7 +37,7 @@ class _Runtime:
     """
 
     def __init__(self, containers=(), networks=(), refuses=(), garbles=False,
-                 component="egress", run_label="", docker_like=False):
+                 component="egress", run_label="", docker_like=False, ps_says=None):
         self.containers = list(containers)
         self.networks = list(networks)
         self.refuses = set(refuses)
@@ -49,6 +49,10 @@ class _Runtime:
         #: accepts it. A runtime double that accepts both cannot tell the two apart, and the Linux lane
         #: could -- see test_the_inventory_asks_a_question_both_runtimes_answer.
         self.docker_like = docker_like
+        #: Raw text the container listing answers INSTEAD of rows. For the case where a runtime
+        #: prints a sentence rather than a listing, which is what a parser recognising rows by
+        #: shape has to refuse and a parser excluding known prefixes lets through.
+        self.ps_says = ps_says
         self.calls: list = []
 
     # -- what a listing answers -------------------------------------------------
@@ -84,6 +88,8 @@ class _Runtime:
                                         "labels": {"agentnode.component": self.component,
                                                    "agentnode.run": self.run_label}}))
         if argv[1:3] == ["ps", "-a"]:
+            if self.ps_says is not None:
+                return self._cp(self.ps_says)
             if self.docker_like and any("index .Labels" in str(part) for part in argv):
                 raise subprocess.CalledProcessError(
                     1, argv, output="",
@@ -936,18 +942,21 @@ class TestADiagnosticIsNotAResource:
     """
 
     def test_a_diagnostic_sentence_is_unreadable_and_not_a_container(self, monkeypatch, no_resolver):
-        said = {"ps": "Cannot connect to the runtime: is the daemon running?\n"}
+        """Through the runtime double, so the WRONG answer is reachable and not merely absent.
 
-        def _run(argv, timeout=30.0, **kw):
-            argv = list(argv)
-            text = said["ps"] if argv[1:3] == ["ps", "-a"] else ""
-            return type("R", (), {"returncode": 0, "stdout": text, "stderr": ""})()
-
-        monkeypatch.setattr(egress, "_run", _run)
+        The double answers labels for whatever it is asked about, which is what a real runtime does
+        for a real id. So if a diagnostic is accepted as a row, it is inspected, it comes back
+        labelled as ours, and the inventory reports a container that does not exist. That is the
+        answer CU7 is about, and it is what the first assertion below catches.
+        """
+        rt = _Runtime(containers=[],
+                      ps_says="Cannot connect to the runtime: is the daemon running?\n")
+        monkeypatch.setattr(egress, "_run", rt)
         got = egress.what_is_left_of_ours("podman")
 
-        assert got["containers"] == [], "a diagnostic was counted as a container"
-        assert any("Cannot connect" in u for u in got["unreadable"]), got["unreadable"]
+        assert got["containers"] == [], "a diagnostic was counted as a container: %r" % (got,)
+        assert any("Cannot connect" in u for u in got["unreadable"]), (
+            "the diagnostic was not reported as unreadable either: %r" % (got["unreadable"],))
         clean, _inventory = egress.nothing_of_ours_is_left("podman")
         assert clean is False, "an unreadable listing was read as provably empty"
 
@@ -993,13 +1002,17 @@ class TestAnUnlistableResolverDirectoryIsNotAnEmptyOne:
 
         entries, cannot_read = egress._resolver_entries("podman")
         assert entries == []
-        assert any("could not be listed" in u for u in cannot_read), cannot_read
+        assert any("could not be listed" in u for u in cannot_read), (
+            "a directory that could not be listed was reported as an empty one: %r"
+            % (cannot_read,))
 
     def test_and_a_podman_whose_runtime_directory_is_unknown_is_not_either(self, monkeypatch):
         monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
         entries, cannot_read = egress._resolver_entries("podman")
         assert entries == []
-        assert any("could not be located" in u for u in cannot_read), cannot_read
+        assert any("could not be located" in u for u in cannot_read), (
+            "a resolver directory that could not be located was reported as an empty one: %r"
+            % (cannot_read,))
         # and docker, which has no such resolver at all, is not made unreadable by the same absence
         entries, cannot_read = egress._resolver_entries("docker")
         assert entries == [] and cannot_read == [], cannot_read
