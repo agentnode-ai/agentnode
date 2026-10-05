@@ -360,37 +360,18 @@ class TestTheWorkerRefusesRatherThanServing:
             "the sweep that reported what it could not do and carried on is back")
 
 
-class TestClosingAPolicyIsNeverBlocked:
-    """PA2 of frozen/activation.json, driven against the transaction."""
-
-    def test_a_policy_that_grants_nothing_is_recognised(self):
-        from agentnode_sdk.gateway import operator_policy as opol
-        from agentnode_sdk.gateway.server import GatewayService
-
-        closed = opol.build(opol.NONE, (), {}, None)
-        restricted = opol.build(opol.RESTRICTED, ("pypi.org",), {}, None)
-        assert GatewayService._grants_nothing(closed) is True
-        assert GatewayService._grants_nothing(restricted) is False
-
-    def test_the_verdict_can_say_in_force_without_saying_ready(self):
-        from agentnode_sdk.gateway.readiness import Readiness
-
-        said = Readiness(ready=False, reason="not measured", in_force=True)
-        assert said.ready is False and said.in_force is True
-        assert said.as_dict()["in_force"] is True
-
-    def test_the_command_does_not_say_nothing_was_changed_when_something_was(self):
-        import inspect
-
-        from agentnode_sdk.cli import gateway_commands
-
-        source = inspect.getsource(gateway_commands)
-        in_force = source.index('if not verdict.ready and getattr(verdict, "in_force", False):')
-        nothing = source.index("The previous policy remains in force. Nothing was changed.",
-                               in_force)
-        between = source[in_force:nothing]
-        assert "grants nothing, and it is now in force" in between, (
-            "the in-force branch has to come before the one that says nothing was changed")
+#: THE THREE PA2 TESTS THAT WERE HERE ARE GONE, and where they went matters more than that they went.
+#: `TestClosingAPolicyIsNeverBlocked` claimed in its docstring to be "driven against the transaction".
+#: One test asked `_grants_nothing` about two envelopes; one built a `Readiness` and read its own field
+#: back; one asserted that two strings appear in a certain ORDER in this CLI's source text. None called
+#: `activate()`, so all three passed while the path they were about could not execute at all -- which is
+#: `A9` of the sealed acceptance bundle `beta-readiness-r2`, found on a real host rather than here.
+#:
+#: B6 of `a9-repair/frozen/binding.json` requires them replaced rather than added to: a test that cannot
+#: fail occupies the place a real one would have gone. They are now
+#: `sdk/tests/test_closing_a_policy_needs_no_worker.py`, where every test calls `activate()` on a real
+#: service and asserts on what the gateway stores and answers. The source-text one became a test that
+#: runs `cmd_egress` and reads what it printed.
 
 
 class TestContentionIsNotAFailedMeasurement:
