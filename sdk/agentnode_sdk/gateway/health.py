@@ -617,6 +617,18 @@ class HealthWatch:
             try:
                 measured = self._measure()
             except BaseException as failed:                   # noqa: BLE001
+                # PA5 of frozen/activation.json. ONE DRIVER AT A TIME, AND CONTENTION IS NOT A
+                # FAILURE. `ActivationError` means another change to this gateway's policy holds the
+                # lock -- in F38 it was THIS PROCESS's own `doctor --measure`, measured: the lock file
+                # held that pid and the error an operator read was this path publishing its own
+                # contention as a verdict about the worker. "Somebody else is doing exactly this" says
+                # nothing about what the worker enforces, so it is not published as a measurement that
+                # failed; the retry timer decides when to ask again.
+                from agentnode_sdk.gateway.activation import ActivationError
+
+                if isinstance(failed, ActivationError):
+                    self._note_the_measurement_failed()
+                    return self.now()
                 self._note_the_measurement_failed()
                 return self._publish(
                     UNAVAILABLE, MEASUREMENT_FAILED,

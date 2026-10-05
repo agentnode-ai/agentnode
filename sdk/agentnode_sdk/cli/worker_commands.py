@@ -437,6 +437,7 @@ def _serialization():
 
 def cmd_serve(args) -> int:
     """Serve one socket, for one account, until something stops this process."""
+    from agentnode_sdk.worker.reconcile import LeftoversRemain
     from agentnode_sdk.worker.service import CannotHoldItsLimits, serve
 
     # The worker is where foreign code actually runs, so it is the LAST place that should be
@@ -526,6 +527,31 @@ def cmd_serve(args) -> int:
     except KeyboardInterrupt:                                 # pragma: no cover - operator
         print("\n  stopped.")
         return 0
+    except LeftoversRemain as refusal:
+        # CU5: this is a CLEANUP state and it is never shaped like a policy decision. In F37 the
+        # symptom reached an operator as `403 Forbidden` from the egress proxy -- indistinguishable
+        # from an allowlist refusal -- while the real condition was that the account could not remove
+        # its own containers and nothing on any custom network could resolve a name.
+        print()
+        print(f"  {bold('This worker will not serve: it owns something it could not remove.')}")
+        print()
+        print("  " + str(refusal.reason))
+        print()
+        for row in refusal.resources:
+            print("    %-16s %s" % (row.get("kind") or "resource", row.get("name") or "?"))
+            if row.get("state"):
+                print("      the runtime still says: %s" % row["state"])
+            if row.get("why"):
+                print("      and said: %s" % row["why"])
+        print()
+        print("  Nothing was opened and no job can reach this machine, and the runtime's namespace")
+        print("  was NOT rebuilt. That order is deliberate: rebuilding it is what takes away this")
+        print("  account's ability to remove its own containers, and a worker that serves with a")
+        print("  route out standing is the thing this refusal exists to prevent.")
+        print()
+        print("  This is not a policy refusal and not a 403. The destinations a job may reach are")
+        print("  not involved.")
+        return 1
     except CannotHoldItsLimits as refusal:
         # Told at length, because the operator has to change the deployment and the failure is
         # one that otherwise looks like success: the runtime is up, the flag is accepted, and
@@ -554,9 +580,45 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_reconcile(args) -> int:
+    """Remove everything of this worker's that no run is waiting for, and say whether that worked.
+
+    THIS IS WHAT THE RUNTIME UNIT CALLS, in place of a bare `podman system migrate || true`. The unit
+    runs as the worker's own account and without the worker's hardening, which is the only place a
+    rootless namespace can be rebuilt -- and `--before-migrate` is the gate that decides whether it may
+    be: it reconciles, reads every removal back, and exits non-zero if anything of ours is still there
+    or any listing could not be read. systemd stops a `oneshot` at the first ExecStart that fails, so
+    the migration that follows in the unit simply does not run.
+    """
+    from agentnode_sdk.worker.reconcile import reconcile, reconcile_then_rebuild
+
+    before_migrate = bool(getattr(args, "before_migrate", False))
+    said = reconcile_then_rebuild() if bool(getattr(args, "rebuild", False)) else reconcile()
+    report = said.report.get("before", said.report)
+    print("  runtime        : %s" % (report.get("runtime") or "none"))
+    print("  found          : %s" % ", ".join(report.get("found") or []) or "-")
+    print("  removed        : %s" % ", ".join(report.get("removed") or []) or "-")
+    egress = report.get("egress") or {}
+    print("  of its route out: removed %d, failed %d"
+          % (len(egress.get("removed") or []), len(egress.get("failed") or [])))
+    for row in (egress.get("removed") or []):
+        print("      gone  %-14s %s" % (row.get("kind") or "?", row.get("name") or "?"))
+    if said.clean:
+        print("  nothing of ours is left, and every listing could be read")
+        if before_migrate:
+            print("  so the namespace may be rebuilt by the step after this one")
+        return 0
+    print("  NOT clean: %s" % said.why)
+    if before_migrate:
+        print("  so the namespace must NOT be rebuilt: doing it now would take away this account's")
+        print("  ability to remove what is still there. Nothing after this step runs.")
+    return 1
+
+
 def dispatch(args) -> int:
     action = getattr(args, "worker_command", None)
-    handlers = {"key": cmd_key, "serve": cmd_serve, "preflight": cmd_preflight}
+    handlers = {"key": cmd_key, "serve": cmd_serve, "preflight": cmd_preflight,
+                "reconcile": cmd_reconcile}
     if action not in handlers:
         print()
         print("  agentnode worker key       --at <path>")
@@ -648,5 +710,15 @@ def add_parser(subparsers) -> None:
     the_same_arguments(actions.add_parser(
         "preflight", help="Would this configuration serve? Opens nothing, starts nothing"))
 
+    # WHAT THE RUNTIME UNIT CALLS. It takes none of the arguments above: it needs no door, no keyring
+    # and no trust material, because removing what this account owns is not about who may speak here.
+    tidy = actions.add_parser(
+        "reconcile", help="Remove what no run is waiting for, and say whether that worked")
+    tidy.add_argument("--before-migrate", dest="before_migrate", action="store_true",
+                      help="say, in the refusal, that the namespace must not be rebuilt after this")
+    tidy.add_argument("--rebuild", dest="rebuild", action="store_true",
+                      help="and rebuild the rootless namespace afterwards, but only if nothing of "
+                           "ours is left")
 
-__all__ = ["add_parser", "dispatch", "cmd_key", "cmd_preflight", "cmd_serve", "sys"]
+
+__all__ = ["add_parser", "dispatch", "cmd_key", "cmd_preflight", "cmd_reconcile", "cmd_serve", "sys"]

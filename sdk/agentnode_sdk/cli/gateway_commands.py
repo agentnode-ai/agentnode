@@ -408,12 +408,73 @@ def cmd_start(args) -> int:
     return 0
 
 
+def _the_close_took_effect(root) -> tuple:
+    """``(took_effect, still_granted)`` read back from what is IN FORCE, not from what was asked.
+
+    PA3 of frozen/activation.json. `E0424` of the previous round's sealed record is a park run whose
+    `gateway egress --none` could not be measured, said "The previous policy remains in force", and
+    left the host parked with an allowlist still granting two destinations. Nothing checked. A close
+    that is reported without being read back is a claim, and parking rests on it.
+    """
+    from agentnode_sdk.gateway.activation import ActivationStore, SnapshotUnusable
+
+    try:
+        state = ActivationStore(root).load_active()
+    except SnapshotUnusable:
+        return False, ["this gateway's active state cannot be read"]
+    if state is None:
+        # Nothing is in force at all, which grants nothing. That IS closed.
+        return True, []
+    granted = list(getattr(state.policy, "allowed_destinations", ()) or ())
+    return (not granted), granted
+
+
+def _say_if_a_change_is_pending(root) -> bool:
+    """Print the pending proposal, if there is one, and say it is not in force. PA1."""
+    import json
+
+    from agentnode_sdk.gateway.activation import ActivationStore
+
+    try:
+        where = ActivationStore(root).pending_path
+        if not where.is_file():
+            return False
+        said = json.loads(where.read_text(encoding="utf-8"))
+    except Exception:                                             # noqa: BLE001
+        # A pending file that cannot be read is itself worth saying, because the alternative is
+        # printing a tidy answer about the policy in force while something unreadable sits beside it.
+        print("  A change to this policy is PENDING and its record could not be read. What is shown")
+        print("  below is what is in force, which is not what was proposed.")
+        print()
+        return True
+    print("  A change to this policy is PENDING and is NOT in force.")
+    policy = said.get("policy") or {}
+    network = policy.get("network") or {}
+    print("    proposed mode         : %s" % (network.get("mode") or "?"))
+    for host in (network.get("allowed_destinations") or []):
+        print("    proposed destination  : %s" % host)
+    print("    proposed digest       : %s" % (said.get("policy_digest") or "?"))
+    print("  What follows is what is IN FORCE. The two digests it compares are both about that, so")
+    print("  they can agree while this proposal sits here unactivated.")
+    print()
+    return True
+
+
 def _egress_show(root, verbose: bool = False) -> int:
-    """What is actually in force, and whether it matches what is configured."""
+    """What is actually in force, whether it matches what is configured, and whether a change is
+    pending and NOT in force.
+
+    PA1 of frozen/activation.json. `digests agree: True` was printed at the moment a submission was
+    being refused because what was configured was not what had been measured (F19, `E0195`): the two
+    digests it compares are both about the policy in force, so they can agree while a proposal sits
+    unactivated beside them. A reader cannot tell which state they are looking at unless the pending
+    one is named, so it is named.
+    """
     from agentnode_sdk.gateway import operator_policy as opol
     from agentnode_sdk.gateway.activation import ActivationStore, SnapshotUnusable
 
     print()
+    _say_if_a_change_is_pending(root)
     try:
         state = ActivationStore(root).load_active()
     except SnapshotUnusable as exc:
@@ -535,6 +596,29 @@ def cmd_egress(args) -> int:
         print("  The previous policy remains in force. Nothing was changed.")
         return 1
 
+    if not verdict.ready and getattr(verdict, "in_force", False):
+        # PA2. The policy grants nothing and IS in force, and it was not measured. Printing
+        # "nothing was changed" here -- which is what the branch below says -- would be false, and
+        # this is the case `E0424` of the sealed record walked into from the other side: a close
+        # that did not take effect while the report said the digests agreed.
+        print(f"  {bold('This policy grants nothing, and it is now in force.')}")
+        print(f"  {verdict.reason}")
+        print()
+        print("  It was NOT measured, so this gateway will not run anything until it is -- which")
+        print("  is a tightening in both directions and never a widening: nothing is granted, and")
+        print("  nothing is admitted.")
+        if verdict.unproven:
+            print("  Not established:")
+            for name in verdict.unproven:
+                print(f"    {name}")
+        print()
+        took, granted = _the_close_took_effect(root)
+        if not took:
+            print(f"  {bold('But it did not take effect.')}")
+            print("  What is in force still grants: %s" % ", ".join(granted))
+            _egress_show(root, verbose)
+            return 1
+        return _egress_show(root, verbose)
     if not verdict.ready:
         print(f"  Measurement failed: {verdict.reason}")
         if verdict.unproven:
@@ -546,6 +630,15 @@ def cmd_egress(args) -> int:
         return 1
 
     print("  Measurements passed. The new policy is now in force.")
+    if not proposed.allowed_destinations:
+        took, granted = _the_close_took_effect(root)
+        if not took:
+            print()
+            print(f"  {bold('But it did not take effect.')}")
+            print("  What is in force still grants: %s" % ", ".join(granted))
+            print("  This is read back from the active state rather than from what was asked for.")
+            _egress_show(root, verbose)
+            return 1
     return _egress_show(root, verbose)
 
 
@@ -646,7 +739,21 @@ def cmd_doctor(args) -> int:
     if getattr(args, "measure", False):
         print("  Measuring what it actually enforces. This runs several short containers")
         print("  and takes a minute or two.")
-        readiness = service.measure()
+        # PA4 of frozen/activation.json. `measure()` returns what the measurement PROVED -- the
+        # ungated answer, which the health watch needs because during its own measurement the gated
+        # one would conclude that its measurement had failed. It is NOT the answer an operator asked
+        # for. F19 recorded this command exiting 0 and printing "Protected" while every submission was
+        # refused, because admission additionally compares what is configured against what is in
+        # force and this command did not ask that. The gate is what decides, so the gate is reported.
+        proved = service.measure()
+        readiness = service.readiness_now()
+        if bool(proved.ready) != bool(readiness.ready):
+            print()
+            print("  The measurement and the gate do not agree, and the gate is what decides:")
+            print("    the measurement proved : %s"
+                  % ("ready" if proved.ready else (proved.reason or "not ready")))
+            print("    admission says         : %s"
+                  % ("ready" if readiness.ready else (readiness.reason or "not ready")))
     else:
         readiness = service.readiness_now()
 

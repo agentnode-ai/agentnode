@@ -29,6 +29,11 @@ Wants=network-online.target
 # usual cause is a session that is still coming up. Long enough to outlast that, and still
 # bounded, because a worker that can never hold a ceiling must end up stopped and visible rather
 # than restarting forever.
+# CU15. These are in [Unit] on purpose: in [Service] systemd ignores them silently, which an
+# earlier arc found the hard way. And the interval and the burst are what they are so that a
+# worker whose refusal is a CLEANUP condition does not have its reason replaced by "Start
+# request repeated too quickly" -- which names nothing and which cost this arc a round. A
+# refusal that repeats is still the same refusal, and the operator has to be able to read it.
 StartLimitIntervalSec=600
 StartLimitBurst=20
 

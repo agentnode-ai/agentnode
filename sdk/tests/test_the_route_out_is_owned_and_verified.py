@@ -38,14 +38,44 @@ class _Runtime:
     """Answers what a runtime answers. Every deviation a test wants is a constructor argument."""
 
     def __init__(self, internal=True, dns=False, attached=None, address="10.89.0.2",
-                 networks_listed="", containers_listed=""):
+                 networks_listed="", containers_listed="", refuses=()):
         self.calls = []
         self.internal = internal
         self.dns = dns
         self.attached = attached
         self.address = address
-        self.networks_listed = networks_listed
-        self.containers_listed = containers_listed
+        # A DOUBLE THAT CAN REPRESENT A REMOVAL. It could not before, and a read-back cannot be tested
+        # against a double that answers the same listing after a removal as before it: every removal
+        # would look refused. The rows are mutable now, `rm` takes one out, and `refuses` names the ones
+        # whose removal fails the way a real runtime failed in F37 -- which is the case the product has
+        # to notice.
+        self.container_rows = [r for r in (containers_listed or "").splitlines() if r.strip()]
+        self.network_rows = [r for r in (networks_listed or "").splitlines() if r.strip()]
+        self.refuses = set(refuses or ())
+
+    @staticmethod
+    def _first(row):
+        return row.split()[0] if row.split() else ""
+
+    def _listing(self, rows, argv):
+        """What a listing answers, honouring `--filter name=` the way a runtime does."""
+        wanted = ""
+        for part in argv:
+            if str(part).startswith("name="):
+                wanted = str(part).split("=", 1)[1]
+        if wanted:
+            rows = [r for r in rows if self._first(r) == wanted]
+        return "".join(r + "\n" for r in rows)
+
+    def _remove(self, rows, name):
+        import subprocess as _sp
+
+        if name in self.refuses:
+            raise _sp.CalledProcessError(
+                125, ["podman", "rm", "-f", name], output="",
+                stderr=("Error: cannot remove container %s as it could not be stopped: sending "
+                        "SIGKILL to container %s: operation not permitted" % (name, name)))
+        rows[:] = [r for r in rows if self._first(r) != name]
 
     def _answer(self, argv):
         if argv[1:3] == ["network", "inspect"]:
@@ -56,9 +86,15 @@ class _Runtime:
                                "labels": {"agentnode.component": "egress",
                                           "agentnode.run": "r-7"}})
         if argv[1:3] == ["network", "ls"]:
-            return self.networks_listed
+            return self._listing(self.network_rows, argv)
         if argv[1:3] == ["ps", "-a"]:
-            return self.containers_listed
+            return self._listing(self.container_rows, argv)
+        if argv[1:3] == ["network", "rm"]:
+            self._remove(self.network_rows, argv[-1])
+            return ""
+        if argv[1] == "rm":
+            self._remove(self.container_rows, argv[-1])
+            return ""
         if argv[1] == "inspect" and "{{json .NetworkSettings.Networks}}" in argv:
             nets = self.attached
             if nets is None:
@@ -82,6 +118,14 @@ class _Runtime:
             stdout = answer
             stderr = ""
         return _CP()
+
+    @property
+    def networks_listed(self):
+        return "".join(r + "\n" for r in self.network_rows)
+
+    @property
+    def containers_listed(self):
+        return "".join(r + "\n" for r in self.container_rows)
 
     def created(self, suffix):
         """The argv of the `network create` whose name ends in `suffix`."""
