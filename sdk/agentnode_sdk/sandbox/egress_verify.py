@@ -74,8 +74,13 @@ said["must_fail"]["udp_resolver"] = connect("1.1.1.1", 53, socket.AF_UNSPEC,
 said["must_fail"]["cloud_metadata"] = connect("169.254.169.254", 80, socket.AF_INET)
 said["must_fail"]["a_public_name"] = connect("pypi.org", 443)
 if GATEWAY:
+    # TWO QUESTIONS, because a UDP datagram into the void cannot say "nothing is there": it times out
+    # exactly as it would if something received it and stayed quiet. The finding this probe exists for
+    # is a host-side RESOLVER ANSWERING in the payload's own subnet, so the measurable form of it is an
+    # answer -- and a TCP connect to the same address and port is the half that can be refused.
     said["must_fail"]["the_networks_gateway"] = connect(GATEWAY, 53, socket.AF_INET,
                                                         socket.SOCK_DGRAM, A_DNS_QUERY)
+    said["must_fail"]["the_networks_gateway_tcp"] = connect(GATEWAY, 53, socket.AF_INET)
 if PROXY:
     host, _, port = PROXY.rpartition(":")
     host = host.replace("http://", "")
@@ -124,8 +129,26 @@ def verify_the_boundary(handle, *, backend=None, timeout: float = 30.0) -> tuple
     except ValueError as exc:
         raise SandboxRequiredError("the boundary probe's reading was unreadable: %r" % (exc,)) from exc
 
-    reached = [name for name, got in (said.get("must_fail") or {}).items()
-               if str(got.get("outcome")) not in _REFUSALS]
+    # ONE READING WHOSE SILENCE IS AN ANSWER, and only one. `_REFUSALS` deliberately leaves "silent"
+    # out: for a DESTINATION, a send that neither failed nor answered says nothing, and nothing is not
+    # a refusal. For the network's own gateway address the question is narrower -- does a host-side
+    # resolver ANSWER in the payload's subnet -- and for that question silence is a measured no. The
+    # TCP half of the same question is kept in the general rule, so a resolver that speaks TCP, or any
+    # other service on that address, still refuses the run.
+    #
+    # This was found by the EM-3C gateway lane, which runs on Docker: a Docker `--internal` bridge
+    # still has a gateway address, nothing answers on it, and the previous reading refused every
+    # restricted run on that runtime. Under podman the address does not exist at all, which is why the
+    # two-machine measurements never saw it.
+    silence_is_an_answer = ("the_networks_gateway",)
+    reached = []
+    for name, got in (said.get("must_fail") or {}).items():
+        outcome = str(got.get("outcome"))
+        if outcome in _REFUSALS:
+            continue
+        if name in silence_is_an_answer and outcome == "silent":
+            continue
+        reached.append(name)
     worked = said.get("must_work") or {}
     if reached:
         raise SandboxRequiredError(

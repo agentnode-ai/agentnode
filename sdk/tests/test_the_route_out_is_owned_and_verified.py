@@ -285,6 +285,52 @@ class TestTheBoundaryIsMeasuredBeforeThePayload:
         with pytest.raises(SandboxRequiredError, match="udp_resolver was reachable"):
             egress_verify.verify_the_boundary(self._Handle())
 
+    def test_the_gateways_own_silence_is_not_reachability(self, monkeypatch):
+        """The one reading whose silence is an answer, and why.
+
+        The EM-3C gateway lane runs on Docker, where an `--internal` bridge still has a gateway
+        address and nothing answers on it. Reading that silence as reachability refused every
+        restricted run on that runtime -- the lane went red on exactly these two tests, and the
+        two-machine measurements never saw it because podman gives such a network no gateway
+        address at all. The question this probe asks is whether a host-side resolver ANSWERS in the
+        payload's own subnet; for that question silence is a measured no.
+        """
+        self._probe_says(monkeypatch, {
+            "must_fail": {"public_ipv4": {"outcome": "refused"},
+                          "the_networks_gateway": {"outcome": "silent", "detail": "172.18.0.1"},
+                          "the_networks_gateway_tcp": {"outcome": "refused"}},
+            "must_work": {"the_proxy": {"outcome": "connected"}}})
+        readings = egress_verify.verify_the_boundary(self._Handle())
+        assert dict(readings)["boundary_probe_exit"] == 0
+
+    def test_a_gateway_that_answers_still_refuses_the_run(self, monkeypatch):
+        """FINDING-EGRESS-1 itself: a resolver answering on the payload's own subnet."""
+        self._probe_says(monkeypatch, {
+            "must_fail": {"the_networks_gateway": {"outcome": "answered", "detail": "10.89.0.1"}},
+            "must_work": {"the_proxy": {"outcome": "connected"}}})
+        with pytest.raises(SandboxRequiredError, match="the_networks_gateway was reachable"):
+            egress_verify.verify_the_boundary(self._Handle())
+
+    def test_a_gateway_that_takes_a_tcp_connection_still_refuses_the_run(self, monkeypatch):
+        """The half of the question that CAN be refused is read by the general rule, so anything
+        listening on that address -- a resolver that speaks TCP or something else entirely -- is
+        still a reason not to start."""
+        self._probe_says(monkeypatch, {
+            "must_fail": {"the_networks_gateway": {"outcome": "silent"},
+                          "the_networks_gateway_tcp": {"outcome": "connected",
+                                                       "detail": "172.18.0.1"}},
+            "must_work": {"the_proxy": {"outcome": "connected"}}})
+        with pytest.raises(SandboxRequiredError, match="the_networks_gateway_tcp was reachable"):
+            egress_verify.verify_the_boundary(self._Handle())
+
+    def test_the_probe_asks_the_gateway_both_ways(self):
+        """A test on the probe's own source, because the two readings above are only meaningful if
+        the probe produces both."""
+        source = egress_verify.PROBE
+        assert 'said["must_fail"]["the_networks_gateway"]' in source
+        assert 'said["must_fail"]["the_networks_gateway_tcp"]' in source
+        assert "SOCK_DGRAM, A_DNS_QUERY" in source
+
     def test_a_proxy_that_does_not_answer_refuses_the_run(self, monkeypatch):
         self._probe_says(monkeypatch, {
             "must_fail": {"public_ipv4": {"outcome": "refused"}},
