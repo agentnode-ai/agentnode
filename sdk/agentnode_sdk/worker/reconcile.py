@@ -114,7 +114,21 @@ def reconcile(worker=None) -> Reconciled:
     Idempotent, which is CU12: against an already clean host it removes nothing and says clean; against
     the same dirty host twice it reaches the same verdict.
     """
-    said = _a_worker(worker).remove_what_a_previous_worker_left()
+    it = _a_worker(worker)
+    sweep = getattr(it, "remove_what_a_previous_worker_left", None)
+    if not callable(sweep):
+        # A WORKER THAT CANNOT SAY WHAT IT LEFT IS NOT CLEAN, IT IS UNKNOWN. The code this replaced
+        # did `if callable(left):` and carried on when there was none -- which is the hole EG12 is
+        # about, one level up: no reconciliation at all, and nothing said. The CI lane for the socket
+        # boundary caught this, because its double has no sweep; a double that cannot answer the
+        # question is exactly the case that must not be read as "nothing is left".
+        return Reconciled(
+            clean=False, report={"runtime": "", "found": [], "removed": [], "failed": [],
+                                 "unreadable": ["this worker cannot say what a previous one left"],
+                                 "clean": False, "why": ""},
+            why="this worker has no way to say what a previous one left, and an answer nobody can "
+                "give is not an empty one")
+    said = sweep()
     clean = bool(said.get("clean"))
     return Reconciled(clean=clean, report=said, why="" if clean else _why_not(said))
 

@@ -79,6 +79,20 @@ class AWorkerThatAnswers(Worker):
         return Ceilings(held=self.ceilings,
                         reason="" if self.ceilings else "nothing stopped the allocation")
 
+    #: What this double says when asked what a previous worker left. It is a FIELD for the same
+    #: reason `ceilings` is one: the start refuses a worker that cannot say, so a double that could
+    #: not answer would make every test here fail at the gate instead of exercising the line. One
+    #: test sets it to a dirty answer and expects to be refused.
+    leftovers = None
+
+    def remove_what_a_previous_worker_left(self):
+        if self.leftovers is not None:
+            return dict(self.leftovers)
+        return {"runtime": "none", "found": [], "removed": [], "failed": [], "unreadable": [],
+                "egress": {"asked": True, "clean": True, "failed": [], "removed": [],
+                           "unreadable": []},
+                "clean": True, "why": ""}
+
     def instance_label(self):
         return "AWorkerThatAnswers"
 
