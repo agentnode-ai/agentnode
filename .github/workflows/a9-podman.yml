@@ -47,7 +47,14 @@ jobs:
       run:
         working-directory: sdk
     steps:
+      # THE WHOLE HISTORY, and a test asked for it. The second run of this lane was red on
+      # `test_the_commit_messages_on_this_branch_do_not_claim_it_either`, which refused to pass rather
+      # than read less: "the base of the range ('b0c28ad...') is not a commit in this checkout. A
+      # shallow clone is the usual cause, and the remedy is to fetch the history the check needs rather
+      # than to read less." That is the right behaviour from the test and a defect in this lane.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
