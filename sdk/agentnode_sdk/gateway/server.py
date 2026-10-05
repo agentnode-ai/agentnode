@@ -856,11 +856,55 @@ class GatewayService:
 
     # ------------------------------------------------------------------ capabilities
 
-    def report_binding(self, policy_digest: str = "") -> ReportBinding:
+    def report_binding(self, policy_digest: str = "", *,
+                       measured: bool = True) -> ReportBinding:
         """What a conformance report about this gateway would have to be about.
 
         `policy_digest` is supplied while a *pending* policy is being measured, so the report is
         stamped with the policy it was taken for rather than with the one still in force.
+
+        ## `measured=False`, and why this parameter exists rather than a try/except
+
+        B1 and B2 of `a9-repair/frozen/binding.json`. Five of the fields below can only be
+        answered by the worker -- `backend` and `backend_version` and `image_digest` and
+        `worker_boot_id` and `worker_configuration_sha256` all come from asking it, and on a
+        separate worker host every one of them is a request over the wire. That is correct for a
+        report about a measurement: a measurement happened somewhere, against some runtime and
+        some image, and a report that does not say which describes nothing.
+
+        It is wrong for a report about a measurement that did NOT happen. PA2 of the activation
+        profile puts a policy that grants no destination in force without measuring, because
+        nothing is granted and there is therefore nothing to prove -- and the single situation
+        that rule exists for is a worker that cannot be reached. `A9` of the sealed acceptance
+        bundle `beta-readiness-r2` is this method being called on that path: `E0280` is a real
+        host where `gateway egress --none` was refused with "the sandbox worker ... was refused:
+        ... its certificate is revoked", and the control plane was parked with an allow-list
+        still in force. `E0303` reproduces it in three controlled cases.
+
+        So with `measured=False` the worker is not asked, and the five fields it owns are left
+        EMPTY -- which is not a workaround but the honest value. Nothing was observed about any
+        runtime, so claiming one would be a worse defect than the one this repairs: a binding
+        naming an image that nobody looked at.
+
+        `worker_topology` stays, and that is deliberate: it is read from this gateway's own
+        configuration (`self._topology` on the remote worker), it is a fact about how the
+        deployment is arranged rather than about a measurement, and it needs nothing on the far
+        side.
+
+        WHY AN EMPTY BINDING CANNOT FAIL OPEN, which is the part to check rather than take.
+        `ReportBinding.mismatches` compares field by field as strings with no leniency for an
+        empty value, and `Readiness.evaluate_document` refuses on ANY drift. So the moment a real
+        binding is computed -- the next time anything asks what this gateway proves -- the five
+        empty fields differ from the live ones and readiness refuses. That is independent of the
+        other reason it refuses: an unmeasured report establishes no property, so every required
+        property is unproven. Two reasons, either sufficient, and `B3` drives both.
+
+        REJECTED ALTERNATIVE, recorded because it would have passed the observed case. Catching
+        `WorkerUnreachable` around the call at the PA2 site repairs `E0280` exactly -- that is
+        the type `worker/tls.py` wraps the PKI's `PeerRefused` into, with the very sentence that
+        capture carries. It is not the repair, because it leaves the path depending on which
+        exception a future worker error happens to be, and because the cause to prevent is that
+        this path calls the worker at all.
         """
         from agentnode_sdk.gateway.boot import boot_identity
 
@@ -869,7 +913,28 @@ class GatewayService:
         from agentnode_sdk.gateway import policy_version as _versions
 
         identity = self.state.identity
-        isolation = self.worker.can_it_isolate()
+        # ASKED ONLY WHEN THERE IS SOMETHING TO ASK ABOUT. Every one of these is a request to the
+        # worker, and on a separate worker host that is a request over the wire.
+        if measured:
+            isolation = self.worker.can_it_isolate()
+            about_the_worker = {
+                "backend": isolation.backend if isolation.backend != "none" else "",
+                "image_digest": self.worker.image_digest(),
+                # TWO MACHINES, TWO FACTS, TWO FIELDS. The worker's boot is what the measurement
+                # is about; the gateway's is about the process that signed it. They were one
+                # field filled from the gateway, which was right on one machine and wrong on two.
+                "worker_boot_id": str(self.worker.boot_id() or ""),
+                "backend_version": self.runtime_version(),
+                "worker_configuration_sha256": self.worker.configuration_sha256(),
+            }
+        else:
+            about_the_worker = {
+                "backend": "",
+                "image_digest": "",
+                "worker_boot_id": "",
+                "backend_version": "",
+                "worker_configuration_sha256": "",
+            }
         boot_value, _method = boot_identity()
         # The ordinal for whichever policy this report is ABOUT -- the pending one while it is
         # being measured, the one in force otherwise. Assigned here rather than read, because
@@ -890,21 +955,16 @@ class GatewayService:
             operator_policy_version=str(ordinal) if ordinal > 0 else "",
             gateway_id=identity.gateway_id,
             gateway_version=identity.version,
-            backend=isolation.backend if isolation.backend != "none" else "",
-            image_digest=self.worker.image_digest(),
-            # TWO MACHINES, TWO FACTS, TWO FIELDS. The worker's boot is what the measurement
-            # is about; the gateway's is about the process that signed it. They were one field
-            # filled from the gateway, which was right on one machine and wrong on two.
-            worker_boot_id=str(self.worker.boot_id() or ""),
             gateway_boot_id=boot_value,
-            backend_version=self.runtime_version(),
             conformance_schema=str(SUITE_VERSION),
             operator_policy_digest=policy_digest or self.operator_envelope().digest(),
             # Where this was measured, and what the worker was configured as when it was.
             # `ALPHA-BOUNDARY-0001`: a report that does not say which of those two it describes is
             # a report somebody will read as describing the other.
+            # Read from this gateway's own configuration, so it holds whether or not anything
+            # was measured, and asks the far side nothing.
             worker_topology=self.worker.topology,
-            worker_configuration_sha256=self.worker.configuration_sha256(),
+            **about_the_worker,
             # WHAT THIS GATEWAY IS RUNNING AS. Read from the running process and from the pin
             # written by the deployment, never from a constant in the source: a field that says
             # what somebody intended rather than what is true is a field that keeps saying it
@@ -1060,7 +1120,10 @@ class GatewayService:
                         "results": [],
                         "is_conformant": False,
                     }
-                    binding = self.report_binding(envelope.digest())
+                    # `measured=False`: THIS is the line A9 was about. The branch exists for a
+                    # worker that cannot be reached, and asking for a measured binding here asked
+                    # that worker five questions, so the refusal escaped and the close was lost.
+                    binding = self.report_binding(envelope.digest(), measured=False)
                     store.activate(envelope, report, binding.as_dict(), now)
                     # AND THE PENDING RECORD GOES. It was written at the top of this transaction to
                     # say what was being measured if the process died mid-measurement; this policy is

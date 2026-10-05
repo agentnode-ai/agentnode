@@ -1847,30 +1847,103 @@ class TestTheConformanceReportBindsWhereItWasMeasured:
 
     A report that lost one of those bindings would still look like a report -- the numbers would
     all be there -- while no longer saying which arrangement produced them.
+
+    ## Why these two tests were rewritten
+
+    Both used to read `inspect.getsource(GatewayService.report_binding)` and assert that `image_digest=`
+    and `self.worker.image_digest()` appear in it as TEXT. The repair in `a9-repair` moved those
+    assignments into a dict that is splatted into the constructor, so `image_digest=` stopped appearing
+    while the binding went on carrying every field -- and this test went red for a change in punctuation.
+
+    That is the same genus of test as the three the same repair deleted from
+    `test_cleanup_is_the_products_own.py`: a source-text assertion passes or fails on how code is
+    spelled rather than on what it does. The version below builds a real binding from a worker whose
+    answers are distinguishable, so it asserts both halves of what the two old tests were reaching for
+    -- that the field is bound, and that its value came from the worker rather than from the control
+    plane -- and it cannot be broken by rearranging the call.
     """
 
     MUST_BIND = ("image_digest", "backend_version", "worker_topology",
                  "worker_configuration_sha256")
 
-    def test_the_report_is_built_with_every_one_of_them(self):
-        import inspect
+    #: What the stand-in answers, one distinguishable value per field, so a binding that filled a field
+    #: from anywhere else cannot accidentally match.
+    SAID = {
+        "image_digest": "sha256:" + "ab" * 32,
+        "runtime_version": "a-runtime-version-no-host-would-report",
+        "topology": "separate-worker-host",
+        "configuration_sha256": "c0ffee" * 8,
+        "boot_id": "a-boot-id-of-the-worker",
+    }
 
-        from agentnode_sdk.gateway import server
+    def a_service(self, tmp_path):
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.server import GatewayService
+        from agentnode_sdk.worker import Isolation
+        from tests.test_em3c_gateway import StandInBackend
 
-        built = inspect.getsource(server.GatewayService.report_binding)
-        for field in self.MUST_BIND:
-            assert field + "=" in built, f"the conformance report does not bind {field}"
+        said = self.SAID
 
-    def test_and_each_comes_from_the_worker_rather_than_from_here(self):
+        class AWorkerWithKnownAnswers:
+            def can_it_isolate(self, *a, **k):
+                return Isolation(available=True, backend="podman", reason="", measured=())
+
+            def image_digest(self, *a, **k):
+                return said["image_digest"]
+
+            def runtime_version(self, *a, **k):
+                return said["runtime_version"]
+
+            def configuration_sha256(self, *a, **k):
+                return said["configuration_sha256"]
+
+            def boot_id(self, *a, **k):
+                return said["boot_id"]
+
+            @property
+            def topology(self):
+                return said["topology"]
+
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        the_property = GatewayService.worker
+        GatewayService.worker = property(lambda _self: AWorkerWithKnownAnswers())
+        return service, state, the_property
+
+    def test_the_report_is_built_with_every_one_of_them(self, tmp_path):
+        from agentnode_sdk.gateway.server import GatewayService
+
+        service, state, the_property = self.a_service(tmp_path)
+        try:
+            binding = service.report_binding("adigest").as_dict()
+            for field in self.MUST_BIND:
+                assert binding.get(field), f"the conformance report does not bind {field}"
+        finally:
+            GatewayService.worker = the_property
+            state.close()
+
+    def test_and_each_comes_from_the_worker_rather_than_from_here(self, tmp_path):
         """A control plane that filled these in itself would be describing something it guessed."""
-        import inspect
+        from agentnode_sdk.gateway.server import GatewayService
 
-        from agentnode_sdk.gateway import server
-
-        built = inspect.getsource(server.GatewayService.report_binding)
-        assert "self.worker.image_digest()" in built
-        assert "self.worker.topology" in built
-        assert "self.worker.configuration_sha256()" in built
+        service, state, the_property = self.a_service(tmp_path)
+        try:
+            binding = service.report_binding("adigest").as_dict()
+            # EACH WITH ITS OWN REASON, so a counter-check can require THIS failure rather than
+            # whatever pytest's diff happens to render. Counter-check 8 filled one of these from the
+            # control plane and the check was recorded RED FOR THE WRONG REASON (`E0050`) against the
+            # first version of these lines, which carried no message at all.
+            said = "a field of the report did not come from the worker: %s"
+            assert binding["image_digest"] == self.SAID["image_digest"], said % "image_digest"
+            assert binding["backend_version"] == self.SAID["runtime_version"], said % "backend_version"
+            assert binding["worker_topology"] == self.SAID["topology"], said % "worker_topology"
+            assert binding["worker_configuration_sha256"] == self.SAID["configuration_sha256"], (
+                said % "worker_configuration_sha256")
+            assert binding["worker_boot_id"] == self.SAID["boot_id"], said % "worker_boot_id"
+            assert binding["backend"] == "podman", said % "backend"
+        finally:
+            GatewayService.worker = the_property
+            state.close()
 
 
 class TestWhatTheWorkerIsToldAndWhatItIsNot:
