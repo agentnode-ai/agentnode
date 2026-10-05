@@ -56,6 +56,21 @@ ONLY_THE_WORKER_KNOWS = ("backend", "backend_version", "image_digest", "worker_b
                          "worker_configuration_sha256")
 
 
+class ARefusalNobodyCatchesByType(BaseException):
+    """A BaseException that is not an Exception, for the case B1 is really about.
+
+    THE FIRST VERSION OF THAT CASE RAISED `KeyboardInterrupt`, which made the point and broke the
+    measurement. pytest treats `KeyboardInterrupt` as "stop this session", so against the UNREPAIRED
+    product -- where the repair is not there to catch it -- the whole run aborted after two tests and
+    B6's accounting could not be taken at all (`E0088`). On the repaired product the branch catches it
+    before pytest ever sees it, which is exactly why the problem stayed invisible until the full
+    reversion was run.
+
+    The claim being tested is that the repair depends on no exception TYPE: not that it survives the
+    one exception the test runner has reserved for itself.
+    """
+
+
 class AWorkerThatIsGone:
     """Refuses every attribute access. `topology` is the one thing the gateway owns itself."""
 
@@ -163,7 +178,7 @@ class TestAClosedPolicyGoesInForceWithNoWorkerAtAll:
                 if name.startswith("_"):
                     raise AttributeError(name)
                 self.what_was_asked.append(name)
-                raise KeyboardInterrupt("not an exception anyone catches by type")
+                raise ARefusalNobodyCatchesByType("not an exception anyone catches by type")
 
         put_this_worker_on(service, AWorkerThatFailsStrangely(real.topology))
         verdict = service.activate(the_closed_policy())
