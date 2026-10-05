@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import gc
 import os
+import time
 
 import pytest
 
@@ -91,9 +92,18 @@ class TestALockLeftBehindIsBroken:
                 raise AssertionError("an unreadable lock was broken on a guess")
 
     def test_the_age_rule_still_breaks_one_nobody_can_account_for(self, tmp_path):
-        """A live pid that is somebody else's: honoured until it is older than any activation."""
+        """A live pid that is somebody else's: honoured until it is OLDER than any activation.
+
+        The lock is aged rather than the window being set to zero. `age <= stale_after` honours a lock, so
+        a window of zero against a file written microseconds ago asks whether `time.time() - st_mtime`
+        rounds to exactly 0.0 -- which depends on the clock and on the filesystem's mtime resolution, and
+        came out differently one run in three. The rule says older, so this test makes it older.
+        """
         a_lock_left_behind(tmp_path, os.getpid())
-        lock = ActivationLock(tmp_path, stale_after=0.0)
+        long_ago = time.time() - 600.0
+        os.utime(str(tmp_path / "activation.lock"), (long_ago, long_ago))
+        lock = ActivationLock(tmp_path, stale_after=60.0)
         with lock:
             pass
-        assert "more than" in lock.broke_a_lock
+        assert "more than" in lock.broke_a_lock, (
+            "a lock ten minutes older than a one-minute window was honoured: %r" % (lock.broke_a_lock,))
