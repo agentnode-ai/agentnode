@@ -88,7 +88,21 @@ class _Runtime:
         if argv[1:3] == ["network", "ls"]:
             return self._listing(self.network_rows, argv)
         if argv[1:3] == ["ps", "-a"]:
-            return self._listing(self.container_rows, argv)
+            # IDS ONLY, because that is all the product asks `ps` for now. Its labels used to come from
+            # the same template, which docker rejects -- see the cross-runtime tests in
+            # test_cleanup_is_the_products_own.py. The rows these tests are written with still carry the
+            # labels in fields two and three, and `inspect` below is where they are answered from.
+            return self._listing([self._first(r) for r in self.container_rows], argv)
+        if argv[1] == "inspect" and "{{json .Config.Labels}}" in [str(a) for a in argv]:
+            import subprocess as _sp
+
+            for row in self.container_rows:
+                parts = row.split()
+                if parts and parts[0] == argv[2]:
+                    return json.dumps({"agentnode.component": parts[1] if len(parts) > 1 else "",
+                                       "agentnode.run": parts[2] if len(parts) > 2 else ""})
+            raise _sp.CalledProcessError(125, list(argv), output="",
+                                         stderr="Error: no such object: %s" % argv[2])
         if argv[1:3] == ["network", "rm"]:
             self._remove(self.network_rows, argv[-1])
             return ""
