@@ -64,9 +64,22 @@ jobs:
           command -v docker && docker --version || echo "  no docker on PATH"
           command -v podman && podman --version || echo "  no podman on PATH"
           sudo systemctl stop docker.socket docker.service 2>/dev/null || true
-          sudo rm -f "$(command -v docker || true)" || true
+          # EVERY docker on PATH, not the first one. The first version of this step removed
+          # `$(command -v docker)` -- one path -- and the check below then found docker still
+          # discoverable and stopped the lane, which is the refusal working: the runner carries more
+          # than one, and a lane that had carried on would have run the tests with docker present and
+          # called the result a podman measurement. `hash -r` as well, because the shell remembers
+          # where a command was even after the file is gone.
+          for where in $(type -a -p docker 2>/dev/null | sort -u); do
+            echo "  removing ${where}"
+            sudo rm -f "${where}" || true
+          done
+          hash -r 2>/dev/null || true
           if command -v docker >/dev/null 2>&1; then
-            echo "docker is still discoverable, so this would not be a podman measurement"; exit 1
+            echo "docker is STILL discoverable at $(command -v docker), so this would not be a"
+            echo "podman measurement. Every path type -a reported was removed; something else"
+            echo "provides it and this lane must not pretend otherwise."
+            exit 1
           fi
           if ! command -v podman >/dev/null 2>&1; then
             echo "podman is not on this runner, so this lane cannot do what it says"; exit 1
