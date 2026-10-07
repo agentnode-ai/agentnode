@@ -1,4 +1,4 @@
-﻿"""The operator's policy, in the one form its digest is taken over.
+"""The operator's policy, in the one form its digest is taken over.
 
 `EM3C-EXTERNAL-0017` found that readiness said nothing about the policy it was measured under. A
 report taken while the gateway allowed no network at all was accepted as evidence that the gateway
