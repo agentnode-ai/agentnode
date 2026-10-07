@@ -60,30 +60,22 @@ def _save_config(root: Path, config: dict) -> None:
     _config_path(root).write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def _operator_policy(root: Path):
-    """The ceiling this machine's owner set, or None to keep the built-in default.
-
-    EM3C-EGRESS-CLASSIFY-0001 found the gateway had a deliberate "the operator opens it"
-    default with no way for an operator to open it: `gateway start` never passed a policy, so
-    the no-network default was the only reachable setting and `remote run --allow` could not
-    be granted by any published command. This reads the setting the operator saved.
-
-    Returning None rather than an all-denying policy matters: it keeps the default in ONE
-    place, in the service, instead of restating it here where the two could drift apart.
-    """
-    allowed = _load_config(root).get("egress_allowed")
-    if not allowed:
-        return None
-
-    from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
-    from agentnode_sdk.sandbox.egress import validate_allowed_domains
-
-    hosts = tuple(str(h) for h in allowed)
-    # Validated on the way in AND here, because a config file can be edited by hand between
-    # the two. An unenforceable ceiling must not become a running gateway.
-    validate_allowed_domains(hosts)
-    return SandboxPolicy(network=NetworkRules(enabled=True,
-                                              allowed_destinations=frozenset(hosts)))
+# `_operator_policy(root)` USED TO LIVE HERE AND IS GONE, which is finding R8 of acceptance run
+# `r5-20261006`. It read `egress_allowed` from the config file and returned a `SandboxPolicy`, which
+# `_service` handed to every gateway it built -- freezing that list into the serving process for its whole
+# life. What it was FOR is still met, and better: `EM3C-EGRESS-CLASSIFY-0001` found that an operator had no
+# reachable way to open the network, and today `gateway egress --allow` writes the file, measures it and
+# activates a snapshot, and the service takes what is in force from that snapshot and what is requested from
+# the file at the moment it asks. The decision is the snapshot; the file is the request.
+#
+# Its one unique contribution has moved rather than been dropped: it ran
+# `sandbox.egress.validate_allowed_domains`, which refuses an IP literal, `localhost` and raw non-ASCII --
+# all of which the envelope's own `_destination` accepts. That check is now in
+# `GatewayService._refuse_a_ceiling_that_cannot_be_enforced`, where it runs on every read of the file
+# instead of once per process. See the comment on `_service` below and the one on `configured_envelope`.
+#
+# It is deleted rather than left unused on purpose: a helper whose only remaining use would be to
+# reintroduce the defect is a trap, not a convenience.
 
 
 def _build_id() -> str:
@@ -119,9 +111,28 @@ def _service(root: Path, recover: bool = False):
     from agentnode_sdk import __version__ as version
 
     state = GatewayState(root, version=str(version), build_id=_build_id())
-    return state, GatewayService(state, backend=ContainerBackend(),
-                                 operator_policy=_operator_policy(root),
-                                 recover=recover)
+    # NO POLICY IS HANDED IN HERE, and that single argument was finding R8 of acceptance run
+    # `r5-20261006`. It used to be `operator_policy=_operator_policy(root)`, read from `config.json` at
+    # this moment -- so `GatewayService.configured_envelope()` returned that start-up list for the life of
+    # the process, and `operator_envelope()` and `operator_policy()` returned it too. The consequences,
+    # both measured on a real two-host stand:
+    #
+    #   * a policy set through `gateway egress --allow`, measured and activated, was refused for every job
+    #     with "what this gateway is configured to allow is not what was measured and put into force"
+    #     until the service was restarted. `doctor --measure`, which that refusal prescribes, cannot clear
+    #     it: it is a different process and the serving one never re-reads (`E0177`, `E0181`).
+    #   * and the operator command lied about its own work. `_transact` ends a successful activation by
+    #     returning `_what_the_measurement_proves()`, which compares this frozen envelope against the
+    #     snapshot it has just written -- so a change to a DIFFERENT list printed "Measurement failed" and
+    #     "The previous policy remains in force. Nothing was changed." with the new policy in force at a
+    #     new generation (`E0191`). A change to the same list reported success, because there was nothing
+    #     to differ about.
+    #
+    # With nothing handed in, the service reads the config file whenever it is asked and takes what is in
+    # force from the authenticated snapshot -- which is what `EM3C-EGRESS-CLASSIFY-0001` wanted when it
+    # found that an operator had no reachable way to open the network at all. That requirement is met
+    # better this way round: the snapshot is the decision, and the file is the request.
+    return state, GatewayService(state, backend=ContainerBackend(), recover=recover)
 
 
 def _tls_from(config: dict, args):
