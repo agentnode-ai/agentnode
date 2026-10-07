@@ -826,44 +826,13 @@ class GatewayService:
             config = opol.loads_strict(path.read_text(encoding="utf-8"))
         except OSError as exc:
             raise opol.OperatorPolicyError(f"the gateway config cannot be read: {exc}") from None
-        envelope = opol.from_config(config)
-        self._refuse_a_ceiling_that_cannot_be_enforced(envelope)
-        return envelope
-
-    @staticmethod
-    def _refuse_a_ceiling_that_cannot_be_enforced(envelope) -> None:
-        """The check the CLI used to make at construction, made here instead -- on every read.
-
-        `cli/gateway_commands._operator_policy` ran `sandbox.egress.validate_allowed_domains` over
-        the file's hosts before handing the result to the service, and that validator refuses more
-        than the envelope's own `_destination` does: an IP literal, `localhost`, and raw non-ASCII.
-        Those are precisely the destinations an allowlist cannot meaningfully hold -- the proxy
-        screens an address it resolves to, so a policy naming one by hand is a ceiling that cannot
-        be enforced as written.
-
-        Removing the construction-time policy for R8 would have silently dropped that, so it moves
-        here, where it runs whenever the file is read rather than once when a process starts. A
-        config that cannot be enforced is refused rather than honoured approximately.
-
-        NOT pushed down into `operator_policy.build`, deliberately and out of scope: that would also
-        judge the snapshot reader, and a snapshot already holding such a host would stop being
-        readable, which turns a configuration mistake into a gateway that cannot say what it
-        enforces. That the envelope accepts hosts this validator refuses is worth its own look and
-        is recorded as an observation of this arc rather than changed inside it.
-        """
-        from agentnode_sdk.gateway import operator_policy as opol
-
-        hosts = tuple(getattr(envelope, "allowed_destinations", ()) or ())
-        if not hosts:
-            return
-        from agentnode_sdk.sandbox.egress import validate_allowed_domains
-
-        try:
-            validate_allowed_domains(hosts)
-        except ValueError as why:
-            raise opol.OperatorPolicyError(
-                "the gateway config names a destination that cannot be enforced as an allowlist: "
-                "%s" % (why,)) from None
+        # `from_config` is what refuses a ceiling that cannot be enforced -- an IP literal, `localhost`,
+        # raw non-ASCII -- which the CLI's deleted `_operator_policy` used to check at construction. The
+        # check was first written here, as a method of this class, and that was one layer too high: the
+        # CLI's egress show path calls `from_config` directly and would have kept computing a digest from
+        # an unvalidated envelope while admission refused the same config. It lives at the parse now, which
+        # is the only place a gateway config becomes a policy.
+        return opol.from_config(config)
 
     def _explicit_envelope(self):
         """A policy handed in at construction, described in the same envelope as a configured one."""
