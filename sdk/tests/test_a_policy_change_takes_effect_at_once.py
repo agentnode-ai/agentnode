@@ -1,4 +1,4 @@
-﻿"""R8 and R11: a policy a running gateway was not started with.
+"""R8 and R11: a policy a running gateway was not started with.
 
 ## What these are about
 
