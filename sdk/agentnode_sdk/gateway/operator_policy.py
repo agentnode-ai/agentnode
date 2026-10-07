@@ -1,4 +1,4 @@
-"""The operator's policy, in the one form its digest is taken over.
+﻿"""The operator's policy, in the one form its digest is taken over.
 
 `EM3C-EXTERNAL-0017` found that readiness said nothing about the policy it was measured under. A
 report taken while the gateway allowed no network at all was accepted as evidence that the gateway
@@ -278,11 +278,11 @@ def from_config(config: dict) -> OperatorPolicyEnvelope:
     envelope = build(RESTRICTED, allowed,
                      limits=config.get("egress_limits") or None,
                      runtime=config.get("runtime_requirements") or None)
-    _refuse_a_ceiling_that_cannot_be_enforced(envelope)
+    refuse_a_ceiling_that_cannot_be_enforced(envelope)
     return envelope
 
 
-def _refuse_a_ceiling_that_cannot_be_enforced(envelope) -> None:
+def refuse_a_ceiling_that_cannot_be_enforced(envelope) -> None:
     """A config whose hosts cannot be held as an allowlist is refused, not honoured approximately.
 
     `cli/gateway_commands._operator_policy` used to run `sandbox.egress.validate_allowed_domains` over the

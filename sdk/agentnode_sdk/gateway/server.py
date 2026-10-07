@@ -817,9 +817,19 @@ class GatewayService:
         """
         from agentnode_sdk.gateway import operator_policy as opol
 
-        if self._operator_policy is not None:
-            return self._explicit_envelope()
         path = self.state.root / "config.json"
+        # THE FILE WINS WHENEVER THERE IS ONE, and that ordering is what makes RQ2 of the repair
+        # profile true by construction rather than by nobody passing a policy. An independent
+        # review of the first repair was right that leaving the explicit branch first satisfied
+        # "a running gateway does not keep a start-up policy as the truth about what is
+        # configured" only by caller convention: any caller that handed in a policy derived from
+        # a state directory would have recreated the defect exactly.
+        #
+        # A policy handed in is still the answer when there is NO config file, because then it is
+        # genuinely the only source of record -- an embedded gateway constructed with a policy and
+        # no directory of its own. What it can no longer do is override a file that exists.
+        if self._operator_policy is not None and not path.is_file():
+            return self._explicit_envelope()
         if not path.is_file():
             return opol.build(opol.NONE)
         try:
@@ -848,13 +858,32 @@ class GatewayService:
         return opol.build(opol.RESTRICTED, tuple(dests))
 
     def operator_envelope(self):
-        """The operator policy actually IN FORCE -- from the authenticated snapshot."""
+        """The operator policy actually IN FORCE -- from the authenticated snapshot.
+
+        AND A SNAPSHOT IS READ BACK LENIENTLY AND ACTED ON STRICTLY. `operator_policy.from_document`
+        deliberately does not refuse a snapshot naming a host an allowlist cannot hold -- an IP
+        literal, `localhost`, raw non-ASCII -- because a snapshot that cannot be READ is a gateway
+        that cannot say what it enforces, which is worse than a configuration mistake. An
+        independent review of the first repair was right that this leaves the other half open: the
+        snapshot is what admission composes with, so a lenient read becomes a policy acted on.
+
+        So the check happens HERE, where it is about to be used, and it fails closed: the policy in
+        force becomes the closed one rather than the one naming a host the proxy would screen
+        anyway. A reader can still see what the snapshot says -- `active_state()` returns it
+        untouched and the show command prints it -- while nothing is granted on its strength.
+        """
         from agentnode_sdk.gateway import operator_policy as opol
 
         if self._operator_policy is not None:
             return self._explicit_envelope()
         state = self.active_state()
         if state is None:
+            return opol.build(opol.NONE)
+        try:
+            opol.refuse_a_ceiling_that_cannot_be_enforced(state.policy)
+        except opol.OperatorPolicyError:
+            # Closed, not raised: every caller of this is either composing a policy for a job or
+            # reporting one, and a gateway that grants nothing is the safe answer to both.
             return opol.build(opol.NONE)
         return state.policy
 

@@ -1,4 +1,4 @@
-"""R8 and R11: a policy a running gateway was not started with.
+﻿"""R8 and R11: a policy a running gateway was not started with.
 
 ## What these are about
 
@@ -77,13 +77,22 @@ def serving(tmp_path):
     The order is the one that matters: the config exists FIRST, then the service is constructed, then the
     config changes. That is a running gateway meeting an operator's change.
     """
+    from agentnode_sdk.gateway.server import GatewayService
+
     root = tmp_path / "state"
     root.mkdir(parents=True, exist_ok=True)
     write_the_config(root, ONE)
     state, service = gateway_commands._service(root)
+    # THE CLASS PROPERTY IS PUT BACK, not deleted. Some tests here replace `GatewayService.worker` with a
+    # worker that answers a chosen report, and a fixture that did not restore it would leave the next test
+    # measuring through the previous one's stand-in -- one test deciding another. The same lesson is written
+    # into `test_closing_a_policy_needs_no_worker.py`, whose first version used `del` and broke the case
+    # after it.
+    the_real_property = GatewayService.worker
     try:
         yield root, service
     finally:
+        GatewayService.worker = the_real_property
         state.close()
 
 
@@ -123,6 +132,97 @@ class TestARunningServiceReadsTheConfigWhenItLooks:
 
         assert service.configured_envelope().digest() != before
         assert service.configured_envelope().digest() == opol.build(opol.RESTRICTED, TWO).digest()
+
+
+class TestRQ2HoldsByConstructionAndNotByConvention:
+    """RQ2, after an independent review found it satisfied only by nobody passing a policy.
+
+    The first repair removed the CLI's `operator_policy=` argument, and every reading then came from the file
+    and the snapshot -- but only because no caller handed one in any more. `configured_envelope` still
+    short-circuited to the handed-in policy first, so any caller that derived one from a state directory
+    would have recreated the defect exactly. The review's words: "RQ2 is satisfied only by caller
+    convention, not by construction."
+
+    The file now wins whenever there is one. A policy handed in is still the answer when there is no config
+    file, because then it genuinely is the only source of record.
+    """
+
+    def test_a_handed_in_policy_does_not_override_a_config_file(self, serving):
+        root, service = serving
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        service._operator_policy = SandboxPolicy(
+            network=NetworkRules(enabled=True, allowed_destinations=frozenset({"example.org"})))
+
+        assert tuple(service.configured_envelope().allowed_destinations) == ONE, (
+            "a policy handed in at construction overrode the config file, so RQ2 holds only as long as "
+            "nobody passes one")
+
+        write_the_config(root, TWO)
+        assert tuple(service.configured_envelope().allowed_destinations) == TWO, (
+            "and it went on overriding the file after the file changed")
+
+    def test_but_it_is_still_the_answer_when_there_is_no_config_file(self, serving):
+        """The other side. A repair that ignored a handed-in policy entirely would break the caller the
+        branch exists for -- an embedded gateway with no directory of its own -- and would make
+        `configured_envelope` and `operator_policy` disagree about the same moment, which RQ3 forbids."""
+        root, service = serving
+        from agentnode_sdk.sandbox.contract import NetworkRules, SandboxPolicy
+
+        (root / "config.json").unlink()
+        service._operator_policy = SandboxPolicy(
+            network=NetworkRules(enabled=True, allowed_destinations=frozenset({"example.org"})))
+
+        assert tuple(service.configured_envelope().allowed_destinations) == ("example.org",)
+
+
+class TestASnapshotIsReadLenientlyAndActedOnStrictly:
+    """IR-05 of the independent review: a lenient read must not become a policy acted on.
+
+    `from_document` deliberately does not refuse a snapshot naming a host an allowlist cannot hold, because a
+    snapshot that cannot be READ is a gateway that cannot say what it enforces. The review was right that
+    this leaves the other half open: the snapshot is what admission composes with.
+    """
+
+    @staticmethod
+    def put_an_unenforceable_host_in_force(service, host):
+        """Activate a snapshot naming `host`, going around the config path on purpose.
+
+        The config path refuses such a host now, which is the point of this test: the question is what
+        happens when a snapshot holds one anyway -- an older one, or one written before that check existed.
+        """
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        envelope = opol.build(opol.RESTRICTED, (host,))
+        store = ActivationStore(service.state.root)
+        active = store.load_active()
+        store.activate(envelope, active.report, active.binding)
+        return envelope
+
+    @pytest.mark.parametrize("host", ["10.0.0.2", "localhost"])
+    def test_what_is_in_force_becomes_the_closed_policy(self, serving, host):
+        root, service = serving
+        _store_measurement(service)
+        self.put_an_unenforceable_host_in_force(service, host)
+
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        assert service.operator_envelope().mode == opol.NONE, (
+            "a snapshot naming %r is being acted on, so an allowlist the proxy would screen is what "
+            "admission composes with" % (host,))
+        assert not tuple(service.operator_policy().network.allowed_destinations or ()), (
+            "the policy admission uses still grants that host")
+
+    @pytest.mark.parametrize("host", ["10.0.0.2", "localhost"])
+    def test_and_the_snapshot_is_still_readable(self, serving, host):
+        """Fail-closed, not unreadable. A reader must still be able to see what the snapshot says."""
+        root, service = serving
+        _store_measurement(service)
+        self.put_an_unenforceable_host_in_force(service, host)
+
+        stored = ActivationStore(service.state.root).load_active()
+        assert stored is not None, "the snapshot became unreadable, which is worse than the mistake in it"
+        assert tuple(stored.policy.allowed_destinations) == (host,)
 
 
 class TestTheRepairLosesNoValidation:
@@ -321,32 +421,67 @@ class TestStoredMeasuredReportedAndUsedAgree:
 class TestAFailedMeasurementChangesNothing:
     """RQ6: the last demonstrably valid policy stays in force. No intermediate state, no fail-open.
 
-    WHAT A MEASUREMENT FAILURE LOOKS LIKE DEPENDS ON THE MACHINE, and the first version of these two tests
-    assumed one shape. Asking for a restricted policy drives the real egress path, which starts a proxy
-    container; where there is no container runtime that RAISES out of `_transact` rather than returning a
-    not-ready verdict. On a machine with podman it measures and returns one. Both are failures of the
-    measurement and RQ6 is the same requirement in either -- so these assert the INVARIANT and accept
-    either outcome, instead of requiring the shape this workstation happens to produce.
+    THE FAILURE IS MADE BY THE PRODUCT'S OWN GATE, not by this machine, and the two versions before this one
+    are why. The first asked for a restricted policy and asserted on the returned verdict; on this
+    workstation that call never returns, because the real egress path starts a proxy container and there is
+    no runtime, so it raises out of `_transact`. The second accepted either outcome -- a verdict or an
+    exception -- and an independent review was right that this is not good enough: it called a perfectly
+    valid policy "a measurement that cannot succeed", took its failure from a missing runtime, and would
+    invert on a machine that has one. Catching `BaseException` made it worse, letting any unrelated error
+    pass for the failure under test.
+
+    So the measurement is made to fail by the one thing that decides it: a worker that measures and reports
+    NOTHING established. The report is built by the product's own `ConformanceReport` out of real
+    `CheckResult`s, as `_store_measurement` does, so the readiness gate sees the shape it really sees. The
+    policy is valid, the measurement runs, and the gate refuses it -- on any machine.
     """
 
     @staticmethod
-    def a_measurement_that_cannot_succeed(service, hosts):
-        try:
-            return service.activate(opol.build(opol.RESTRICTED, hosts)), None
-        except BaseException as why:                                  # noqa: BLE001
-            return None, why
+    def a_worker_whose_measurement_establishes_nothing(service):
+        """The real worker, with `measure` answering a report in which no property holds."""
+        from agentnode_sdk.conformance.report import CheckResult, ConformanceReport, Vantage
+        from agentnode_sdk.gateway.readiness import PROPERTY_CHECKS
+
+        real = service.worker
+        every_check = sorted({c for ids in PROPERTY_CHECKS.values() for c in ids})
+
+        class ItMeasuresAndNothingHolds:
+            def measure(self, *_a, **_k):
+                results = tuple(CheckResult.measured(c, c, "test", False, Vantage.INSIDE,
+                                                     "stated by the test")
+                                for c in every_check)
+                return ConformanceReport(
+                    backend_identity="StandInBackend", backend_version="test", runtime="docker",
+                    image="", generated_at="1970-01-01T00:00:00+00:00", results=results).to_dict()
+
+            def measure_egress(self, *_a, **_k):
+                # No matrix, which is what a closed or unmeasurable allowlist yields. The point of this
+                # worker is the report above; this only keeps the call from reaching a real proxy.
+                return None
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        from agentnode_sdk.gateway.server import GatewayService
+
+        GatewayService.worker = property(lambda _self: ItMeasuresAndNothingHolds())
+        return real
+
+    @staticmethod
+    def a_measurement_that_the_gate_refuses(service, hosts):
+        """A valid policy, measured, and refused by the gate. No exception is expected or caught."""
+        return service.activate(opol.build(opol.RESTRICTED, hosts))
 
     def test_the_config_and_the_snapshot_are_both_left_alone(self, serving):
         root, service = serving
         _store_measurement(service)
         before_file = (root / "config.json").read_text(encoding="utf-8")
         before_force, before_gen = in_force(service), generation(service)
+        self.a_worker_whose_measurement_establishes_nothing(service)
 
-        verdict, raised = self.a_measurement_that_cannot_succeed(service, TWO)
+        verdict = self.a_measurement_that_the_gate_refuses(service, TWO)
 
-        assert verdict is not None or raised is not None
-        if verdict is not None:
-            assert verdict.ready is False, "a measurement that did not succeed was reported as ready"
+        assert verdict.ready is False, "a measurement in which nothing held was reported as ready"
         assert in_force(service) == before_force, "a failed measurement moved the policy in force"
         assert generation(service) == before_gen, "a failed measurement advanced the generation"
         assert (root / "config.json").read_text(encoding="utf-8") == before_file, (
@@ -356,72 +491,203 @@ class TestAFailedMeasurementChangesNothing:
     def test_and_nothing_is_left_pending(self, serving):
         root, service = serving
         _store_measurement(service)
+        self.a_worker_whose_measurement_establishes_nothing(service)
 
-        self.a_measurement_that_cannot_succeed(service, TWO)
+        self.a_measurement_that_the_gate_refuses(service, TWO)
 
         assert not ActivationStore(service.state.root).pending_path.is_file(), (
             "a pending record left behind makes every later report say a change is proposed")
+
+    def test_and_a_measurement_in_which_everything_holds_is_NOT_refused(self, serving):
+        """The other side, so the two tests above are not satisfied by a gate that refuses everything.
+
+        Without this a repair that made `activate` always fail would pass both of them. The same worker
+        answers a report in which every property DOES hold, and the policy goes in force.
+        """
+        root, service = serving
+        _store_measurement(service)
+        before_gen = generation(service)
+
+        from agentnode_sdk.conformance.report import CheckResult, ConformanceReport, Vantage
+        from agentnode_sdk.gateway.readiness import PROPERTY_CHECKS
+        from agentnode_sdk.gateway.server import GatewayService
+
+        real = service.worker
+        every_check = sorted({c for ids in PROPERTY_CHECKS.values() for c in ids})
+
+        class ItMeasuresAndEverythingHolds:
+            def measure(self, *_a, **_k):
+                results = tuple(CheckResult.measured(c, c, "test", True, Vantage.INSIDE,
+                                                     "stated by the test")
+                                for c in every_check)
+                return ConformanceReport(
+                    backend_identity="StandInBackend", backend_version="test", runtime="docker",
+                    image="", generated_at="1970-01-01T00:00:00+00:00", results=results).to_dict()
+
+            def measure_egress(self, *_a, **_k):
+                return None
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        GatewayService.worker = property(lambda _self: ItMeasuresAndEverythingHolds())
+
+        verdict = service.activate(opol.build(opol.RESTRICTED, TWO))
+
+        assert verdict.ready is True, (
+            "a measurement in which every property held was still refused: %r" % (verdict.reason,))
+        assert in_force(service) == TWO, "the policy did not go in force after a measurement that held"
+        assert generation(service) > before_gen
 
 
 # ------------------------------------------------------------------------------------------- RQ7, TD5
 
 
 class TestConcurrentUpdatesLoseNoGeneration:
-    """RQ7: no generation lost, reused, moved backwards, and no two policies mixed."""
+    """RQ7: no generation lost, reused, moved backwards, and no two policies mixed.
 
-    def test_two_transactions_at_once_each_get_their_own_generation(self, serving):
-        """Two REAL transactions, racing, through the path that takes the lock.
+    THIS CLASS WAS REWRITTEN AFTER AN INDEPENDENT REVIEW CALLED ITS PREVIOUS FORM OUT, and the criticism was
+    exact. The test was named for two concurrent updates while its body expressly removed the race -- it held
+    the lock, attempted one change, and asserted that the generation did NOT move. That is a true statement
+    about a refusal and the opposite of what RQ7 and TD5 ask, which is that two updates racing lose no
+    generation, reuse none, move none backwards and mix nothing. A test that reports a stronger answer than
+    it can produce is the shape this arc keeps finding in its own instruments, and that was its sixth
+    instance.
 
-        THE FIRST VERSION OF THIS TEST DROVE `ActivationStore.activate` DIRECTLY FROM TWO THREADS and
-        failed: both claimed generation 2. That is not a defect, it is my test driving a path the product
-        never drives unlocked -- `GatewayService._transact` holds `ActivationLock` around the whole change,
-        and the store's own method is the inside of that lock. A test that removes the product's protection
-        and then reports the absence of protection has measured nothing.
+    Both questions are asked here, as two tests that say what they are:
 
-        So this races the transaction. A CLOSED policy is used because it is the one change that completes
-        without a worker (PA2), which is what makes a real two-thread race possible in a unit suite at all.
+    * `test_two_updates_racing...` is the real race, and it is possible because a worker whose measurement
+      holds makes two SUCCESSFUL activations reachable without a container runtime. Either both commit, in
+      which case the generations must be distinct and ascending, or one is refused as busy, in which case the
+      refusal must be truthful and nothing of it may remain.
+    * `test_a_change_that_finds_the_lock_held_is_refused_and_changes_nothing` is the refusal on its own, which
+      is what the previous version actually measured, under a name that says so.
+    """
 
-        AND WHAT THE PRODUCT GUARANTEES IS A REFUSAL, NOT A QUEUE, which this test learned from the product
-        rather than assuming: a change that finds the lock held is told *"another change to this gateway's
-        policy is already running. Nothing was changed. Wait for it to finish, then try again."* That
-        satisfies RQ7 more simply than serialising would -- a change that never started cannot lose a
-        generation, reuse one, or mix itself into another -- and the sentence it is refused with has to be
-        true, which is asserted here rather than taken.
+    @staticmethod
+    def a_worker_whose_measurement_holds(service):
+        """The real worker, with `measure` answering a report in which every property is observed to hold.
 
-        THE THIRD VERSION OF THIS TEST STOPPED RACING TWO THREADS, and the reason is worth keeping. Its
-        second version raced two real transactions over a closed policy, on the assumption that a closed
-        policy always completes without a worker. It does not: that branch is for a worker that RAISES, and
-        a `ContainerBackend` with no runtime does not raise -- it reports itself unavailable, the
-        measurement returns a report that is not conformant, and the close is refused by the gate. So one
-        thread reported no activation and the test failed for a reason that had nothing to do with
-        concurrency. Holding the lock explicitly asks the same question with no race in it: whether a second
-        change can begin while one is in progress, and what it is told.
+        This is what makes a race of two SUCCESSFUL updates reachable here at all: the real measurement
+        starts a proxy container, and there is no runtime on this workstation. The report is built by the
+        product's own `ConformanceReport` out of real `CheckResult`s, exactly as `_store_measurement` does,
+        so the readiness gate reads the shape it really reads.
+        """
+        from agentnode_sdk.conformance.report import CheckResult, ConformanceReport, Vantage
+        from agentnode_sdk.gateway.readiness import PROPERTY_CHECKS
+        from agentnode_sdk.gateway.server import GatewayService
+
+        real = service.worker
+        every_check = sorted({c for ids in PROPERTY_CHECKS.values() for c in ids})
+
+        class ItMeasuresAndEverythingHolds:
+            def measure(self, *_a, **_k):
+                results = tuple(CheckResult.measured(c, c, "test", True, Vantage.INSIDE,
+                                                     "stated by the test")
+                                for c in every_check)
+                return ConformanceReport(
+                    backend_identity="StandInBackend", backend_version="test", runtime="docker",
+                    image="", generated_at="1970-01-01T00:00:00+00:00", results=results).to_dict()
+
+            def measure_egress(self, *_a, **_k):
+                return None
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        GatewayService.worker = property(lambda _self: ItMeasuresAndEverythingHolds())
+
+    def test_two_updates_racing_lose_no_generation_and_mix_no_policies(self, serving):
+        """TD5 and RQ7, as a real race of two updates that can each succeed."""
+        from agentnode_sdk.gateway.activation import ActivationError
+
+        root, service = serving
+        _store_measurement(service)
+        self.a_worker_whose_measurement_holds(service)
+        start = generation(service)
+
+        left = ("a.example", "b.example")
+        right = ("c.example", "d.example")
+        committed: list = []
+        refused: list = []
+        other: list = []
+
+        def put(hosts):
+            try:
+                verdict = service.activate(opol.build(opol.RESTRICTED, hosts))
+                committed.append((tuple(sorted(hosts)), bool(verdict.ready), generation(service)))
+            except ActivationError as busy:
+                refused.append(str(busy))
+            except BaseException as why:                              # noqa: BLE001
+                other.append(why)
+
+        threads = [threading.Thread(target=put, args=(left,)),
+                   threading.Thread(target=put, args=(right,))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=180)
+
+        assert not other, "a transaction failed in a way nothing here describes: %r" % (other,)
+        assert len(committed) + len(refused) == 2, "one of the two updates never finished"
+        assert committed, "both updates were refused, so the race established nothing"
+        assert all(ready for _h, ready, _g in committed), (
+            "an update reported itself committed without being ready")
+
+        # NO GENERATION LOST, REUSED OR MOVED BACKWARDS. The generation after is exactly the one before plus
+        # the number that committed -- which is the whole of RQ7's first clause, and it fails if two
+        # activations claim one number or if one is skipped.
+        after = generation(service)
+        assert after == start + len(committed), (
+            "%d update(s) committed and the generation moved by %d, so one was lost or reused"
+            % (len(committed), after - start))
+        store = ActivationStore(service.state.root)
+        assert store.protected.accepted_generation() >= after, (
+            "the rollback anchor is behind what is in force, so an older snapshot would read as current")
+        assert store.next_generation() > after, "the next generation does not advance past this one"
+
+        # NO TWO POLICIES MIXED. What is in force is one of the two, whole, and never a union of them.
+        final = tuple(sorted(in_force(service)))
+        assert final in (tuple(sorted(left)), tuple(sorted(right))), (
+            "what is in force is neither policy whole, so two were mixed: %r" % (final,))
+        assert not store.pending_path.is_file(), "a pending record was left behind"
+
+        # AND A REFUSAL, IF THERE WAS ONE, HAS TO HAVE BEEN TRUE.
+        for said in refused:
+            assert "Nothing was changed" in said, (
+                "a refused update did not say that nothing was changed: %r" % (said,))
+
+    def test_a_change_that_finds_the_lock_held_is_refused_and_changes_nothing(self, serving):
+        """The other half, under a name that says what it does rather than implying a race.
+
+        The lock is held explicitly, so there is no timing to be lucky about: a second change begins while
+        one is in progress, and what it is told has to be true.
         """
         from agentnode_sdk.gateway.activation import ActivationError, ActivationLock
 
         root, service = serving
         _store_measurement(service)
+        self.a_worker_whose_measurement_holds(service)
         start = generation(service)
         before = (root / "config.json").read_text(encoding="utf-8")
 
-        refused: list = []
+        answered: list = []
         with ActivationLock(service.state.root):
-            # One change is in progress, by definition: this is what `_transact` holds while it works.
             def try_to_change():
                 try:
                     service.activate(opol.build(opol.RESTRICTED, TWO))
-                    refused.append(None)
+                    answered.append(None)
                 except ActivationError as busy:
-                    refused.append(str(busy))
+                    answered.append(str(busy))
                 except BaseException as why:                           # noqa: BLE001
-                    refused.append(why)
+                    answered.append(why)
 
             second = threading.Thread(target=try_to_change)
             second.start()
-            second.join(timeout=120)
+            second.join(timeout=180)
 
-        assert refused, "the second change never finished"
-        said = refused[0]
+        assert answered, "the second change never finished"
+        said = answered[0]
         assert isinstance(said, str), (
             "a change that began while another was in progress was not refused as busy: %r" % (said,))
         assert "already running" in said and "Nothing was changed" in said, (
