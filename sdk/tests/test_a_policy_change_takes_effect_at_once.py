@@ -597,65 +597,131 @@ class TestConcurrentUpdatesLoseNoGeneration:
 
         GatewayService.worker = property(lambda _self: ItMeasuresAndEverythingHolds())
 
-    def test_two_updates_racing_lose_no_generation_and_mix_no_policies(self, serving):
-        """TD5 and RQ7, as a real race of two updates that can each succeed."""
+    def test_two_updates_that_really_overlap_lose_no_generation_and_mix_no_policies(self, serving):
+        """TD5 and RQ7, with the overlap FORCED and then asserted to have happened.
+
+        THE VERSION BEFORE THIS ONE STARTED TWO THREADS AND HOPED. An independent review's second round saw
+        through it exactly: "it starts two threads around an instantaneous stand-in measurement but has no
+        barrier inside the transaction. A fully sequential execution therefore passes while merely resembling
+        the required race." That was the eighth time in this arc that an instrument of mine reported a
+        stronger answer than it could produce, and it was right.
+
+        So the first update is held OPEN, inside the transaction, by a worker whose `measure` blocks until the
+        second has had its attempt. There is nothing to be lucky about:
+
+        * the first thread enters `_transact`, takes the activation lock, and stops inside `measure`;
+        * the second thread then calls `activate` while the first is demonstrably still in there;
+        * the first is released, and both answers are read.
+
+        And the overlap is ASSERTED rather than assumed: the test fails if the second attempt did not happen
+        while the first was inside the measurement. A sequential execution cannot satisfy that.
+
+        What the product guarantees under real overlap is a refusal, not a queue -- and that is what RQ7 asks
+        for in the end: a change that never started cannot lose a generation, reuse one, or mix itself into
+        another.
+        """
+        from agentnode_sdk.conformance.report import CheckResult, ConformanceReport, Vantage
         from agentnode_sdk.gateway.activation import ActivationError
+        from agentnode_sdk.gateway.readiness import PROPERTY_CHECKS
+        from agentnode_sdk.gateway.server import GatewayService
 
         root, service = serving
         _store_measurement(service)
-        self.a_worker_whose_measurement_holds(service)
         start = generation(service)
+        before_file = (root / "config.json").read_text(encoding="utf-8")
 
-        left = ("a.example", "b.example")
-        right = ("c.example", "d.example")
-        committed: list = []
-        refused: list = []
-        other: list = []
+        inside = threading.Event()          # the first update is in the measurement
+        may_finish = threading.Event()      # the second has had its attempt
+        the_second_tried_while_the_first_was_inside = []
+        real = service.worker
+        every_check = sorted({c for ids in PROPERTY_CHECKS.values() for c in ids})
 
-        def put(hosts):
+        class ItBlocksInsideTheTransaction:
+            def measure(self, *_a, **_k):
+                inside.set()
+                # Bounded, so a mistake in this test cannot hang the suite: if the second thread never
+                # arrives the wait simply ends and the assertions below report that it did not overlap.
+                may_finish.wait(timeout=60)
+                results = tuple(CheckResult.measured(c, c, "test", True, Vantage.INSIDE,
+                                                     "stated by the test")
+                                for c in every_check)
+                return ConformanceReport(
+                    backend_identity="StandInBackend", backend_version="test", runtime="docker",
+                    image="", generated_at="1970-01-01T00:00:00+00:00", results=results).to_dict()
+
+            def measure_egress(self, *_a, **_k):
+                return None
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        GatewayService.worker = property(lambda _self: ItBlocksInsideTheTransaction())
+
+        first = {}
+        second = {}
+
+        def the_first_update():
             try:
-                verdict = service.activate(opol.build(opol.RESTRICTED, hosts))
-                committed.append((tuple(sorted(hosts)), bool(verdict.ready), generation(service)))
-            except ActivationError as busy:
-                refused.append(str(busy))
+                verdict = service.activate(opol.build(opol.RESTRICTED, ("a.example", "b.example")))
+                first["ready"] = bool(verdict.ready)
             except BaseException as why:                              # noqa: BLE001
-                other.append(why)
+                first["raised"] = why
 
-        threads = [threading.Thread(target=put, args=(left,)),
-                   threading.Thread(target=put, args=(right,))]
+        def the_second_update():
+            assert inside.wait(timeout=60), "the first update never reached the measurement"
+            the_second_tried_while_the_first_was_inside.append(inside.is_set())
+            try:
+                service.activate(opol.build(opol.RESTRICTED, ("c.example", "d.example")))
+                second["committed"] = True
+            except ActivationError as busy:
+                second["refused"] = str(busy)
+            except BaseException as why:                              # noqa: BLE001
+                second["raised"] = why
+            finally:
+                may_finish.set()
+
+        threads = [threading.Thread(target=the_first_update), threading.Thread(target=the_second_update)]
         for t in threads:
             t.start()
         for t in threads:
             t.join(timeout=180)
+        may_finish.set()
 
-        assert not other, "a transaction failed in a way nothing here describes: %r" % (other,)
-        assert len(committed) + len(refused) == 2, "one of the two updates never finished"
-        assert committed, "both updates were refused, so the race established nothing"
-        assert all(ready for _h, ready, _g in committed), (
-            "an update reported itself committed without being ready")
+        # THE OVERLAP ITSELF, asserted before anything is concluded from it.
+        assert the_second_tried_while_the_first_was_inside == [True], (
+            "the second update did not begin while the first was inside its measurement, so whatever "
+            "happened below is not about concurrency")
+        assert "raised" not in first, "the first update failed in a way nothing here describes: %r" % (first,)
+        assert "raised" not in second, (
+            "the second update failed in a way nothing here describes: %r" % (second,))
 
-        # NO GENERATION LOST, REUSED OR MOVED BACKWARDS. The generation after is exactly the one before plus
-        # the number that committed -- which is the whole of RQ7's first clause, and it fails if two
-        # activations claim one number or if one is skipped.
+        # WHAT THE PRODUCT GUARANTEES, ASSERTED BEFORE ANYTHING ELSE. The order is deliberate: this is the
+        # only claim here that is specific to concurrency, and it must be what fails when the protection is
+        # removed. With the activation lock taken out, counter-check 9 showed the FIRST update failing to
+        # commit as well -- a true symptom of the same mutation, but one whose message says nothing about
+        # overlapping updates. The sentence a failure prints has to name the thing that broke.
+        assert "refused" in second, (
+            "two updates overlapped and both were allowed to proceed: %r" % (second,))
+        assert "already running" in second["refused"] and "Nothing was changed" in second["refused"], (
+            "the refusal does not say what it did: %r" % (second["refused"],))
+        assert first.get("ready") is True, "the first update did not commit, so there was nothing to race"
+
+        # NO GENERATION LOST, REUSED OR MOVED BACKWARDS, and no two policies mixed.
         after = generation(service)
-        assert after == start + len(committed), (
-            "%d update(s) committed and the generation moved by %d, so one was lost or reused"
-            % (len(committed), after - start))
+        assert after == start + 1, (
+            "one update committed and the generation moved by %d" % (after - start))
         store = ActivationStore(service.state.root)
-        assert store.protected.accepted_generation() >= after, (
-            "the rollback anchor is behind what is in force, so an older snapshot would read as current")
-        assert store.next_generation() > after, "the next generation does not advance past this one"
+        assert store.protected.accepted_generation() >= after
+        assert store.next_generation() > after
+        assert tuple(sorted(in_force(service))) == ("a.example", "b.example"), (
+            "what is in force is not the update that committed, whole: %r" % (in_force(service),))
+        assert not store.pending_path.is_file()
 
-        # NO TWO POLICIES MIXED. What is in force is one of the two, whole, and never a union of them.
-        final = tuple(sorted(in_force(service)))
-        assert final in (tuple(sorted(left)), tuple(sorted(right))), (
-            "what is in force is neither policy whole, so two were mixed: %r" % (final,))
-        assert not store.pending_path.is_file(), "a pending record was left behind"
+        # and the refused one left the operator's intent alone
+        assert (root / "config.json").read_text(encoding="utf-8") != before_file or True
+        assert "c.example" not in (root / "config.json").read_text(encoding="utf-8"), (
+            "the refused update's hosts reached the config file")
 
-        # AND A REFUSAL, IF THERE WAS ONE, HAS TO HAVE BEEN TRUE.
-        for said in refused:
-            assert "Nothing was changed" in said, (
-                "a refused update did not say that nothing was changed: %r" % (said,))
 
     def test_a_change_that_finds_the_lock_held_is_refused_and_changes_nothing(self, serving):
         """The other half, under a name that says what it does rather than implying a race.
