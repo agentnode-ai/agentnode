@@ -632,6 +632,13 @@ class TestConcurrentUpdatesLoseNoGeneration:
 
         inside = threading.Event()          # the first update is in the measurement
         may_finish = threading.Event()      # the second has had its attempt
+        # WHAT THE FIRST MEASUREMENT HAS DONE, which is the fact the overlap claim rests on. An independent
+        # review's third round found the previous version of that claim incapable of being false: it recorded
+        # `inside.is_set()` immediately after waiting successfully on `inside`, which is a tautology in the
+        # language rather than an observation about the other thread. This event is set when `measure`
+        # RETURNS, so the second thread can read a real answer: in a sequential execution the first
+        # measurement would already have returned and the recorded value would be False. Finding F19.
+        the_measurement_returned = threading.Event()
         the_second_tried_while_the_first_was_inside = []
         real = service.worker
         every_check = sorted({c for ids in PROPERTY_CHECKS.values() for c in ids})
@@ -645,9 +652,13 @@ class TestConcurrentUpdatesLoseNoGeneration:
                 results = tuple(CheckResult.measured(c, c, "test", True, Vantage.INSIDE,
                                                      "stated by the test")
                                 for c in every_check)
-                return ConformanceReport(
+                report = ConformanceReport(
                     backend_identity="StandInBackend", backend_version="test", runtime="docker",
                     image="", generated_at="1970-01-01T00:00:00+00:00", results=results).to_dict()
+                # Last, so that a reader of the other thread's flag knows what it means: the measurement is
+                # over only once this is set.
+                the_measurement_returned.set()
+                return report
 
             def measure_egress(self, *_a, **_k):
                 return None
@@ -668,8 +679,11 @@ class TestConcurrentUpdatesLoseNoGeneration:
                 first["raised"] = why
 
         def the_second_update():
+            # A precondition, not the overlap claim: if the first never arrived there is nothing to race.
             assert inside.wait(timeout=60), "the first update never reached the measurement"
-            the_second_tried_while_the_first_was_inside.append(inside.is_set())
+            # THE OVERLAP CLAIM, recorded as something that can be false: has the first measurement
+            # returned yet? In a sequential execution it has, and this is False.
+            the_second_tried_while_the_first_was_inside.append(not the_measurement_returned.is_set())
             try:
                 service.activate(opol.build(opol.RESTRICTED, ("c.example", "d.example")))
                 second["committed"] = True
@@ -689,8 +703,8 @@ class TestConcurrentUpdatesLoseNoGeneration:
 
         # THE OVERLAP ITSELF, asserted before anything is concluded from it.
         assert the_second_tried_while_the_first_was_inside == [True], (
-            "the second update did not begin while the first was inside its measurement, so whatever "
-            "happened below is not about concurrency")
+            "the first update's measurement had already returned when the second began, so the two did not "
+            "overlap and whatever happened below is not about concurrency")
         assert "raised" not in first, "the first update failed in a way nothing here describes: %r" % (first,)
         assert "raised" not in second, (
             "the second update failed in a way nothing here describes: %r" % (second,))
@@ -717,10 +731,18 @@ class TestConcurrentUpdatesLoseNoGeneration:
             "what is in force is not the update that committed, whole: %r" % (in_force(service),))
         assert not store.pending_path.is_file()
 
-        # and the refused one left the operator's intent alone
-        assert (root / "config.json").read_text(encoding="utf-8") != before_file or True
-        assert "c.example" not in (root / "config.json").read_text(encoding="utf-8"), (
-            "the refused update's hosts reached the config file")
+        # AND THE REFUSED ONE LEFT THE OPERATOR'S INTENT ALONE. The previous version of this ended in
+        # `or True`, which made it an assertion that could not fail, and checked only the first of the
+        # refused policy's two hosts. An independent review's third round found both. What is asserted now is
+        # the whole allowlist in the file, compared against the policy that committed, plus each refused host
+        # by name -- so a file holding one of them, or holding both plus the right ones, fails. Finding F19.
+        saved = json.loads((root / "config.json").read_text(encoding="utf-8"))
+        assert tuple(sorted(saved.get("egress_allowed") or ())) == ("a.example", "b.example"), (
+            "the config file is not the policy that committed, whole: %r" % (saved.get("egress_allowed"),))
+        text = (root / "config.json").read_text(encoding="utf-8")
+        for refused_host in ("c.example", "d.example"):
+            assert refused_host not in text, (
+                "the refused update's host %s reached the config file" % refused_host)
 
 
     def test_a_change_that_finds_the_lock_held_is_refused_and_changes_nothing(self, serving):
