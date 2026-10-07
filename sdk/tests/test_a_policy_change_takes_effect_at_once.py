@@ -156,6 +156,34 @@ class TestTheRepairLosesNoValidation:
 
         assert tuple(service.configured_envelope().allowed_destinations) == TWO
 
+    @pytest.mark.parametrize("host", ["10.0.0.2", "localhost"])
+    def test_and_the_published_show_path_refuses_it_too(self, serving, host, capsys):
+        """RQ3, and a hole this repair opened before closing it.
+
+        The check was first written as a method of `GatewayService`, called from `configured_envelope`. That
+        left `cli/gateway_commands._egress_show` -- which calls `operator_policy.from_config` directly --
+        computing a digest from an unvalidated envelope and comparing it with the snapshot, while admission
+        refused the same config outright. Two published readings of one moment, disagreeing, which is the
+        shape of the defect being repaired.
+
+        So the check lives at the parse, and this asserts that the show path gets the same answer as
+        admission rather than a different one.
+        """
+        root, service = serving
+        _store_measurement(service)
+        write_the_config(root, (host,))
+
+        code = gateway_commands._egress_show(root, verbose=True)
+
+        said = capsys.readouterr().out
+        # THE REASON IS ASSERTED FIRST, and that ordering is the point. Without the check the show path
+        # still exits non-zero -- it notices that a different policy is saved than the one in force -- so
+        # the exit code alone cannot tell the two situations apart. What distinguishes them is whether it
+        # says the saved policy cannot be read at all.
+        assert "cannot be read" in said or "cannot be enforced" in said, (
+            "the show path did not say that the saved policy is unusable: %r" % (said[-400:],))
+        assert code != 0, "the show path reported a config that admission refuses as if it were usable"
+
 
 # ------------------------------------------------------------------------------------------- RQ1, TD6
 
