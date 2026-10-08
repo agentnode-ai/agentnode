@@ -20,6 +20,7 @@ and has no default.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 from agentnode_sdk.pki import floor as _floor
@@ -33,24 +34,67 @@ def _sha256():
     return hashes.SHA256()
 
 
-def _bytes(path) -> tuple[bytes | None, str]:
-    """(contents, "") or (None, why). Missing and unreadable are told apart for the floor."""
-    try:
-        with open(path, "rb") as handle:
-            return handle.read(), ""
-    except FileNotFoundError:
-        return None, "missing"
-    except OSError as exc:
-        return None, type(exc).__name__
+#: HOW MANY TIMES A READ THAT FAILED FOR A REASON OTHER THAN ABSENCE IS ASKED AGAIN, and how long
+#: is waited between the tries. Both are constants of this module on purpose: a bound that a caller
+#: could pass in is not a bound, and one derived from a clock reading is not fixed.
+#:
+#: WHY ANY RETRY AT ALL. These files belong to root and are replaced by root's own run while the
+#: services read them: `pki/files.durable_publish` writes a stage, fsyncs it, and `os.replace`s it
+#: onto the target. `os.replace` is atomic and `issuer._publish_list` reports a revocation effective
+#: only once that promotion is durable, so there is never a half-written file to read. A READER,
+#: though, can still catch an error from the operating system while the swap happens -- measured on
+#: one platform at hundreds of exceptions against a couple of thousand durable publications, with no
+#: absent and no empty read among them. Asking again is the right answer to that; believing the file
+#: would not be. After these tries this side still refuses, so nothing is weakened.
+#:
+#: AND ABSENCE IS NOT RETRIED. A file that is not there will not appear by being asked for again, and
+#: a deployment that has published no list is a different state from one whose list could not be
+#: read -- which is the whole subject of this repair.
+_TRIES = 4
+_BETWEEN_TRIES = 0.02
+#: The most that can be spent waiting, by construction rather than by measurement.
+_RETRY_CEILING_SECONDS = (_TRIES - 1) * _BETWEEN_TRIES
+
+
+def _bytes(path, *, tries: int = 1) -> tuple[bytes | None, str]:
+    """(contents, "") or (None, why). Missing and unreadable are told apart, for the floor AND for
+    the revocation list.
+
+    `tries` DEFAULTS TO ONE so that every caller that had this behaviour keeps it exactly: the
+    anchor, the floor and the tombstones are read once, as before. Only the revocation list asks for
+    more, because that is the file this repair is about. A read that fails for any reason other than
+    absence is asked again up to `tries` times with `_BETWEEN_TRIES` in between; absence returns at
+    once. Whatever happens, this returns either the WHOLE contents or None with the reason -- there
+    is no partial result and nothing from an earlier call is remembered.
+    """
+    why = ""
+    for attempt in range(max(1, int(tries))):
+        try:
+            with open(path, "rb") as handle:
+                return handle.read(), ""
+        except FileNotFoundError:
+            return None, "missing"
+        except OSError as exc:
+            why = type(exc).__name__
+            if attempt + 1 < max(1, int(tries)):
+                time.sleep(_BETWEEN_TRIES)
+    return None, why
 
 
 class TrustView:
     def __init__(self, *, anchor: bytes | None, revocation_list: bytes | None,
                  floor: bytes | None, floor_problem: str, role: str, identity: str = "",
                  identity_tombstones: bytes | None = None,
-                 tombstones_required: bool = False) -> None:
+                 tombstones_required: bool = False, list_problem: str = "") -> None:
         self._anchor_bytes = anchor
         self._list_bytes = revocation_list
+        #: WHY THIS IS KEPT NOW. It was read and thrown away, so a list that could not be READ was
+        #: reported as a list that was not THERE -- one sentence for two states that send a reader to
+        #: different places: "publish a list" against "find out what is holding the file". The floor
+        #: has kept its reason since a floor it cannot trust became a refusal; this is the list doing
+        #: the same. The default is empty so that every existing construction of this class is
+        #: unchanged.
+        self._list_problem = list_problem
         self._floor_bytes = floor
         self._floor_problem = floor_problem
         self.role = role
@@ -71,7 +115,7 @@ class TrustView:
              identity_tombstones=None, tombstones_required: bool = False) -> "TrustView":
         """Every file, now. The anchor's absence surfaces when it is asked for."""
         anchor_bytes, _ = _bytes(anchor)
-        list_bytes, _ = _bytes(revocation_list)
+        list_bytes, list_problem = _bytes(revocation_list, tries=_TRIES)
         floor_bytes, floor_problem = _bytes(floor)
         tombstone_bytes = None
         if identity_tombstones:
@@ -79,7 +123,7 @@ class TrustView:
         return cls(anchor=anchor_bytes, revocation_list=list_bytes, floor=floor_bytes,
                    floor_problem=floor_problem, role=role, identity=identity,
                    identity_tombstones=tombstone_bytes,
-                   tombstones_required=tombstones_required)
+                   tombstones_required=tombstones_required, list_problem=list_problem)
 
     def withdrawn(self, effective_time: float, presented: str) -> frozenset:
         """The identities this deployment has permanently withdrawn, authenticated.
@@ -160,6 +204,15 @@ class TrustView:
     def revoked_serials(self, effective_time: float, presented: str = "") -> frozenset:
         """The serials in a list this side can believe at `effective_time` -- or a refusal naming
         why there is none. No list is never an empty list."""
+        # A LIST THAT COULD NOT BE READ SAYS SO, rather than saying there is none. `_bytes` tells
+        # the two apart and this is where the distinction was being dropped. Both are refusals and
+        # neither is softened: the only difference is which of the two true things is said. The
+        # wording is the one `revocation.load` already uses for the path it reads itself, so an
+        # operator meets one sentence for this state and not two.
+        if self._list_bytes is None and self._list_problem not in ("", "missing"):
+            raise _identity.PeerRefused(
+                _revocation.UNREADABLE, presented,
+                "the revocation list could not be read (%s)" % self._list_problem)
         try:
             return _revocation.read(self._list_bytes, self.anchor(), effective_time).serials
         except _revocation.ListUnusable as unusable:
