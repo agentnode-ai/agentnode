@@ -71,9 +71,24 @@ NoNewPrivileges=no
 #
 # The image is the pinned one, asked of the SDK rather than written down twice.
 #
-# `|| true` on both: a machine where this is unnecessary must not be one where the worker
-# refuses to start. If the runtime is genuinely unusable the worker's own ceiling proof
-# refuses, and it says why -- that is the right place for it, not here.
+# `|| true` on the migration and on the container start, but NOT on the reconciliation above it: a
+# machine where a rebuild is unnecessary must not be one where the worker refuses to start, and if the
+# runtime is genuinely unusable the worker's own ceiling proof refuses and says why. The reconciliation
+# is different in kind -- it is the gate that decides whether the migration may happen at all -- and a
+# gate with `|| true` on it is not a gate.
+# AND ONE STEP BEFORE BOTH OF THOSE, which is the whole of CU1 and CU2 of the eg12-repair profile.
+# `podman system migrate` replaces the user namespace that a live container's init belongs to. Run while
+# anything of this product still exists, it costs the account the ability to remove its own containers:
+# `podman rm -f` then answers "could not be stopped: sending SIGKILL to container ...: operation not
+# permitted", the sweep that would have removed them is refused the same way, and the worker serves with
+# a route out standing. That is F37, measured on this very host, and an independent review failed EG12
+# of the previous arc's frozen profile on it.
+#
+# So the first step reconciles and READS EVERY REMOVAL BACK, and it exits non-zero if anything of ours
+# is still there or if any listing could not be read. There is deliberately no `|| true` on it: systemd
+# stops a oneshot at the first ExecStart that fails, so the migration below simply does not happen, and
+# the worker -- which runs the same gate itself -- refuses with the resource named.
+ExecStart=/opt/agentnode/venv/bin/agentnode worker reconcile --before-migrate
 ExecStart=/bin/sh -c '/usr/bin/podman system migrate || true'
 ExecStart=/bin/sh -c 'IMG=$$(/opt/agentnode/venv/bin/python3 -c "from agentnode_sdk.sandbox.container_backend import _BASE_IMAGE; print(_BASE_IMAGE)") && /usr/bin/podman run --rm --network none --user 1000:1000 "$$IMG" /bin/true || true'
 
