@@ -50,7 +50,7 @@ import uuid
 
 import pytest
 
-from agentnode_sdk.sandbox.policy import get_default_backend
+from agentnode_sdk.sandbox.container_backend import ContainerBackend
 from agentnode_sdk.sandbox.types import ProcessSpec
 
 #: the name whose answer changes. `.test` is reserved: nothing on the internet can answer for it.
@@ -69,8 +69,22 @@ ANSWERS = os.environ.get("EG8_ANSWERS", "")
 
 
 def _runtime_is_there():
+    """A REAL backend, built here rather than asked of the default.
+
+    `get_default_backend()` is the wrong door in a test of this suite: `tests/conftest.py` has an
+    autouse fixture, `_default_sandbox_available`, which replaces the default backend with a stand-in
+    that reports `backend="docker"` and wraps every command as `["docker", "run", ...]`. It exists so
+    that the hundreds of tests which are not about the sandbox are not blocked by the live
+    fail-closed gate, and it is right to exist. But a test that actually starts a proxy container
+    through it gets `docker` on a machine where podman is the runtime, and dies with
+    `FileNotFoundError: 'docker'` -- which is what the third run of the eg8 lane did, several steps
+    after the arrangement it was testing had already worked.
+
+    So this constructs `ContainerBackend` directly, the same way `tests/test_egress_e2e.py` does, and
+    the runtime is whatever that discovers.
+    """
     try:
-        backend = get_default_backend()
+        backend = ContainerBackend()
     except Exception as why:                                      # noqa: BLE001
         return None, "no backend could be built: %s" % (why,)
     available = backend.check_available()
