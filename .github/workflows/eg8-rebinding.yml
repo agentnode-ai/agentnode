@@ -55,7 +55,9 @@ env:
   # image would be measuring a different sandbox.
   SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
   EG8_ANSWERS: /tmp/eg8-answers.json
-  EG8_RESOLVER: 127.0.0.1:53
+  # EG8_RESOLVER is deliberately NOT set here: it has to be the host's routable address, which is only
+  # known once the machine is running, and a value set here would shadow the real one ambiguously. The
+  # step that stands the resolver up writes it into the environment for the steps that follow.
 
 jobs:
   a-name-that-changes-where-it-points:
@@ -70,14 +72,27 @@ jobs:
         with:
           python-version: '3.12'
 
+      # THE IMAGE GOES INTO WHICHEVER RUNTIME THE PRODUCT WILL CHOOSE, not the one this lane prefers.
+      # The first run of this lane pulled with podman and then failed on the product's own answer:
+      # "backend: docker / available: False / reason: sandbox image not present (pull required)". The
+      # runner carries both, the product picks docker, and an image in the other runtime's store is no
+      # image at all. So both are filled where both exist, and the product is asked afterwards.
       - name: The runtime and the pinned image
         run: |
           set -euo pipefail
-          if ! command -v podman >/dev/null 2>&1; then
-            echo "podman is not on this runner, so this lane cannot do what it says"; exit 1
+          FOUND=0
+          for rt in docker podman; do
+            if command -v "$rt" >/dev/null 2>&1; then
+              echo "== $rt"
+              "$rt" --version
+              "$rt" pull "${SANDBOX_IMAGE}"
+              FOUND=1
+            fi
+          done
+          if [ "$FOUND" -eq 0 ]; then
+            echo "neither docker nor podman is on this runner, so this lane cannot do what it says"
+            exit 1
           fi
-          podman --version
-          podman pull "${SANDBOX_IMAGE}"
 
       - name: Install the SDK
         run: |
@@ -95,7 +110,9 @@ jobs:
           assert bool(getattr(said, 'available', False)), (
               'no usable container runtime, so the rebinding case cannot be driven here: %r'
               % getattr(said, 'reason', ''))
+          open('/tmp/eg8-runtime', 'w').write(str(getattr(said, 'backend', '')))
           "
+          echo "the runtime the product will use: $(cat /tmp/eg8-runtime)"
 
       # The upstream is READ OFF THE MACHINE before the switch. Guessing it would make every name this
       # resolver does not answer stop resolving, which would break the rest of the job in a way that looks
@@ -117,10 +134,21 @@ jobs:
           echo "   forwarding everything else to ${UPSTREAM}"
           echo "EG8_UPSTREAM=${UPSTREAM}" >> "${GITHUB_ENV}"
 
+          # A NON-LOOPBACK ADDRESS, and this is the whole reason the first attempt could not have worked.
+          # A container does not inherit a loopback nameserver: both runtimes drop `127.0.0.1` from the
+          # resolv.conf they give a container -- inside a container that address is the container -- and
+          # substitute a public resolver. So a stub on 127.0.0.1 is one the proxy would never ask. The
+          # stub listens on every interface and resolv.conf names the host's own routable address, which
+          # a container CAN reach and which neither runtime rewrites.
+          HOST_IP="$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)"
+          if [ -z "${HOST_IP}" ]; then echo "this machine has no global IPv4 to put the stub on"; exit 1; fi
+          echo "   the stub will be reachable at ${HOST_IP}:53"
+          echo "EG8_RESOLVER=${HOST_IP}:53" >> "${GITHUB_ENV}"
+
           sudo cp /etc/resolv.conf /tmp/resolv.conf.as-it-was
           sudo systemctl stop systemd-resolved 2>/dev/null || true
           sudo rm -f /etc/resolv.conf
-          printf 'nameserver 127.0.0.1\noptions timeout:2 attempts:1\n' | sudo tee /etc/resolv.conf
+          printf 'nameserver %s\noptions timeout:2 attempts:1\n' "${HOST_IP}" | sudo tee /etc/resolv.conf
 
           printf '{"rebind.test": "1.1.1.1"}\n' > "${EG8_ANSWERS}"
           # Bound on every interface on purpose: the proxy resolves from inside a container, and which
@@ -150,13 +178,22 @@ jobs:
         working-directory: .
         run: |
           set -euo pipefail
-          # The proxy resolves from INSIDE a container. If that does not reach this resolver, the test
-          # would refuse the first leg and report the arrangement as broken -- which is correct but is
-          # better diagnosed here, where the answer is one command.
-          podman run --rm "${SANDBOX_IMAGE}" python -c "
+          # The proxy resolves from INSIDE a container, with the runtime the PRODUCT chose -- asking the
+          # other one would answer a question nobody has. If this does not reach the stub, the test would
+          # refuse its first leg and report the arrangement as broken, which is correct but is better
+          # diagnosed here, where the answer is one command.
+          RT="$(cat /tmp/eg8-runtime)"
+          echo "   asking through ${RT}"
+          "${RT}" run --rm "${SANDBOX_IMAGE}" python -c "
           import socket
           print('a container resolves rebind.test to', socket.gethostbyname('rebind.test'))
           " | sed 's/^/   /'
+          "${RT}" run --rm "${SANDBOX_IMAGE}" python -c "
+          import socket
+          print('and an ordinary name still resolves:', socket.gethostbyname('github.com'))
+          " | sed 's/^/   /'
+          echo "   what a container is given as its resolver:"
+          "${RT}" run --rm "${SANDBOX_IMAGE}" cat /etc/resolv.conf | sed 's/^/      /'
 
       - name: The rebinding case, and it must have RUN
         run: |
