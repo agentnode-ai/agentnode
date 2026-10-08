@@ -801,6 +801,62 @@ class TestTheProxyWritesDownWhatItDecided:
         assert lines and "SCREENED" in lines[0], lines
         assert "example.com:443" in lines[0]
 
+    def test_a_screening_says_WHICH_screening_it_was(self, capsys, monkeypatch):
+        """Two different events, two different lines -- which is what EG8 needed this log to be.
+
+        `resolve_and_screen` raises `EgressBlocked` for a name that could not be resolved AND for a
+        name that resolved to an address this proxy will not reach. The line said the second in both
+        cases, so a reader could not tell a rebinding attempt from a broken resolver, and a test
+        asserting only "it was screened" passed either way. That matters here more than it looks: EG8
+        of the frozen acceptance is specifically about rebinding, and this line is the evidence for it.
+        """
+        from agentnode_sdk.sandbox import egress_proxy
+
+        def raising(message):
+            def _blocked(host, port):
+                raise egress_proxy.EgressBlocked(message)
+            return _blocked
+
+        monkeypatch.setattr(egress_proxy, "resolve_and_screen",
+                            raising("non-public address resolved: 10.0.0.5"))
+        sock, lines = self._decisions(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n", capsys=capsys)
+        assert b"403" in sock.sent
+        assert lines and "SCREENED" in lines[0], lines
+        assert "non-public address resolved: 10.0.0.5" in lines[0], (
+            "a screening that will not say what it resolved to cannot evidence rebinding: %r"
+            % (lines[0],))
+
+        monkeypatch.setattr(egress_proxy, "resolve_and_screen", raising("resolve failed: gaierror"))
+        sock, lines = self._decisions(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n", capsys=capsys)
+        assert b"403" in sock.sent
+        assert lines and "SCREENED" in lines[0], lines
+        assert "resolve failed" in lines[0], (
+            "a name that could not be resolved is reported as one that resolved somewhere bad: %r"
+            % (lines[0],))
+        assert "non-public address resolved" not in lines[0], (
+            "a resolution FAILURE is being described as a private address: %r" % (lines[0],))
+
+    def test_a_screening_still_does_not_spill_the_request(self, capsys, monkeypatch):
+        """And carrying the reason through must not carry anything else through with it.
+
+        The reason now comes from an exception message, which is a string this process composed -- but
+        the rule the proxy's own docstring sets is that a decision line holds the destination, the port,
+        the decision and the reason, and nothing of the tunnel. Counter-check 15 of an earlier arc
+        caught a mutation that spilled a cookie past the recognised lines, so this asks the same
+        question of the new path, against everything printed and not only the lines that parse.
+        """
+        from agentnode_sdk.sandbox import egress_proxy
+
+        def _blocked(host, port):
+            raise egress_proxy.EgressBlocked("non-public address resolved: 10.0.0.5")
+
+        monkeypatch.setattr(egress_proxy, "resolve_and_screen", _blocked)
+        self._decisions(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n"
+            b"Cookie: session=not-in-a-log-please\r\nProxy-Authorization: Basic c2VjcmV0\r\n\r\n", capsys=capsys)
+        assert "not-in-a-log-please" not in self.everything_printed, self.everything_printed
+        assert "c2VjcmV0" not in self.everything_printed, self.everything_printed
+        assert "Cookie" not in self.everything_printed, self.everything_printed
+
     def test_an_allowed_one_says_so_and_names_the_address_it_went_to(self, capsys, monkeypatch):
         from agentnode_sdk.sandbox import egress_proxy
 

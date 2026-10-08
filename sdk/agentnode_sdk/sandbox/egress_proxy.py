@@ -199,13 +199,20 @@ def _handle(client: socket.socket, allowlist) -> None:
         # to the vetted IP literal (no second, unchecked hostname resolution).
         try:
             vetted = resolve_and_screen(host, port)
-        except EgressBlocked:
+        except EgressBlocked as why:
             # ON THE ALLOWLIST AND STILL REFUSED. This is the rebinding case: a name this proxy is
             # willing to reach that resolves to something it is not -- a private address, a loopback,
             # link-local, metadata. Worth its own word in the log, because "refused" and "refused
             # although it was allowed" send a reader to different places.
-            _decided("SCREENED", host, port, 403, "allowed by name, but it resolves to an address "
-                                                  "this proxy will not reach")
+            #
+            # AND THE REASON IS CARRIED THROUGH, which it was not until EG8 needed this log to be
+            # evidence. `resolve_and_screen` raises the same exception for two different things: a
+            # name that could not be resolved at all, and a name that resolved to an address this
+            # proxy will not reach. The log said the second in both cases, so a reader could not tell
+            # a rebinding attempt from a broken resolver -- and a line that says the same thing about
+            # two different events cannot establish which one happened. By this function's own
+            # standard, those send a reader to different places, so the exception's own words go in.
+            _decided("SCREENED", host, port, 403, "allowed by name, but " + str(why))
             client.sendall(_STATUS[403])
             client.close()
             return
