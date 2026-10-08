@@ -72,27 +72,38 @@ jobs:
         with:
           python-version: '3.12'
 
-      # THE IMAGE GOES INTO WHICHEVER RUNTIME THE PRODUCT WILL CHOOSE, not the one this lane prefers.
-      # The first run of this lane pulled with podman and then failed on the product's own answer:
-      # "backend: docker / available: False / reason: sandbox image not present (pull required)". The
-      # runner carries both, the product picks docker, and an image in the other runtime's store is no
-      # image at all. So both are filled where both exist, and the product is asked afterwards.
-      - name: The runtime and the pinned image
+      # PODMAN IS THE RUNTIME HERE, and the reason is the product rather than this lane's convenience.
+      #
+      # Two runs taught it. The first pulled the image with podman and failed on the product's own answer
+      # -- "backend: docker / available: False / reason: sandbox image not present (pull required)" --
+      # because the runner carries both and the product prefers docker. Filling both stores fixed that and
+      # uncovered the real obstacle: a docker container could not resolve the name at all, `gaierror -2`,
+      # although the host resolved it perfectly through the same stub. Docker gives a container its own
+      # resolver and decides for itself what that resolver forwards to; podman's forwards from the HOST's
+      # network namespace, where the stub plainly is.
+      #
+      # Podman is also what this product actually uses where it matters: the worker drives podman,
+      # rootless, on the separate worker host. So the runtime this lane removes is the one the deployed
+      # product never uses, and what is left is the one it does.
+      - name: Make podman the only container runtime on this machine
+        working-directory: .
         run: |
           set -euo pipefail
-          FOUND=0
-          for rt in docker podman; do
-            if command -v "$rt" >/dev/null 2>&1; then
-              echo "== $rt"
-              "$rt" --version
-              "$rt" pull "${SANDBOX_IMAGE}"
-              FOUND=1
-            fi
+          sudo systemctl stop docker.socket docker.service 2>/dev/null || true
+          # EVERY docker on PATH, not the first: the runner carries more than one, and a lane that
+          # carried on would measure the runtime it meant to remove.
+          for where in $(type -a -p docker 2>/dev/null | sort -u); do
+            echo "   removing ${where}"; sudo rm -f "${where}" || true
           done
-          if [ "$FOUND" -eq 0 ]; then
-            echo "neither docker nor podman is on this runner, so this lane cannot do what it says"
-            exit 1
+          hash -r 2>/dev/null || true
+          if command -v docker >/dev/null 2>&1; then
+            echo "docker is STILL discoverable at $(command -v docker)"; exit 1
           fi
+          if ! command -v podman >/dev/null 2>&1; then
+            echo "podman is not on this runner, so this lane cannot do what it says"; exit 1
+          fi
+          podman --version
+          podman pull "${SANDBOX_IMAGE}"
 
       - name: Install the SDK
         run: |
@@ -180,26 +191,37 @@ jobs:
             echo "ordinary names stopped resolving, so this lane would fail for the wrong reason"
             cat /tmp/eg8-resolver.log; exit 1; }
 
+      # DIAGNOSE FIRST, THEN DECIDE. The previous run of this step asked a container to resolve the name
+      # before printing anything, the resolution failed, `set -e` ended the step, and the one thing that
+      # would have explained it -- what resolver the container was actually given -- was in the command
+      # after the one that died. So everything is printed, nothing aborts, and the decision comes last.
       - name: And a container resolves through it too
         working-directory: .
         run: |
-          set -euo pipefail
-          # The proxy resolves from INSIDE a container, with the runtime the PRODUCT chose -- asking the
-          # other one would answer a question nobody has. If this does not reach the stub, the test would
-          # refuse its first leg and report the arrangement as broken, which is correct but is better
-          # diagnosed here, where the answer is one command.
+          set -uo pipefail
           RT="$(cat /tmp/eg8-runtime)"
-          echo "   asking through ${RT}"
-          "${RT}" run --rm "${SANDBOX_IMAGE}" python -c "
-          import socket
-          print('a container resolves rebind.test to', socket.gethostbyname('rebind.test'))
-          " | sed 's/^/   /'
-          "${RT}" run --rm "${SANDBOX_IMAGE}" python -c "
-          import socket
-          print('and an ordinary name still resolves:', socket.gethostbyname('github.com'))
-          " | sed 's/^/   /'
-          echo "   what a container is given as its resolver:"
-          "${RT}" run --rm "${SANDBOX_IMAGE}" cat /etc/resolv.conf | sed 's/^/      /'
+          echo "== the runtime the product chose: ${RT}"
+          echo "== what a container is given as its resolver"
+          "${RT}" run --rm "${SANDBOX_IMAGE}" cat /etc/resolv.conf 2>&1 | sed 's/^/      /' || true
+          echo "== what the host itself resolves the name to"
+          getent hosts rebind.test 2>&1 | sed 's/^/      /' || true
+          echo "== what a container resolves it to"
+          OUT="$("${RT}" run --rm "${SANDBOX_IMAGE}" python -c \
+                 "import socket; print(socket.gethostbyname('rebind.test'))" 2>&1 || true)"
+          echo "      ${OUT}"
+          echo "== and whether ordinary names still resolve inside a container"
+          "${RT}" run --rm "${SANDBOX_IMAGE}" python -c \
+            "import socket; print(socket.gethostbyname('github.com'))" 2>&1 | sed 's/^/      /' || true
+          echo "== what the stub was asked, from its own log"
+          tail -20 /tmp/eg8-resolver.log 2>/dev/null | sed 's/^/      /' || true
+          echo
+          case "${OUT}" in
+            1.1.1.1) echo "a container resolves the name through the stub" ;;
+            *) echo "a container does NOT resolve the name through the stub, so the proxy would not"
+               echo "either and the rebinding case cannot be driven on this machine. That is the"
+               echo "condition this lane must report rather than work around."
+               exit 1 ;;
+          esac
 
       - name: The rebinding case, and it must have RUN
         run: |
