@@ -123,14 +123,20 @@ jobs:
           set -euo pipefail
           echo "resolv.conf as this machine had it:"
           cat /etc/resolv.conf | sed 's/^/   /'
-          UPSTREAM="$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf)"
-          if [ -z "${UPSTREAM}" ]; then UPSTREAM="8.8.8.8"; fi
-          if [ "${UPSTREAM}" = "127.0.0.53" ]; then
+          # EVERY ONE OF THESE READS IS ALLOWED TO FIND NOTHING, and that is why each ends in `|| true`.
+          # The previous run of this lane died here with no message of its own: under `pipefail` the
+          # substitution `resolvectl status | awk ...` fails as a whole when resolvectl exits non-zero,
+          # and `set -e` then ended the step immediately after it had printed resolv.conf. A diagnostic
+          # read that stops the job is the wrong kind of strict -- the gate that must not be lenient is
+          # the check below that the stub really answers, and that one has no `|| true` on it.
+          UPSTREAM="$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf 2>/dev/null || true)"
+          if [ "${UPSTREAM}" = "127.0.0.53" ] || [ -z "${UPSTREAM}" ]; then
             # systemd-resolved's stub. Its real upstreams are behind it, and it is about to lose port 53,
             # so the forwarding target has to be something that still answers afterwards.
-            UPSTREAM="$(resolvectl status 2>/dev/null | awk '/DNS Servers/ {print $3; exit}')"
-            if [ -z "${UPSTREAM}" ]; then UPSTREAM="8.8.8.8"; fi
+            UPSTREAM="$( { resolvectl status 2>/dev/null || true; } \
+                         | awk '/DNS Servers/ {print $3; exit}' || true)"
           fi
+          if [ -z "${UPSTREAM}" ]; then UPSTREAM="8.8.8.8"; fi
           echo "   forwarding everything else to ${UPSTREAM}"
           echo "EG8_UPSTREAM=${UPSTREAM}" >> "${GITHUB_ENV}"
 
