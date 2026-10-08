@@ -193,12 +193,20 @@ class TestTheRuntimeThatLostItsNamespace:
         assert container_backend.recover_a_runtime_that_lost_its_namespace("docker") is False
         assert container_backend.recover_a_runtime_that_lost_its_namespace("") is False
 
+    # THESE FOUR MOVED ONE LEVEL DOWN, and the reason is CU1 of the eg12-repair profile rather than
+    # anything about a reboot. `serve` no longer calls the recovery directly: it calls
+    # `reconcile_then_rebuild`, which rebuilds ONLY after a reconciliation that came back clean. The
+    # properties these tests hold are unchanged -- tried only on the "never started" fault, guarded,
+    # once, and a failure still refuses -- and they are asserted against the call that now carries
+    # them. The gate's own behaviour is tested in test_cleanup_is_the_products_own.py, which drives it
+    # rather than reading it.
+
     def test_serve_tries_it_only_when_nothing_could_be_started(self):
         from agentnode_sdk.worker import service
 
         source = inspect.getsource(service.serve)
         assert 'never started' in source
-        assert "recover_a_runtime_that_lost_its_namespace" in source
+        assert "reconcile_then_rebuild" in source
 
     def test_and_a_ceiling_that_failed_to_bind_is_not_recovered_from(self):
         """The opposite fault. Recovering from it would paper over the one thing the proof
@@ -206,22 +214,35 @@ class TestTheRuntimeThatLostItsNamespace:
         from agentnode_sdk.worker import service
 
         source = inspect.getsource(service.serve)
-        guard = source[source.index("recover_a_runtime_that_lost_its_namespace") - 900:
-                       source.index("recover_a_runtime_that_lost_its_namespace")]
+        guard = source[source.index("reconcile_then_rebuild(the_worker)") - 1200:
+                       source.index("reconcile_then_rebuild(the_worker)")]
         assert '"never started" in str(proof.reason' in guard
 
     def test_a_failed_recovery_still_refuses(self):
         from agentnode_sdk.worker import service
 
         source = inspect.getsource(service.serve)
-        after = source[source.index("recover_a_runtime_that_lost_its_namespace"):]
+        after = source[source.index("reconcile_then_rebuild(the_worker)"):]
+        # Either refusal is a refusal: a rebuild that could not happen because something of ours is
+        # still there raises LeftoversRemain, and a ceiling that still does not bind afterwards
+        # raises CannotHoldItsLimits. Neither path serves.
+        assert "raise LeftoversRemain" in after
         assert "raise CannotHoldItsLimits" in after
 
     def test_and_it_is_tried_once_rather_than_in_a_loop(self):
         from agentnode_sdk.worker import service
 
         source = inspect.getsource(service.serve)
-        assert source.count("recover_a_runtime_that_lost_its_namespace") <= 2
+        assert source.count("reconcile_then_rebuild") <= 2
+
+    def test_the_rebuild_is_not_reachable_from_serve_without_the_gate(self):
+        """CU1: the one thing this arc's repair must not allow is a migration beside the gate."""
+        from agentnode_sdk.worker import service
+
+        source = inspect.getsource(service.serve)
+        assert "recover_a_runtime_that_lost_its_namespace" not in source, (
+            "serve calls the rebuild directly again; it has to go through reconcile_then_rebuild, "
+            "which rebuilds only on an inventory that is empty and could be read")
 
 
 class TestTheNamespaceUnitStartsAContainer:
@@ -247,6 +268,29 @@ class TestTheNamespaceUnitStartsAContainer:
 
     def test_in_that_order(self):
         assert self.UNIT.index("system migrate") < self.UNIT.index("podman run")
+
+    def test_and_it_reconciles_before_it_migrates(self):
+        """CU1 and CU2 in the unit. A migration replaces the user namespace a live container's init
+        belongs to, so anything of ours still present has to go FIRST -- under the mapping that is
+        still valid -- or it can never be removed by the account that owns it."""
+        # THE COMMANDS, NOT THE PROSE. The first version of this compared `.index()` over the whole
+        # file and failed: this unit's header explains `podman system migrate` at length, so the
+        # comparison was a comment against a command. A unit's order is the order of its ExecStart
+        # lines.
+        steps = [line for line in self.UNIT.splitlines() if line.startswith("ExecStart=")]
+        assert any("worker reconcile --before-migrate" in s for s in steps), steps
+        first = next(i for i, s in enumerate(steps) if "worker reconcile" in s)
+        migrates = next(i for i, s in enumerate(steps) if "system migrate" in s)
+        assert first < migrates, steps
+
+    def test_and_the_gate_has_no_or_true_on_it(self):
+        """`|| true` on the migration is deliberate; on the gate it would make it not a gate."""
+        for line in self.UNIT.splitlines():
+            if line.startswith("ExecStart=") and "worker reconcile" in line:
+                assert "|| true" not in line, line
+                break
+        else:
+            raise AssertionError("the unit no longer reconciles before it migrates")
 
     def test_with_the_pinned_image_rather_than_a_second_copy_of_it(self):
         assert "_BASE_IMAGE" in self.UNIT

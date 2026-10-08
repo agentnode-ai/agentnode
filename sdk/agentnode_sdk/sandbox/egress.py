@@ -158,6 +158,257 @@ def _is_podman(runtime: str) -> bool:
     return os.path.basename(str(runtime or "")) == "podman"
 
 
+# ----------------------------------------------------------------------------
+# what is left, and whether it really went
+#
+# CU6 and CU7 of frozen/cleanup.json, and both exist because of F37. The sweep below used to do
+# `_safe(lambda: _run([rt, "rm", "-f", cid]))` and then append the id to a `removed` list -- so a
+# removal the runtime REFUSED was recorded as done. On the real worker `podman rm -f` answered
+# "could not be stopped: sending SIGKILL to container ...: operation not permitted" four times, the
+# sweep reported four containers removed, and the worker served with four proxies still there. Nothing
+# in the record said otherwise.
+#
+# So: every removal is read back, and every listing is parsed into the shape a row has. An answer that
+# cannot be parsed is UNKNOWN, and unknown is not none -- which is the rule container_backend already
+# states for a single container ("unknown must never be read as absent") and which an inventory needs
+# just as much: a count of this bundle's own that read a stray runtime notice as a container reported
+# one on a host that had none.
+# ----------------------------------------------------------------------------
+
+#: Lines a runtime writes that are not rows. Checked as a prefix on the first token, so a row whose id
+#: happens to contain one of these words is still a row.
+_NOT_A_ROW = ("time=", "level=", "WARN", "WARNING", "ERRO", "ERROR", "Error:", "error:", "msg=")
+
+
+def _rows_of(text: str) -> tuple:
+    """``(rows, unreadable)``: rows are lines that look like a listing's line, and nothing is guessed."""
+    rows, unreadable = [], []
+    for line in (text or "").splitlines():
+        if not line.strip():
+            continue
+        first = line.split()[0]
+        if len(first) > 128 or any(first.startswith(p) for p in _NOT_A_ROW):
+            unreadable.append(line.strip()[:200])
+            continue
+        rows.append(line)
+    return rows, unreadable
+
+
+def _state_of(rt: str, kind: str, name: str) -> str:
+    """PRESENT, ABSENT or UNKNOWN for one named container or network, asked of the runtime."""
+    from agentnode_sdk.sandbox.container_backend import ABSENT, PRESENT, UNKNOWN
+
+    if kind == "container":
+        argv = [rt, "ps", "-a", "--filter", "name=" + name, "--format", "{{.Names}}"]
+    else:
+        argv = [rt, "network", "ls", "--filter", "name=" + name, "--format", "{{.Name}}"]
+    try:
+        said = _run(argv).stdout
+    except Exception:                                             # noqa: BLE001
+        return UNKNOWN
+    rows, unreadable = _rows_of(said)
+    if unreadable:
+        return UNKNOWN
+    for row in rows:
+        if row.strip() == name or row.split()[0] == name:
+            return PRESENT
+    return ABSENT
+
+
+def state_of(runtime: str, kind: str, name: str) -> str:
+    """The public name for one read-back, so the worker does not grow a second implementation of it."""
+    return _state_of(runtime, kind, name)
+
+
+def _resolver_dir() -> str:
+    """Where a rootless podman keeps one file per network for ``aardvark-dns``."""
+    run_dir = os.environ.get("XDG_RUNTIME_DIR", "")
+    if not run_dir:
+        return ""
+    return os.path.join(run_dir, "containers", "networks", "aardvark-dns")
+
+
+#: A resolver entry is a FILE NAMED AFTER A NETWORK and it carries no label, so this is the one place
+#: ownership is decided by a name -- and only by a name this module itself composes, below.
+_OUR_NETWORK_NAME = re.compile(r"^agentnode-egress-[0-9a-f]{4,32}-(int|ext)$")
+
+
+def _resolver_entries() -> list:
+    """``[(name, path)]`` for entries belonging to networks this module names. Never anybody else's."""
+    where = _resolver_dir()
+    if not where or not os.path.isdir(where):
+        return []
+    out = []
+    try:
+        names = sorted(os.listdir(where))
+    except OSError:
+        return []
+    for name in names:
+        if name == "aardvark.pid" or not _OUR_NETWORK_NAME.match(name):
+            continue
+        out.append((name, os.path.join(where, name)))
+    return out
+
+
+def _remove_one(rt: str, kind: str, name: str) -> dict:
+    """Remove one resource, then ASK whether it is gone. The runtime's own words travel with a failure.
+
+    `network rm -f` is podman's; docker's `network rm` has no such flag and fails on it, so the flag is
+    passed only where it exists. The sweep used to pass it unconditionally.
+    """
+    from agentnode_sdk.sandbox.container_backend import ABSENT, PRESENT
+
+    said = ""
+    if kind == "container":
+        argv = [rt, "rm", "-f", name]
+    else:
+        argv = [rt, "network", "rm"] + (["-f"] if _is_podman(rt) else []) + [name]
+    try:
+        _run(argv)
+    except subprocess.CalledProcessError as exc:
+        said = ((exc.stderr or "") + " " + (exc.stdout or "")).strip()[:240]
+    except Exception as exc:                                      # noqa: BLE001
+        said = "%s: %s" % (type(exc).__name__, str(exc)[:200])
+    state = _state_of(rt, kind, name)
+    return {"kind": kind, "name": name, "state": state, "why": said,
+            "gone": state == ABSENT, "still_there": state == PRESENT}
+
+
+def _remove_resolver_entry(name: str, path: str) -> dict:
+    """Remove one resolver entry and read it back from the filesystem.
+
+    WHY THIS EXISTS AT ALL. Nothing in this product mentioned these files before. In F37 four networks
+    were removed while containers were still attached to them, each left its entry behind, and
+    `aardvark-dns` then refused to start: "failed to bind udp listener on 10.89.1.1:53: Cannot assign
+    requested address". With no resolver, no container on any custom network can resolve a name -- and
+    the egress proxy, fail-closed on a resolve failure, answered 403 for a host on its own allowlist.
+    """
+    from agentnode_sdk.sandbox.container_backend import ABSENT, PRESENT
+
+    said = ""
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        said = "%s: %s" % (type(exc).__name__, str(exc)[:200])
+    gone = not os.path.exists(path)
+    return {"kind": "resolver-entry", "name": name, "state": ABSENT if gone else PRESENT,
+            "why": said, "gone": gone, "still_there": not gone}
+
+
+def what_is_left_of_ours(runtime: str = "") -> dict:
+    """Every resource of this component the runtime admits to, with UNKNOWN kept apart from none.
+
+    The answer a migration and a readiness decision are allowed to act on. `asked` false means the
+    question could not be put at all, which is not an empty answer either.
+    """
+    rt = runtime or ""
+    if not rt:
+        avail = get_default_backend().check_available()
+        if not avail.available:
+            return {"asked": False, "reason": avail.reason or "no runtime",
+                    "containers": [], "networks": [], "resolver_entries": [], "unreadable": []}
+        rt = avail.backend
+    out = {"asked": True, "runtime": rt, "containers": [], "networks": [],
+           "resolver_entries": [], "unreadable": [], "left_alone": [], "reason": ""}
+    try:
+        listed = _run([rt, "ps", "-a", "--filter", "label=" + _COMPONENT,
+                       "--format", '{{.ID}} {{index .Labels "agentnode.component"}} '
+                                   '{{index .Labels "agentnode.run"}}']).stdout
+    except Exception as exc:                                      # noqa: BLE001
+        out["asked"] = False
+        out["reason"] = "the runtime would not list its containers: %s" % str(exc)[:200]
+        return out
+    rows, unreadable = _rows_of(listed)
+    out["unreadable"] += ["containers: " + u for u in unreadable]
+    for row in rows:
+        parts = row.split()
+        cid = parts[0]
+        component = parts[1] if len(parts) > 1 else ""
+        run = parts[2] if len(parts) > 2 else ""
+        if component != _COMPONENT_VALUE:
+            out["left_alone"].append(cid)
+            continue
+        out["containers"].append({"id": cid, "run": run})
+    try:
+        nets = _run([rt, "network", "ls", "--filter", "label=" + _COMPONENT,
+                     "--format", "{{.ID}}"]).stdout
+    except Exception as exc:                                      # noqa: BLE001
+        out["unreadable"].append("networks: could not be listed: %s" % str(exc)[:160])
+        nets = ""
+    rows, unreadable = _rows_of(nets)
+    out["unreadable"] += ["networks: " + u for u in unreadable]
+    for row in rows:
+        nid = row.split()[0]
+        try:
+            facts = _network_facts(rt, nid)
+        except Exception:                                         # noqa: BLE001
+            out["unreadable"].append("networks: %s could not be inspected" % nid)
+            continue
+        labels = facts.get("labels") or {}
+        if str(labels.get("agentnode.component", "")) != _COMPONENT_VALUE:
+            out["left_alone"].append(nid)
+            continue
+        out["networks"].append({"id": nid, "run": str(labels.get("agentnode.run", ""))})
+    for name, path in _resolver_entries():
+        out["resolver_entries"].append({"name": name, "path": path})
+    return out
+
+
+def nothing_of_ours_is_left(runtime: str = "") -> tuple:
+    """``(True, inventory)`` only when the inventory is empty AND every part of it could be read."""
+    got = what_is_left_of_ours(runtime)
+    if not got.get("asked"):
+        return False, got
+    empty = not (got["containers"] or got["networks"] or got["resolver_entries"])
+    return bool(empty and not got["unreadable"]), got
+
+
+def remove_everything_of_ours(runtime: str = "", *, keep_runs=()) -> dict:
+    """Remove every resource of this component, in an order that cannot orphan one, reading each back.
+
+    Containers first, then the networks they sat on, then the resolver entries of networks that are no
+    longer there. That order is CU2: removing a network while a container is still attached to it is
+    what left the entries behind in F37.
+    """
+    keep = {str(r) for r in keep_runs}
+    got = what_is_left_of_ours(runtime)
+    rt = got.get("runtime") or runtime
+    out = {"asked": bool(got.get("asked")), "runtime": rt, "removed": [], "failed": [],
+           "left_alone": list(got.get("left_alone") or []),
+           "unreadable": list(got.get("unreadable") or []), "kept": sorted(keep),
+           "reason": got.get("reason", "")}
+    if not out["asked"]:
+        out["clean"] = False
+        return out
+    for container in got["containers"]:
+        if container["run"] and container["run"] in keep:
+            continue
+        said = _remove_one(rt, "container", container["id"])
+        (out["removed"] if said["gone"] else out["failed"]).append(said)
+    for network in got["networks"]:
+        if keep and network["run"] in keep:
+            continue
+        said = _remove_one(rt, "network", network["id"])
+        (out["removed"] if said["gone"] else out["failed"]).append(said)
+    # The entries are re-read AFTER the networks have gone: an entry whose network still exists is not
+    # a leftover, and removing it would take the resolver away from a live network.
+    live = {str(n.get("id")) for n in what_is_left_of_ours(rt).get("networks") or []}
+    for name, path in _resolver_entries():
+        if _state_of(rt, "network", name) == "present" or name in live:
+            continue
+        said = _remove_resolver_entry(name, path)
+        (out["removed"] if said["gone"] else out["failed"]).append(said)
+    clean, after = nothing_of_ours_is_left(rt)
+    out["clean"] = bool(clean and not out["failed"])
+    out["afterwards"] = {"containers": len(after.get("containers") or []),
+                         "networks": len(after.get("networks") or []),
+                         "resolver_entries": len(after.get("resolver_entries") or []),
+                         "unreadable": list(after.get("unreadable") or [])}
+    return out
+
+
 def _json_of(argv) -> dict:
     """``inspect --format '{{json .}}'``, parsed. Read tolerantly: podman and docker disagree on names."""
     out = _run(argv).stdout.strip()
@@ -239,12 +490,29 @@ def _wait_healthy(rt: str, name: str, timeout: float) -> None:
     raise SandboxRequiredError(f"egress proxy {name} did not become healthy in {timeout}s")
 
 
-def _teardown(rt: str, proxy_name, nets) -> None:
-    """Best-effort teardown of ONLY our own named resources. Never a broad or prefix sweep."""
+def _teardown(rt: str, proxy_name, nets) -> dict:
+    """Teardown of ONLY our own named resources, read back, and it SAYS what happened to each.
+
+    It used to be `_safe(...)` around each removal and nothing else: a failure was swallowed and the
+    caller could not tell a teardown that worked from one that did not. The caller now gets a report,
+    and `complete` is false when anything is still there or anything could not be asked.
+    """
+    said = []
     if proxy_name:
-        _safe(lambda: _run([rt, "rm", "-f", proxy_name]))
+        said.append(_remove_one(rt, "container", proxy_name))
     for n in nets:
-        _safe(lambda n=n: _run([rt, "network", "rm", n]))
+        if n:
+            said.append(_remove_one(rt, "network", n))
+    # The resolver entries of exactly these networks, and only once their network is gone.
+    for name, path in _resolver_entries():
+        if name not in set(nets or ()):
+            continue
+        if _state_of(rt, "network", name) == "present":
+            continue
+        said.append(_remove_resolver_entry(name, path))
+    return {"resources": said,
+            "complete": all(x["gone"] for x in said) if said else True,
+            "still_there": [x["name"] for x in said if x["still_there"]]}
 
 
 def start_egress_proxy(allowed_domains, *, backend=None, health_timeout: float = 10.0,
@@ -343,11 +611,16 @@ def start_egress_proxy(allowed_domains, *, backend=None, health_timeout: float =
     return handle
 
 
-def stop_egress_proxy(handle: EgressHandle) -> None:
-    """Idempotent, best-effort teardown of ONLY this handle's own proxy and two networks."""
-    _teardown(handle.runtime, handle.proxy_name, [handle.int_net, handle.ext_net])
+def stop_egress_proxy(handle: EgressHandle) -> dict:
+    """Idempotent teardown of ONLY this handle's own proxy, two networks and resolver entries.
+
+    Returns the report rather than nothing, so a run can record whether its own route out went away.
+    Idempotent: a second call removes nothing and reports every resource as already gone.
+    """
+    said = _teardown(handle.runtime, handle.proxy_name, [handle.int_net, handle.ext_net])
     with _live_lock:
         _live.discard(handle)
+    return said
 
 
 def remove_what_no_run_is_waiting_for(runtime: str = "", *, keep_runs=()) -> dict:
@@ -357,65 +630,22 @@ def remove_what_no_run_is_waiting_for(runtime: str = "", *, keep_runs=()) -> dic
     called something familiar is not adopted, and one that was renamed is not orphaned. A caller that
     knows which runs are live passes them in ``keep_runs``; everything else labelled as this component's
     is a leftover of a worker that is gone.
+
+    WHAT CHANGED AND WHY. It now delegates to `remove_everything_of_ours`, which reads every removal
+    back. The old version appended an id to `containers` after a `_safe(...)` removal whether or not the
+    runtime had done it -- which is how four containers the account could not remove were reported as
+    removed (F37, and EG12 of the previous arc's frozen profile, which an independent review failed on
+    exactly this). `containers` and `networks` still carry what was REMOVED, so a caller that only reads
+    those sees what it always saw; `failed`, `unreadable` and `clean` are what a caller has to read to
+    know the answer.
     """
-    rt = runtime or ""
-    if not rt:
-        avail = get_default_backend().check_available()
-        if not avail.available:
-            return {"asked": False, "reason": avail.reason or "no runtime"}
-        rt = avail.backend
-    keep = {str(r) for r in keep_runs}
-    removed = {"asked": True, "containers": [], "networks": [], "kept": sorted(keep)}
-    # THE FILTER IS ASKED FOR AND THE LABEL IS READ BACK, and the second part is not belt and braces.
-    #
-    # `test_a_sweep_leaves_alone_what_this_sdk_did_not_name` found this: the first version trusted
-    # `--filter label=` and removed whatever came back, so a runtime that ignored the filter, or did not
-    # support it, or was asked by something that did not pass it, would have had this remove containers
-    # belonging to whoever else uses that account's runtime. The label is in the format string now and a
-    # candidate is removed only when it SAYS it is ours.
-    try:
-        listed = _run([rt, "ps", "-a", "--filter", "label=" + _COMPONENT,
-                       "--format", '{{.ID}} {{index .Labels "agentnode.component"}} '
-                                   '{{index .Labels "agentnode.run"}}']).stdout
-    except Exception as exc:                                      # noqa: BLE001
-        return {"asked": False, "reason": str(exc)}
-    removed["left_alone"] = []
-    for line in listed.splitlines():
-        parts = line.split()
-        if not parts:
-            continue
-        cid = parts[0]
-        component = parts[1] if len(parts) > 1 else ""
-        run = parts[2] if len(parts) > 2 else ""
-        if component != _COMPONENT_VALUE:
-            # Not ours, whatever the filter said. Recorded rather than passed over, because a sweep
-            # that is being handed foreign containers is itself worth knowing about.
-            removed["left_alone"].append(cid)
-            continue
-        if run and run in keep:
-            continue
-        _safe(lambda cid=cid: _run([rt, "rm", "-f", cid]))
-        removed["containers"].append(cid)
-    try:
-        nets = _run([rt, "network", "ls", "--filter", "label=" + _COMPONENT,
-                     "--format", "{{.ID}}"]).stdout
-    except Exception:                                             # noqa: BLE001
-        nets = ""
-    for nid in [n for n in nets.split() if n]:
-        try:
-            facts = _network_facts(rt, nid)
-        except Exception:                                         # noqa: BLE001
-            facts = {}
-        labels = facts.get("labels") or {}
-        # The same read-back as above: the network has to say it is this component's.
-        if str(labels.get("agentnode.component", "")) != _COMPONENT_VALUE:
-            removed["left_alone"].append(nid)
-            continue
-        if str(labels.get("agentnode.run", "")) in keep and keep:
-            continue
-        _safe(lambda nid=nid: _run([rt, "network", "rm", "-f", nid]))
-        removed["networks"].append(nid)
-    return removed
+    said = remove_everything_of_ours(runtime, keep_runs=keep_runs)
+    out = dict(said)
+    out["containers"] = [x["name"] for x in said["removed"] if x["kind"] == "container"]
+    out["networks"] = [x["name"] for x in said["removed"] if x["kind"] == "network"]
+    out["resolver_entries"] = [x["name"] for x in said["removed"]
+                               if x["kind"] == "resolver-entry"]
+    return out
 
 
 @contextmanager

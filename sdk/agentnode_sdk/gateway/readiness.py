@@ -204,6 +204,11 @@ class Readiness:
     unproven: tuple[str, ...] = ()
     next_steps: tuple[str, ...] = ()
     measured_at: float | None = None
+    #: PA1/PA2 of frozen/activation.json. `ready` is about what was PROVEN; this is about what is in
+    #: FORCE, and the two are not the same answer when a policy that grants nothing is put in force
+    #: without a measurement. A caller that printed "nothing was changed" on `ready is False` would be
+    #: lying in exactly that case, which is why this field exists rather than a second return type.
+    in_force: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -213,6 +218,7 @@ class Readiness:
             "unproven": list(self.unproven),
             "next_steps": list(self.next_steps),
             "measured_at": self.measured_at,
+            "in_force": self.in_force,
         }
 
 

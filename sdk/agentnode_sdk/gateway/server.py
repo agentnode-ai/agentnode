@@ -997,6 +997,14 @@ class GatewayService:
         else:
             path.write_text(previous, encoding="utf-8")
 
+    @staticmethod
+    def _grants_nothing(envelope) -> bool:
+        """Whether this policy permits no destination at all -- the only case PA2 covers."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        return (str(getattr(envelope, "mode", "")) == opol.NONE
+                and not tuple(getattr(envelope, "allowed_destinations", ()) or ()))
+
     def _transact(self, proposed, options=None, now: float | None = None):
         """One lock around the whole change: intent, measurement, and what becomes of both."""
         from datetime import datetime, timezone
@@ -1021,12 +1029,55 @@ class GatewayService:
                 # was being measured if the process dies before it finishes.
                 store.write_pending(envelope)
 
-                report = self.worker.measure(
-                    generated_at=stamp, options=options,
-                    egress_matrix=self._egress_matrix_for(envelope),
-                    # The policy's own destinations, so the check compares the matrix against
-                    # what is being permitted rather than against what the run happened to do.
-                    egress_expected=(envelope.allowed_destinations or None))
+                try:
+                    report = self.worker.measure(
+                        generated_at=stamp, options=options,
+                        egress_matrix=self._egress_matrix_for(envelope),
+                        # The policy's own destinations, so the check compares the matrix against
+                        # what is being permitted rather than against what the run happened to do.
+                        egress_expected=(envelope.allowed_destinations or None))
+                except BaseException as could_not_measure:
+                    # PA2 of frozen/activation.json. NARROWING TO NOTHING IS NEVER BLOCKED BY A WORKER
+                    # THAT IS GONE. Measured, in this project's own sealed record: `E0424` is the
+                    # previous round parking the control plane, where `gateway egress --none` answered
+                    # "the sandbox worker could not be reached" and "The previous policy remains in
+                    # force. Nothing was changed." -- so the host was parked with an allowlist still in
+                    # force. Closing a policy is the one change you most want when the worker is down.
+                    #
+                    # The invariant the measurement exists for is "never GRANT what has not been proven
+                    # to hold". A policy that grants nothing grants nothing, and the report it is
+                    # activated with says it was not measured -- so the gate below finds no established
+                    # property and this gateway admits no work until it is measured again. Both
+                    # dimensions tighten; neither widens. Any other proposal still fails here.
+                    if proposed is None or not self._grants_nothing(envelope):
+                        raise
+                    report = {
+                        "not_measured": True,
+                        "generated_at": stamp,
+                        "why": "the worker could not be measured (%s: %s), and this policy grants "
+                               "nothing, so it was put in force without one"
+                               % (type(could_not_measure).__name__, str(could_not_measure)[:160]),
+                        "results": [],
+                        "is_conformant": False,
+                    }
+                    binding = self.report_binding(envelope.digest())
+                    store.activate(envelope, report, binding.as_dict(), now)
+                    # AND THE PENDING RECORD GOES. It was written at the top of this transaction to
+                    # say what was being measured if the process died mid-measurement; this policy is
+                    # now IN FORCE, so a pending record beside it would make every later report say a
+                    # change is proposed and not in force -- and would make closing twice say
+                    # something different the second time. Found while writing the counter-check for
+                    # exactly that (PA7, sixth).
+                    store.clear_pending()
+                    from agentnode_sdk.gateway.readiness import Readiness
+
+                    return Readiness(
+                        ready=False,
+                        reason="this policy grants nothing and is now in force, and it was NOT "
+                               "measured: " + str(report["why"]),
+                        unproven=tuple(envelope.required_properties),
+                        in_force=True,
+                    )
                 binding = self.report_binding(envelope.digest())
                 document = {"measured_at": now if now is not None else time.time(),
                             "binding": binding.as_dict(), "report": report}
