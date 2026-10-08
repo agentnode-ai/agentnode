@@ -391,3 +391,106 @@ def test_9_the_retry_bound_is_a_fixed_ceiling_and_enoent_is_not_retried(world, a
     assert absent.attempts == 1, \
         "a file that is not there must be asked for once: ENOENT must not be retried"
     assert slept_for_absent.waits == [], slept_for_absent.waits
+
+
+# ===================================== 10. the retry reads the NEWEST list, never a remembered one
+
+class AnOpenThatPublishesThenFails:
+    """`open`, except that the first attempt on ONE path publishes a NEW list and then fails.
+
+    This puts a replacement exactly inside the retry window, deterministically, with no sleep and no race:
+    the first attempt fails, and by the time the second happens the file on disk is a newer generation.
+    """
+
+    def __init__(self, path, publish) -> None:
+        self.path = os.fspath(path)
+        self.publish = publish
+        self.attempts = 0
+        self.published = False
+
+    def __call__(self, path, *args, **kwargs):
+        if os.fspath(path) == self.path:
+            self.attempts += 1
+            if self.attempts == 1:
+                self.publish()
+                self.published = True
+                raise PermissionError(13, "this read was made to fail by the test")
+        return _REAL_OPEN(path, *args, **kwargs)
+
+
+def test_10_a_retry_reads_the_newest_list_and_never_a_remembered_one(world, a_revoked_worker,
+                                                                      monkeypatch):
+    """The clause `DECISION-0001` makes measurable: during the retries nothing old is accepted.
+
+    A retry that succeeds does so at a LATER instant than the attempt that failed, so the file it reads is
+    newer or the same -- never older. This proves it the only way that distinguishes it from a remembered
+    value: the list is REPLACED between the failed attempt and the successful one, and the replacement
+    revokes a serial the first version did not name. A reader that served anything remembered, or the file
+    as it was before the failure, cannot see that serial.
+    """
+    _folder, first_serial = a_revoked_worker
+    second = world.service("worker", "w2")
+    second_serial = serial_of(second)
+
+    # a successful read first, so that an implementation WITH a memory has something to remember
+    before = frozenset(a_view(world).revoked_serials(time.time(),
+                                                     presented="agentnode://d/worker/w1"))
+    assert first_serial in before, "the fixture did not revoke the first worker"
+    assert second_serial not in before, "the second worker is revoked before the test revoked it"
+
+    def publish_a_newer_list():
+        done = world.issuer.revoke(second_serial)
+        assert done["effective"] is True, "the newer list was not published, so this test proves nothing"
+
+    failing = AnOpenThatPublishesThenFails(world.revocation_list, publish_a_newer_list)
+    slept = ANoteOfEverySleep()
+    monkeypatch.setattr(trust_module, "open", failing, raising=False)
+    monkeypatch.setattr(time, "sleep", slept)
+    try:
+        after = frozenset(a_view(world).revoked_serials(time.time(),
+                                                        presented="agentnode://d/worker/w1"))
+    except ids.PeerRefused as refused:
+        raise AssertionError(
+            "a read that failed once must be tried again and read the list that is there then: %s"
+            % refused)
+    assert failing.published, "the test did not manage to replace the list inside the retry window"
+    # THE DISCRIMINATING ASSERTION COMES FIRST, and the preconditions after it. Ordered the other way, a
+    # product that served a remembered value failed this test on "nothing was tried again" -- true, because
+    # a fallback short-circuits the retry, and the wrong thing to name: the counter-check for that removal
+    # has to predeclare a phrase about REMEMBERING. A red should name the property that broke.
+    assert second_serial in after, \
+        "the retry served an older or remembered list: the serial revoked during the retry is missing"
+    assert first_serial in after, "the newer list lost a revocation the older one had"
+    assert failing.attempts >= 2, "nothing was tried again, so no replacement could have been read"
+
+
+# ============================== 11. the floor and the list now carry their reason alike
+
+def test_11_the_floor_and_the_list_both_carry_their_reason(world, a_revoked_worker, monkeypatch):
+    """The asymmetry that was the whole finding, asserted as the comparison it is.
+
+    `_bytes` has always told a missing file from an unreadable one. The FLOOR has carried that reason since a
+    floor it could not trust became a refusal; the LIST threw it away. This asserts both halves in one test,
+    so that the day one of them stops carrying it, something says so.
+    """
+    monkeypatch.setattr(time, "sleep", ANoteOfEverySleep())
+    floor_path = floors.path_for(world.floor_dir, "worker")
+
+    # the floor's half
+    failing_floor = AnOpenThatFails(floor_path, times=10 ** 6)
+    monkeypatch.setattr(trust_module, "open", failing_floor, raising=False)
+    view = a_view(world)
+    with pytest.raises(ids.PeerRefused) as caught:
+        view.effective_time()
+    said_about_the_floor = str(caught.value)
+    assert "PermissionError" in said_about_the_floor, \
+        "the floor must carry the classified reason it could not be read"
+
+    # the list's half, in the same test, because the point is that they are alike
+    failing_list = AnOpenThatFails(world.revocation_list, times=10 ** 6)
+    monkeypatch.setattr(trust_module, "open", failing_list, raising=False)
+    said_about_the_list = str(refusal_from(a_view(world)))
+    assert "PermissionError" in said_about_the_list, \
+        "the revocation list must carry the classified reason it could not be read, as the floor does"
+    assert "there is no revocation list to read" not in said_about_the_list, \
+        "the revocation list must not be reported as missing when it could not be read"
