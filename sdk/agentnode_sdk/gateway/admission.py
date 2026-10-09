@@ -61,6 +61,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agentnode_sdk.access import contract
+from agentnode_sdk.gateway import protocol as _protocol
 from agentnode_sdk.gateway.filelock import ProcessLock
 
 #: Every reason admission can refuse for. Closed: a refusal that could invent its own name is a
@@ -109,6 +110,14 @@ AS_A_REFUSAL = {
 }
 
 assert set(AS_A_REFUSAL) == set(REASONS), "every reason renders as exactly one refusal"
+
+# AND EVERY REASON ALSO MEANS SOMETHING TO A JOB THAT NEVER RAN. The gateway re-asks admission at the
+# moment a slot is granted, and what comes back has to become a terminal reason in the durable record
+# -- `BETA-4` `D1`. The table lives in `protocol.py`, beside the words it maps to; this assert is here,
+# beside `REASONS`, because this is the file somebody edits when they add a reason. Without it a new
+# reason would silently fall to whatever default the lookup had.
+assert set(_protocol.WHY_IT_NEVER_RAN) == set(REASONS), (
+    "every reason has to say what it means for a job stopped before it ever ran")
 assert set(AS_A_REFUSAL.values()) <= set(contract.REFUSALS), (
     "every refusal admission produces is one the contract declares")
 

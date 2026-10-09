@@ -121,9 +121,78 @@ GATEWAY_CRASHED = "gateway_crashed"
 GATEWAY_KILLED = "gateway_killed"
 GATEWAY_LOST = "gateway_lost"
 
+#: WHY A JOB THAT NEVER RAN STOPPED, which the ten reasons above could not say at all.
+#:
+#: Every reason above is about a run that was RUNNING. A job stopped while it was still waiting in
+#: the queue had none of them to carry, so the field stayed empty -- and `BETA-4` measured the
+#: consequence on the two-host stand (`E0231`): three terminal `refused` entries whose customers had
+#: each been told the true cause in words, and whose durable record said nothing.
+#:
+#: I first argued that this was the refusal vocabulary rather than a defect, on the grounds that
+#: these words answer "why did a RUNNING run stop" and a refused job never ran. The independent
+#: review rejected that, and it was right: the criterion asks the closing record to carry the actual
+#: terminal reason, and "the job never started" is a terminal reason like any other.
+#:
+#: WHY THEY HAD TO GO IN HERE rather than be written by the path that knows the cause: `what_disagrees`
+#: refuses any reason outside `TERMINATION_REASONS`, so a word invented at the call site would not
+#: record a cause -- it would make the record UNREADABLE, an `EVIDENCE_ERROR` in every bundle that
+#: carried it. That constraint is what shapes this, and it is a test
+#: (`test_a_stopped_waiting_job_says_why_it_stopped.py::test_5`).
+#:
+#: FOUR SPECIFIC WORDS AND ONE HONEST COARSE ONE. The four are the stops `EG15` names, and they are
+#: separate because `D2` asks that the causes stay distinguishable -- four causes behind one word
+#: would satisfy the letter and lose the point. The fifth is for a refusal at the slot whose cause has
+#: no word of its own: it is not a guess, it is a true statement at a coarser grain, and the refusal
+#: sentence recorded beside it carries the rest. What it is NOT is an absence, which is the defect.
+ACCOUNT_SUSPENDED = "account_suspended"
+DEVICE_WITHDRAWN = "device_withdrawn"
+NOT_TAKING_WORK = "not_taking_work"
+ENROLMENT_UNREADABLE = "enrolment_unreadable"
+REFUSED_BEFORE_IT_RAN = "refused_before_it_ran"
+
+STOPPED_BEFORE_IT_RAN = (ACCOUNT_SUSPENDED, DEVICE_WITHDRAWN, NOT_TAKING_WORK,
+                         ENROLMENT_UNREADABLE, REFUSED_BEFORE_IT_RAN)
+
 TERMINATION_REASONS = (EXITED, TIMED_OUT, CANCELLED,
                        OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST,
-                       GATEWAY_STOPPED, GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST)
+                       GATEWAY_STOPPED, GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST
+                       ) + STOPPED_BEFORE_IT_RAN
+
+#: WHICH OF THOSE FIVE EACH ADMISSION REASON MEANS, for a job that was already waiting.
+#:
+#: The gateway re-asks admission at the moment a slot is granted, and the refusal it gets back
+#: carries one of `admission.REASONS`. This is where that word becomes a terminal reason, in one
+#: place, so the mapping can be read rather than reconstructed from call sites.
+#:
+#: `admission.py` asserts that every one of its reasons has an entry here, which is the point of
+#: writing it as a table: a new admission reason cannot be added without somebody deciding what it
+#: means for a job that never ran. The alternative -- a `.get(reason, FALLBACK)` -- would answer that
+#: question silently and always.
+#:
+#: The ceilings and the unreadable-state reasons map to the coarse word on purpose. They are real
+#: causes, they are not one of the stops this vocabulary separates, and the sentence beside them says
+#: which ceiling or which file. `not_enrolled` maps to `DEVICE_WITHDRAWN` because for a job that was
+#: ADMITTED and then found unenrolled at its slot, the enrolment it had is gone -- which is what a
+#: withdrawal is. A caller that was never enrolled cannot have a waiting job.
+WHY_IT_NEVER_RAN = {
+    "gateway_stopped": NOT_TAKING_WORK,
+    "gateway_unmeasured": REFUSED_BEFORE_IT_RAN,
+    "account_suspended": ACCOUNT_SUSPENDED,
+    "account_unreadable": REFUSED_BEFORE_IT_RAN,
+    "ceilings_unreadable": REFUSED_BEFORE_IT_RAN,
+    "use_unreadable": REFUSED_BEFORE_IT_RAN,
+    "device_rate": REFUSED_BEFORE_IT_RAN,
+    "account_rate": REFUSED_BEFORE_IT_RAN,
+    "device_concurrent": REFUSED_BEFORE_IT_RAN,
+    "account_concurrent": REFUSED_BEFORE_IT_RAN,
+    "device_runs_window": REFUSED_BEFORE_IT_RAN,
+    "account_runs_window": REFUSED_BEFORE_IT_RAN,
+    "device_seconds_window": REFUSED_BEFORE_IT_RAN,
+    "account_seconds_window": REFUSED_BEFORE_IT_RAN,
+    "artifact_too_large": REFUSED_BEFORE_IT_RAN,
+    "refused_by_operator_policy": REFUSED_BEFORE_IT_RAN,
+    "not_enrolled": DEVICE_WITHDRAWN,
+}
 
 #: The reasons under which nobody established what the payload did. They are NOT failures: a run
 #: reported as failed when nobody knows is a false statement about a customer's job in the same

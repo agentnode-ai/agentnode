@@ -3068,6 +3068,12 @@ class GatewayService:
             if not ticket.dropped and record.cancel_requested.is_set():
                 self.slots.drop(record.run_id, "cancelled")
             if not self.slots.wait_for_slot(ticket):
+                from agentnode_sdk.gateway.protocol import (
+                    DEVICE_WITHDRAWN,
+                    NOT_TAKING_WORK,
+                    REFUSED_BEFORE_IT_RAN,
+                )
+
                 why = getattr(ticket, "dropped", "") or "dropped"
                 self._end_without_running(
                     record, granted,
@@ -3083,7 +3089,17 @@ class GatewayService:
                     {"cancelled": "cancelled by the client while it was waiting for a slot",
                      "stopped": "this sandbox stopped taking work while this job was waiting",
                      "revoked": "the device that submitted this job was withdrawn while it "
-                                "was waiting"}.get(why, why))
+                                "was waiting"}.get(why, why),
+                    # AND THE WORD THE DURABLE RECORD KEEPS, beside the sentence above.
+                    #
+                    # The sentence is for a person; the word is for everything else -- the ledger,
+                    # the evidence checker, a query over a month of runs. Before `D1` the record
+                    # kept only the sentence, so "why did this job never run" was a question only
+                    # a human reading prose could answer. A drop reason this build does not know
+                    # still gets a word rather than an absence.
+                    because_word={"stopped": NOT_TAKING_WORK,
+                                  "revoked": DEVICE_WITHDRAWN}.get(
+                                      why, REFUSED_BEFORE_IT_RAN))
                 return False
             record.slot_ticket = None
 
@@ -3118,12 +3134,24 @@ class GatewayService:
             self.may_this_caller_proceed(record.owner_account_id, record.owner_client_id,
                                          True)
         except Exception as refused:                          # noqa: BLE001
+            from agentnode_sdk.gateway.protocol import (
+                REFUSED_BEFORE_IT_RAN,
+                WHY_IT_NEVER_RAN,
+            )
+
             because = getattr(refused, "because", "") or str(refused)
             what = getattr(refused, "what_to_do", "")
             self.slots.give_back(record.run_id)
             self._end_without_running(
                 record, granted, "refused",
-                because + ((" " + what) if what else ""))
+                because + ((" " + what) if what else ""),
+                # ADMISSION ALREADY NAMED THE CAUSE and the table says what that name means for a
+                # job that never ran. `admission.py` asserts the table covers every one of its
+                # reasons, so a new reason cannot arrive here without somebody deciding this.
+                # The fallback is for an exception that is not a `NotAdmitted` at all and
+                # therefore carries no reason -- it is still a word rather than an absence.
+                because_word=WHY_IT_NEVER_RAN.get(
+                    str(getattr(refused, "reason", "") or ""), REFUSED_BEFORE_IT_RAN))
             return False
         if record.cancel_requested.is_set():
             self.slots.give_back(record.run_id)
@@ -3145,6 +3173,8 @@ class GatewayService:
                                                  record.owner_account_id)
         if enrolled is not True:
             self.slots.give_back(record.run_id)
+            from agentnode_sdk.gateway.protocol import DEVICE_WITHDRAWN, ENROLMENT_UNREADABLE
+
             self._end_without_running(
                 record, granted, "refused",
                 # The same sentence the queue's own drop reason carries, so a customer reads one
@@ -3152,7 +3182,12 @@ class GatewayService:
                 "the device that submitted this job was withdrawn while it was waiting"
                 if enrolled is False else
                 "this sandbox cannot currently tell whether the device that submitted this job "
-                "is still enrolled, so it is not starting its work")
+                "is still enrolled, so it is not starting its work",
+                # AND THE TWO ANSWERS KEEP THEIR OWN WORDS. "Withdrawn" and "this gateway cannot
+                # tell" are different facts: one is an operator's decision, the other is this
+                # host's own state, and an operator reading a month of records needs to be able
+                # to tell a policy action from a broken token store.
+                because_word=DEVICE_WITHDRAWN if enrolled is False else ENROLMENT_UNREADABLE)
             return False
 
         # THE BILLED CLOCK STARTS HERE, and nowhere earlier.
@@ -3160,7 +3195,7 @@ class GatewayService:
         return True
 
     def _end_without_running(self, record: RunRecord, granted, state: str,
-                             why: str) -> None:
+                             why: str, because_word: str = "") -> None:
         """Finish a run that never ran. Billed nothing, and said so.
 
         It goes through the same publication as any other ending, so a job that waited and was
@@ -3182,6 +3217,33 @@ class GatewayService:
             from agentnode_sdk.gateway.protocol import CANCELLED
 
             record.termination_reason = CANCELLED
+        # AND A REFUSAL ALSO HAS A REASON, which this path used to leave empty.
+        #
+        # Measured on the two-host stand (`BETA-4`, `E0231`): three terminal `refused` entries with
+        # `settled_because` empty, after each of those customers had been told the true cause in
+        # words. I argued that the empty field was the refusal convention rather than a defect --
+        # `TERMINATION_REASONS` answers "why did a RUNNING run stop" and a refused job never ran --
+        # and the independent review rejected that reading. `D1` asks the closing record to carry
+        # the actual terminal reason, and "it never started, because X" is one.
+        #
+        # THE WORDS ARE THE PROTOCOL'S, not this path's: `what_disagrees` refuses any reason outside
+        # `TERMINATION_REASONS`, so a word invented here would make the record unreadable rather than
+        # informative. `STOPPED_BEFORE_IT_RAN` is that vocabulary and `WHY_IT_NEVER_RAN` maps each
+        # admission reason onto it.
+        #
+        # AN UNKNOWN WORD IS REFUSED RATHER THAN STORED. A caller passing something outside the
+        # vocabulary is a programming error here, and storing it would turn one defect -- a missing
+        # reason -- into a worse one: a terminal record that nothing can read. The coarse word is
+        # what an unnamed cause gets, and it is still a true statement.
+        elif state == "refused":
+            from agentnode_sdk.gateway.protocol import (
+                REFUSED_BEFORE_IT_RAN,
+                STOPPED_BEFORE_IT_RAN,
+            )
+
+            word = str(because_word or "") or REFUSED_BEFORE_IT_RAN
+            record.termination_reason = (
+                word if word in STOPPED_BEFORE_IT_RAN else REFUSED_BEFORE_IT_RAN)
         # NOTHING WAS LEFT BEHIND, because nothing was ever created. `container_name` is set in
         # `_run` AFTER the slot is held, so an empty one here is not an assumption -- it is the
         # record saying this job never reached the point of having a sandbox. Guarded on that
