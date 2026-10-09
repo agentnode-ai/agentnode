@@ -3200,9 +3200,29 @@ class GatewayService:
         # at zero and the wait recorded beside it. A run that vanished silently would be the one
         # kind of run nobody could check afterwards.
         try:
-            self.write_down_what_it_used(record, granted, state)
+            said = self.write_down_what_it_used(record, granted, state)
         except Exception as exc:                              # noqa: BLE001
             self.could_not_record(record, exc)
+            return
+        # AND THE DURABLE RECORD, which this path never settled.
+        #
+        # Measured on the two-host stand: a job stopped while it was waiting got a signed usage
+        # line at 0.0 seconds and its ledger entry stayed `state=accepted settled_as=(none)` for
+        # ever -- after the gateway had already told the customer it did not finish. That is
+        # finding A-1 of BETA-4, and it breaks the invariant this product states itself at
+        # `ledger.unfinished_runs`: "every run that has a signed line has settled_as". Such a run
+        # had a line and no word, so it was both billed-as-ended and counted among the runs that
+        # still owe a closing line.
+        #
+        # THE WORD COMES FROM THE LINE, not from this path: `write_down_what_it_used` returns what
+        # the signed log now says, which is the whole point of its return value. A path that wrote
+        # its own word is the defect `note_it_settled` was written about.
+        if said:
+            try:
+                self.ledger.note_it_settled(record.run_id, said,
+                                            because=record.termination_reason)
+            except Exception as exc:                          # noqa: BLE001
+                self.could_not_record(record, exc)
 
     def _run(self, request: JobRequest, artifact: bytes, granted, record: RunRecord) -> None:
         from agentnode_sdk.sandbox.composition import network_mode
@@ -3528,7 +3548,11 @@ class GatewayService:
                 # moves the record as well as the files. `move_to` refuses rather than assigns, and
                 # being refused here is the invariant holding, not a failure to handle.
                 pass
-            self.ledger.note_it_settled(record.run_id, final)
+            # WITH THE REASON THE SIGNED LINE GAVE. `final` is what the log says; the reason is
+            # what the record carries, and the two are written together so the durable record
+            # cannot hold a word without the reason that produced it.
+            self.ledger.note_it_settled(record.run_id, final,
+                                        because=record.termination_reason)
 
     #: How long a cancellation waits for the run to actually stop before it answers. The worker
     #: publishes the terminal state LAST, after cleanup -- so waiting for that state is waiting
