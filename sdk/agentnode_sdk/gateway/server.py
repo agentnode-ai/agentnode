@@ -2708,9 +2708,31 @@ class GatewayService:
             # different job from the one that was asked for, decided silently. The dangerous
             # reading -- that an empty list means no restriction -- is the reason this is an
             # explicit refusal rather than a quiet substitution either way.
+            #
+            # BUT AN EMPTY EFFECTIVE LIST HAS TWO CAUSES, and only one of them is about the
+            # client. This check reads the EFFECTIVE list -- the one left after the operator's
+            # policy has been folded in -- and for a while it blamed the job either way, so a
+            # client that had named three hosts and had all three removed was told it named none
+            # and asked to name them. That is `EG3` of the beta profile at WARN: "the remedy text
+            # incorrectly tells a client that already named hosts to name them."
+            #
+            # WHAT IS SAID AND WHAT IS NOT. The client's OWN destinations are named, because it
+            # already knows them and cannot act without knowing which of them was removed. The
+            # operator's allowlist is NOT named: on a shared gateway that is somebody else's
+            # configuration, and a refusal is not a way to read it.
+            _asked_for = tuple(sorted(
+                (self.requested_policy(request).network.allowed_destinations or frozenset())))
+            if not _asked_for:
+                raise ProtocolError(
+                    "this job asked for a restricted network but named no host it may reach, so "
+                    "there is nothing to allow. Name the hosts, or ask for no network at all. "
+                    "Nothing was started."
+                )
             raise ProtocolError(
-                "this job asked for a restricted network but named no host it may reach, so "
-                "there is nothing to allow. Name the hosts, or ask for no network at all. "
+                "this job asked to reach " + ", ".join(_asked_for) +
+                ", and the policy in force here allows none of them, so there is nothing left "
+                "to allow. This is not something the job can change: ask whoever runs this "
+                "sandbox to allow one of those destinations, or ask for no network at all. "
                 "Nothing was started."
             )
         if _mode == "egress":
