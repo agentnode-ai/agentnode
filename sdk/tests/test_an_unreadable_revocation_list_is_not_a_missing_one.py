@@ -221,9 +221,11 @@ def test_5_nothing_stale_empty_or_partial_is_accepted_while_the_list_is_replaced
     _folder, serial = a_revoked_worker
     files = pki_files.Files()
     published = io.open(world.revocation_list, "rb").read()
-    expected = frozenset(a_view(world).revoked_serials(time.time(),
-                                                       presented="agentnode://d/worker/w1"))
-    assert serial in expected, "the fixture did not publish a list naming the revoked serial"
+    # THE EXPECTATION COMES FROM WHAT THIS TEST DID, not from the component under test. Read back
+    # through `revoked_serials`, a mutation that empties the answer empties the expectation with it,
+    # and the test then fails on a precondition about the fixture instead of on its own safety
+    # property. What was revoked here is known without asking anything: the fixture revoked it.
+    expected = frozenset({serial})
 
     stop = threading.Event()
     counted = {"read": 0, "refused": 0, "wrong_set": 0}
@@ -254,10 +256,12 @@ def test_5_nothing_stale_empty_or_partial_is_accepted_while_the_list_is_replaced
         writer.join(timeout=10)
 
     assert counted["read"] + counted["refused"] == 250, counted
-    assert counted["read"] > 0, \
-        "not one reading succeeded, so this test did not exercise what it claims to"
+    # SAFETY FIRST, CONTROL SECOND. The other order reports a removal as "this test did not exercise
+    # what it claims to", which is true and is not the property that broke.
     assert counted["wrong_set"] == 0, \
         "a reading taken while the list was replaced returned a different serial set"
+    assert counted["read"] > 0, \
+        "not one reading succeeded, so this test did not exercise what it claims to"
 
 
 # ============================================ 6. a revoked certificate during that same concurrency
@@ -297,10 +301,11 @@ def test_6_a_revoked_certificate_stays_revoked_while_the_list_is_replaced(world,
         stop.set()
         writer.join(timeout=10)
 
-    assert counted["revoked"] > 0, \
-        "not one reading saw the revocation, so this test did not exercise what it claims to"
+    # SAFETY FIRST, CONTROL SECOND, for the same reason as the test above.
     assert counted["admitted"] == 0, \
         "a revoked certificate was not seen as revoked while the list was being replaced"
+    assert counted["revoked"] > 0, \
+        "not one reading saw the revocation, so this test did not exercise what it claims to"
 
 
 # ================================================================ 7. no state is ever accepted open
