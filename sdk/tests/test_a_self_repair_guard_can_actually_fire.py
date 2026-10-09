@@ -111,9 +111,21 @@ def test_the_mechanism_itself_so_the_reason_is_in_the_suite():
     If a future shell stops killing the producer, this goes red and the pin above can be revisited --
     which is better than carrying a rule whose reason has quietly expired.
     """
+    # PIPESTATUS IS READ INSIDE THE BRANCH, and the first version of this test is why. It wrote the
+    # pipeline a second time, bare, to read PIPESTATUS after it -- and a bare failing pipeline under
+    # `set -e` ENDS THE SHELL, so the shell exited 141 and never printed the line this test asserts on.
+    # The test had never run: on this workstation there is no /bin/bash, so it was skipped, and the
+    # first machine to execute it was CI, which went red. Measured both ways afterwards:
+    #
+    #   the shape as written : DID-NOT-FIRE            shell exit 141   (no pipestatus line at all)
+    #   the shape below      : DID-NOT-FIRE pipestatus 141 0   shell exit 0
+    #
+    # Reading PIPESTATUS as the first thing inside the branch gets the CONDITION's statuses, because
+    # `then` and `else` run no pipeline of their own and an assignment is not a pipeline.
     shape = (
-        "if seq 1 200000 | grep -q '^5$'; then echo FIRED; else echo DID-NOT-FIRE; fi; "
-        "seq 1 200000 | grep -q '^5$'; echo \"pipestatus ${PIPESTATUS[*]}\""
+        "if seq 1 200000 | grep -q '^5$'; then PS=\"${PIPESTATUS[*]}\"; "
+        "echo \"FIRED pipestatus $PS\"; else PS=\"${PIPESTATUS[*]}\"; "
+        "echo \"DID-NOT-FIRE pipestatus $PS\"; fi"
     )
     with_pipefail = subprocess.run(["/bin/bash", "-c", "set -euo pipefail; " + shape],
                                    capture_output=True, text=True)
