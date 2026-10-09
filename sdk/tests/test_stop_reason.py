@@ -486,9 +486,18 @@ class TestNothingElseMoved:
             the four  what happened to the GATEWAY -- it was stopped, it failed, it was ended
                       from outside, or what ended it is not established. A run caught by any of
                       them was not ended by anything about itself
-            the five  why it NEVER RAN -- the account was suspended, the device was withdrawn,
-                      this gateway stopped taking work, its enrolment could not be read, or it
-                      was refused at the slot for something with no word of its own
+            the nineteen  why it NEVER RAN. Admission already names every cause it refuses for,
+                      and these ARE those names, plus two for the device check at the slot and one
+                      for a refusal carrying no admission reason at all
+
+        THE THIRD GROUP GREW, from five to nineteen, and the reason is the whole of what the second
+        independent round failed this on. The five were four specific words and a coarse fifth, and
+        the mapping wrote the fifth over thirteen of admission's seventeen reasons -- so a ceiling, an
+        unreadable limits file and a policy refusal all came out as one word. The review: "D1 requires
+        the actual terminal reason, not merely some non-empty readable reason. The fallback therefore
+        preserves the same class of information loss." There is now one vocabulary rather than two, the
+        mapping is injective, and `admission.py` asserts both that it covers every reason and that no
+        two reasons share a word.
 
         The last of the four is where the refusal to invent still lives. `gateway_killed` is
         written only when the machine kept running across it, which is a thing the kernel's boot
@@ -523,9 +532,13 @@ class TestNothingElseMoved:
         `test_a_stopped_waiting_job_says_why_it_stopped.py::test_7` is the guard on that.
         """
         from agentnode_sdk.gateway.protocol import (
-            ACCOUNT_SUSPENDED, DEVICE_WITHDRAWN, ENROLMENT_UNREADABLE, GATEWAY_CRASHED,
-            GATEWAY_KILLED, GATEWAY_LOST, GATEWAY_STOPPED, NOT_TAKING_WORK, OUT_OF_MEMORY,
-            REFUSED_BEFORE_IT_RAN, RUNTIME_LOST, TRANSPORT_LOST,
+ACCOUNT_SUSPENDED, ACCOUNT_CONCURRENT, ACCOUNT_RATE, ACCOUNT_RUNS_WINDOW,
+            ACCOUNT_SECONDS_WINDOW, ACCOUNT_UNREADABLE, ARTIFACT_TOO_LARGE,
+            CAUSE_NOT_ESTABLISHED, CEILINGS_UNREADABLE, DEVICE_CONCURRENT, DEVICE_RATE,
+            DEVICE_RUNS_WINDOW, DEVICE_SECONDS_WINDOW, DEVICE_WITHDRAWN,
+            ENROLMENT_UNREADABLE, GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST,
+            GATEWAY_STOPPED, GATEWAY_UNMEASURED, NOT_TAKING_WORK, OUT_OF_MEMORY,
+            REFUSED_BY_OPERATOR_POLICY, RUNTIME_LOST, TRANSPORT_LOST, USE_UNREADABLE,
         )
 
         assert TERMINATION_REASONS == (EXITED, TIMED_OUT, CANCELLED,
@@ -533,7 +546,13 @@ class TestNothingElseMoved:
                                        GATEWAY_STOPPED, GATEWAY_CRASHED, GATEWAY_KILLED,
                                        GATEWAY_LOST,
                                        ACCOUNT_SUSPENDED, DEVICE_WITHDRAWN, NOT_TAKING_WORK,
-                                       ENROLMENT_UNREADABLE, REFUSED_BEFORE_IT_RAN)
+                                       ENROLMENT_UNREADABLE, GATEWAY_UNMEASURED,
+                                       ACCOUNT_UNREADABLE, CEILINGS_UNREADABLE, USE_UNREADABLE,
+                                       DEVICE_RATE, ACCOUNT_RATE, DEVICE_CONCURRENT,
+                                       ACCOUNT_CONCURRENT, DEVICE_RUNS_WINDOW,
+                                       ACCOUNT_RUNS_WINDOW, DEVICE_SECONDS_WINDOW,
+                                       ACCOUNT_SECONDS_WINDOW, ARTIFACT_TOO_LARGE,
+                                       REFUSED_BY_OPERATOR_POLICY, CAUSE_NOT_ESTABLISHED)
 
     def test_and_each_one_names_exactly_one_ending(self):
         """No two of them may be spellings of the same thing: a reader who cannot tell two

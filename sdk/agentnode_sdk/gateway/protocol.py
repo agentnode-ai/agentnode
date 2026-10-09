@@ -144,14 +144,58 @@ GATEWAY_LOST = "gateway_lost"
 #: would satisfy the letter and lose the point. The fifth is for a refusal at the slot whose cause has
 #: no word of its own: it is not a guess, it is a true statement at a coarser grain, and the refusal
 #: sentence recorded beside it carries the rest. What it is NOT is an absence, which is the defect.
+#: ONE VOCABULARY, NOT TWO. The first version of this had four words and a coarse fifth, and mapped
+#: thirteen of admission's seventeen reasons onto the fifth. Every cause was then recorded and a
+#: ceiling, an unreadable limits file and a policy refusal all came out as the same word. The
+#: independent review failed `D1` on exactly that:
+#:
+#:   "the fallback intentionally substitutes a generic word when an actual cause is outside the
+#:    vocabulary. D1 requires the actual terminal reason, not merely some non-empty readable reason.
+#:    The fallback therefore preserves the same class of information loss."
+#:
+#: So there is no second vocabulary. Admission already names every cause it refuses for, and the
+#: terminal reason IS that name. `WHY_IT_NEVER_RAN` below is injective, and `admission.py` asserts
+#: both that it covers every reason and that no two reasons share a word.
+#:
+#: TWO DEPARTURES, each with a reason:
+#:   * `gateway_stopped` already exists above and means something else -- a run that WAS RUNNING when
+#:     a shutdown began, which is why it sits in `NOTHING_WAS_ESTABLISHED`. For a waiting job it IS
+#:     established that nothing ran, so the kill switch gets `NOT_TAKING_WORK`.
+#:   * `not_enrolled` becomes `DEVICE_WITHDRAWN`: for a job that was admitted and then found
+#:     unenrolled at its slot, the enrolment it had is gone, which is what a withdrawal is.
+#:
+#: AND TWO WORDS THAT ARE NOT ADMISSION'S, because their routes are not admission's: the device check
+#: at the slot answers "withdrawn" or "this host cannot read its own token store", and the last word
+#: is for a refusal carrying no admission reason at all. That one names what it does not know rather
+#: than naming a cause it does not have -- the same refusal to invent that `GATEWAY_LOST` makes.
 ACCOUNT_SUSPENDED = "account_suspended"
 DEVICE_WITHDRAWN = "device_withdrawn"
 NOT_TAKING_WORK = "not_taking_work"
 ENROLMENT_UNREADABLE = "enrolment_unreadable"
-REFUSED_BEFORE_IT_RAN = "refused_before_it_ran"
+GATEWAY_UNMEASURED = "gateway_unmeasured"
+ACCOUNT_UNREADABLE = "account_unreadable"
+CEILINGS_UNREADABLE = "ceilings_unreadable"
+USE_UNREADABLE = "use_unreadable"
+DEVICE_RATE = "device_rate"
+ACCOUNT_RATE = "account_rate"
+DEVICE_CONCURRENT = "device_concurrent"
+ACCOUNT_CONCURRENT = "account_concurrent"
+DEVICE_RUNS_WINDOW = "device_runs_window"
+ACCOUNT_RUNS_WINDOW = "account_runs_window"
+DEVICE_SECONDS_WINDOW = "device_seconds_window"
+ACCOUNT_SECONDS_WINDOW = "account_seconds_window"
+ARTIFACT_TOO_LARGE = "artifact_too_large"
+REFUSED_BY_OPERATOR_POLICY = "refused_by_operator_policy"
+#: The cause this build cannot name, said as that. It replaces `refused_before_it_ran`, which was a
+#: true statement that named nothing and was being written over causes that had names.
+CAUSE_NOT_ESTABLISHED = "cause_not_established"
 
 STOPPED_BEFORE_IT_RAN = (ACCOUNT_SUSPENDED, DEVICE_WITHDRAWN, NOT_TAKING_WORK,
-                         ENROLMENT_UNREADABLE, REFUSED_BEFORE_IT_RAN)
+                         ENROLMENT_UNREADABLE, GATEWAY_UNMEASURED, ACCOUNT_UNREADABLE,
+                         CEILINGS_UNREADABLE, USE_UNREADABLE, DEVICE_RATE, ACCOUNT_RATE,
+                         DEVICE_CONCURRENT, ACCOUNT_CONCURRENT, DEVICE_RUNS_WINDOW,
+                         ACCOUNT_RUNS_WINDOW, DEVICE_SECONDS_WINDOW, ACCOUNT_SECONDS_WINDOW,
+                         ARTIFACT_TOO_LARGE, REFUSED_BY_OPERATOR_POLICY, CAUSE_NOT_ESTABLISHED)
 
 TERMINATION_REASONS = (EXITED, TIMED_OUT, CANCELLED,
                        OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST,
@@ -169,28 +213,28 @@ TERMINATION_REASONS = (EXITED, TIMED_OUT, CANCELLED,
 #: means for a job that never ran. The alternative -- a `.get(reason, FALLBACK)` -- would answer that
 #: question silently and always.
 #:
-#: The ceilings and the unreadable-state reasons map to the coarse word on purpose. They are real
-#: causes, they are not one of the stops this vocabulary separates, and the sentence beside them says
-#: which ceiling or which file. `not_enrolled` maps to `DEVICE_WITHDRAWN` because for a job that was
-#: ADMITTED and then found unenrolled at its slot, the enrolment it had is gone -- which is what a
-#: withdrawal is. A caller that was never enrolled cannot have a waiting job.
+#: IT IS INJECTIVE, and that is the point rather than a property it happens to have: a reader of the
+#: durable record has to be able to tell a ceiling from an unreadable limits file from a policy
+#: refusal. `admission.py` asserts both halves -- every reason has a word, and no two reasons share
+#: one. The earlier version of this table mapped thirteen reasons onto one coarse word, which is what
+#: round three of the review failed `D1` on.
 WHY_IT_NEVER_RAN = {
     "gateway_stopped": NOT_TAKING_WORK,
-    "gateway_unmeasured": REFUSED_BEFORE_IT_RAN,
+    "gateway_unmeasured": GATEWAY_UNMEASURED,
     "account_suspended": ACCOUNT_SUSPENDED,
-    "account_unreadable": REFUSED_BEFORE_IT_RAN,
-    "ceilings_unreadable": REFUSED_BEFORE_IT_RAN,
-    "use_unreadable": REFUSED_BEFORE_IT_RAN,
-    "device_rate": REFUSED_BEFORE_IT_RAN,
-    "account_rate": REFUSED_BEFORE_IT_RAN,
-    "device_concurrent": REFUSED_BEFORE_IT_RAN,
-    "account_concurrent": REFUSED_BEFORE_IT_RAN,
-    "device_runs_window": REFUSED_BEFORE_IT_RAN,
-    "account_runs_window": REFUSED_BEFORE_IT_RAN,
-    "device_seconds_window": REFUSED_BEFORE_IT_RAN,
-    "account_seconds_window": REFUSED_BEFORE_IT_RAN,
-    "artifact_too_large": REFUSED_BEFORE_IT_RAN,
-    "refused_by_operator_policy": REFUSED_BEFORE_IT_RAN,
+    "account_unreadable": ACCOUNT_UNREADABLE,
+    "ceilings_unreadable": CEILINGS_UNREADABLE,
+    "use_unreadable": USE_UNREADABLE,
+    "device_rate": DEVICE_RATE,
+    "account_rate": ACCOUNT_RATE,
+    "device_concurrent": DEVICE_CONCURRENT,
+    "account_concurrent": ACCOUNT_CONCURRENT,
+    "device_runs_window": DEVICE_RUNS_WINDOW,
+    "account_runs_window": ACCOUNT_RUNS_WINDOW,
+    "device_seconds_window": DEVICE_SECONDS_WINDOW,
+    "account_seconds_window": ACCOUNT_SECONDS_WINDOW,
+    "artifact_too_large": ARTIFACT_TOO_LARGE,
+    "refused_by_operator_policy": REFUSED_BY_OPERATOR_POLICY,
     "not_enrolled": DEVICE_WITHDRAWN,
 }
 

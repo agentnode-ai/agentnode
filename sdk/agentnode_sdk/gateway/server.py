@@ -3080,7 +3080,7 @@ class GatewayService:
                     ACCOUNT_SUSPENDED,
                     DEVICE_WITHDRAWN,
                     NOT_TAKING_WORK,
-                    REFUSED_BEFORE_IT_RAN,
+                    CAUSE_NOT_ESTABLISHED,
                 )
 
                 why = getattr(ticket, "dropped", "") or "dropped"
@@ -3122,7 +3122,7 @@ class GatewayService:
                     because_word={"stopped": NOT_TAKING_WORK,
                                   "revoked": DEVICE_WITHDRAWN,
                                   SWEPT_FOR_A_SUSPENSION: ACCOUNT_SUSPENDED}.get(
-                                      why, REFUSED_BEFORE_IT_RAN))
+                                      why, CAUSE_NOT_ESTABLISHED))
                 return False
             record.slot_ticket = None
 
@@ -3158,7 +3158,7 @@ class GatewayService:
                                          True)
         except Exception as refused:                          # noqa: BLE001
             from agentnode_sdk.gateway.protocol import (
-                REFUSED_BEFORE_IT_RAN,
+                CAUSE_NOT_ESTABLISHED,
                 WHY_IT_NEVER_RAN,
             )
 
@@ -3174,7 +3174,7 @@ class GatewayService:
                 # The fallback is for an exception that is not a `NotAdmitted` at all and
                 # therefore carries no reason -- it is still a word rather than an absence.
                 because_word=WHY_IT_NEVER_RAN.get(
-                    str(getattr(refused, "reason", "") or ""), REFUSED_BEFORE_IT_RAN))
+                    str(getattr(refused, "reason", "") or ""), CAUSE_NOT_ESTABLISHED))
             return False
         if record.cancel_requested.is_set():
             self.slots.give_back(record.run_id)
@@ -3260,13 +3260,13 @@ class GatewayService:
         # what an unnamed cause gets, and it is still a true statement.
         elif state == "refused":
             from agentnode_sdk.gateway.protocol import (
-                REFUSED_BEFORE_IT_RAN,
+                CAUSE_NOT_ESTABLISHED,
                 STOPPED_BEFORE_IT_RAN,
             )
 
-            word = str(because_word or "") or REFUSED_BEFORE_IT_RAN
+            word = str(because_word or "") or CAUSE_NOT_ESTABLISHED
             record.termination_reason = (
-                word if word in STOPPED_BEFORE_IT_RAN else REFUSED_BEFORE_IT_RAN)
+                word if word in STOPPED_BEFORE_IT_RAN else CAUSE_NOT_ESTABLISHED)
         # NOTHING WAS LEFT BEHIND, because nothing was ever created. `container_name` is set in
         # `_run` AFTER the slot is held, so an empty one here is not an assumption -- it is the
         # record saying this job never reached the point of having a sandbox. Guarded on that

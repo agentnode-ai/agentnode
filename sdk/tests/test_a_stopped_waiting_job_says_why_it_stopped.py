@@ -45,6 +45,16 @@ WHAT EACH TEST GOES RED WITH on the unrepaired build, predeclared here before th
 * `test_9` -- "a refusal with no specific word wrote nothing at all"
 * `test_10` -- "an invented word was stored, so the terminal record cannot be read back"
 
+AND WHAT ROUND THREE'S FOUR ADD, declared the same way before their own run:
+
+* `test_15` -- "these causes are recorded under one word", about the mapping collapsing thirteen of
+  admission's seventeen reasons onto the coarse word;
+* `test_16` -- "a ceiling refusal at the slot recorded", driven through the real path;
+* `test_17` and `test_18` -- `cannot import name 'CAUSE_NOT_ESTABLISHED'`. Those two are reds about a
+  name that does not exist yet rather than about a stored value, and that is said rather than dressed
+  up: the fallback's word is the subject, so its absence and the defect are the same statement.
+  `test_18` becomes a value test the moment the name exists.
+
 `test_7` must be **GREEN BEFORE AND AFTER**. It is not about the repair; it is the guard on it. Adding a
 reason to these endings must not change the OUTCOME a customer is told, because `outcome` is a field
 clients branch on and this repair is about `termination_reason`. A repair that quietly moved every
@@ -70,9 +80,14 @@ WITHDRAWN = "device_withdrawn"
 UNREADABLE = "enrolment_unreadable"
 SUSPENDED = "account_suspended"
 NOT_TAKING_WORK = "not_taking_work"
-#: The honest coarse word, for a refusal at the slot whose specific cause has no word of its own. It is
-#: not a guess: it is a true statement at a coarser grain, with the sentence beside it carrying the rest.
-GENERIC = "refused_before_it_ran"
+#: THE WORD FOR A CAUSE THIS BUILD CANNOT NAME, and it is the second version of this line.
+#:
+#: It was `refused_before_it_ran` -- a true statement that named nothing -- and the mapping wrote it
+#: over thirteen of admission's seventeen reasons, every one of which HAS a name. Round three of the
+#: review failed `D1` on that: a non-empty readable reason is not the actual reason. The mapping is now
+#: injective, so this word reaches the record only where no admission reason was carried at all, and it
+#: says that rather than naming a cause it does not have.
+GENERIC = "cause_not_established"
 
 
 def _a_waiting_job(service, name):
@@ -244,6 +259,118 @@ class TestTheQueuesOwnDropReasonsKeepTheirWords:
         assert _reason(record) == WITHDRAWN, (
             "a ticket dropped because the device was withdrawn recorded %r where it should record "
             "%r" % (_reason(record), WITHDRAWN))
+
+
+class TestNoCauseIsReplacedByAnother:
+    """What round three of the review failed `D1` on, as tests.
+
+    The first version of this repair mapped thirteen of admission's seventeen reasons onto one coarse
+    word. Every named cause was recorded -- and a ceiling, an unreadable ceilings file and a policy
+    refusal all came out as `refused_before_it_ran`. The review was right about what that is:
+
+        "the fallback intentionally substitutes a generic word when an actual cause is outside the
+         vocabulary. D1 requires the actual terminal reason, not merely some non-empty readable
+         reason. The fallback therefore preserves the same class of information loss."
+
+    So there is no second vocabulary. Admission already names every cause it refuses for, and the
+    terminal reason IS that name. The only departures are two, and each has a reason:
+
+      * `gateway_stopped` already exists as a termination reason and means something else -- a run
+        that WAS RUNNING when a shutdown began, which is why it sits in `NOTHING_WAS_ESTABLISHED`.
+        A waiting job stopped by the kill switch did not run, and that is established, so it keeps
+        its own word.
+      * `not_enrolled` becomes `device_withdrawn`: for a job that was ADMITTED and then found
+        unenrolled at its slot, the enrolment it had is gone, which is what a withdrawal is.
+
+    And the fallback is now for one thing only -- a refusal that carries no admission reason at all,
+    which is an exception that is not a `NotAdmitted`. Its word says that rather than naming a cause
+    it does not know, in the same spirit as `gateway_lost`.
+    """
+
+    def test_15_every_cause_admission_names_keeps_its_own_word(self):
+        from agentnode_sdk.gateway import admission
+        from agentnode_sdk.gateway.protocol import TERMINATION_REASONS, WHY_IT_NEVER_RAN
+
+        missing = [r for r in admission.REASONS if r not in WHY_IT_NEVER_RAN]
+        assert not missing, "admission reasons with no terminal word at all: %r" % missing
+
+        words = {r: WHY_IT_NEVER_RAN[r] for r in admission.REASONS}
+        for reason, word in sorted(words.items()):
+            assert word in TERMINATION_REASONS, (
+                "%r maps to %r, which the record cannot hold" % (reason, word))
+
+        # NO TWO CAUSES SHARE A WORD. This is the whole of what round three failed D1 on: a reader
+        # of the durable record must be able to tell a ceiling from an unreadable limits file from
+        # a policy refusal, and a mapping that is not injective makes that impossible however many
+        # words it has.
+        backwards = {}
+        for reason, word in sorted(words.items()):
+            backwards.setdefault(word, []).append(reason)
+        collapsed = {w: rs for w, rs in backwards.items() if len(rs) > 1}
+        assert not collapsed, (
+            "these causes are recorded under one word, so the record cannot tell them apart: %r"
+            % collapsed)
+
+    def test_16_a_ceiling_at_the_slot_is_recorded_as_that_ceiling(self, capped):
+        """Driven rather than read off the table: the word has to survive the real path.
+
+        The refusal is raised the way admission raises it -- a `NotAdmitted` carrying one of its own
+        reasons -- from the one call `_wait_for_a_slot` makes. Nothing else about the path is
+        changed, so what this measures is the mapping on the real route, not the table in isolation.
+        """
+        from agentnode_sdk.gateway import admission
+
+        who, record = _a_waiting_job(capped, "over-a-ceiling-and-waiting")
+
+        def over_a_ceiling(_account, _device, _would_run):
+            raise admission.NotAdmitted(
+                "device_concurrent",
+                "this device already has 1 runs going and may have 1 at once",
+                "Wait for one to finish.")
+
+        capped.may_this_caller_proceed = over_a_ceiling
+
+        assert _let_it_through(capped, record) is False, "a job over a ceiling was started"
+        assert _reason(record) == "device_concurrent", (
+            "a ceiling refusal at the slot recorded %r; the cause admission named was "
+            "'device_concurrent'" % _reason(record))
+
+    def test_18_and_a_refusal_that_is_not_an_admission_refusal_says_so(self, capped):
+        """The one case the fallback is for, driven.
+
+        An exception that is not a `NotAdmitted` carries no cause this build can name. The record
+        then says that, rather than naming a cause it does not have.
+        """
+        from agentnode_sdk.gateway.protocol import CAUSE_NOT_ESTABLISHED
+
+        who, record = _a_waiting_job(capped, "refused-by-something-unnamed")
+
+        def something_else(_account, _device, _would_run):
+            raise RuntimeError("something this build has no reason for")
+
+        capped.may_this_caller_proceed = something_else
+
+        assert _let_it_through(capped, record) is False
+        assert _reason(record) == CAUSE_NOT_ESTABLISHED, (
+            "a refusal with no admission reason recorded %r" % _reason(record))
+
+    def test_17_the_fallback_names_what_it_does_not_know(self):
+        """It fires for a refusal that carries no admission reason -- and says so.
+
+        `refused_before_it_ran` was a true statement that named no cause. The word now says the
+        cause was not established, which is what is actually the case, and is the same refusal to
+        invent that `gateway_lost` makes.
+        """
+        from agentnode_sdk.gateway.protocol import (
+            CAUSE_NOT_ESTABLISHED,
+            TERMINATION_REASONS,
+            WHY_IT_NEVER_RAN,
+        )
+
+        assert CAUSE_NOT_ESTABLISHED in TERMINATION_REASONS
+        assert CAUSE_NOT_ESTABLISHED not in WHY_IT_NEVER_RAN.values(), (
+            "a named admission cause is being recorded as 'the cause was not established', which "
+            "is false about it")
 
 
 class TestTheWordsAreWordsTheRecordCanHold:

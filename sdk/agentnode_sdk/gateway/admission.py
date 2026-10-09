@@ -118,6 +118,11 @@ assert set(AS_A_REFUSAL) == set(REASONS), "every reason renders as exactly one r
 # reason would silently fall to whatever default the lookup had.
 assert set(_protocol.WHY_IT_NEVER_RAN) == set(REASONS), (
     "every reason has to say what it means for a job stopped before it ever ran")
+# AND NO TWO REASONS MAY SHARE A WORD. Covering every reason is not enough: the first version of that
+# table covered all of them and mapped thirteen onto one coarse word, so the durable record could not
+# tell a ceiling from an unreadable limits file. An independent review failed the criterion on it.
+assert len(set(_protocol.WHY_IT_NEVER_RAN.values())) == len(REASONS), (
+    "two reasons are recorded under one terminal word, so the record cannot tell them apart")
 assert set(AS_A_REFUSAL.values()) <= set(contract.REFUSALS), (
     "every refusal admission produces is one the contract declares")
 
