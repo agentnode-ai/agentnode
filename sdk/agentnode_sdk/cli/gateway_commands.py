@@ -25,6 +25,11 @@ import time
 from pathlib import Path
 
 from agentnode_sdk.cli.output import bold, dim
+# THE INCOMPLETE-INSTALLATION REPORT LIVES IN `output`, not here: the worker's preflight
+# needs the same answer, and importing this module from the worker's put twenty-four
+# gateway modules into the worker's import graph. See `roles.py` and
+# `test_the_two_roles_are_separable.py`.
+from agentnode_sdk.cli.output import an_incomplete_installation
 
 
 def _root(args) -> Path:
@@ -654,6 +659,12 @@ def cmd_egress(args) -> int:
 
 
 def cmd_status(args) -> int:
+    # PR7 is about a host that could be MISTAKEN for one that serves, and `status` is what an
+    # operator reads to decide that. It answers the same condition the doctor does.
+    incomplete = an_incomplete_installation(bool(getattr(args, "json_output", False)))
+    if incomplete is not None:
+        return incomplete
+
     root = _root(args)
     if not _config_path(root).is_file() and not (root / "identity.json").is_file():
         print("  No gateway is set up here. Run: agentnode gateway init")
@@ -709,6 +720,11 @@ def cmd_status(args) -> int:
 
 
 def cmd_doctor(args) -> int:
+    # BEFORE ANYTHING ELSE. See `_an_incomplete_installation`.
+    incomplete = an_incomplete_installation(bool(getattr(args, "json_output", False)))
+    if incomplete is not None:
+        return incomplete
+
     from agentnode_sdk.worker import WorkerUnreachable
 
     root = _root(args)

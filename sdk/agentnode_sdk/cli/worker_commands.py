@@ -215,6 +215,15 @@ def cmd_preflight(args) -> int:
     appears as the pair it belongs to and a generation; a certificate appears as the identity
     URI on it, which is a name.
     """
+    # BEFORE ANY QUESTION ABOUT CONFIGURATION. PR7 says "the preflight or readiness path", and this
+    # is the worker's half: a host whose dependencies never arrived cannot answer anything about
+    # its configuration, and must say THAT rather than die on an import.
+    from agentnode_sdk.cli.output import an_incomplete_installation
+
+    incomplete = an_incomplete_installation(bool(getattr(args, "json_output", False)))
+    if incomplete is not None:
+        return incomplete
+
     say, bad = [], []
 
     def good(line):
