@@ -333,6 +333,14 @@ def name_the_refusal(exc: Exception) -> tuple:
         "Try again; if it keeps happening, tell whoever runs this sandbox.")
 
 
+#: WHY THE SWEEP TOOK A TICKET OUT, when the reason is a suspension. One definition, because it is
+#: read at both ends: the sweep writes it onto the ticket and `_wait_for_a_slot` turns it back into a
+#: terminal reason. It was a literal at the sweep and absent from the mapping, and the stand measured
+#: the consequence -- a suspended account's waiting job recorded under the coarse word while its
+#: customer was correctly told the cause (`BETA-4`, `E0318`).
+SWEPT_FOR_A_SUSPENSION = "the account was suspended"
+
+
 def container_name_for(run_id: str) -> str:
     """The name this gateway gives a run's container.
 
@@ -682,7 +690,7 @@ class GatewayService:
                     accounts[account] = False
             return accounts[account]
 
-        suspended = slots.drop_every(no_longer_permitted, "the account was suspended")
+        suspended = slots.drop_every(no_longer_permitted, SWEPT_FOR_A_SUSPENSION)
 
         # AND A SECOND PASS, FOR A DEVICE THAT IS GONE, with its own reason.
         #
@@ -3069,6 +3077,7 @@ class GatewayService:
                 self.slots.drop(record.run_id, "cancelled")
             if not self.slots.wait_for_slot(ticket):
                 from agentnode_sdk.gateway.protocol import (
+                    ACCOUNT_SUSPENDED,
                     DEVICE_WITHDRAWN,
                     NOT_TAKING_WORK,
                     REFUSED_BEFORE_IT_RAN,
@@ -3080,12 +3089,18 @@ class GatewayService:
                     "cancelled" if why == "cancelled" else "refused",
                     # EVERY REASON SOMETHING ACTUALLY DROPS A TICKET WITH, and no others.
                     #
-                    # A suspension is deliberately absent. It is applied by the operator's CLI,
-                    # which is a DIFFERENT PROCESS from the one holding this queue and cannot
-                    # reach these tickets at all. It is enforced instead a few lines below, by
-                    # asking the account's standing again at the moment the slot is granted --
-                    # the last moment before foreign code runs. A wording here for a case
-                    # nothing can produce would read like a mechanism that exists.
+                    # THIS COMMENT USED TO SAY a suspension was "deliberately absent" here,
+                    # because it is applied by the operator's CLI -- a different process, which
+                    # cannot reach these tickets -- and was therefore enforced only at the grant.
+                    # That was half right and the half it got wrong cost a measurement: the
+                    # gateway's OWN tick sweeps, and the sweep does drop a suspended account's
+                    # ticket, with `SWEPT_FOR_A_SUSPENSION` on it. So the case the comment said
+                    # nothing could produce was being produced every tick, and it arrived here
+                    # with a sentence this map did not know.
+                    #
+                    # The grant-time check below is still the fail-closed half and still matters:
+                    # a sweep is prompt and not instantaneous. Both routes now end in the same
+                    # word for the same cause.
                     {"cancelled": "cancelled by the client while it was waiting for a slot",
                      "stopped": "this sandbox stopped taking work while this job was waiting",
                      "revoked": "the device that submitted this job was withdrawn while it "
@@ -3097,8 +3112,16 @@ class GatewayService:
                     # kept only the sentence, so "why did this job never run" was a question only
                     # a human reading prose could answer. A drop reason this build does not know
                     # still gets a word rather than an absence.
+                    # MEASURED, NOT REASONED: `E0318` on the stand recorded a suspended
+                    # account's waiting job as the coarse word, because the sweep drops its
+                    # ticket with a SENTENCE and this map knew only the two short reasons. The
+                    # comment a few lines below said a suspension could not arrive by this route
+                    # at all -- true of the operator's CLI, which is another process, and false
+                    # of the gateway's own tick, which sweeps. `SWEPT_FOR_A_SUSPENSION` is that
+                    # one sentence, defined once and used by both ends, so the two cannot drift.
                     because_word={"stopped": NOT_TAKING_WORK,
-                                  "revoked": DEVICE_WITHDRAWN}.get(
+                                  "revoked": DEVICE_WITHDRAWN,
+                                  SWEPT_FOR_A_SUSPENSION: ACCOUNT_SUSPENDED}.get(
                                       why, REFUSED_BEFORE_IT_RAN))
                 return False
             record.slot_ticket = None

@@ -183,6 +183,58 @@ class TestTheQueuesOwnDropReasonsKeepTheirWords:
             "a ticket dropped because the gateway stopped taking work recorded %r where it should "
             "record %r" % (_reason(record), NOT_TAKING_WORK))
 
+    def test_13_a_ticket_dropped_because_the_account_was_suspended(self, capped):
+        """MEASURED ON THE TWO-HOST STAND, and it is why this test exists at all.
+
+        `E0318` on the head that carried the first version of this repair: the suspended account's
+        waiting job settled as `refused_before_it_ran` -- the coarse word -- while its customer was
+        correctly told `the account was suspended`. The ledger could not tell that job from any
+        other refusal at the slot, which is what `D2` asks for and is exactly the defect one layer
+        in from the one this file started on.
+
+        The cause is in the sweep rather than in the mapping. `drop_queued_work_that_is_no_longer_
+        permitted` drops a suspended account's ticket with the SENTENCE `"the account was
+        suspended"`, and the mapping knew only the short reasons `"stopped"` and `"revoked"`. The
+        comment at the grant-time branch even said a suspension could not arrive by this route --
+        "it is applied by the operator's CLI, which is a DIFFERENT PROCESS" -- which is true of the
+        CLI and not of the gateway's own tick, which sweeps.
+
+        The drop reason is the string the sweep passes, pinned here, because that is the coupling:
+        if the sweep's wording changes and this is not changed with it, the word silently coarsens
+        again and only a stand measurement would show it.
+        """
+        who, record = _a_waiting_job(capped, "dropped-because-suspended")
+        capped.slots.drop(record.run_id, "the account was suspended")
+
+        assert capped._wait_for_a_slot(record, _limits()) is False, (
+            "a job whose ticket was dropped was allowed to start")
+        assert _reason(record) == SUSPENDED, (
+            "a ticket dropped because the account was suspended recorded %r where it should "
+            "record %r" % (_reason(record), SUSPENDED))
+
+    def test_14_and_the_sweep_still_drops_it_with_the_wording_this_mapping_expects(self, capped):
+        """The other half of that coupling, as its own test.
+
+        `test_13` pins what the mapping does with a sentence. This pins that the sentence is the
+        one the sweep actually passes, read from the product rather than from my memory of it. Two
+        tests because they fail for different reasons: one if the mapping is wrong, one if the
+        sweep's wording moves out from under it.
+        """
+        from tests.test_two_accounts import _a_customer
+
+        who = _a_customer(capped, "suspended-and-swept")
+        record = _queued_job(capped, who, run_id="swept-job")
+        capped.state.accounts.suspend(who.account_id, "we need to talk", by="the operator")
+
+        dropped = capped.drop_queued_work_that_is_no_longer_permitted()
+
+        assert record.run_id in [str(x) for x in dropped], (
+            "the sweep did not drop the suspended account's waiting job at all: %r" % dropped)
+        assert str(getattr(record.slot_ticket, "dropped", "")) == "the account was suspended", (
+            "the sweep drops a suspended account's ticket with %r, which is not the wording the "
+            "mapping in `_wait_for_a_slot` keys on"
+            % str(getattr(record.slot_ticket, "dropped", "")))
+
     def test_12_a_ticket_dropped_because_the_device_was_withdrawn(self, capped):
         who, record = _a_waiting_job(capped, "dropped-because-revoked")
         capped.slots.drop(record.run_id, "revoked")
