@@ -530,8 +530,19 @@ WAITED="$(wait_until_serving)" || DID_NOT_SERVE=1
 if [ -n "${DID_NOT_SERVE:-}" ]; then
   printf '\n   not serving after %ss. What it said:\n\n' "$WAITED"
   journalctl -u agentnode-worker.service -n 25 --no-pager | sed 's/^/   /'
-  if journalctl -u agentnode-worker.service -n 60 --no-pager 2>/dev/null \
-       | grep -q 'limits do not bind'; then
+  # READ ONCE, THEN TEST THE TEXT. This was `journalctl ... | grep -q 'limits do not bind'`, and under
+  # the `set -euo pipefail` at the top of this file that condition could never be true: `grep -q` exits
+  # on its first match, the match is near the start of sixty journal lines, so journalctl is still
+  # writing when the pipe closes and dies of SIGPIPE. Measured on a real worker, ${PIPESTATUS[*]} for
+  # that pipeline was `141 0` -- grep FOUND it and journalctl was killed -- and pipefail takes the
+  # leftmost failure. The more certainly the phrase was there, the earlier grep exited and the more
+  # reliably this repair did not run. It cost a host that would have recovered in three seconds.
+  WHAT_IT_SAID="$(journalctl -u agentnode-worker.service -n 60 --no-pager 2>/dev/null || true)"
+  case "$WHAT_IT_SAID" in
+    *'limits do not bind'*) THE_NAMESPACE_IS_STALE=1 ;;
+    *)                      THE_NAMESPACE_IS_STALE= ;;
+  esac
+  if [ -n "$THE_NAMESPACE_IS_STALE" ]; then
     printf '\n   That is the rootless runtime, not this host being unfit: its stored namespace is\n'
     printf '   stale. Restarting agentnode-worker-runtime.service, which exists to rebuild it, and\n'
     printf '   trying the worker once more. This is said out loud because a host that needed it is\n'
