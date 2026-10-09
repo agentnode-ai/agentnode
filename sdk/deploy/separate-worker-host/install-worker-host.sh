@@ -41,7 +41,7 @@ stop_here() { printf '\n-- %s\n\n' "$1"; exit 0; }
 
 [ "$(id -u)" = "0" ] || die "this makes system accounts and units, so it needs root"
 command -v systemctl >/dev/null || die "there is no systemd here"
-command -v podman    >/dev/null || die "podman is not installed, and this worker runs rootless podman"
+# python3 is checked by hand because it is what reads the table of everything else.
 command -v python3   >/dev/null || die "python3 is not installed"
 [ -n "$LISTEN" ]     || die "set AGENTNODE_LISTEN to this host's PRIVATE address, e.g. tcps://10.0.1.5:8443"
 [ -n "$DEPLOYMENT" ] || die "set AGENTNODE_DEPLOYMENT to the same deployment id the control plane was given"
@@ -62,7 +62,65 @@ unit_file() {
   die "no unit file named $* is in this artefact or beside this script"
 }
 
+# THE UNIT LOOKUP IS NOT USED FOR THIS, and the reason is worth the paragraph: that function means
+# "a systemd unit this artefact ships", and the build's own self-check scans this script for every
+# name asked of it and refuses to build an artefact that does not carry that name under unit/, where
+# units live. Asking it for the table made the build refuse itself -- correctly -- with "install.sh
+# asks for a unit named one of prerequisites.py and the control-plane artefact carries none of them".
+# So the table, which is not a unit and does not live under unit/, gets its own lookup.
+#
+# (This comment deliberately does not write that function's name followed by a placeholder: the
+# build's scanner reads this file as text, and a mention in a comment was taken for a request.)
+beside_me() {
+  local candidate
+  for candidate in "$HERE/$1" "$(dirname "$HERE")/$1"; do
+    if [ -f "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+  done
+  return 1
+}
+
 cd /
+
+# ---------------------------------------------------------------------------------------------
+say "what this host needs before any of this works"
+
+# THE FIRST THING, and before it had been written the two machines of the cross-host run could
+# not run this script as they came: `tar` was absent on both -- which is how this artefact was
+# unpacked -- and the worker had no container runtime. Both were installed by hand, and a step
+# somebody typed once is not a deploy path.
+#
+# One table, in prerequisites.py, read here and read again by `agentnode worker preflight` on
+# every start. Per role: the worker is the only host that gets a container runtime, because it
+# is the only host that runs foreign code.
+PREREQ="$(beside_me prerequisites.py || true)"
+if [ -z "$PREREQ" ]; then
+  # ABSENT FROM THE ARTEFACT is not the same as a host that is missing something. An
+  # artefact built before this table existed carries none; saying nothing would hide which
+  # checks ran, and dying would make an older artefact uninstallable.
+  ok "this artefact carries no prerequisite table, so nothing was checked about this host"
+elif python3 "$PREREQ" --role worker; then
+  :
+else
+  # The report above already names each missing program, what it is for, and the ONE command
+  # that installs exactly the missing ones from the repositories this host already has.
+  if [ "${AGENTNODE_INSTALL_PREREQUISITES:-}" = "yes" ]; then
+    say "installing what is missing, from this host's own repositories"
+    python3 "$PREREQ" --role worker --install || die "the packages this role needs could not be installed"
+  else
+    die "this host is missing something this role needs. Run the command the report names, or
+    re-run this script with AGENTNODE_INSTALL_PREREQUISITES=yes to install exactly those
+    packages from the repositories this host already has."
+  fi
+fi
+
+# WHERE THE PRODUCT'S OWN PREFLIGHT WILL LOOK. The same bytes, installed, so the check that runs
+# as ExecStartPre on every start is reading the table this install was judged against and not a
+# second copy of it.
+if [ -n "$PREREQ" ]; then
+  install -d -o root -g root -m 0755 "$PREFIX/deploy"
+  install -o root -g root -m 0644 "$PREREQ" "$PREFIX/deploy/prerequisites.py"
+  ok "the table is at $PREFIX/deploy/prerequisites.py, table version $(python3 "$PREREQ" --role worker --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["table_version"])')"
+fi
 
 # ---------------------------------------------------------------------------------------------
 say "the address this worker will bind"
@@ -132,8 +190,18 @@ say "the code"
 if [ -n "$WHEEL" ]; then
   [ -f "$WHEEL" ] || die "no wheel at $WHEEL"
   [ -d "$PREFIX/venv" ] || python3 -m venv "$PREFIX/venv"
-  "$PREFIX/venv/bin/pip" install --quiet --force-reinstall --no-deps "$WHEEL"
-  "$PREFIX/venv/bin/pip" install --quiet "$WHEEL"
+  "$PREFIX/venv/bin/pip" install --quiet --no-compile --force-reinstall --no-deps "$WHEEL"
+  "$PREFIX/venv/bin/pip" install --quiet --no-compile "$WHEEL"
+  # BYTECODE THAT DOES NOT MOVE. Running this installer twice used to change 188 files and nothing
+  # else: every .pyc under the virtualenv, because pip compiles with the default mtime-and-size
+  # invalidation and a reinstall gives every source file a new mtime. The code was identical; the
+  # derived bytecode was not, so a second run of the whole path could not be shown to change
+  # nothing. --no-compile plus checked-hash invalidation makes a .pyc a function of its source's
+  # CONTENT alone, so the second run writes the same bytes -- and the files stay verifiable, which
+  # an interpreter silently recompiling at runtime as root would not be.
+  "$PREFIX/venv/bin/python" -m compileall -q -f --invalidation-mode checked-hash \
+    "$PREFIX/venv/lib" > /dev/null 2>&1 \
+    || die "the installed code could not be compiled, so this host would compile it at run time"
   ok "installed $(basename "$WHEEL")"
   # WHICH ARTEFACT THIS IS, recorded inside the installed distribution, exactly as
   # deploy/deploy-pinned.sh does it. Without this the start refuses -- "the pin expects
@@ -416,12 +484,77 @@ runuser -u "$WORKER_USER" -- env XDG_RUNTIME_DIR="/run/user/$WORKER_UID" HOME="$
 
 systemctl enable agentnode-worker.service >/dev/null
 systemctl restart agentnode-worker.service
-sleep 3
-if ! systemctl is-active --quiet agentnode-worker.service; then
-  printf '\n!! the worker did not start. What it said:\n\n'
-  journalctl -u agentnode-worker.service -n 30 --no-pager | sed 's/^/   /'
+# WAIT FOR THE UNIT'S OWN VERDICT, do not read it three seconds in. Measured on a real worker
+# four times: the rootless runtime's stored namespace can be stale when the service starts, the
+# service repairs it -- `podman system migrate` -- and that repair takes effect only in the NEXT
+# start. The unit is configured to restart on failure, so the host converges by itself in a few
+# seconds. Reading the state at three seconds reported "the worker did not start" on a host that
+# was fine moments later, and every such run spent one of the unit's five allowed start attempts
+# until systemd refused to start it at all and replaced the real message with "Start request
+# repeated too quickly".
+#
+# So: wait for active, bounded, and SAY how long it took and how many attempts it needed. A worker
+# that needed two attempts is worth saying out loud, not hiding behind a longer sleep. A worker
+# that never becomes active still fails here, exactly as before.
+# IS-ACTIVE IS NOT SERVING. Measured on a real worker: the main process starts, so the unit is
+# `active` for the two seconds it takes to probe its memory ceiling, and then it exits 1 because the
+# ceiling did not bind. A wait for `active` is therefore satisfied by a worker that is already
+# doomed -- which is how this script reported success on a host that was in a restart loop and
+# listening on nothing. The thing worth waiting for is the address it was told to bind.
+#
+# AND ONE REPAIR, ONCE, NAMED. The failure this keeps hitting is the rootless runtime's stored
+# namespace going stale: `crun: mount 'proc' to 'proc': Operation not permitted`, after which the
+# worker refuses, correctly, because a worker whose ceilings do not bind runs foreign code with no
+# ceiling. What repairs it is `podman system migrate`, which is the whole job of
+# agentnode-worker-runtime.service -- a unit this script has already installed and started. So on
+# exactly that failure it restarts that unit once and tries the worker again, and SAYS that it did.
+# It is not a retry loop and it is not silent: a second failure fails the install.
+serving() {
+  systemctl is-active --quiet agentnode-worker.service \
+    && ss -tln 2>/dev/null | grep -q "$BIND_IP:$BIND_PORT"
+}
+
+wait_until_serving() {
+  local waited=0
+  while [ "$waited" -lt 90 ]; do
+    serving && { printf '%s' "$waited"; return 0; }
+    sleep 3
+    waited=$((waited + 3))
+  done
+  printf '%s' "$waited"
+  return 1
+}
+
+WAITED="$(wait_until_serving)" || DID_NOT_SERVE=1
+
+if [ -n "${DID_NOT_SERVE:-}" ]; then
+  printf '\n   not serving after %ss. What it said:\n\n' "$WAITED"
+  journalctl -u agentnode-worker.service -n 25 --no-pager | sed 's/^/   /'
+  if journalctl -u agentnode-worker.service -n 60 --no-pager 2>/dev/null \
+       | grep -q 'limits do not bind'; then
+    printf '\n   That is the rootless runtime, not this host being unfit: its stored namespace is\n'
+    printf '   stale. Restarting agentnode-worker-runtime.service, which exists to rebuild it, and\n'
+    printf '   trying the worker once more. This is said out loud because a host that needed it is\n'
+    printf '   a host worth knowing about.\n'
+    systemctl restart agentnode-worker-runtime.service || true
+    systemctl reset-failed agentnode-worker.service 2>/dev/null || true
+    systemctl restart agentnode-worker.service
+    AGAIN="$(wait_until_serving)" && unset DID_NOT_SERVE
+    printf '   the second attempt waited %ss\n' "$AGAIN"
+  fi
+fi
+
+if [ -n "${DID_NOT_SERVE:-}" ]; then
+  printf '\n!! it is not serving on %s:%s after %s restart(s) of the unit.\n\n' \
+    "$BIND_IP" "$BIND_PORT" \
+    "$(systemctl show -p NRestarts --value agentnode-worker.service 2>/dev/null)"
+  journalctl -u agentnode-worker.service -n 40 --no-pager | sed 's/^/   /'
   die "not going any further while the worker is down"
 fi
+
+[ "${WAITED:-0}" = 0 ] || printf '   it took %ss before it was listening\n' "$WAITED"
+ATTEMPTS="$(systemctl show -p NRestarts --value agentnode-worker.service 2>/dev/null)"
+[ "${ATTEMPTS:-0}" = 0 ] || printf '   and %s restart(s) of the unit on the way\n' "$ATTEMPTS"
 ok "worker is running, which means it hit a ceiling and the ceiling held"
 
 # ---------------------------------------------------------------------------------------------

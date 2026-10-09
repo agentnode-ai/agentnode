@@ -480,9 +480,14 @@ class TestNothingIsLeftBehind:
         from agentnode_sdk.worker import service
 
         source = inspect.getsource(service)
-        swept = source.index("remove_what_a_previous_worker_left")
+        # `serve` no longer names the sweep directly: it calls `reconcile(the_worker)`, which is the
+        # gate of frozen/cleanup.json -- and the sweep is now the FIRST thing the start does rather
+        # than the last, because reconciling after a namespace rebuild is reconciling too late (F37).
+        swept = source.index("reconcile(the_worker)")
         listening = source.index("remembers_at=remembers_at")
         assert swept < listening, "the sweep happens after the worker is already taking work"
+        # and it is also before the ceiling proof, which is the ordering CU1 and CU2 are about
+        assert swept < source.index("proof = the_worker.prove_its_ceilings()")
 
 
 class TestTheseEndingsAreProducedAndNotOnlyDescribed:
@@ -587,17 +592,43 @@ class TestTheseEndingsAreProducedAndNotOnlyDescribed:
         worker.backend = type("B", (), {
             "check_available": lambda self: type("A", (), {"backend": "podman"})()})()
         asked: list = []
+        # A DOUBLE THAT CAN REPRESENT A REMOVAL, because the sweep now READS EVERY REMOVAL BACK and a
+        # double that answers the same listing before and after one makes every removal look refused.
+        # That read-back is CU6 of frozen/cleanup.json and it exists because the old sweep appended an
+        # id to `removed` whether or not the runtime had done it -- which is how four containers the
+        # account could not remove were reported as removed (F37).
+        there = {"agentnode-em3c-mine", "somebody-elses-database", "agentnode-run-mine2"}
+
+        def _answer(argv):
+            argv = list(argv)
+            wanted = ""
+            for part in argv:
+                if str(part).startswith("name="):
+                    wanted = str(part).split("=", 1)[1]
+            if "ps" in argv:
+                names = sorted(n for n in there if not wanted or n == wanted)
+                return "".join(n + "\n" for n in names)
+            if "rm" in argv:
+                there.discard(argv[-1])
+            return ""
 
         def _ran(argv, capture_output=False, text=False, timeout=None, **kw):
             asked.append(list(argv))
-            if "ps" in argv:
-                return TestTheseEndingsAreProducedAndNotOnlyDescribed._Said(
-                    0, "agentnode-em3c-mine\nsomebody-elses-database\nagentnode-run-mine2\n")
-            return TestTheseEndingsAreProducedAndNotOnlyDescribed._Said(0)
+            return TestTheseEndingsAreProducedAndNotOnlyDescribed._Said(0, _answer(argv))
+
+        def _egress_ran(argv, timeout=30.0):
+            asked.append(list(argv))
+            return TestTheseEndingsAreProducedAndNotOnlyDescribed._Said(0, _answer(argv))
+
+        from agentnode_sdk.sandbox import egress as _eg
 
         monkeypatch.setattr(wl.subprocess, "run", _ran)
+        monkeypatch.setattr(_eg, "_run", _egress_ran)
+        monkeypatch.setattr(_eg, "_resolver_entries", lambda: [])
         swept = worker.remove_what_a_previous_worker_left()
         removed = [argv[-1] for argv in asked if "rm" in argv]
         assert "somebody-elses-database" not in removed, (
             "the sweep removed a container this SDK never named: %r" % (removed,))
         assert sorted(swept["removed"]) == ["agentnode-em3c-mine", "agentnode-run-mine2"]
+        # and the one it never named is still there, which is the other half of the claim
+        assert "somebody-elses-database" in there

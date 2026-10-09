@@ -253,6 +253,26 @@ class Limits:
     storage_mb: int = 0
 
 
+def label_for_the_owner(deployment: str, account_id: str) -> str:
+    """A stable, opaque label for whose run this is. Both sides can compute it; neither sends an id.
+
+    sha256 over the deployment and the account id, truncated. The deployment is in it so one account
+    in two deployments does not label alike, and it is truncated to sixteen hex characters because
+    this is a label on a container, not a credential.
+
+    WHAT THIS IS NOT. It is not a secret and it is not an anonymiser: anybody holding a list of
+    account ids can compute the labels and match them up. What it does is keep the worker from being
+    HANDED the identity of whoever's code it is running, which is a different and achievable thing.
+    The gateway needs no mapping table to read it back, because it can recompute it.
+    """
+    if not account_id:
+        return ""
+    import hashlib
+
+    return hashlib.sha256(
+        ("%s/%s" % (deployment or "", account_id)).encode("utf-8")).hexdigest()[:16]
+
+
 @dataclass(frozen=True)
 class Job:
     """One unit of foreign code, and everything needed to run it somewhere else.
@@ -272,6 +292,21 @@ class Job:
     network: str = "none"
     allowed_domains: tuple[str, ...] = ()
     limits: Limits = field(default_factory=Limits)
+    #: WHOSE RUN THIS IS, AS A LABEL AND NOT AS AN ACCOUNT. A network or a proxy has to belong to a
+    #: run, an owner and a worker epoch readably, or a sweep cannot tell one run's leftovers from
+    #: another's -- but what a sweep needs is DISTINGUISHABILITY, and an account id is identity.
+    #:
+    #: This field was the account id, and `test_a_job_carries_the_job_and_nothing_else` is what
+    #: stopped that: the worker is the machine that runs other people's code, and this product
+    #: already says, in `_pair_keys`, that it gets only what one job needs. A customer identifier is
+    #: not one of those things. `owner_label` comes from `label_for_the_owner`: not reversible by
+    #: reading it, stable so two runs of one account label alike, and different between accounts so
+    #: neither can be mistaken for the other.
+    #:
+    #: Neither this nor `epoch` is needed to RUN a job, which is why both default to empty and a
+    #: worker that ignores them still runs it.
+    owner_label: str = ""
+    epoch: str = ""
 
     def as_message(self) -> dict[str, Any]:
         """This job, as something that could be sent. Refuses anything that could not cross."""
@@ -306,6 +341,14 @@ class Outcome:
     #: about THIS stop and is empty for an ordinary exit; this one is the worker's own name for
     #: its numbers, so a run that was stopped can still say whose number it kept.
     runtime_platform: str = ""
+    #: What the worker ACTUALLY set up as this run's route out, and what it measured about it before
+    #: the first foreign process started: the networks and the proxy by runtime id, the labels that own
+    #: them, and the readings of the boundary probe. Empty when the run had no route out at all.
+    #:
+    #: This is what makes the difference between "the gateway decided an allowlist" and "the allowlist
+    #: was in force": the first is a decision on one machine, and this is the other machine saying what
+    #: it built and what it measured. The gateway binds a digest of it into the signed line.
+    egress_record: dict | None = None
 
     def as_message(self) -> dict[str, Any]:
         return _plain(asdict(self), "outcome")

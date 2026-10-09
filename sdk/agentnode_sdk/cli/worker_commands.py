@@ -198,6 +198,11 @@ def _tls_from(args):
                        reevaluate_seconds=float(args.reevaluate_seconds))
 
 
+#: Where install.sh puts the table of what a role needs on the host. A path and not an import:
+#: the table is read by the install scripts before there is anything of ours installed to import.
+WHERE_THE_TABLE_IS = "/opt/agentnode/deploy/prerequisites.py"
+
+
 def cmd_preflight(args) -> int:
     """Everything `serve` checks about its configuration, without opening anything.
 
@@ -227,6 +232,36 @@ def cmd_preflight(args) -> int:
     print()
     print(f"  {bold('Would this worker start?')}  topology: {topology}")
     print()
+
+    # 0. WHAT THE HOST ITSELF NEEDS, before any question about configuration. A configuration
+    #    can be perfect on a host that cannot unpack an artefact or start a container, and the
+    #    two machines of the cross-host run were exactly that: `tar` absent on both, no runtime
+    #    on the worker, installed by hand because nothing checked.
+    #
+    #    The table is the install path's own table, installed beside it, so this check and the
+    #    install cannot disagree about what the role needs.
+    _prereq = _the_prerequisite_table()
+    if _prereq is None:
+        # ABSENT IS NOT THE SAME STATEMENT AS UNREADABLE. Absent means this host was not set up
+        # by the deploy path -- a checkout, a developer's machine -- and a missing checker is not
+        # a missing prerequisite, so saying "refused" here would be a lie about the host. It is
+        # said out loud rather than passed over, because an operator reading a clean preflight is
+        # entitled to know which checks ran.
+        say.append("  note    no prerequisite table at %s, so what this host has was not checked. "
+                   "A host installed by the deploy path has one." % WHERE_THE_TABLE_IS)
+    elif isinstance(_prereq, str):
+        # Present and unusable. That is this host's problem and not a reason to continue: a table
+        # that cannot be read is the one case where carrying on would hide a real answer.
+        refuse("the prerequisite table at %s cannot be read: %s" % (WHERE_THE_TABLE_IS, _prereq),
+               "It is installed by install.sh from the artefact. Re-run the installer, or "
+               "restore the file from the artefact this host was installed from.")
+    else:
+        for entry in _prereq["required_missing"]:
+            refuse("%s is not on this host, and %s" % (entry["program"], entry["why"]),
+                   "On this host, as root: %s" % " ".join(_prereq["to_install"]))
+        if not _prereq["required_missing"]:
+            good("every program this role needs is here (table version %d, %d checked)"
+                 % (_prereq["table_version"], len(_prereq["present"]) + len(_prereq["missing"])))
 
     # 1. THE DOOR, and whether the address agrees with the arrangement. Checked first because
     #    every other answer is about a worker that is in one arrangement or the other.
@@ -367,6 +402,33 @@ def cmd_preflight(args) -> int:
     return 0
 
 
+def _the_prerequisite_table():
+    """The installed table's answer for the worker role, or None if no table is installed here.
+
+    Returns the report dict on success, the reason as a STRING when the table is there and cannot
+    be used, and None when there is no table at all -- three answers, because the caller must
+    treat them differently and a single falsy value would collapse two of them.
+
+    It is loaded from a path rather than imported, because it is deliberately not part of the
+    package: the install scripts read it before a virtual environment exists, so it lives in the
+    artefact and is installed beside it. One file, two readers.
+    """
+    import importlib.util
+
+    where = pathlib.Path(WHERE_THE_TABLE_IS)
+    if not where.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("agentnode_host_prerequisites", str(where))
+        if spec is None or spec.loader is None:
+            return "it is not loadable as a python module"
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.inspect("worker")
+    except Exception as exc:                        # noqa: BLE001 - reported as a refusal, above
+        return "%s: %s" % (type(exc).__name__, exc)
+
+
 def _serialization():
     from cryptography.hazmat.primitives import serialization
 
@@ -375,6 +437,7 @@ def _serialization():
 
 def cmd_serve(args) -> int:
     """Serve one socket, for one account, until something stops this process."""
+    from agentnode_sdk.worker.reconcile import LeftoversRemain
     from agentnode_sdk.worker.service import CannotHoldItsLimits, serve
 
     # The worker is where foreign code actually runs, so it is the LAST place that should be
@@ -464,6 +527,45 @@ def cmd_serve(args) -> int:
     except KeyboardInterrupt:                                 # pragma: no cover - operator
         print("\n  stopped.")
         return 0
+    except LeftoversRemain as refusal:
+        # CU5: this is a CLEANUP state and it is never shaped like a policy decision. In F37 the
+        # symptom reached an operator as `403 Forbidden` from the egress proxy -- indistinguishable
+        # from an allowlist refusal -- while the real condition was that the account could not remove
+        # its own containers and nothing on any custom network could resolve a name.
+        print()
+        # THE HEADLINE HAS TO BE TRUE OF THIS REFUSAL, not of the family it belongs to. There are two
+        # states here and they are not the same thing to act on: a resource this account still owns and
+        # could not remove, and a runtime that could not be ASKED what is there. Printing the first when
+        # the second happened sends an operator looking for a container that does not exist -- which is
+        # what it did when a listing template podman accepts and docker rejects made the whole inventory
+        # unaskable, and a lane with nothing of ours on it read as a lane that owned something.
+        owned = [row for row in refusal.resources if row.get("name")]
+        if owned:
+            print(f"  {bold('This worker will not serve: it owns something it could not remove.')}")
+        else:
+            print(f"  {bold('This worker will not serve: it cannot say what is on this host.')}")
+        print()
+        print("  " + str(refusal.reason))
+        print()
+        for row in refusal.resources:
+            print("    %-16s %s" % (row.get("kind") or "resource", row.get("name") or "?"))
+            if row.get("state"):
+                print("      the runtime still says: %s" % row["state"])
+            if row.get("why"):
+                print("      and said: %s" % row["why"])
+        print()
+        if not owned:
+            print("  Nothing is named above because nothing could be listed. An answer nobody can give")
+            print("  is not an empty one, so this refuses rather than assuming the host is clean.")
+            print()
+        print("  Nothing was opened and no job can reach this machine, and the runtime's namespace")
+        print("  was NOT rebuilt. That order is deliberate: rebuilding it is what takes away this")
+        print("  account's ability to remove its own containers, and a worker that serves with a")
+        print("  route out standing is the thing this refusal exists to prevent.")
+        print()
+        print("  This is not a policy refusal and not a 403. The destinations a job may reach are")
+        print("  not involved.")
+        return 1
     except CannotHoldItsLimits as refusal:
         # Told at length, because the operator has to change the deployment and the failure is
         # one that otherwise looks like success: the runtime is up, the flag is accepted, and
@@ -492,9 +594,45 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_reconcile(args) -> int:
+    """Remove everything of this worker's that no run is waiting for, and say whether that worked.
+
+    THIS IS WHAT THE RUNTIME UNIT CALLS, in place of a bare `podman system migrate || true`. The unit
+    runs as the worker's own account and without the worker's hardening, which is the only place a
+    rootless namespace can be rebuilt -- and `--before-migrate` is the gate that decides whether it may
+    be: it reconciles, reads every removal back, and exits non-zero if anything of ours is still there
+    or any listing could not be read. systemd stops a `oneshot` at the first ExecStart that fails, so
+    the migration that follows in the unit simply does not run.
+    """
+    from agentnode_sdk.worker.reconcile import reconcile, reconcile_then_rebuild
+
+    before_migrate = bool(getattr(args, "before_migrate", False))
+    said = reconcile_then_rebuild() if bool(getattr(args, "rebuild", False)) else reconcile()
+    report = said.report.get("before", said.report)
+    print("  runtime        : %s" % (report.get("runtime") or "none"))
+    print("  found          : %s" % ", ".join(report.get("found") or []) or "-")
+    print("  removed        : %s" % ", ".join(report.get("removed") or []) or "-")
+    egress = report.get("egress") or {}
+    print("  of its route out: removed %d, failed %d"
+          % (len(egress.get("removed") or []), len(egress.get("failed") or [])))
+    for row in (egress.get("removed") or []):
+        print("      gone  %-14s %s" % (row.get("kind") or "?", row.get("name") or "?"))
+    if said.clean:
+        print("  nothing of ours is left, and every listing could be read")
+        if before_migrate:
+            print("  so the namespace may be rebuilt by the step after this one")
+        return 0
+    print("  NOT clean: %s" % said.why)
+    if before_migrate:
+        print("  so the namespace must NOT be rebuilt: doing it now would take away this account's")
+        print("  ability to remove what is still there. Nothing after this step runs.")
+    return 1
+
+
 def dispatch(args) -> int:
     action = getattr(args, "worker_command", None)
-    handlers = {"key": cmd_key, "serve": cmd_serve, "preflight": cmd_preflight}
+    handlers = {"key": cmd_key, "serve": cmd_serve, "preflight": cmd_preflight,
+                "reconcile": cmd_reconcile}
     if action not in handlers:
         print()
         print("  agentnode worker key       --at <path>")
@@ -586,5 +724,15 @@ def add_parser(subparsers) -> None:
     the_same_arguments(actions.add_parser(
         "preflight", help="Would this configuration serve? Opens nothing, starts nothing"))
 
+    # WHAT THE RUNTIME UNIT CALLS. It takes none of the arguments above: it needs no door, no keyring
+    # and no trust material, because removing what this account owns is not about who may speak here.
+    tidy = actions.add_parser(
+        "reconcile", help="Remove what no run is waiting for, and say whether that worked")
+    tidy.add_argument("--before-migrate", dest="before_migrate", action="store_true",
+                      help="say, in the refusal, that the namespace must not be rebuilt after this")
+    tidy.add_argument("--rebuild", dest="rebuild", action="store_true",
+                      help="and rebuild the rootless namespace afterwards, but only if nothing of "
+                           "ours is left")
 
-__all__ = ["add_parser", "dispatch", "cmd_key", "cmd_preflight", "cmd_serve", "sys"]
+
+__all__ = ["add_parser", "dispatch", "cmd_key", "cmd_preflight", "cmd_reconcile", "cmd_serve", "sys"]

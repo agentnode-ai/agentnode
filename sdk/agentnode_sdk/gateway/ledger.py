@@ -461,6 +461,30 @@ class Ledger:
             known = entry.get("ever_ran")
             return known if isinstance(known, bool) else None
 
+    def note_the_route_out(self, run_id: str, account: dict) -> None:
+        """Keep the worker's own account of the route out it built for this run, beside the entry.
+
+        The signed line binds a DIGEST of this -- one scalar, because that module deliberately has
+        nowhere to put "anything else" -- and this is the thing the digest is of: the networks and the
+        proxy by runtime id, the labels that own them, and the readings taken before the payload
+        started. A reader holding the line and this entry can recompute the digest; a reader holding
+        only the line knows that something specific was bound.
+
+        Written once and byte-stable on repetition, so a reconciliation that has nothing to add writes
+        nothing at all.
+        """
+        if not isinstance(account, dict) or not account:
+            return
+        with self._lock, ProcessLock(self.path):
+            self._load()
+            entry = self._data["runs"].get(str(run_id))
+            if entry is None:
+                return
+            if entry.get("route_out") == account:
+                return
+            entry["route_out"] = account
+            self._write_locked()
+
     def note_quota_repair(self, run_id: str, was, now: float) -> None:
         """Say that a quota figure was corrected from the signed line, and what it was.
 

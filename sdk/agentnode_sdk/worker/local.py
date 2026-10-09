@@ -183,18 +183,40 @@ class LocalWorker(Worker):
         from agentnode_sdk.sandbox.types import ProcessSpec
 
         egress = None
+        record = None
         if job.network == "egress":
             # The same mechanism the local runners use: an --internal network with no route out,
             # plus a dual-homed CONNECT proxy that is the only way through. The job does not get a
             # filtered internet -- it gets no route at all, and one door.
-            from agentnode_sdk.sandbox.egress import start_egress_proxy
+            from agentnode_sdk.sandbox.egress import EgressOwner, start_egress_proxy
+            from agentnode_sdk.sandbox.egress_verify import verify_the_boundary
 
+            # Whose it is, in LABELS. A name is a string anybody can choose; this is what a sweep and a
+            # restart select on, and what the run's record binds.
+            owner = EgressOwner(run=job.run_id or "unattributed",
+                                account=job.owner_label or "unattributed",
+                                epoch=job.epoch or "unattributed")
             try:
-                egress = start_egress_proxy(list(job.allowed_domains))
+                egress = start_egress_proxy(list(job.allowed_domains), owner=owner)
             except Exception as exc:                          # noqa: BLE001
                 # Nothing has started, so there is nothing to clean up and nothing to report
                 # about a route out that was never opened.
                 raise CouldNotRestrictTheNetwork(str(exc)) from exc
+            # MEASURED BEFORE THE FIRST FOREIGN PROCESS, and the run is refused if it cannot be
+            # measured. The arrangement having been built is not the same statement as the boundary
+            # being there, and only one of the two is worth starting somebody's code on.
+            try:
+                readings = verify_the_boundary(egress)
+            except Exception as exc:                          # noqa: BLE001
+                from agentnode_sdk.sandbox.egress import stop_egress_proxy
+
+                try:
+                    stop_egress_proxy(egress)
+                finally:
+                    egress = None
+                raise CouldNotRestrictTheNetwork(str(exc)) from exc
+            record = egress.as_record()
+            record["verified_before_the_payload"] = dict(readings)
 
         spec = ProcessSpec(
             command=list(job.command),
@@ -206,6 +228,7 @@ class LocalWorker(Worker):
         )
         trouble = None
         result = None
+        teardown = None
         try:
             result = self.backend.run_process(
                 spec, input_text=job.stdin, timeout=float(job.limits.wall_clock_s)
@@ -216,11 +239,20 @@ class LocalWorker(Worker):
             if egress is not None:
                 from agentnode_sdk.sandbox.egress import stop_egress_proxy
 
+                # THE TEARDOWN'S OWN ANSWER IS KEPT. It used to be swallowed -- `except Exception:
+                # pass` -- so a run could not say whether its route out went away, only whether it
+                # happened to be absent afterwards. One cleanup path for every ending (CU10): this
+                # `finally` is reached by a normal exit, a failure, a timeout the backend enforced and
+                # a cancel that removed the container from under the run.
                 try:
-                    stop_egress_proxy(egress)
-                except Exception:                             # noqa: BLE001
-                    pass
+                    teardown = stop_egress_proxy(egress)
+                except Exception as exc:                      # noqa: BLE001
+                    teardown = {"resources": [], "complete": False,
+                                "why": "%s: %s" % (type(exc).__name__, str(exc)[:200])}
         left = self._egress_gone(egress) if egress is not None else None
+        if record is not None:
+            record["gone_afterwards"] = left
+            record["teardown"] = teardown
         if trouble is not None:
             # A job that could not be run is still a run whose route out has to be accounted for,
             # so what was established about that travels with the failure rather than being lost
@@ -240,6 +272,7 @@ class LocalWorker(Worker):
             native_platform=str(platform or ""),
             egress_gone=left,
             runtime_platform=str(getattr(self.backend, "native_platform", "") or ""),
+            egress_record=record,
         )
 
     # ------------------------------------------------------------------ stopping one
@@ -268,36 +301,88 @@ class LocalWorker(Worker):
         still there afterwards. A leak nobody was told about is worse than the one it replaced,
         because the old one at least ended by itself.
 
-        Returns what it found and what it removed. It never raises: a worker that would not start
-        because a leftover could not be removed is a worse answer than one that starts and says
-        what it could not do.
+        Returns what it found, what it removed, what it COULD NOT remove, and whether the answer is
+        clean. It still never raises -- the caller decides -- but the sentence that used to be here,
+        "a worker that would not start because a leftover could not be removed is a worse answer
+        than one that starts and says what it could not do", was wrong and F37 is why.
+
+        A worker that starts with a leftover it could not remove does not merely carry it. The next
+        thing the start does, when nothing can be started at all, is rebuild the rootless namespace --
+        and that replaces the user namespace the leftover's init belongs to, after which the account
+        cannot address it at all. So the worker serves with a route out standing that nothing is
+        using, and the only way back is a human with root signalling each init. The caller now reads
+        `clean` and refuses, which is CU3 of frozen/cleanup.json.
         """
         found: list[str] = []
         removed: list[str] = []
-        failed: list[str] = []
+        failed: list = []
+        unreadable: list = []
         runtime = ""
         try:
             runtime = str(self.backend.check_available().backend or "")
             if not runtime or runtime == "none":
                 return {"runtime": "", "found": [], "removed": [], "failed": [],
+                        "unreadable": [], "clean": False,
                         "why": "there is no container runtime here to ask"}
             listed = subprocess.run([runtime, "ps", "-a", "--format", "{{.Names}}"],
                                     capture_output=True, text=True, timeout=60)
             if listed.returncode != 0:
                 return {"runtime": runtime, "found": [], "removed": [], "failed": [],
+                        "unreadable": [], "clean": False,
                         "why": "the runtime would not list its containers: "
                                + (listed.stderr or "").strip()[:160]}
-            found = [x for x in (listed.stdout or "").split()
-                     if x.startswith(self.ITS_OWN_PREFIXES)]
+            # STRICTLY PARSED. A listing is lines; a line that cannot be a name -- a runtime notice,
+            # anything with whitespace in the wrong place -- is collected as unreadable rather than
+            # counted, because an inventory that reads a stray line as a container is the same defect
+            # from the other end: this bundle's own check did exactly that and reported one container
+            # on a host that had none.
+            from agentnode_sdk.sandbox.egress import _rows_of, state_of
+            from agentnode_sdk.sandbox.container_backend import ABSENT
+
+            rows, cannot_read = _rows_of(listed.stdout or "")
+            unreadable += cannot_read
+            found = [r.split()[0] for r in rows
+                     if r.split() and r.split()[0].startswith(self.ITS_OWN_PREFIXES)]
             for name in found:
+                # The exit code is not the answer; the runtime is. `rm -f` answered non-zero on the
+                # real worker with "could not be stopped: operation not permitted" -- and it also
+                # answers zero for a container that was already gone, so both directions need asking.
                 gone = subprocess.run([runtime, "rm", "-f", name],
                                       capture_output=True, text=True, timeout=60)
-                (removed if gone.returncode == 0 else failed).append(name)
+                said = state_of(runtime, "container", name)
+                if said == ABSENT:
+                    removed.append(name)
+                else:
+                    failed.append({"name": name, "state": said,
+                                   "why": ((gone.stderr or "") + " "
+                                           + (gone.stdout or "")).strip()[:240]})
         except Exception as exc:                                    # noqa: BLE001
             return {"runtime": runtime, "found": found, "removed": removed, "failed": failed,
+                    "unreadable": unreadable, "clean": False,
                     "why": "%s: %s" % (type(exc).__name__, str(exc)[:160])}
+        # A CONTAINER IS NOT THE ONLY THING A DEAD WORKER LEAVES. An egress run creates two networks
+        # and a proxy as well, and the sweep above cannot see them: a network is not listed by
+        # `ps`, and the proxy's name carries a per-run token rather than one of the prefixes above.
+        # Before this, a worker that died mid-run left a route out standing that nothing was using
+        # and nobody was watching -- which is the one leftover that is worse than a stale container.
+        #
+        # Selected by LABEL rather than by name, so a network that happens to be called something
+        # familiar is not adopted and one that was renamed is not orphaned. No run of this worker can
+        # be in flight at this moment, so nothing labelled as this component's is wanted.
+        egress = {"asked": False}
+        try:
+            from agentnode_sdk.sandbox.egress import remove_what_no_run_is_waiting_for
+
+            egress = remove_what_no_run_is_waiting_for(runtime)
+        except Exception as exc:                                    # noqa: BLE001
+            egress = {"asked": False, "reason": "%s: %s" % (type(exc).__name__, str(exc)[:160])}
+        # THE VERDICT, which is the whole point of the change. Clean means: nothing of this SDK's was
+        # left that could not be removed, nothing in either listing could not be read, and the egress
+        # reconciliation says the same about its own resources. A caller that starts a worker on
+        # anything else is the behaviour EG12 failed on.
+        clean = (not failed and not unreadable and bool(egress.get("clean", False)))
         return {"runtime": runtime, "found": found, "removed": removed, "failed": failed,
-                "why": ""}
+                "unreadable": unreadable, "egress": egress, "clean": bool(clean), "why": ""}
 
     def stop(self, run_id: str, container_name: str, appear_seconds: float) -> bool:
         """Remove this run's container by the identity the backend actually gave it.
@@ -399,6 +484,20 @@ class LocalWorker(Worker):
         # A container is listed with .Names and a network with .Name. Asking for the wrong one
         # makes the runtime fail the template rather than answer, which comes back as "could not
         # ask" -- unknown rather than a false yes, but still blind.
+        # AND THE RESOLVER ENTRIES OF THOSE TWO NETWORKS. A network can be gone while the file the
+        # resolver keeps for it stays, and that one file stops `aardvark-dns` starting at all -- after
+        # which no container on any custom network can resolve a name and the egress proxy, fail-closed
+        # on a resolve failure, refuses a host on its own allowlist. F37, and CU9.
+        from agentnode_sdk.sandbox.egress import _resolver_entries
+
+        ours = {handle.int_net, handle.ext_net}
+        entries, cannot_read = _resolver_entries(runtime)
+        if cannot_read:
+            # CU7: an answer nobody could read is not an answer that the route out is gone.
+            return False
+        for name, _path in entries:
+            if name in ours:
+                return False
         for kind, field, name in (("container", "{{.Names}}", handle.proxy_name),
                                   ("network", "{{.Name}}", handle.int_net),
                                   ("network", "{{.Name}}", handle.ext_net)):

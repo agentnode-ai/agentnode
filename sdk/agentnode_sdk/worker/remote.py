@@ -612,6 +612,11 @@ class SocketWorker(Worker):
             native_platform=str(got.get("native_platform") or ""),
             egress_gone=got.get("egress_gone"),
             runtime_platform=str(got.get("runtime_platform") or ""),
+            # What the OTHER machine says it built and measured as this run's route out. Read with a
+            # default, because a worker that predates it says nothing -- and a gateway that then
+            # claimed an enforced allowlist would be claiming something nobody on that side reported.
+            egress_record=(got.get("egress_record")
+                           if isinstance(got.get("egress_record"), dict) else None),
         )
 
     def stop(self, run_id: str, container_name: str, appear_seconds: float) -> bool:

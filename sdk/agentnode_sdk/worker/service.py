@@ -759,6 +759,15 @@ class Bench:
                 stdin=str(said.get("stdin") or ""),
                 network=str(said.get("network") or "none"),
                 allowed_domains=tuple(domains),
+                # Read with a default rather than required: an older control plane does not send them
+                # and a job still runs without them. What they are for is OWNERSHIP of what running it
+                # creates -- a network and a proxy have to belong to a run, an owner and an epoch
+                # readably, or a sweep cannot tell whose leftovers are whose.
+                #
+                # A LABEL, NOT AN ACCOUNT. What arrives is opaque and this side never learns whose it
+                # is; it only ever needs to tell it apart from another owner's.
+                owner_label=str(said.get("owner_label") or ""),
+                epoch=str(said.get("epoch") or ""),
                 limits=Limits(
                     cpu=float(limits.get("cpu", 1.0)),
                     memory_mb=int(limits.get("memory_mb", 512)),
@@ -860,6 +869,32 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             "this check exist to prevent.")
     the_worker = worker or LocalWorker(ContainerBackend())
 
+    # WHAT A PREVIOUS WORKER LEFT, FIRST -- before the ceiling proof, before any namespace rebuild,
+    # before anything else touches the runtime. This used to be the LAST thing the start did and it was
+    # advisory; both were wrong, and F37 is the measurement that says so. The ceiling proof starts a
+    # container, and when it cannot start one at all the recovery below rebuilds the account's user
+    # namespace -- which is exactly the operation that makes a leftover container unremovable by the
+    # account that owns it. Reconciling afterwards is reconciling too late.
+    #
+    # At this moment no job of THIS worker can be in flight, so anything carrying this SDK's labels or
+    # prefixes belongs to a worker that is gone. CU1, CU2, CU3 and CU4 of frozen/cleanup.json.
+    from agentnode_sdk.worker.reconcile import LeftoversRemain, reconcile, reconcile_then_rebuild
+
+    swept = reconcile(the_worker)
+    if swept.report.get("found") or swept.report.get("removed"):
+        print("  what a previous worker left: found %d, removed %d"
+              % (len(swept.report.get("found") or []), len(swept.report.get("removed") or [])),
+              flush=True)
+    egress_said = swept.report.get("egress") or {}
+    if egress_said.get("removed"):
+        print("  and of its route out: %d resource(s) removed"
+              % len(egress_said.get("removed") or []), flush=True)
+    if not swept.clean:
+        # NOT A WARNING. A worker that serves while it owns something it could not remove is the
+        # EG12 failure, and it is also a worker that is about to lose the ability to remove it.
+        raise LeftoversRemain(swept.why, swept.report)
+    print("  nothing of a previous worker is left here, and every listing could be read", flush=True)
+
     # Before it agrees to run anybody's code, it shows that a ceiling binds -- by hitting one.
     # A worker whose limits are quietly not applied is worse than one that is down: down is
     # visible, and a job that runs with no memory limit on a host that believes it has one is
@@ -876,15 +911,18 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
     # ceiling is the opposite fault, and recovering from that would paper over the one thing
     # this proof exists to catch, so that case still refuses below.
     if proof.held is False and "never started" in str(proof.reason or ""):
-        from agentnode_sdk.sandbox.container_backend import (
-            recover_a_runtime_that_lost_its_namespace,
-        )
-
         runtime = getattr(getattr(the_worker, "backend", None), "runtime", "") or "podman"
         print("  nothing could be started here at all. Asking %s to rebuild the user "
-              "namespace its stored state refers to, which a reboot invalidates." % runtime,
+              "namespace its stored state refers to, which a reboot invalidates -- after "
+              "reconciling, and only if there is nothing of ours left to reconcile." % runtime,
               flush=True)
-        if recover_a_runtime_that_lost_its_namespace(runtime):
+        # THROUGH THE GATE, NOT DIRECTLY. The rebuild is the operation that costs the account the
+        # ability to remove its own containers, so it happens only on an inventory that is empty and
+        # could be read, and the inventory is taken AGAIN afterwards (CU1, CU6, CU7, CU8).
+        rebuilt = reconcile_then_rebuild(the_worker)
+        if not rebuilt.clean:
+            raise LeftoversRemain(rebuilt.why, rebuilt.report)
+        if rebuilt.rebuilt:
             proof = the_worker.prove_its_ceilings()
             if proof.held is True:
                 print("  recovered: the runtime could not start anything until its namespace "
@@ -899,21 +937,9 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             "is not one to hand foreign code to: " + (proof.reason or "no reason given"),
             proof.evidence)
 
-    # WHAT THE PREVIOUS WORKER LEFT, before this one opens its socket. At this moment no job of
-    # its own can be in flight, so anything carrying this SDK's prefixes is a leftover from a
-    # worker that died mid-run -- which is now possible to leave behind, because the single-run
-    # path no longer passes `--rm` and a container that removes itself cannot be asked how it
-    # ended. Never fatal: it reports what it could not do rather than refusing to start.
-    left = getattr(the_worker, "remove_what_a_previous_worker_left", None)
-    if callable(left):
-        swept = left()
-        if swept.get("found"):
-            print("  Removed %d container(s) a previous worker left: %s"
-                  % (len(swept.get("removed") or []), ", ".join(swept.get("found") or [])))
-        if swept.get("failed") or swept.get("why"):
-            print("  Could not account for every leftover: %s%s"
-                  % (", ".join(swept.get("failed") or []) or "-",
-                     (" (" + swept["why"] + ")") if swept.get("why") else ""))
+    # (What a previous worker left is reconciled at the TOP of this function now, before the ceiling
+    # proof and before any namespace rebuild, and it refuses rather than reporting. The block that
+    # used to be here ran after both and was advisory -- see the comment up there and F37.)
 
     # Next to the worker's own state, which is the only directory it may write. A worker that
     # could not write this would still refuse replays within its own life; it just could not

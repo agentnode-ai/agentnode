@@ -118,8 +118,18 @@ step "3. the new code"
 # --force-reinstall because a development wheel keeps its version number while its contents
 # change, and "already satisfied" would leave the previous code running while every check said
 # the upgrade had happened.
-"$PREFIX/venv/bin/pip" install --quiet --force-reinstall --no-deps "$WHEEL" || died "pip refused the wheel"
-"$PREFIX/venv/bin/pip" install --quiet "$WHEEL" || died "pip could not resolve its dependencies"
+"$PREFIX/venv/bin/pip" install --quiet --no-compile --force-reinstall --no-deps "$WHEEL" || died "pip refused the wheel"
+"$PREFIX/venv/bin/pip" install --quiet --no-compile "$WHEEL" || died "pip could not resolve its dependencies"
+# BYTECODE THAT DOES NOT MOVE. Running this installer twice used to change 188 files and nothing
+# else: every .pyc under the virtualenv, because pip compiles with the default mtime-and-size
+# invalidation and a reinstall gives every source file a new mtime. The code was identical; the
+# derived bytecode was not, so a second run of the whole path could not be shown to change
+# nothing. --no-compile plus checked-hash invalidation makes a .pyc a function of its source's
+# CONTENT alone, so the second run writes the same bytes -- and the files stay verifiable, which
+# an interpreter silently recompiling at runtime as root would not be.
+"$PREFIX/venv/bin/python" -m compileall -q -f --invalidation-mode checked-hash \
+  "$PREFIX/venv/lib" > /dev/null 2>&1 \
+  || died "the installed code could not be compiled, so this host would compile it at run time"
 echo "   now: $("$PREFIX/venv/bin/agentnode" --version 2>/dev/null || echo unknown)"
 
 # AND THE TWO THINGS PIP JUST INVALIDATED. `AGENTNODE_ARTEFACT` lives inside the dist-info
@@ -170,6 +180,43 @@ step "4. would it still start?"
 # ever been run across two machines. Measured here on the pair: the plain doctor reported
 # "the stored measurement describes something else (artefact_sha256, commit, build_id differ)"
 # and the upgrade stopped.
+# THE PREREQUISITE TABLE COMES WITH THE UPGRADE, and it has to arrive BEFORE the gate below.
+#
+# A gap found while preparing the acceptance run: the table was wired into install.sh only, so a host
+# that was UPGRADED rather than installed afresh would never receive one -- and its preflight, which
+# treats an absent table as "this host was not set up by the deploy path", would say so for ever
+# without anybody noticing the check had stopped happening. The two hosts of this arc are exactly
+# that case: both were installed before the table existed.
+#
+# ROLE-CORRECT, from $UNIT, which this script has already worked out from what is on the host. The
+# worker gets the worker's table and the control plane gets the control plane's; neither is given the
+# other's, which is the one thing about this file that must not become convenient.
+if [ "$UNIT" = "agentnode-worker" ]; then THE_ROLE=worker; else THE_ROLE=control-plane; fi
+# WHERE IT IS: beside this script, or beside the wheel it was given. This script takes a WHEEL and
+# does not unpack anything itself, so the artefact it came from is already open somewhere and the
+# table is in it. Both places are asked rather than one guessed.
+THE_TABLE=""
+for candidate in "$(cd "$(dirname "$0")" && pwd)/prerequisites.py"                  "$(cd "$(dirname "$WHEEL")" && pwd)/prerequisites.py"                  "$(cd "$(dirname "$WHEEL")/.." && pwd)/prerequisites.py"; do
+  [ -f "$candidate" ] && { THE_TABLE="$candidate"; break; }
+done
+if [ -n "$THE_TABLE" ]; then
+  install -d -o root -g root -m 0755 "$PREFIX/deploy"
+  install -o root -g root -m 0644 "$THE_TABLE" "$PREFIX/deploy/prerequisites.py"
+  echo "   the prerequisite table is at $PREFIX/deploy/prerequisites.py"
+  # Reported, and it GATES: an upgrade onto a host that is missing something the new build reaches
+  # for should stop here, with the one command that fixes it, rather than at the first job.
+  python3 "$PREFIX/deploy/prerequisites.py" --role "$THE_ROLE" \
+    || died "this host is missing something the $THE_ROLE role needs. The report above names each
+  one and the single command that installs them from the repositories this host already has.
+  The service was NOT restarted -- but the code on disk and the runtime pin are ALREADY the new
+  ones, so a restart for any other reason would bring the new build up.
+  Put it back with: rollback-one-host.sh $KEEP"
+else
+  # ABSENT FROM THE ARTEFACT is not the same as a host that is missing something. An artefact built
+  # before the table existed carries none, and saying nothing about it would hide which checks ran.
+  echo "   this artefact carries no prerequisite table, so nothing was checked about this host"
+fi
+
 if [ "$UNIT" = "agentnode-worker" ]; then
   set -a; . /etc/agentnode/worker.env; set +a
   runuser -u agentnode-worker -- "$PREFIX/venv/bin/agentnode" worker preflight \
@@ -202,10 +249,33 @@ step "5. restart, and check it is THIS code that came up"
 # earlier start would answer the question about the wrong process.
 RESTARTED_AT="$(date -u +%s)"
 systemctl restart "$UNIT".service || died "the service did not restart"
-sleep 3
-systemctl is-active --quiet "$UNIT".service || {
+# WAIT FOR THE UNIT'S OWN VERDICT, do not read it three seconds in. Measured on a real worker
+# four times: the rootless runtime's stored namespace can be stale when the service starts, the
+# service repairs it -- `podman system migrate` -- and that repair takes effect only in the NEXT
+# start. The unit is configured to restart on failure, so the host converges by itself in a few
+# seconds. Reading the state at three seconds reported "the worker did not start" on a host that
+# was fine moments later, and every such run spent one of the unit's five allowed start attempts
+# until systemd refused to start it at all and replaced the real message with "Start request
+# repeated too quickly".
+#
+# So: wait for active, bounded, and SAY how long it took and how many attempts it needed. A worker
+# that needed two attempts is worth saying out loud, not hiding behind a longer sleep. A worker
+# that never becomes active still fails here, exactly as before.
+WAITED=0
+while [ "$WAITED" -lt 90 ]; do
+  systemctl is-active --quiet "$UNIT".service && break
+  sleep 3
+  WAITED=$((WAITED + 3))
+done
+ATTEMPTS="$(systemctl show -p NRestarts --value "$UNIT".service 2>/dev/null)"
+if ! systemctl is-active --quiet "$UNIT".service; then
+  printf '\n!! it is still not up after %ss and %s restart(s). What it said:\n\n' \
+    "$WAITED" "${ATTEMPTS:-unknown}"
   journalctl -u "$UNIT".service -n 40 --no-pager | sed 's/^/   /'
-  died "it did not come back. Roll back with: rollback-one-host.sh $KEEP"; }
+  died "it did not come back. Roll back with: rollback-one-host.sh $KEEP"
+fi
+[ "$WAITED" = 0 ] || printf '   it took %ss to come up\n' "$WAITED"
+[ "${ATTEMPTS:-0}" = 0 ] || printf '   and %s restart(s) on the way -- the unit repaired something and the repair landed on the next start\n' "$ATTEMPTS"
 
 # RUNNING IS NOT RUNNING THIS CODE, and a timestamp cannot tell two builds apart -- only two
 # orders of events. This used to compare the service's start time against the mtime of the
@@ -220,8 +290,22 @@ SAID_IT_IS="$(wait_for_the_build_id "$UNIT" "$RESTARTED_AT")"
   Roll back with: rollback-one-host.sh $KEEP"
 [ "$SAID_IT_IS" = "$WILL_BE_BUILD_ID" ] || died "$UNIT is serving $SAID_IT_IS and this upgrade
   installed $WILL_BE_BUILD_ID. Roll back with: rollback-one-host.sh $KEEP"
-[ "$SAID_IT_IS" != "$WAS_BUILD_ID" ] || died "$UNIT is serving the build it was serving before
-  ($WAS_BUILD_ID), so nothing changed. Roll back with: rollback-one-host.sh $KEEP"
+# WHETHER THE BUILD MOVED IS REPORTED, AND IS NOT A FAILURE. This used to `died` when the running
+# build equalled the one that was running before, as "nothing changed". It cost an upgrade: the first
+# attempt on the control plane got as far as writing the new wheel and the new pin and then stopped at
+# the measurement gate because its worker was parked and unreachable -- which is the product being
+# right. The second attempt, on the host that now already had the new code on disk, found before and
+# after equal and refused an upgrade that had in fact succeeded.
+#
+# The property worth protecting is that the restart brought up the build THIS RUN INSTALLED, and the
+# two checks above are exactly that: it must say a build id, and that id must be the one installed. A
+# restart that silently came up on the old code fails the second of them. "It is the same as before"
+# adds nothing to those and is true of every resumed upgrade and every reinstall of one build.
+if [ "$SAID_IT_IS" = "$WAS_BUILD_ID" ]; then
+  echo "   the build did not change: it was already $WAS_BUILD_ID before this run."
+  echo "   That is not a failure -- it is what a resumed upgrade, or installing one build twice,"
+  echo "   looks like. What matters is that it is serving what THIS run installed, and it is."
+fi
 echo "   $UNIT is up and says it is $SAID_IT_IS, which is what was installed"
 
 printf '\n=== upgraded. What it was is kept at %s\n' "$KEEP"

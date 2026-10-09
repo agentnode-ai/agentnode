@@ -1,0 +1,140 @@
+name: A9 repair on podman
+
+# WHY THIS LANE EXISTS, and why it is narrow on purpose.
+#
+# `a9-repair/frozen/binding.json`, criterion B8, asks that the repair be checked "on podman AND in the
+# existing Docker lanes, because the defect this arc is adjacent to (R19 of the repair bundle) was a
+# podman-only template that passed everywhere else". The existing lanes install and verify a pinned
+# docker-ce, so they are the Docker half. There was no podman half, and round one of the independent
+# review refused to accept an argument in its place: "it does not supply the missing podman measurement".
+#
+# So this supplies it. What it is NOT is a podman copy of `lane-runtime-present`: that lane runs the whole
+# suite against a frozen inventory (`tests/lanes/FROZEN_INVENTORY.json`, verified per lane name), and a
+# second inventory for a second runtime is a far larger change than this repair, with its own ways to be
+# wrong. This lane runs the tests the repair is ABOUT, on a machine where podman is the only container
+# runtime discoverable at all.
+#
+# That is also the honest limit, stated here rather than in a report somebody has to find: the repaired
+# path makes zero calls to any runtime, so what this lane can show is that the gateway's activation,
+# readiness, policy and binding behaviour is identical when podman is what the host has. It does not run
+# containers under podman; the container-present Docker lanes do that.
+
+on:
+  push:
+    branches:
+      - 'beta/**'
+      - 'a9/**'
+    paths:
+      - 'sdk/agentnode_sdk/gateway/**'
+      - 'sdk/tests/test_closing_a_policy_needs_no_worker.py'
+      - 'sdk/tests/test_cleanup_is_the_products_own.py'
+      - 'sdk/tests/test_socket_worker.py'
+      - '.github/workflows/a9-podman.yml'
+  pull_request:
+    paths:
+      - 'sdk/agentnode_sdk/gateway/**'
+      - 'sdk/tests/test_closing_a_policy_needs_no_worker.py'
+      - '.github/workflows/a9-podman.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The SAME digest `sandbox/container_backend.py` pins as `_BASE_IMAGE`, and the same one the Docker
+  # lanes pull. A lane that pulled a different image would be measuring a different sandbox.
+  SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
+
+jobs:
+  podman-is-the-only-runtime:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      # THE WHOLE HISTORY, and a test asked for it. The second run of this lane was red on
+      # `test_the_commit_messages_on_this_branch_do_not_claim_it_either`, which refused to pass rather
+      # than read less: "the base of the range ('b0c28ad...') is not a commit in this checkout. A
+      # shallow clone is the usual cause, and the remedy is to fetch the history the check needs rather
+      # than to read less." That is the right behaviour from the test and a defect in this lane.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # DOCKER GOES FIRST, and the lane fails if podman is not there afterwards. A lane that silently
+      # ran with no runtime at all would be `lane-runtime-absent` wearing this one's name, and would
+      # report a podman measurement nobody made.
+      - name: Make podman the only container runtime on this machine
+        working-directory: .
+        run: |
+          set -euo pipefail
+          echo "before:"
+          command -v docker && docker --version || echo "  no docker on PATH"
+          command -v podman && podman --version || echo "  no podman on PATH"
+          sudo systemctl stop docker.socket docker.service 2>/dev/null || true
+          # EVERY docker on PATH, not the first one. The first version of this step removed
+          # `$(command -v docker)` -- one path -- and the check below then found docker still
+          # discoverable and stopped the lane, which is the refusal working: the runner carries more
+          # than one, and a lane that had carried on would have run the tests with docker present and
+          # called the result a podman measurement. `hash -r` as well, because the shell remembers
+          # where a command was even after the file is gone.
+          for where in $(type -a -p docker 2>/dev/null | sort -u); do
+            echo "  removing ${where}"
+            sudo rm -f "${where}" || true
+          done
+          hash -r 2>/dev/null || true
+          if command -v docker >/dev/null 2>&1; then
+            echo "docker is STILL discoverable at $(command -v docker), so this would not be a"
+            echo "podman measurement. Every path type -a reported was removed; something else"
+            echo "provides it and this lane must not pretend otherwise."
+            exit 1
+          fi
+          if ! command -v podman >/dev/null 2>&1; then
+            echo "podman is not on this runner, so this lane cannot do what it says"; exit 1
+          fi
+          echo "after: podman is the only runtime"
+          podman --version
+          podman info --format '{{.Host.OsArch}}' || true
+
+      # PULLED WITH PODMAN, which is the point: the Docker lanes pull the same digest with docker.
+      # Without it the product reports podman as discovered but NOT available -- "sandbox image not
+      # present (pull required)", which is the second run's recorded answer at `E0092`. That is the
+      # difference between showing podman is THERE and showing the product considers it usable.
+      - name: Pull the pinned sandbox image with podman
+        run: podman pull "${SANDBOX_IMAGE}"
+
+      - name: What the product itself discovers
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          python -c "
+          from agentnode_sdk.sandbox.container_backend import ContainerBackend
+          said = ContainerBackend().check_available()
+          print('backend     :', getattr(said, 'backend', None))
+          print('available   :', getattr(said, 'available', None))
+          print('reason      :', getattr(said, 'reason', ''))
+          assert str(getattr(said, 'backend', '')) == 'podman', (
+              'the product discovered %r where podman is the only runtime' % getattr(said, 'backend', None))
+          assert bool(getattr(said, 'available', False)), (
+              'podman is the only runtime and the product does not consider it usable: %r'
+              % getattr(said, 'reason', ''))
+          "
+
+      # The tests this repair is about: the new module in full, plus everything that touches the code it
+      # changed. Named here rather than hidden behind a `-k` nobody can read.
+      - name: The repair's own tests, with podman as the host's runtime
+        run: |
+          python -m pytest -q -p no:randomly \
+            tests/test_closing_a_policy_needs_no_worker.py \
+            tests/test_cleanup_is_the_products_own.py \
+            tests/test_socket_worker.py \
+            -p no:cacheprovider
+
+      - name: And the gateway's activation, readiness and policy tests
+        run: |
+          python -m pytest -q -p no:randomly -p no:cacheprovider \
+            tests -k "activation or readiness or policy or admission or measured or doctor or health"

@@ -142,6 +142,27 @@ def resolve_and_screen(host: str, port: int) -> list:
     return screen_addrinfos(infos)
 
 
+def _decided(what: str, host: str, port, status, why: str = "") -> None:
+    """Write down one decision, on the WORKER's side of the line.
+
+    EG17 of this arc's egress profile says every connection and every refusal has to be evidenced
+    from worker or kernel observation and not only from what the job reported about itself. The
+    kernel's part is strong on its own -- the payload's namespace has no default route at all -- but
+    a REFUSAL by name happens here, in this process, and until this existed the only record of one
+    was the job's own account of being refused. A boundary whose refusals are only self-reported is
+    not evidenced.
+
+    WHAT IS WRITTEN AND WHAT IS NOT. The destination, the port, the decision and the reason: all of
+    them things the caller asked for and this process decided. NOT the request bytes, not headers,
+    not a path, not a query, and nothing of the tunnel's contents -- a proxy log that grew those
+    would be a record of what somebody's code was doing, which is not this product's business and is
+    not worth having on the machine that runs other people's code.
+
+    One line, flushed, to stdout, which is where the runtime collects it.
+    """
+    print("egress-proxy %-8s %s:%s%s" % (what, host, port, (" " + why) if why else ""), flush=True)
+
+
 def _handle(client: socket.socket, allowlist) -> None:
     try:
         buf = b""
@@ -157,7 +178,18 @@ def _handle(client: socket.socket, allowlist) -> None:
                 return
         first_line = buf.split(b"\r\n", 1)[0].decode("latin1")
         status = classify(first_line, allowlist)
+        # The destination is read out for the log whatever the verdict was, because a refusal that
+        # does not say WHAT was refused is not evidence of anything. It is read from the request line
+        # only, and a request line that could not be parsed says so instead of guessing.
+        try:
+            asked_host, asked_port = _split_hostport(first_line.split()[1])
+            asked_host = normalize_host(asked_host)
+        except Exception:                                     # noqa: BLE001
+            asked_host, asked_port = "(unparseable)", "?"
         if status != 200:
+            _decided("REFUSED" if status == 403 else "REJECTED", asked_host, asked_port, status,
+                     "not on the allowlist or not port 443" if status == 403
+                     else "not a CONNECT this proxy will answer")
             client.sendall(_STATUS[status])
             client.close()
             return
@@ -167,7 +199,20 @@ def _handle(client: socket.socket, allowlist) -> None:
         # to the vetted IP literal (no second, unchecked hostname resolution).
         try:
             vetted = resolve_and_screen(host, port)
-        except EgressBlocked:
+        except EgressBlocked as why:
+            # ON THE ALLOWLIST AND STILL REFUSED. This is the rebinding case: a name this proxy is
+            # willing to reach that resolves to something it is not -- a private address, a loopback,
+            # link-local, metadata. Worth its own word in the log, because "refused" and "refused
+            # although it was allowed" send a reader to different places.
+            #
+            # AND THE REASON IS CARRIED THROUGH, which it was not until EG8 needed this log to be
+            # evidence. `resolve_and_screen` raises the same exception for two different things: a
+            # name that could not be resolved at all, and a name that resolved to an address this
+            # proxy will not reach. The log said the second in both cases, so a reader could not tell
+            # a rebinding attempt from a broken resolver -- and a line that says the same thing about
+            # two different events cannot establish which one happened. By this function's own
+            # standard, those send a reader to different places, so the exception's own words go in.
+            _decided("SCREENED", host, port, 403, "allowed by name, but " + str(why))
             client.sendall(_STATUS[403])
             client.close()
             return
@@ -175,9 +220,12 @@ def _handle(client: socket.socket, allowlist) -> None:
         try:
             upstream = socket.create_connection((vetted_ip, port), timeout=10)
         except Exception:
+            _decided("UNREACHED", host, port, 502, "allowed, screened, and the destination did not "
+                                                   "answer")
             client.sendall(_STATUS[502])
             client.close()
             return
+        _decided("ALLOWED", host, port, 200, "to " + str(vetted_ip))
         client.sendall(_STATUS[200])
         _tunnel(client, upstream)
     except Exception:

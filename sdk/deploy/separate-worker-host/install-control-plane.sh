@@ -88,10 +88,21 @@ finish. Run it again -- every step of it checks before it acts."
   fi
 
   systemctl start agentnode-gateway.service
-  sleep 1
+  # WAIT FOR THE UNIT'S OWN VERDICT, for the reason install-worker-host.sh records at length: a
+  # service read one second in is a service nobody asked. One second is not enough for this one to
+  # have failed, let alone to have been restarted by systemd and succeeded.
+  WAITED=0
+  while [ "$WAITED" -lt 60 ]; do
+    systemctl is-active --quiet agentnode-gateway.service && break
+    sleep 3
+    WAITED=$((WAITED + 3))
+  done
   if systemctl is-active --quiet agentnode-gateway.service; then
-    ok "gateway started"
+    ok "gateway started$([ "$WAITED" = 0 ] || printf ', after %ss' "$WAITED")"
   else
+    printf '\n!! still not up after %ss and %s restart(s):\n\n' "$WAITED" \
+      "$(systemctl show -p NRestarts --value agentnode-gateway.service 2>/dev/null)"
+    journalctl -u agentnode-gateway.service -n 40 --no-pager | sed 's/^/   /'
     die "the gateway did not stay up; systemctl status agentnode-gateway.service"
   fi
   printf '\n   Phase 2 done. The client port is still closed: open %s when a client should\n' "$PORT"
@@ -128,6 +139,23 @@ unit_file() {
   die "no unit file named $* is in this artefact or beside this script"
 }
 
+# THE UNIT LOOKUP IS NOT USED FOR THIS, and the reason is worth the paragraph: that function means
+# "a systemd unit this artefact ships", and the build's own self-check scans this script for every
+# name asked of it and refuses to build an artefact that does not carry that name under unit/, where
+# units live. Asking it for the table made the build refuse itself -- correctly -- with "install.sh
+# asks for a unit named one of prerequisites.py and the control-plane artefact carries none of them".
+# So the table, which is not a unit and does not live under unit/, gets its own lookup.
+#
+# (This comment deliberately does not write that function's name followed by a placeholder: the
+# build's scanner reads this file as text, and a mention in a comment was taken for a request.)
+beside_me() {
+  local candidate
+  for candidate in "$HERE/$1" "$(dirname "$HERE")/$1"; do
+    if [ -f "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+  done
+  return 1
+}
+
 cd /
 
 # ---------------------------------------------------------------------------------------------
@@ -141,6 +169,41 @@ for runtime in docker podman; do
   fi
 done
 ok "no container runtime on this host"
+
+# ---------------------------------------------------------------------------------------------
+say "what this host needs before any of this works"
+
+# The same table the worker reads, and the role is what differs. This host is NOT given podman,
+# crun, netavark or passt: the check above refuses this host if it has a runtime at all, and the
+# table for this role does not ask for one. A control plane that acquires a runtime "because the
+# other half needs it" is how the two-machine arrangement quietly becomes one machine.
+#
+# `tar` is in the table because upgrade.sh and rollback.sh both unpack and repack with it, and it
+# was absent on this very machine during the cross-host run while nothing checked.
+PREREQ="$(beside_me prerequisites.py || true)"
+if [ -z "$PREREQ" ]; then
+  # ABSENT FROM THE ARTEFACT is not the same as a host that is missing something. An
+  # artefact built before this table existed carries none; saying nothing would hide which
+  # checks ran, and dying would make an older artefact uninstallable.
+  ok "this artefact carries no prerequisite table, so nothing was checked about this host"
+elif python3 "$PREREQ" --role control-plane; then
+  :
+else
+  if [ "${AGENTNODE_INSTALL_PREREQUISITES:-}" = "yes" ]; then
+    say "installing what is missing, from this host's own repositories"
+    python3 "$PREREQ" --role control-plane --install || die "the packages this role needs could not be installed"
+  else
+    die "this host is missing something this role needs. Run the command the report names, or
+    re-run this script with AGENTNODE_INSTALL_PREREQUISITES=yes to install exactly those
+    packages from the repositories this host already has."
+  fi
+fi
+
+if [ -n "$PREREQ" ]; then
+  install -d -o root -g root -m 0755 "$PREFIX/deploy"
+  install -o root -g root -m 0644 "$PREREQ" "$PREFIX/deploy/prerequisites.py"
+  ok "the table is at $PREFIX/deploy/prerequisites.py"
+fi
 
 # ---------------------------------------------------------------------------------------------
 say "the one account"
@@ -165,8 +228,18 @@ if [ -n "$WHEEL" ]; then
   # --force-reinstall because a development wheel keeps its version number while its contents
   # change, and "already satisfied" would leave the previous code running while every check said
   # it was deployed.
-  "$PREFIX/venv/bin/pip" install --quiet --force-reinstall --no-deps "$WHEEL"
-  "$PREFIX/venv/bin/pip" install --quiet "$WHEEL"
+  "$PREFIX/venv/bin/pip" install --quiet --no-compile --force-reinstall --no-deps "$WHEEL"
+  "$PREFIX/venv/bin/pip" install --quiet --no-compile "$WHEEL"
+  # BYTECODE THAT DOES NOT MOVE. Running this installer twice used to change 188 files and nothing
+  # else: every .pyc under the virtualenv, because pip compiles with the default mtime-and-size
+  # invalidation and a reinstall gives every source file a new mtime. The code was identical; the
+  # derived bytecode was not, so a second run of the whole path could not be shown to change
+  # nothing. --no-compile plus checked-hash invalidation makes a .pyc a function of its source's
+  # CONTENT alone, so the second run writes the same bytes -- and the files stay verifiable, which
+  # an interpreter silently recompiling at runtime as root would not be.
+  "$PREFIX/venv/bin/python" -m compileall -q -f --invalidation-mode checked-hash \
+    "$PREFIX/venv/lib" > /dev/null 2>&1 \
+    || die "the installed code could not be compiled, so this host would compile it at run time"
   ok "installed $(basename "$WHEEL")"
   # WHICH ARTEFACT THIS IS, recorded inside the installed distribution, exactly as
   # deploy/deploy-pinned.sh does it. A service refuses to start when its pin names an artefact

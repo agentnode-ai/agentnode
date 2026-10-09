@@ -164,7 +164,12 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -p no:randomly tests/test_socket_worker.py 2>&1 | tee em3c-socket.txt
-          grep -qE "^124 passed" em3c-socket.txt || {
+          # 124 -> 126: this branch adds two tests to that file, about the label that now crosses to
+          # the worker in place of an account id. The count stays EXACT rather than becoming a floor,
+          # for the reason the Windows lane gives: a floor cannot see a test quietly disappearing. The
+          # two numbers check each other -- on Windows the same file is 115 passed and 11 skipped, and
+          # 115 + 11 is 126.
+          grep -qE "^126 passed" em3c-socket.txt || {
             echo "the socket tests did not all run here; a skip on Linux is a case nobody ran"
             exit 1; }
 

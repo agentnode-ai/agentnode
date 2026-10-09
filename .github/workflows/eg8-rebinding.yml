@@ -1,0 +1,279 @@
+name: EG8 rebinding (stub resolver, container-present)
+
+# WHY THIS LANE EXISTS.
+#
+# EG8 of the frozen beta acceptance says direct IP destinations, other ports, DNS bypass, redirects and DNS
+# rebinding do not widen the allowance. Three independent review rounds accepted the first four and refused
+# the last, in these words: the evidence showed "request-time rejection of an already non-public result" and
+# "does not show an allowed name's resolution changing". Those are different properties. A name that
+# resolves privately from the start is refused one layer earlier, when the policy is activated. A name that
+# resolves publicly while the policy is activated and privately when the request is made is the rebinding
+# attack, and nothing in the record had exercised it.
+#
+# Exercising it needs something that can change its mind about a name while a proxy is already running.
+# That is what this lane arranges: a resolver whose answers come from a file it re-reads per query, made the
+# resolver this machine uses, so the product resolves through it exactly as it resolves through any other.
+#
+# WHAT THIS LANE IS CAREFUL ABOUT, because each of these would turn it into theatre:
+#
+#   * A SKIP IS A FAILURE HERE. The test skips where there is no runtime or no resolver, which is right on a
+#     workstation and wrong in the lane whose whole purpose is to supply both. The run is checked for having
+#     actually executed.
+#   * THE COUNTER-CHECK RUNS. Removing the request-time screening must make the test red for a predicted
+#     phrase. A protection nobody removed is a protection nobody measured.
+#   * THE RESOLVER FORWARDS. While it is this machine's resolver, everything else still has to resolve, so
+#     names it has no answer for go upstream unchanged. The upstream is read off the machine BEFORE the
+#     switch rather than assumed.
+#   * `.test` IS RESERVED. The name under test resolves nowhere else on earth, so an answer for it can only
+#     have come from this lane's resolver -- which makes the arrangement self-checking: if the resolver is
+#     not wired up, the FIRST leg is refused too and the test says so instead of passing for the wrong
+#     reason.
+
+on:
+  push:
+    branches:
+      - 'beta/**'
+    paths:
+      - 'sdk/agentnode_sdk/sandbox/egress_proxy.py'
+      - 'sdk/agentnode_sdk/sandbox/egress.py'
+      - 'sdk/tests/test_a_name_that_changes_where_it_points.py'
+      - 'sdk/tests/a_resolver_that_can_change_its_mind.py'
+      - 'sdk/tests/lanes/eg8_counter_check.py'
+      - '.github/workflows/eg8-rebinding.yml'
+  pull_request:
+    paths:
+      - 'sdk/agentnode_sdk/sandbox/egress_proxy.py'
+      - 'sdk/tests/test_a_name_that_changes_where_it_points.py'
+      - '.github/workflows/eg8-rebinding.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The same digest `sandbox/container_backend.py` pins as `_BASE_IMAGE`. A lane that pulled a different
+  # image would be measuring a different sandbox.
+  SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
+  EG8_ANSWERS: /tmp/eg8-answers.json
+  # EG8_RESOLVER is deliberately NOT set here: it has to be the host's routable address, which is only
+  # known once the machine is running, and a value set here would shadow the real one ambiguously. The
+  # step that stands the resolver up writes it into the environment for the steps that follow.
+
+jobs:
+  a-name-that-changes-where-it-points:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # PODMAN IS THE RUNTIME HERE, and the reason is the product rather than this lane's convenience.
+      #
+      # Two runs taught it. The first pulled the image with podman and failed on the product's own answer
+      # -- "backend: docker / available: False / reason: sandbox image not present (pull required)" --
+      # because the runner carries both and the product prefers docker. Filling both stores fixed that and
+      # uncovered the real obstacle: a docker container could not resolve the name at all, `gaierror -2`,
+      # although the host resolved it perfectly through the same stub. Docker gives a container its own
+      # resolver and decides for itself what that resolver forwards to; podman's forwards from the HOST's
+      # network namespace, where the stub plainly is.
+      #
+      # Podman is also what this product actually uses where it matters: the worker drives podman,
+      # rootless, on the separate worker host. So the runtime this lane removes is the one the deployed
+      # product never uses, and what is left is the one it does.
+      - name: Make podman the only container runtime on this machine
+        working-directory: .
+        run: |
+          set -euo pipefail
+          sudo systemctl stop docker.socket docker.service 2>/dev/null || true
+          # EVERY docker on PATH, not the first: the runner carries more than one, and a lane that
+          # carried on would measure the runtime it meant to remove.
+          for where in $(type -a -p docker 2>/dev/null | sort -u); do
+            echo "   removing ${where}"; sudo rm -f "${where}" || true
+          done
+          hash -r 2>/dev/null || true
+          if command -v docker >/dev/null 2>&1; then
+            echo "docker is STILL discoverable at $(command -v docker)"; exit 1
+          fi
+          if ! command -v podman >/dev/null 2>&1; then
+            echo "podman is not on this runner, so this lane cannot do what it says"; exit 1
+          fi
+          podman --version
+          podman pull "${SANDBOX_IMAGE}"
+
+      - name: Install the SDK
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: What the product discovers, before anything is rearranged
+        run: |
+          python -c "
+          from agentnode_sdk.sandbox.policy import get_default_backend
+          said = get_default_backend().check_available()
+          print('backend   :', getattr(said, 'backend', None))
+          print('available :', getattr(said, 'available', None))
+          print('reason    :', getattr(said, 'reason', ''))
+          assert bool(getattr(said, 'available', False)), (
+              'no usable container runtime, so the rebinding case cannot be driven here: %r'
+              % getattr(said, 'reason', ''))
+          open('/tmp/eg8-runtime', 'w').write(str(getattr(said, 'backend', '')))
+          "
+          echo "the runtime the product will use: $(cat /tmp/eg8-runtime)"
+
+      # The upstream is READ OFF THE MACHINE before the switch. Guessing it would make every name this
+      # resolver does not answer stop resolving, which would break the rest of the job in a way that looks
+      # like a product failure.
+      - name: Make the resolver one that can change its mind
+        working-directory: .
+        run: |
+          set -euo pipefail
+          echo "resolv.conf as this machine had it:"
+          cat /etc/resolv.conf | sed 's/^/   /'
+          # EVERY ONE OF THESE READS IS ALLOWED TO FIND NOTHING, and that is why each ends in `|| true`.
+          # The previous run of this lane died here with no message of its own: under `pipefail` the
+          # substitution `resolvectl status | awk ...` fails as a whole when resolvectl exits non-zero,
+          # and `set -e` then ended the step immediately after it had printed resolv.conf. A diagnostic
+          # read that stops the job is the wrong kind of strict -- the gate that must not be lenient is
+          # the check below that the stub really answers, and that one has no `|| true` on it.
+          UPSTREAM="$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf 2>/dev/null || true)"
+          if [ "${UPSTREAM}" = "127.0.0.53" ] || [ -z "${UPSTREAM}" ]; then
+            # systemd-resolved's stub. Its real upstreams are behind it, and it is about to lose port 53,
+            # so the forwarding target has to be something that still answers afterwards.
+            UPSTREAM="$( { resolvectl status 2>/dev/null || true; } \
+                         | awk '/DNS Servers/ {print $3; exit}' || true)"
+          fi
+          if [ -z "${UPSTREAM}" ]; then UPSTREAM="8.8.8.8"; fi
+          echo "   forwarding everything else to ${UPSTREAM}"
+          echo "EG8_UPSTREAM=${UPSTREAM}" >> "${GITHUB_ENV}"
+
+          # A NON-LOOPBACK ADDRESS, and this is the whole reason the first attempt could not have worked.
+          # A container does not inherit a loopback nameserver: both runtimes drop `127.0.0.1` from the
+          # resolv.conf they give a container -- inside a container that address is the container -- and
+          # substitute a public resolver. So a stub on 127.0.0.1 is one the proxy would never ask. The
+          # stub listens on every interface and resolv.conf names the host's own routable address, which
+          # a container CAN reach and which neither runtime rewrites.
+          HOST_IP="$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)"
+          if [ -z "${HOST_IP}" ]; then echo "this machine has no global IPv4 to put the stub on"; exit 1; fi
+          echo "   the stub will be reachable at ${HOST_IP}:53"
+          echo "EG8_RESOLVER=${HOST_IP}:53" >> "${GITHUB_ENV}"
+
+          sudo cp /etc/resolv.conf /tmp/resolv.conf.as-it-was
+          sudo systemctl stop systemd-resolved 2>/dev/null || true
+          sudo rm -f /etc/resolv.conf
+          printf 'nameserver %s\noptions timeout:2 attempts:1\n' "${HOST_IP}" | sudo tee /etc/resolv.conf
+
+          printf '{"rebind.test": "1.1.1.1"}\n' > "${EG8_ANSWERS}"
+          # Bound on every interface on purpose: the proxy resolves from inside a container, and which
+          # address of this machine that reaches is decided by a network the test creates with a random
+          # subnet. The runner is an ephemeral VM behind NAT and this resolver forwards rather than
+          # recursing, so it is not a service anybody else can use.
+          sudo -E env "PATH=${PATH}" "EG8_UPSTREAM=${UPSTREAM}" \
+            python sdk/tests/a_resolver_that_can_change_its_mind.py \
+              --answers "${EG8_ANSWERS}" --listen 0.0.0.0:53 --upstream "${UPSTREAM}" \
+              > /tmp/eg8-resolver.log 2>&1 &
+          for _ in $(seq 1 40); do
+            if getent hosts rebind.test >/dev/null 2>&1; then break; fi
+            sleep 0.25
+          done
+
+          echo "what the machine now says about the name under test:"
+          getent hosts rebind.test | sed 's/^/   /'
+          echo "and that ordinary names still resolve through it:"
+          getent hosts github.com | head -1 | sed 's/^/   /'
+          getent hosts rebind.test | grep -q '1.1.1.1' || {
+            echo "the resolver is not answering for the name under test"; cat /tmp/eg8-resolver.log; exit 1; }
+          getent hosts github.com >/dev/null || {
+            echo "ordinary names stopped resolving, so this lane would fail for the wrong reason"
+            cat /tmp/eg8-resolver.log; exit 1; }
+
+      # DIAGNOSE FIRST, THEN DECIDE. The previous run of this step asked a container to resolve the name
+      # before printing anything, the resolution failed, `set -e` ended the step, and the one thing that
+      # would have explained it -- what resolver the container was actually given -- was in the command
+      # after the one that died. So everything is printed, nothing aborts, and the decision comes last.
+      - name: And a container resolves through it too
+        working-directory: .
+        run: |
+          set -uo pipefail
+          RT="$(cat /tmp/eg8-runtime)"
+          echo "== the runtime the product chose: ${RT}"
+          echo "== what a container is given as its resolver"
+          "${RT}" run --rm "${SANDBOX_IMAGE}" cat /etc/resolv.conf 2>&1 | sed 's/^/      /' || true
+          echo "== what the host itself resolves the name to"
+          getent hosts rebind.test 2>&1 | sed 's/^/      /' || true
+          echo "== what a container resolves it to"
+          OUT="$("${RT}" run --rm "${SANDBOX_IMAGE}" python -c \
+                 "import socket; print(socket.gethostbyname('rebind.test'))" 2>&1 || true)"
+          echo "      ${OUT}"
+          echo "== and whether ordinary names still resolve inside a container"
+          "${RT}" run --rm "${SANDBOX_IMAGE}" python -c \
+            "import socket; print(socket.gethostbyname('github.com'))" 2>&1 | sed 's/^/      /' || true
+          echo "== what the stub was asked, from its own log"
+          tail -20 /tmp/eg8-resolver.log 2>/dev/null | sed 's/^/      /' || true
+          echo
+          case "${OUT}" in
+            1.1.1.1) echo "a container resolves the name through the stub" ;;
+            *) echo "a container does NOT resolve the name through the stub, so the proxy would not"
+               echo "either and the rebinding case cannot be driven on this machine. That is the"
+               echo "condition this lane must report rather than work around."
+               exit 1 ;;
+          esac
+
+      - name: The rebinding case, and it must have RUN
+        run: |
+          set -euo pipefail
+          python -m pytest tests/test_a_name_that_changes_where_it_points.py \
+            -v -rs --color=no -p no:cacheprovider -p no:randomly \
+            | tee /tmp/eg8-pytest.txt
+          # A SKIP HERE IS A FAILURE. This lane exists to supply the runtime and the resolver the test
+          # skips without, so a skip means the arrangement did not take and the criterion was not
+          # measured -- which must not be reported as a lane that passed.
+          if grep -qiE '(^|[^a-z])skipped' /tmp/eg8-pytest.txt; then
+            echo "the test SKIPPED in the lane whose purpose is to make it runnable:"
+            grep -iE 'skipp' /tmp/eg8-pytest.txt | sed 's/^/   /'
+            exit 1
+          fi
+          grep -qE '[0-9]+ passed' /tmp/eg8-pytest.txt
+
+      - name: What the proxy wrote down, and what the resolver was asked
+        if: always()
+        working-directory: .
+        run: |
+          echo "== the resolver's own account of what it was asked and what it answered"
+          sed 's/^/   /' /tmp/eg8-resolver.log || true
+          echo "== the answers file as it was left"
+          cat "${EG8_ANSWERS}" 2>/dev/null | sed 's/^/   /' || true
+
+      # THE PROTECTION, REMOVED. Without this the lane shows that a rebound name is refused and not that
+      # the screening is what refuses it.
+      - name: The counter-check -- with the screening gone, the test must go red for its own phrase
+        run: python tests/lanes/eg8_counter_check.py
+
+      - name: Put the machine's resolver back
+        if: always()
+        working-directory: .
+        run: |
+          set -uo pipefail
+          sudo pkill -f a_resolver_that_can_change_its_mind.py 2>/dev/null || true
+          sudo rm -f /etc/resolv.conf
+          sudo cp /tmp/resolv.conf.as-it-was /etc/resolv.conf 2>/dev/null || \
+            printf 'nameserver 8.8.8.8\n' | sudo tee /etc/resolv.conf
+          sudo systemctl start systemd-resolved 2>/dev/null || true
+          echo "resolv.conf as it is now:"
+          cat /etc/resolv.conf | sed 's/^/   /'
+          echo "nothing of this lane is still listening on 53:"
+          sudo ss -lnup 2>/dev/null | grep ':53 ' | sed 's/^/   /' || echo "   nothing"
+
+      - name: Keep what was measured
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eg8-rebinding
+          path: |
+            /tmp/eg8-pytest.txt
+            /tmp/eg8-resolver.log
+          if-no-files-found: warn

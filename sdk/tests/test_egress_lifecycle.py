@@ -19,22 +19,56 @@ class _FakeBackend:
 
 
 class _Recorder:
-    """Stand-in for egress._run; records argv and can fail on the Nth call."""
+    """Stand-in for egress._run; records argv, can fail on the Nth call, and ANSWERS like a runtime.
 
-    def __init__(self, fail_on=None, exc=RuntimeError("boom")):
+    `start_egress_proxy` now reads back what it created -- is the network internal, does it carry a
+    resolver, which networks is the proxy actually on and by which id -- and refuses the arrangement when
+    the answers disagree with what was asked for. A double that answered nothing made that refusal fire,
+    which was the check working rather than a broken test; so this says what a runtime says, and the
+    tests that WANT the refusal ask for it by constructing a double that answers differently.
+    """
+
+    def __init__(self, fail_on=None, exc=RuntimeError("boom"), internal=True, dns=False,
+                 attached=None):
         self.calls = []
         self.fail_on = fail_on
         self.exc = exc
         self.n = 0
+        self.internal = internal
+        self.dns = dns
+        self.attached = attached            # None -> exactly this handle's own two networks
+
+    def _answer(self, argv) -> str:
+        import json as _json
+
+        if argv[1:3] == ["network", "inspect"]:
+            name = argv[3]
+            return _json.dumps({
+                "id": "netid-" + name, "internal": bool(self.internal),
+                "dns_enabled": bool(self.dns), "ipv6_enabled": False,
+                "subnets": [{"subnet": "10.89.0.0/24", "gateway": "10.89.0.1"}],
+                "labels": {"agentnode.component": "egress"},
+            })
+        if argv[1] == "inspect" and "{{json .NetworkSettings.Networks}}" in argv:
+            nets = self.attached
+            if nets is None:
+                nets = [a for call in self.calls for a in call if a.endswith(("-int", "-ext"))]
+                nets = sorted(set(nets))
+            return _json.dumps({n: {"NetworkID": "netid-" + n, "IPAddress": "10.89.0.2",
+                                    "GlobalIPv6Address": ""} for n in nets})
+        if argv[1] == "inspect" and "{{.Id}}" in argv:
+            return "containerid-" + argv[2]
+        return ""
 
     def __call__(self, argv, timeout=30.0):
         self.calls.append(list(argv))
         self.n += 1
         if self.fail_on is not None and self.n == self.fail_on:
             raise self.exc
+        answer = self._answer(list(argv))
 
         class _CP:
-            stdout = ""
+            stdout = answer
             stderr = ""
         return _CP()
 

@@ -79,6 +79,20 @@ class AWorkerThatAnswers(Worker):
         return Ceilings(held=self.ceilings,
                         reason="" if self.ceilings else "nothing stopped the allocation")
 
+    #: What this double says when asked what a previous worker left. It is a FIELD for the same
+    #: reason `ceilings` is one: the start refuses a worker that cannot say, so a double that could
+    #: not answer would make every test here fail at the gate instead of exercising the line. One
+    #: test sets it to a dirty answer and expects to be refused.
+    leftovers = None
+
+    def remove_what_a_previous_worker_left(self):
+        if self.leftovers is not None:
+            return dict(self.leftovers)
+        return {"runtime": "none", "found": [], "removed": [], "failed": [], "unreadable": [],
+                "egress": {"asked": True, "clean": True, "failed": [], "removed": [],
+                           "unreadable": []},
+                "clean": True, "why": ""}
+
     def instance_label(self):
         return "AWorkerThatAnswers"
 
@@ -1833,30 +1847,103 @@ class TestTheConformanceReportBindsWhereItWasMeasured:
 
     A report that lost one of those bindings would still look like a report -- the numbers would
     all be there -- while no longer saying which arrangement produced them.
+
+    ## Why these two tests were rewritten
+
+    Both used to read `inspect.getsource(GatewayService.report_binding)` and assert that `image_digest=`
+    and `self.worker.image_digest()` appear in it as TEXT. The repair in `a9-repair` moved those
+    assignments into a dict that is splatted into the constructor, so `image_digest=` stopped appearing
+    while the binding went on carrying every field -- and this test went red for a change in punctuation.
+
+    That is the same genus of test as the three the same repair deleted from
+    `test_cleanup_is_the_products_own.py`: a source-text assertion passes or fails on how code is
+    spelled rather than on what it does. The version below builds a real binding from a worker whose
+    answers are distinguishable, so it asserts both halves of what the two old tests were reaching for
+    -- that the field is bound, and that its value came from the worker rather than from the control
+    plane -- and it cannot be broken by rearranging the call.
     """
 
     MUST_BIND = ("image_digest", "backend_version", "worker_topology",
                  "worker_configuration_sha256")
 
-    def test_the_report_is_built_with_every_one_of_them(self):
-        import inspect
+    #: What the stand-in answers, one distinguishable value per field, so a binding that filled a field
+    #: from anywhere else cannot accidentally match.
+    SAID = {
+        "image_digest": "sha256:" + "ab" * 32,
+        "runtime_version": "a-runtime-version-no-host-would-report",
+        "topology": "separate-worker-host",
+        "configuration_sha256": "c0ffee" * 8,
+        "boot_id": "a-boot-id-of-the-worker",
+    }
 
-        from agentnode_sdk.gateway import server
+    def a_service(self, tmp_path):
+        from agentnode_sdk.gateway.identity import GatewayState
+        from agentnode_sdk.gateway.server import GatewayService
+        from agentnode_sdk.worker import Isolation
+        from tests.test_em3c_gateway import StandInBackend
 
-        built = inspect.getsource(server.GatewayService.report_binding)
-        for field in self.MUST_BIND:
-            assert field + "=" in built, f"the conformance report does not bind {field}"
+        said = self.SAID
 
-    def test_and_each_comes_from_the_worker_rather_than_from_here(self):
+        class AWorkerWithKnownAnswers:
+            def can_it_isolate(self, *a, **k):
+                return Isolation(available=True, backend="podman", reason="", measured=())
+
+            def image_digest(self, *a, **k):
+                return said["image_digest"]
+
+            def runtime_version(self, *a, **k):
+                return said["runtime_version"]
+
+            def configuration_sha256(self, *a, **k):
+                return said["configuration_sha256"]
+
+            def boot_id(self, *a, **k):
+                return said["boot_id"]
+
+            @property
+            def topology(self):
+                return said["topology"]
+
+        state = GatewayState(str(tmp_path / "state"), version="test")
+        service = GatewayService(state, backend=StandInBackend())
+        the_property = GatewayService.worker
+        GatewayService.worker = property(lambda _self: AWorkerWithKnownAnswers())
+        return service, state, the_property
+
+    def test_the_report_is_built_with_every_one_of_them(self, tmp_path):
+        from agentnode_sdk.gateway.server import GatewayService
+
+        service, state, the_property = self.a_service(tmp_path)
+        try:
+            binding = service.report_binding("adigest").as_dict()
+            for field in self.MUST_BIND:
+                assert binding.get(field), f"the conformance report does not bind {field}"
+        finally:
+            GatewayService.worker = the_property
+            state.close()
+
+    def test_and_each_comes_from_the_worker_rather_than_from_here(self, tmp_path):
         """A control plane that filled these in itself would be describing something it guessed."""
-        import inspect
+        from agentnode_sdk.gateway.server import GatewayService
 
-        from agentnode_sdk.gateway import server
-
-        built = inspect.getsource(server.GatewayService.report_binding)
-        assert "self.worker.image_digest()" in built
-        assert "self.worker.topology" in built
-        assert "self.worker.configuration_sha256()" in built
+        service, state, the_property = self.a_service(tmp_path)
+        try:
+            binding = service.report_binding("adigest").as_dict()
+            # EACH WITH ITS OWN REASON, so a counter-check can require THIS failure rather than
+            # whatever pytest's diff happens to render. Counter-check 8 filled one of these from the
+            # control plane and the check was recorded RED FOR THE WRONG REASON (`E0050`) against the
+            # first version of these lines, which carried no message at all.
+            said = "a field of the report did not come from the worker: %s"
+            assert binding["image_digest"] == self.SAID["image_digest"], said % "image_digest"
+            assert binding["backend_version"] == self.SAID["runtime_version"], said % "backend_version"
+            assert binding["worker_topology"] == self.SAID["topology"], said % "worker_topology"
+            assert binding["worker_configuration_sha256"] == self.SAID["configuration_sha256"], (
+                said % "worker_configuration_sha256")
+            assert binding["worker_boot_id"] == self.SAID["boot_id"], said % "worker_boot_id"
+            assert binding["backend"] == "podman", said % "backend"
+        finally:
+            GatewayService.worker = the_property
+            state.close()
 
 
 class TestWhatTheWorkerIsToldAndWhatItIsNot:
@@ -1872,8 +1959,46 @@ class TestWhatTheWorkerIsToldAndWhatItIsNot:
 
     def test_a_job_carries_the_job_and_nothing_else(self):
         carried = set(a_job().as_message())
+        # `owner_label` and `epoch` were added for OWNERSHIP of what running a job creates: a network
+        # and a proxy have to belong to a run, an owner and a worker epoch readably, or a sweep cannot
+        # tell one account's leftovers from another's. They are in this list because they are in the
+        # message, and the two tests below are why they are allowed to be: neither is an account id,
+        # and this check caught the first attempt, which sent one.
         assert carried == {"run_id", "container_name", "command", "artifact", "stdin",
-                           "network", "allowed_domains", "limits"}, carried
+                           "network", "allowed_domains", "limits", "owner_label", "epoch"}, carried
+
+    def test_and_the_owner_label_is_not_the_account(self):
+        """The field that was an account id, and must never be one again.
+
+        The worker is the machine that runs other people's code. It needs to tell one owner's
+        leftovers from another's; it does not need to know whose they are, and this product says so
+        about the pair key a few hundred lines away. So what crosses is a label.
+        """
+        from agentnode_sdk.worker import label_for_the_owner
+
+        account = "acct-a-real-customer-0001"
+        label = label_for_the_owner("a-deployment", account)
+        assert label and label != account
+        assert account not in label
+        # Opaque to read, 16 hex characters, and it is a LABEL: short enough to go on a container.
+        assert len(label) == 16 and all(c in "0123456789abcdef" for c in label)
+
+    def test_and_the_label_is_stable_for_one_account_and_differs_between_two(self):
+        """Both properties, because each alone would be useless.
+
+        Unstable, and a sweep cannot find what an earlier run of the same account left. Identical
+        across accounts, and it cannot tell two accounts apart, which is the whole purpose.
+        """
+        from agentnode_sdk.worker import label_for_the_owner
+
+        one = label_for_the_owner("dep", "acct-one")
+        assert one == label_for_the_owner("dep", "acct-one")
+        assert one != label_for_the_owner("dep", "acct-two")
+        # And the deployment is in it, so one account in two deployments does not label alike.
+        assert one != label_for_the_owner("another-dep", "acct-one")
+        # No account, no label -- rather than a label for the empty string, which would be one
+        # value every unattributed run shared.
+        assert label_for_the_owner("dep", "") == ""
 
     def test_and_no_field_of_it_is_named_like_a_secret(self):
         for field in a_job().as_message():

@@ -25,6 +25,12 @@ a job does not depend on the channel.
 from __future__ import annotations
 
 import base64
+# hashlib is for the egress digest in the metering tail. It was MISSING, and the real two-host
+# run is what found it: a job ran, the tail raised NameError, the gateway could not write down
+# what the run used and -- correctly -- stopped taking work rather than run anything else it
+# could not account for. The unit test for the two new meter fields called meter.record itself
+# instead of driving this path, so it never executed this line.
+import hashlib
 import hmac
 import urllib.parse
 import json
@@ -62,6 +68,7 @@ from agentnode_sdk.gateway.transport import TlsFiles, check_bind_address
 from agentnode_sdk.gateway.allowance import OverTheCeiling, Stopped, why_it_is_stopped
 from agentnode_sdk.worker import CouldNotRestrictTheNetwork, JobFailed, Job as WorkerJob
 from agentnode_sdk.worker import Limits as WorkerLimits
+from agentnode_sdk.worker import label_for_the_owner
 from agentnode_sdk.worker import WorkerUnreachable
 from agentnode_sdk.gateway.protocol import (
     refusal,
@@ -169,6 +176,12 @@ class RunRecord:
     billed_from_the_workers_clock: bool = False
     stderr: str = ""
     refusal: str = ""
+    #: The WORKER's own account of the route out it built for this run: the networks and the proxy by
+    #: runtime id, the labels that own them, and the readings it took before the payload started. Empty
+    #: for a run with no route out, and empty for a worker that does not report it -- in which case the
+    #: signed line's egress digest stays empty too, because a gateway must not claim an arrangement that
+    #: the machine which built it did not describe.
+    route_out: dict = field(default_factory=dict)
     #: WHICH refusal, by the contract's name, when this record is one. A record carrying only
     #: prose meant the contract door answered "it is refused, here is a sentence" -- so a client
     #: that branches on the closed list of refusals could not tell "over a ceiling" from
@@ -779,24 +792,56 @@ class GatewayService:
         return ActivationStore(self.state.root).load_active()
 
     def configured_envelope(self):
-        """What the operator has ASKED for, read from the config file.
+        """What the operator has ASKED for, read from the config file -- EVERY TIME IT IS ASKED.
 
         Deliberately not the same thing as what is in force. The config file is an input; the
         authenticated snapshot is the decision. Editing the file by hand therefore changes what
         this returns and does NOT change what runs -- it makes the two disagree, and a
         disagreement is refused rather than resolved in the file's favour.
+
+        READ AT THE MOMENT OF ASKING, which is finding R8 of acceptance run `r5-20261006`. The CLI
+        used to hand every service a policy built from this same file at construction, and the
+        branch below then returned that start-up list for the life of the process. A policy set
+        through the published command was written, measured, activated and reported in force, and
+        every job was refused -- `what this gateway is configured to allow is not what was measured
+        and put into force` -- until the service was restarted, which the refusal does not mention
+        and `doctor --measure` cannot achieve. `E0177` and `E0181` of `beta-readiness-r3` are that
+        behaviour measured on a real stand.
+
+        The explicit branch stays, because it is right for the caller it was written for: an
+        embedded gateway constructed with a policy and no config file of its own IS its own source
+        of record, and making it read a file that does not exist would answer `no network` while
+        `operator_policy()` answered otherwise -- two readings of one moment that disagree, which
+        is what RQ3 of the repair profile forbids. What changed is who passes one:
+        `cli/gateway_commands._service` no longer does.
         """
         from agentnode_sdk.gateway import operator_policy as opol
 
-        if self._operator_policy is not None:
-            return self._explicit_envelope()
         path = self.state.root / "config.json"
+        # THE FILE WINS WHENEVER THERE IS ONE, and that ordering is what makes RQ2 of the repair
+        # profile true by construction rather than by nobody passing a policy. An independent
+        # review of the first repair was right that leaving the explicit branch first satisfied
+        # "a running gateway does not keep a start-up policy as the truth about what is
+        # configured" only by caller convention: any caller that handed in a policy derived from
+        # a state directory would have recreated the defect exactly.
+        #
+        # A policy handed in is still the answer when there is NO config file, because then it is
+        # genuinely the only source of record -- an embedded gateway constructed with a policy and
+        # no directory of its own. What it can no longer do is override a file that exists.
+        if self._operator_policy is not None and not path.is_file():
+            return self._explicit_envelope()
         if not path.is_file():
             return opol.build(opol.NONE)
         try:
             config = opol.loads_strict(path.read_text(encoding="utf-8"))
         except OSError as exc:
             raise opol.OperatorPolicyError(f"the gateway config cannot be read: {exc}") from None
+        # `from_config` is what refuses a ceiling that cannot be enforced -- an IP literal, `localhost`,
+        # raw non-ASCII -- which the CLI's deleted `_operator_policy` used to check at construction. The
+        # check was first written here, as a method of this class, and that was one layer too high: the
+        # CLI's egress show path calls `from_config` directly and would have kept computing a digest from
+        # an unvalidated envelope while admission refused the same config. It lives at the parse now, which
+        # is the only place a gateway config becomes a policy.
         return opol.from_config(config)
 
     def _explicit_envelope(self):
@@ -813,13 +858,32 @@ class GatewayService:
         return opol.build(opol.RESTRICTED, tuple(dests))
 
     def operator_envelope(self):
-        """The operator policy actually IN FORCE -- from the authenticated snapshot."""
+        """The operator policy actually IN FORCE -- from the authenticated snapshot.
+
+        AND A SNAPSHOT IS READ BACK LENIENTLY AND ACTED ON STRICTLY. `operator_policy.from_document`
+        deliberately does not refuse a snapshot naming a host an allowlist cannot hold -- an IP
+        literal, `localhost`, raw non-ASCII -- because a snapshot that cannot be READ is a gateway
+        that cannot say what it enforces, which is worse than a configuration mistake. An
+        independent review of the first repair was right that this leaves the other half open: the
+        snapshot is what admission composes with, so a lenient read becomes a policy acted on.
+
+        So the check happens HERE, where it is about to be used, and it fails closed: the policy in
+        force becomes the closed one rather than the one naming a host the proxy would screen
+        anyway. A reader can still see what the snapshot says -- `active_state()` returns it
+        untouched and the show command prints it -- while nothing is granted on its strength.
+        """
         from agentnode_sdk.gateway import operator_policy as opol
 
         if self._operator_policy is not None:
             return self._explicit_envelope()
         state = self.active_state()
         if state is None:
+            return opol.build(opol.NONE)
+        try:
+            opol.refuse_a_ceiling_that_cannot_be_enforced(state.policy)
+        except opol.OperatorPolicyError:
+            # Closed, not raised: every caller of this is either composing a policy for a job or
+            # reporting one, and a gateway that grants nothing is the safe answer to both.
             return opol.build(opol.NONE)
         return state.policy
 
@@ -843,11 +907,55 @@ class GatewayService:
 
     # ------------------------------------------------------------------ capabilities
 
-    def report_binding(self, policy_digest: str = "") -> ReportBinding:
+    def report_binding(self, policy_digest: str = "", *,
+                       measured: bool = True) -> ReportBinding:
         """What a conformance report about this gateway would have to be about.
 
         `policy_digest` is supplied while a *pending* policy is being measured, so the report is
         stamped with the policy it was taken for rather than with the one still in force.
+
+        ## `measured=False`, and why this parameter exists rather than a try/except
+
+        B1 and B2 of `a9-repair/frozen/binding.json`. Five of the fields below can only be
+        answered by the worker -- `backend` and `backend_version` and `image_digest` and
+        `worker_boot_id` and `worker_configuration_sha256` all come from asking it, and on a
+        separate worker host every one of them is a request over the wire. That is correct for a
+        report about a measurement: a measurement happened somewhere, against some runtime and
+        some image, and a report that does not say which describes nothing.
+
+        It is wrong for a report about a measurement that did NOT happen. PA2 of the activation
+        profile puts a policy that grants no destination in force without measuring, because
+        nothing is granted and there is therefore nothing to prove -- and the single situation
+        that rule exists for is a worker that cannot be reached. `A9` of the sealed acceptance
+        bundle `beta-readiness-r2` is this method being called on that path: `E0280` is a real
+        host where `gateway egress --none` was refused with "the sandbox worker ... was refused:
+        ... its certificate is revoked", and the control plane was parked with an allow-list
+        still in force. `E0303` reproduces it in three controlled cases.
+
+        So with `measured=False` the worker is not asked, and the five fields it owns are left
+        EMPTY -- which is not a workaround but the honest value. Nothing was observed about any
+        runtime, so claiming one would be a worse defect than the one this repairs: a binding
+        naming an image that nobody looked at.
+
+        `worker_topology` stays, and that is deliberate: it is read from this gateway's own
+        configuration (`self._topology` on the remote worker), it is a fact about how the
+        deployment is arranged rather than about a measurement, and it needs nothing on the far
+        side.
+
+        WHY AN EMPTY BINDING CANNOT FAIL OPEN, which is the part to check rather than take.
+        `ReportBinding.mismatches` compares field by field as strings with no leniency for an
+        empty value, and `Readiness.evaluate_document` refuses on ANY drift. So the moment a real
+        binding is computed -- the next time anything asks what this gateway proves -- the five
+        empty fields differ from the live ones and readiness refuses. That is independent of the
+        other reason it refuses: an unmeasured report establishes no property, so every required
+        property is unproven. Two reasons, either sufficient, and `B3` drives both.
+
+        REJECTED ALTERNATIVE, recorded because it would have passed the observed case. Catching
+        `WorkerUnreachable` around the call at the PA2 site repairs `E0280` exactly -- that is
+        the type `worker/tls.py` wraps the PKI's `PeerRefused` into, with the very sentence that
+        capture carries. It is not the repair, because it leaves the path depending on which
+        exception a future worker error happens to be, and because the cause to prevent is that
+        this path calls the worker at all.
         """
         from agentnode_sdk.gateway.boot import boot_identity
 
@@ -856,7 +964,28 @@ class GatewayService:
         from agentnode_sdk.gateway import policy_version as _versions
 
         identity = self.state.identity
-        isolation = self.worker.can_it_isolate()
+        # ASKED ONLY WHEN THERE IS SOMETHING TO ASK ABOUT. Every one of these is a request to the
+        # worker, and on a separate worker host that is a request over the wire.
+        if measured:
+            isolation = self.worker.can_it_isolate()
+            about_the_worker = {
+                "backend": isolation.backend if isolation.backend != "none" else "",
+                "image_digest": self.worker.image_digest(),
+                # TWO MACHINES, TWO FACTS, TWO FIELDS. The worker's boot is what the measurement
+                # is about; the gateway's is about the process that signed it. They were one
+                # field filled from the gateway, which was right on one machine and wrong on two.
+                "worker_boot_id": str(self.worker.boot_id() or ""),
+                "backend_version": self.runtime_version(),
+                "worker_configuration_sha256": self.worker.configuration_sha256(),
+            }
+        else:
+            about_the_worker = {
+                "backend": "",
+                "image_digest": "",
+                "worker_boot_id": "",
+                "backend_version": "",
+                "worker_configuration_sha256": "",
+            }
         boot_value, _method = boot_identity()
         # The ordinal for whichever policy this report is ABOUT -- the pending one while it is
         # being measured, the one in force otherwise. Assigned here rather than read, because
@@ -877,21 +1006,16 @@ class GatewayService:
             operator_policy_version=str(ordinal) if ordinal > 0 else "",
             gateway_id=identity.gateway_id,
             gateway_version=identity.version,
-            backend=isolation.backend if isolation.backend != "none" else "",
-            image_digest=self.worker.image_digest(),
-            # TWO MACHINES, TWO FACTS, TWO FIELDS. The worker's boot is what the measurement
-            # is about; the gateway's is about the process that signed it. They were one field
-            # filled from the gateway, which was right on one machine and wrong on two.
-            worker_boot_id=str(self.worker.boot_id() or ""),
             gateway_boot_id=boot_value,
-            backend_version=self.runtime_version(),
             conformance_schema=str(SUITE_VERSION),
             operator_policy_digest=policy_digest or self.operator_envelope().digest(),
             # Where this was measured, and what the worker was configured as when it was.
             # `ALPHA-BOUNDARY-0001`: a report that does not say which of those two it describes is
             # a report somebody will read as describing the other.
+            # Read from this gateway's own configuration, so it holds whether or not anything
+            # was measured, and asks the far side nothing.
             worker_topology=self.worker.topology,
-            worker_configuration_sha256=self.worker.configuration_sha256(),
+            **about_the_worker,
             # WHAT THIS GATEWAY IS RUNNING AS. Read from the running process and from the pin
             # written by the deployment, never from a constant in the source: a field that says
             # what somebody intended rather than what is true is a field that keeps saying it
@@ -984,6 +1108,14 @@ class GatewayService:
         else:
             path.write_text(previous, encoding="utf-8")
 
+    @staticmethod
+    def _grants_nothing(envelope) -> bool:
+        """Whether this policy permits no destination at all -- the only case PA2 covers."""
+        from agentnode_sdk.gateway import operator_policy as opol
+
+        return (str(getattr(envelope, "mode", "")) == opol.NONE
+                and not tuple(getattr(envelope, "allowed_destinations", ()) or ()))
+
     def _transact(self, proposed, options=None, now: float | None = None):
         """One lock around the whole change: intent, measurement, and what becomes of both."""
         from datetime import datetime, timezone
@@ -1008,12 +1140,58 @@ class GatewayService:
                 # was being measured if the process dies before it finishes.
                 store.write_pending(envelope)
 
-                report = self.worker.measure(
-                    generated_at=stamp, options=options,
-                    egress_matrix=self._egress_matrix_for(envelope),
-                    # The policy's own destinations, so the check compares the matrix against
-                    # what is being permitted rather than against what the run happened to do.
-                    egress_expected=(envelope.allowed_destinations or None))
+                try:
+                    report = self.worker.measure(
+                        generated_at=stamp, options=options,
+                        egress_matrix=self._egress_matrix_for(envelope),
+                        # The policy's own destinations, so the check compares the matrix against
+                        # what is being permitted rather than against what the run happened to do.
+                        egress_expected=(envelope.allowed_destinations or None))
+                except BaseException as could_not_measure:
+                    # PA2 of frozen/activation.json. NARROWING TO NOTHING IS NEVER BLOCKED BY A WORKER
+                    # THAT IS GONE. Measured, in this project's own sealed record: `E0424` is the
+                    # previous round parking the control plane, where `gateway egress --none` answered
+                    # "the sandbox worker could not be reached" and "The previous policy remains in
+                    # force. Nothing was changed." -- so the host was parked with an allowlist still in
+                    # force. Closing a policy is the one change you most want when the worker is down.
+                    #
+                    # The invariant the measurement exists for is "never GRANT what has not been proven
+                    # to hold". A policy that grants nothing grants nothing, and the report it is
+                    # activated with says it was not measured -- so the gate below finds no established
+                    # property and this gateway admits no work until it is measured again. Both
+                    # dimensions tighten; neither widens. Any other proposal still fails here.
+                    if proposed is None or not self._grants_nothing(envelope):
+                        raise
+                    report = {
+                        "not_measured": True,
+                        "generated_at": stamp,
+                        "why": "the worker could not be measured (%s: %s), and this policy grants "
+                               "nothing, so it was put in force without one"
+                               % (type(could_not_measure).__name__, str(could_not_measure)[:160]),
+                        "results": [],
+                        "is_conformant": False,
+                    }
+                    # `measured=False`: THIS is the line A9 was about. The branch exists for a
+                    # worker that cannot be reached, and asking for a measured binding here asked
+                    # that worker five questions, so the refusal escaped and the close was lost.
+                    binding = self.report_binding(envelope.digest(), measured=False)
+                    store.activate(envelope, report, binding.as_dict(), now)
+                    # AND THE PENDING RECORD GOES. It was written at the top of this transaction to
+                    # say what was being measured if the process died mid-measurement; this policy is
+                    # now IN FORCE, so a pending record beside it would make every later report say a
+                    # change is proposed and not in force -- and would make closing twice say
+                    # something different the second time. Found while writing the counter-check for
+                    # exactly that (PA7, sixth).
+                    store.clear_pending()
+                    from agentnode_sdk.gateway.readiness import Readiness
+
+                    return Readiness(
+                        ready=False,
+                        reason="this policy grants nothing and is now in force, and it was NOT "
+                               "measured: " + str(report["why"]),
+                        unproven=tuple(envelope.required_properties),
+                        in_force=True,
+                    )
                 binding = self.report_binding(envelope.digest())
                 document = {"measured_at": now if now is not None else time.time(),
                             "binding": binding.as_dict(), "report": report}
@@ -1703,10 +1881,31 @@ class GatewayService:
         sandbox = self.what_became_of_the_sandbox(
             asked_for_a_sandbox=bool(entry.get("asked_for_a_sandbox")),
             cleanup_verified=getattr(record, "cleanup_verified", None))
+        # THE ROUTE OUT OF A RUN THAT WAS INTERRUPTED, from the ledger entry this recovery is reading.
+        #
+        # Found on the two machines: the gateway was restarted mid-run, the ledger closed the run as
+        # interrupted and kept the worker's account of the boundary -- networks, proxy,
+        # gone_afterwards, the readings taken before the payload started, with a digest that
+        # recomputes -- and the SIGNED line for that same run carried neither field. So the one record
+        # that is tamper-evident said nothing about a boundary that had in fact been built and torn
+        # down, for exactly the kind of run an auditor would ask about.
+        #
+        # It is read from the entry rather than from `record`, because this path runs in a process that
+        # never saw the run start: `record` is reconstructed here and its `route_out` is empty.
+        _left_route = entry.get("route_out") if isinstance(entry, dict) else None
+        _left_route = _left_route if isinstance(_left_route, dict) and _left_route else None
+        _left_word = "allowlist" if _left_route else ""
+        _left_digest = ""
+        if _left_route:
+            _left_digest = hashlib.sha256(
+                json.dumps(_left_route, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
         try:
             transport, identity, worker_id = self._who_ran(record.run_id)
             meter.record(
                 self.state.root,
+                egress=_left_word,
+                egress_sha256=_left_digest,
                 run_id=record.run_id,
                 client_id=record.owner_client_id or meter.UNATTRIBUTED,
                 account_id=record.owner_account_id or meter.UNATTRIBUTED,
@@ -2945,6 +3144,18 @@ class GatewayService:
             stdin=payload,
             network=mode,
             allowed_domains=tuple(domains or ()),
+            # WHOSE RUN IT IS, AS A LABEL. A network and a proxy that belong to a run, an owner and
+            # an epoch readably are ones a sweep can tell apart from another account's; ones named
+            # after a token are not. The epoch is this gateway's own instance label, which is what a
+            # worker's lease is held against.
+            #
+            # The ACCOUNT ID IS NOT SENT. It was, until the suite's own rule about what a job carries
+            # caught it: this is the machine that runs other people's code, and it needs to tell one
+            # owner's leftovers from another's, not to know whose they are.
+            owner_label=label_for_the_owner(
+                str(getattr(getattr(self, "state", None), "deployment", "") or ""),
+                str(getattr(record, "owner_account_id", "") or "")),
+            epoch=str(getattr(self, "instance", "") or ""),
             limits=WorkerLimits(
                 cpu=float(granted.limits.cpu),
                 memory_mb=int(granted.limits.memory_mb),
@@ -2953,6 +3164,10 @@ class GatewayService:
             ),
         )
         left_behind = None
+        # What the WORKER says it built and measured as this run's route out. None until it says so,
+        # and it stays None for a worker that predates saying it -- in which case the signed line's
+        # egress fields stay empty rather than claiming an arrangement nobody reported.
+        the_route_out = None
         terminal = "refused"
         # WRITTEN BEFORE THE WORKER IS ASKED, because a closing line has to be able to say
         # whether this run ever had a sandbox at all.
@@ -2981,6 +3196,9 @@ class GatewayService:
             # was not the enforced one. EM3C-GATEWAY-0004 found it.
             outcome = self.worker.run(job)
             left_behind = outcome.egress_gone
+            the_route_out = outcome.egress_record or the_route_out
+            if isinstance(the_route_out, dict) and the_route_out:
+                record.route_out = the_route_out
             rc, platform = outcome.exit_code, outcome.native_platform
             record.termination_reason = outcome.reason
             record.native_status = outcome.native_status
@@ -3036,6 +3254,9 @@ class GatewayService:
                 # a different kind of run, and its line must not look like one.
                 outcome = self._outcome_from(settled.outcome)
                 left_behind = outcome.egress_gone
+                the_route_out = outcome.egress_record or the_route_out
+                if isinstance(the_route_out, dict) and the_route_out:
+                    record.route_out = the_route_out
                 record.termination_reason = outcome.reason
                 record.native_status = outcome.native_status
                 record.native_platform = outcome.native_platform
@@ -3300,8 +3521,48 @@ class GatewayService:
                 pass
 
             transport, identity, worker_id = self._who_ran(record.run_id)
+            # WHERE THIS RUN COULD REACH, bound into the line as a word and a digest.
+            #
+            # The word comes from what was GRANTED, so a run with no route out says so even when the
+            # worker said nothing. The digest is of the worker's own account of what it built and
+            # measured -- so a gateway cannot claim an enforced allowlist on its own say-so: with no
+            # account from the other machine there is no digest and the field stays empty.
+            #
+            # The account itself goes beside the ledger entry, where a reader can recompute the digest.
+            _route = record.route_out if isinstance(record.route_out, dict) else None
+            _route = _route or None
+            if _route:
+                try:
+                    self.ledger.note_the_route_out(record.run_id, _route)
+                except Exception:                             # noqa: BLE001
+                    # A record of what was enforced is worth having and is not worth failing a
+                    # finished run over. The digest below is written either way.
+                    pass
+            _egress_word = ""
+            if _route:
+                _egress_word = "allowlist"
+            elif (record.started_at
+                  and not bool(getattr(getattr(granted, "network", None), "enabled", False))):
+                # `started_at` AND NOT JUST THE GRANTED POLICY. Both words here are statements
+                # about a boundary that was actually put in place: "allowlist" that one was built
+                # and measured, "none" that the sandbox ran with no way out at all. A job that
+                # never started -- cancelled in the queue, its device withdrawn, the machine
+                # stopped, its account suspended when the slot came -- enforced nothing, and
+                # writing "none" for it would describe a boundary that never existed and put a
+                # job that was refused in the same column as one that ran sealed off. Blank is
+                # the honest answer, and `test_a_waiting_job_has_no_network` is where this showed:
+                # the word was read off the granted policy alone, which is false for every job
+                # that was refused before it ran.
+                _egress_word = "none"
+            _egress_digest = ""
+            if _route:
+                _egress_digest = hashlib.sha256(
+                    json.dumps(_route, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
             meter.record(
                 self.state.root,
+                egress=_egress_word,
+                egress_sha256=_egress_digest,
                 run_id=record.run_id,
                 # A run whose device was withdrawn while it was going has no owner left to
                 # name. That is a real state and it is said rather than left blank.

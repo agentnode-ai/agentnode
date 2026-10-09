@@ -35,6 +35,19 @@ class AStandInWorker:
 
         return Held()
 
+    def remove_what_a_previous_worker_left(self):
+        """A clean answer, because that is what this host is.
+
+        The start refuses a worker that cannot say what a previous one left -- an answer nobody can
+        give is not an empty one -- so a double without this method would be refused at the gate and
+        every test in this file would fail there instead of exercising the door it is about. That the
+        refusal happens is tested where it belongs, in test_cleanup_is_the_products_own.py.
+        """
+        return {"runtime": "none", "found": [], "removed": [], "failed": [], "unreadable": [],
+                "egress": {"asked": True, "clean": True, "failed": [], "removed": [],
+                           "unreadable": []},
+                "clean": True, "why": ""}
+
     def run(self, job):                                        # pragma: no cover - not reached
         self.ran.append(job)
         raise AssertionError("no job should reach this stand-in")

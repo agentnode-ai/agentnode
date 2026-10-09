@@ -96,8 +96,30 @@ class TestAnUpgradeProvesWhichCodeCameUp:
     def test_it_fails_when_the_build_is_not_the_one_installed(self):
         assert '"$SAID_IT_IS" = "$WILL_BE_BUILD_ID"' in UP
 
-    def test_and_when_nothing_actually_changed(self):
-        assert '"$SAID_IT_IS" != "$WAS_BUILD_ID"' in UP
+    def test_and_when_nothing_actually_changed_it_says_so_and_does_not_fail(self):
+        """CORRECTED, and the correction cost an upgrade rather than being an opinion.
+
+        This used to assert the line `"$SAID_IT_IS" != "$WAS_BUILD_ID"`, which made the upgrade fail
+        when the running build equalled the one that was running before. Measured on the two machines:
+        the first upgrade of the control plane wrote the new wheel and the new pin and then stopped at
+        the measurement gate, because its worker was parked and unreachable -- the product being right.
+        The second attempt ran on a host that therefore already had the new code, found before and
+        after equal, and refused an upgrade that had in fact succeeded.
+
+        The property worth protecting is that the restart brought up the build THIS RUN INSTALLED, and
+        the two assertions above are exactly that. "It is the same as before" adds nothing to them and
+        is true of every resumed upgrade and of installing one build twice. So the comparison stays and
+        is REPORTED; what is gone is treating it as a failure.
+        """
+        assert '"$SAID_IT_IS" = "$WAS_BUILD_ID"' in UP, (
+            "the upgrade no longer compares the build with what was running before, so it cannot say "
+            "whether anything moved")
+        after = UP.split('"$SAID_IT_IS" = "$WAS_BUILD_ID"', 1)[1][:800]
+        assert "the build did not change" in after, after[:200]
+        assert "That is not a failure" in after, after[:200]
+        assert "died" not in after.split("fi", 1)[0], (
+            "the equal-build branch still ends the run, which is what made a resumed upgrade "
+            "impossible")
 
 
 class TestTheGatewayGateIsPassable:

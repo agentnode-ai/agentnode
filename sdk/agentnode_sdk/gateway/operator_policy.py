@@ -275,9 +275,49 @@ def from_config(config: dict) -> OperatorPolicyEnvelope:
         raise OperatorPolicyError("egress_allowed has to be a list of hostnames.")
     if not allowed:
         return build(NONE)
-    return build(RESTRICTED, allowed,
-                 limits=config.get("egress_limits") or None,
-                 runtime=config.get("runtime_requirements") or None)
+    envelope = build(RESTRICTED, allowed,
+                     limits=config.get("egress_limits") or None,
+                     runtime=config.get("runtime_requirements") or None)
+    refuse_a_ceiling_that_cannot_be_enforced(envelope)
+    return envelope
+
+
+def refuse_a_ceiling_that_cannot_be_enforced(envelope) -> None:
+    """A config whose hosts cannot be held as an allowlist is refused, not honoured approximately.
+
+    `cli/gateway_commands._operator_policy` used to run `sandbox.egress.validate_allowed_domains` over the
+    file's hosts before handing the result to a service, and that validator refuses more than
+    `_destination` above does: an IP literal, `localhost`, and raw non-ASCII. Those are exactly the
+    destinations an allowlist cannot meaningfully hold, because what the egress proxy screens is the
+    address a NAME resolves to.
+
+    That helper was deleted for finding R8 of acceptance run `r5-20261006` -- it was the thing that froze a
+    start-up policy into the serving process -- so this check had to move. **It was first placed on the
+    service, inside `configured_envelope`, and that was not far enough.** `from_config` has two real
+    callers, and the other one is the CLI's own egress show path: it would have gone on computing a digest
+    from an unvalidated envelope and comparing that with the snapshot, while admission refused the same
+    config outright. Two published readings of one moment, disagreeing -- which is the shape of the defect
+    being repaired, reintroduced one layer over.
+
+    So it sits here, at the one place a gateway config becomes a policy. `from_document`, which reads an
+    activation snapshot back, deliberately does NOT go through it: a snapshot already holding such a host
+    would otherwise stop being readable, and that turns a configuration mistake into a gateway which cannot
+    say what it enforces at all.
+
+    The import is local because this module is about a policy's shape and `sandbox.egress` is about making
+    one hold; tying the two together at load time would buy nothing.
+    """
+    hosts = tuple(getattr(envelope, "allowed_destinations", ()) or ())
+    if not hosts:
+        return
+    from agentnode_sdk.sandbox.egress import validate_allowed_domains
+
+    try:
+        validate_allowed_domains(hosts)
+    except ValueError as why:
+        raise OperatorPolicyError(
+            "the gateway config names a destination that cannot be enforced as an allowlist: "
+            "%s" % (why,)) from None
 
 
 def from_document(text: str) -> OperatorPolicyEnvelope:
