@@ -631,6 +631,28 @@ class GatewayService:
         # nothing about its output says nothing; it does not say the run had none.
         return Outcome(**{"exit_code": None, "stdout": "", "stderr": "", **fields})
 
+    def _device_is_still_enrolled(self, client_id: str, account_id: str):
+        """True, False, or None when this gateway cannot tell.
+
+        THREE ANSWERS AND NOT TWO. An unreadable token store is not an enrolled device, and it is
+        not a withdrawn one either -- the same distinction the accounts record already gets with
+        `cannot_tell`, and for the same reason: a gateway that cannot tell whether a device was
+        withdrawn is not one to start its work.
+
+        Asked of the ACCOUNT's own device list, which is the question a customer may ask about
+        their own devices, rather than of the operator-wide listing. A device with no account id
+        to be asked about is answered True: that is not a withdrawal, and refusing on it would
+        refuse every job of a topology that has no accounts.
+        """
+        if not client_id or not account_id:
+            return True
+        try:
+            known = {str(d.get("client_id") or "")
+                     for d in self.state.devices_in(str(account_id))}
+        except Exception:                                     # noqa: BLE001
+            return None
+        return str(client_id) in known
+
     def drop_queued_work_that_is_no_longer_permitted(self) -> list:
         """Take waiting jobs out of the queue when their owner may no longer have them run.
 
@@ -660,7 +682,46 @@ class GatewayService:
                     accounts[account] = False
             return accounts[account]
 
-        return slots.drop_every(no_longer_permitted, "the account was suspended")
+        suspended = slots.drop_every(no_longer_permitted, "the account was suspended")
+
+        # AND A SECOND PASS, FOR A DEVICE THAT IS GONE, with its own reason.
+        #
+        # `R9` above is about a suspended ACCOUNT. A withdrawn DEVICE is a different operator
+        # action with the same structural problem: `agentnode gateway revoke` runs in another
+        # process and cannot reach a ticket. The contract operation `devices.revoke` drops the
+        # ticket itself; the operator's command removes the credential and nothing else, which is
+        # exactly what that handler's own docstring says is not the whole of revocation.
+        #
+        # Measured before this existed: on the two-host stand the operator withdrew a device whose
+        # job was waiting, and that job was promoted when the slot freed, ran for its full 150.7
+        # seconds and was billed for them, while its customer was told only that their job "did
+        # not come back". That is BETA-4 finding A-7.
+        #
+        # TWO PASSES AND NOT ONE PREDICATE: `drop_every` carries one reason, and a withdrawal
+        # reported as a suspension would be the wrong cause for a true condition -- which is the
+        # defect class this whole arc is about. The reason here is the one `_wait_for_a_slot`
+        # already has wording for.
+        known_by_account: dict = {}
+
+        def its_device_is_gone(ticket) -> bool:
+            record = self.runs.get(str(getattr(ticket, "run_id", "") or ""))
+            client = str(getattr(record, "owner_client_id", "") or "") if record else ""
+            account = str(getattr(ticket, "account_id", "") or "")
+            if not client or not account:
+                return False
+            # Keyed by the DEVICE and not by the account: one customer may have several devices
+            # and only one of them withdrawn, and a per-account answer would drop the waiting
+            # jobs of the devices that are still here.
+            if (client, account) not in known_by_account:
+                known_by_account[(client, account)] = self._device_is_still_enrolled(
+                    client, account)
+            # None means this gateway could not read the token store. The sweep does NOT throw a
+            # job away on that: the grant-time check refuses it with an honest cause instead, the
+            # same way the suspension sweep leaves `cannot_tell` to admission.
+            return known_by_account[(client, account)] is False
+
+        withdrawn = slots.drop_every(its_device_is_gone, "revoked")
+        return list(suspended) + list(withdrawn)
 
     def _pair_keys(self, declared: str, tls):
         """The per-pair keys, and the name this gateway answers to. `(None, "")` on the local
@@ -3046,6 +3107,30 @@ class GatewayService:
             self.slots.give_back(record.run_id)
             self._end_without_running(record, granted, "cancelled",
                                       "cancelled by the client before it started")
+            return False
+
+        # AND THE DEVICE, which the standing check above does not ask about.
+        #
+        # `standing_of` looks up the ACCOUNT. A withdrawn device's account is usually in
+        # perfectly good standing, so a job whose device the operator withdrew while it waited
+        # passed every check here and ran. Measured: BETA-4 finding A-7, 150.7 seconds of work
+        # done and billed for a device that had been withdrawn before it started.
+        #
+        # This is the fail-closed half of the repair and does not depend on the sweep having run:
+        # the sweep is prompt and not instantaneous, and the slot can free in between. It is the
+        # last moment before foreign code runs, which is the only moment that counts.
+        enrolled = self._device_is_still_enrolled(record.owner_client_id,
+                                                 record.owner_account_id)
+        if enrolled is not True:
+            self.slots.give_back(record.run_id)
+            self._end_without_running(
+                record, granted, "refused",
+                # The same sentence the queue's own drop reason carries, so a customer reads one
+                # wording whichever of the two noticed first.
+                "the device that submitted this job was withdrawn while it was waiting"
+                if enrolled is False else
+                "this sandbox cannot currently tell whether the device that submitted this job "
+                "is still enrolled, so it is not starting its work")
             return False
 
         # THE BILLED CLOCK STARTS HERE, and nowhere earlier.
