@@ -2736,13 +2736,21 @@ class GatewayService:
                     "there is nothing to allow. Name the hosts, or ask for no network at all. "
                     "Nothing was started."
                 )
-            raise ProtocolError(
+            # A WELL-FORMED JOB THE OPERATOR'S POLICY REFUSED, and named as one. It was a
+            # `ProtocolError`, which both translators render as `malformed` -- the word a garbage
+            # request gets -- so a client branching on the closed list was told to fix a request
+            # that had nothing wrong with it (`F12`). The contract has declared `refused_by_policy`
+            # for exactly this since it was written; admission maps its reason onto it. The
+            # sentence is unchanged, because the older door's clients print only the sentence.
+            raise _admission.NotAdmitted(
+                "refused_by_operator_policy",
                 "this job asked to reach " + ", ".join(_asked_for) +
                 ", and the policy in force here allows none of them, so there is nothing left "
                 "to allow. This is not something the job can change: ask whoever runs this "
                 "sandbox to allow one of those destinations, or ask for no network at all. "
-                "Nothing was started."
-            )
+                "Nothing was started.",
+                "Ask whoever runs this sandbox to allow one of those destinations, or ask for "
+                "no network at all.")
         if _mode == "egress":
             from agentnode_sdk.sandbox.egress import validate_allowed_domains
 
@@ -2769,11 +2777,16 @@ class GatewayService:
         narrowed = narrowed_paths(requested_shape, effective_shape)
         broken = [p for p in narrowed if p in mandatory]
         if broken:
-            raise ProtocolError(
+            # The same class as the refusal above: "mandatory" is a declaration the contract
+            # supports, so the request is well-formed and it is the operator's policy that cannot
+            # meet it. It had no remedy at all; `NotAdmitted` refuses to be raised without one.
+            raise _admission.NotAdmitted(
+                "refused_by_operator_policy",
                 "this gateway cannot run the job as required: it must narrow "
                 + ", ".join(sorted(broken))
-                + ", and the job declared that mandatory. Nothing was started."
-            )
+                + ", and the job declared that mandatory. Nothing was started.",
+                "Declare " + ", ".join(sorted(broken)) + " optional so the job runs within "
+                "what this sandbox allows, or ask whoever runs this sandbox to allow it.")
 
         if request.policy_sha256 and request.policy_sha256 != digest(
                 canonical_bytes(requested_shape)):
