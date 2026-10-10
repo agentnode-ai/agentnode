@@ -329,6 +329,12 @@ def name_the_refusal(exc: Exception) -> tuple:
             "rather than applying a limit it cannot read.")
     if isinstance(exc, ProtocolError):
         return "malformed", "Correct the request and send it again."
+    # Before the generic branch, whose "Try again" is right for a transient failure and wrong for
+    # this one: the same job meets the same fault.
+    from agentnode_sdk.gateway.policy_paths import ComposedWider
+
+    if isinstance(exc, ComposedWider):
+        return "sandbox_unavailable", ComposedWider.WHAT_TO_DO
     from agentnode_sdk.gateway.readiness import RequiredPropertyUnavailable
 
     if isinstance(exc, RequiredPropertyUnavailable):
@@ -2779,12 +2785,25 @@ class GatewayService:
         # A gateway may narrow and never widen. Checked rather than assumed: the fold is supposed
         # to guarantee it, and a check that never fires costs nothing while an unchecked
         # assumption costs everything the one time it is wrong.
+        #
+        # WHEN IT FIRES, THE FAULT IS THIS GATEWAY'S, and it is named that way. It raised
+        # `ProtocolError`, which every door rendered as `malformed` -- "Correct the request" -- to a
+        # caller whose request was never wrong. The sentence is unchanged; the type is what tells the
+        # classifiers whose fault it is. And whoever runs the gateway is told, by field name only,
+        # because a refusal counted among ordinary unavailability is one nobody goes looking for.
         widened = widened_paths(requested_shape, effective_shape)
         if widened:
-            raise ProtocolError(
+            from agentnode_sdk.gateway.policy_paths import ComposedWider
+
+            sys.stderr.write(
+                "\n  run %s: this gateway composed a policy wider than the job asked for in %s, "
+                "and refused it. That is a defect in this gateway; nothing ran.\n"
+                % (str(request.run_id)[:12], ", ".join(widened)))
+            sys.stderr.flush()
+            raise ComposedWider(
                 "this gateway composed a policy WIDER than the job asked for in "
-                + ", ".join(widened) + ". Refusing rather than running it."
-            )
+                + ", ".join(widened) + ". Refusing rather than running it.",
+                widened)
 
         narrowed = narrowed_paths(requested_shape, effective_shape)
         broken = [p for p in narrowed if p in mandatory]
@@ -3306,18 +3325,30 @@ class GatewayService:
         if state == "refused":
             record.refused_as = "over_a_ceiling"
             record.refusal_remedy = "Send it again when this sandbox is taking work."
-        try:
-            record.move_to(state)
-        except Exception:                                     # noqa: BLE001 - already terminal
+        # ALREADY ENDED BY SOMEBODY ELSE, and then this path has nothing to say. That used to be
+        # decided by `move_to` refusing, which also PUBLISHED this path's word before anything was
+        # written down -- so a client could be told `cancelled` or `refused` and a gateway that died
+        # next left no signed line, and the next start closed the run as interrupted: a durable
+        # record contradicting what the customer had already been told. The consultation before
+        # this change (`Q0001`) found that consequence; I had argued no record could become wrong.
+        from agentnode_sdk.gateway.protocol import is_terminal
+
+        if is_terminal(record.state):
             return
         # The same publication as any other ending: one line in the signed log, with `seconds`
         # at zero and the wait recorded beside it. A run that vanished silently would be the one
         # kind of run nobody could check afterwards.
+        #
+        # WRITTEN BEFORE THE STATE IS PUBLISHED, like every other ending. If another path wrote
+        # this run's line first, the meter refuses a second one and `write_down_what_it_used`
+        # returns the word the log already holds -- so the log stays the one place the ending is
+        # decided, and the word published below is that one rather than this path's.
+        said = ""
         try:
             said = self.write_down_what_it_used(record, granted, state)
         except Exception as exc:                              # noqa: BLE001
             self.could_not_record(record, exc)
-            return
+        final = said or state
         # AND THE DURABLE RECORD, which this path never settled.
         #
         # Measured on the two-host stand: a job stopped while it was waiting got a signed usage
@@ -3332,11 +3363,14 @@ class GatewayService:
         # the signed log now says, which is the whole point of its return value. A path that wrote
         # its own word is the defect `note_it_settled` was written about.
         if said:
-            try:
-                self.ledger.note_it_settled(record.run_id, said,
-                                            because=record.termination_reason)
-            except Exception as exc:                          # noqa: BLE001
-                self.could_not_record(record, exc)
+            self._settle_before_it_is_shown(record, said)
+        # Published LAST, and published even when something above could not be written: the
+        # gateway has then stopped itself and said why, and a client left waiting on a run nobody
+        # will finish is the worse of the two.
+        try:
+            record.move_to(final)
+        except Exception:                                     # noqa: BLE001 - already terminal
+            return
 
     def _run(self, request: JobRequest, artifact: bytes, granted, record: RunRecord) -> None:
         from agentnode_sdk.sandbox.composition import network_mode
@@ -3654,6 +3688,16 @@ class GatewayService:
             # no line at all does this fall back to what it decided, because then there is nothing
             # more authoritative to defer to.
             final = settled or terminal
+            # WITH THE REASON THE SIGNED LINE GAVE. `final` is what the log says; the reason is
+            # what the record carries, and the two are written together so the durable record
+            # cannot hold a word without the reason that produced it.
+            #
+            # AND BEFORE THE STATE IS PUBLISHED, which it was not. This came after the move below,
+            # so a client polling the run could be told it ended while the ledger said nothing, and
+            # a test that waited for the terminal state and then removed the gateway's directory met
+            # the ledger's temporary file (`WinError 32`, CI, observation `O3` of the F12 arc). The
+            # sentence under this block was true of the line and the quota and false of the ledger.
+            self._settle_before_it_is_shown(record, final)
             # A reader that sees a terminal state must be seeing a complete record.
             try:
                 record.move_to(final)
@@ -3662,11 +3706,34 @@ class GatewayService:
                 # moves the record as well as the files. `move_to` refuses rather than assigns, and
                 # being refused here is the invariant holding, not a failure to handle.
                 pass
-            # WITH THE REASON THE SIGNED LINE GAVE. `final` is what the log says; the reason is
-            # what the record carries, and the two are written together so the durable record
-            # cannot hold a word without the reason that produced it.
-            self.ledger.note_it_settled(record.run_id, final,
-                                        because=record.termination_reason)
+
+    def _settle_before_it_is_shown(self, record: RunRecord, word: str) -> None:
+        """Make the ledger say `word` for this run, or stop this gateway saying why. Never raises.
+
+        Called by both endings immediately before they publish a terminal state, so that what a
+        reader is shown is already in the durable record.
+
+        IT USED TO HAVE NO GUARD. A ledger that could not be written killed the run's thread after
+        its client had been told the run ended, and the gateway went on taking work it had not
+        written down. A failure here now does what a failed usage line does: the gateway stops,
+        durably and visibly. The caller publishes the run regardless, because a client waiting for
+        ever on a run nobody will finish is the worse of the two.
+
+        AND IT CHECKS WHAT IT GOT BACK. `note_it_settled` keeps the first word it was given and
+        returns that one. The ledger copies the signed log, so a different word already there means
+        two paths read two different things, and carrying on as though `word` had been written
+        would be stating an invariant the file does not hold. The independent consultation before
+        this change (`Q0001`) asked for that check.
+        """
+        try:
+            held, _wrote = self.ledger.note_it_settled(record.run_id, word,
+                                                       because=record.termination_reason)
+        except Exception as exc:                              # noqa: BLE001
+            self.could_not_record(record, exc)
+            return
+        if held and held != word:
+            self.could_not_record(record, RuntimeError(
+                f"the ledger already says {held!r} and the signed line says {word!r}"))
 
     #: How long a cancellation waits for the run to actually stop before it answers. The worker
     #: publishes the terminal state LAST, after cleanup -- so waiting for that state is waiting
@@ -3860,12 +3927,12 @@ class GatewayService:
             # won and makes the caches say that, which is also what repairs a crash between the two
             # file writes.
             return self._settle_the_caches_from_the_signed_line(record.run_id)
-        except OSError:                                       # pragma: no cover - a full disk
-            # A run that happened is not un-happened by a meter that could not be written, and
-            # refusing to publish the terminal state over it would lose the run instead. Nothing is
-            # returned, so the caller falls back to the word it decided: there is no line to defer
-            # to, and a run with no line has nothing more authoritative than the handler that ran it.
-            return ""
+        # NO `except OSError` HERE, and there was one. It returned "" for a meter that could not be
+        # written, which kept the run's ending published -- rightly -- but also hid the failure from
+        # both callers, whose guard is the thing that stops a gateway that "cannot write down what
+        # it ran". So the commonest way that write fails was the one way it did not stop anything.
+        # Both callers still publish the run when this raises; they now also stop taking work and
+        # say why. Found by the consultation before the `O3` change (`Q0001`).
         # THE LINE IS OURS. Its figures are therefore the ones every other record must carry, so the
         # quota is set from the same `billed` the line was written with, and the ledger caches the
         # same word -- both through the one function that does this everywhere else.

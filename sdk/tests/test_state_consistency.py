@@ -412,6 +412,8 @@ def waiting_gateway(tmp_path):
                 if all(is_terminal(r.state) for r in list(service.runs.values())):
                     break
                 time.sleep(0.05)
+            # Closed before the directory goes, for the reason `test_allowance.a_gateway` gives.
+            service.close()
 
 
 def a_running_job(base, state, service, backend, run_id):
