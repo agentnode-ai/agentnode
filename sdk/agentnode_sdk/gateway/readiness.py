@@ -65,6 +65,46 @@ PROPERTY_CHECKS: dict[str, tuple[str, ...]] = {
 #: are all outcomes rather than omissions, and none of them is proof.
 OBSERVED = "observed"
 PASSED = "pass"
+#: The one outcome that is a measured NO. Kept apart from the rest so a property that was measured and
+#: failed can be told from one nobody established (`Readiness.refuted`).
+FAILED = "fail"
+
+
+class RequiredPropertyUnavailable(Exception):
+    """A job requires a property this sandbox cannot show. Refused as `sandbox_incompatible`.
+
+    It was a `ProtocolError`, which every door renders as `malformed` -- "Correct the request" -- for a
+    request that used a declared field correctly (`O1` of the F12 arc). It is not `sandbox_unavailable`
+    either: that word means a sandbox that cannot run anything right now, and a retry here meets the
+    same refusal. What is true is that THIS sandbox does not provide what the job requires, and another
+    one may (the consultation `Q0001` in the O1 bundle).
+
+    `refusal_cause` says which situation it is, beneath the one word: `property_not_provided` when at
+    least one required property was measured and did not hold, `property_unmeasured` when nothing
+    established them either way.
+    """
+
+    NOT_PROVIDED = "property_not_provided"
+    UNMEASURED = "property_unmeasured"
+
+    def __init__(self, because: str, not_provided=(), not_established=()) -> None:
+        super().__init__(because)
+        self.not_provided = tuple(sorted(not_provided))
+        self.not_established = tuple(sorted(not_established))
+        self.refusal_cause = self.NOT_PROVIDED if self.not_provided else self.UNMEASURED
+        if self.not_provided:
+            named = ", ".join(self.not_provided)
+            self.what_to_do = (
+                f"This sandbox measured that it does not provide {named}. Send the job to a "
+                "sandbox that provides it, or remove the requirement only if the job can safely "
+                "run without it. Sending it here again will not help unless this sandbox's "
+                "configuration changes.")
+        else:
+            named = ", ".join(self.not_established)
+            self.what_to_do = (
+                f"This sandbox has not established {named}. Send the job to a sandbox that "
+                "provides it, or ask whoever runs this one to measure it; remove the requirement "
+                "only if the job can safely run without it.")
 
 #: Properties this gateway will not run anything without, whatever a job asks for.
 ALWAYS_REQUIRED: tuple[str, ...] = ("container_isolation",)
@@ -209,6 +249,15 @@ class Readiness:
     #: without a measurement. A caller that printed "nothing was changed" on `ready is False` would be
     #: lying in exactly that case, which is why this field exists rather than a second return type.
     in_force: bool = False
+    #: The properties this gateway MEASURED and found not to hold: at least one of their checks was
+    #: observed and failed. A subset of the false ones in `properties`, which cannot tell "measured,
+    #: and no" from "nobody established it" -- both are false there, rightly, because neither is a
+    #: yes. A job requiring one of these is told that sending it here again will not help, which is
+    #: not true of a property nobody measured (`O1`, `sandbox_incompatible`).
+    #:
+    #: Not in `as_dict`, deliberately: that is what `hello` and the console are told, and this change
+    #: does not change what they are told.
+    refuted: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -365,6 +414,7 @@ class ReadinessGate:
         # suite had found: a check that could not see its input, failing closed but still blind.
         properties: dict[str, bool] = {}
         unproven: list[str] = []
+        refuted: list[str] = []
         for name in sorted(set(PROPERTY_CHECKS) | set(required)):
             check_ids = PROPERTY_CHECKS.get(name)
             if not check_ids:
@@ -385,6 +435,13 @@ class ReadinessGate:
             properties[name] = holds
             if not holds:
                 unproven.append(name)
+            # MEASURED AND NO, which only an observed `fail` says. Every other way to be false --
+            # missing, claimed, `not_checked`, `probe_error` -- is "nobody established it".
+            if any(isinstance(results.get(c), dict)
+                   and str(results[c].get("assurance")) == OBSERVED
+                   and str(results[c].get("outcome")) == FAILED
+                   for c in check_ids):
+                refuted.append(name)
 
         missing_core = [p for p in required if not properties.get(p)]
         if missing_core:
@@ -393,10 +450,11 @@ class ReadinessGate:
                 "this gateway cannot show that it " + _plain(missing_core[0]) +
                 ", so it will not run anything.",
                 properties, tuple(sorted(unproven)), (_MEASURE_STEP,),
-                measured_at=measured_at,
+                measured_at=measured_at, refuted=tuple(refuted),
             )
 
-        return Readiness(True, "", properties, tuple(sorted(unproven)), (), measured_at)
+        return Readiness(True, "", properties, tuple(sorted(unproven)), (), measured_at,
+                         refuted=tuple(refuted))
 
 
 def _plain(property_name: str) -> str:

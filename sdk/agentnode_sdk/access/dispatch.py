@@ -1941,6 +1941,12 @@ def _translate(exc: Exception) -> Refused:
 
     if isinstance(exc, ComposedWider):
         return Refused("sandbox_unavailable", str(exc), ComposedWider.WHAT_TO_DO)
+    # A REQUIREMENT THIS SANDBOX CANNOT MEET, before the generic branch: its "Try again" is the one
+    # thing that will not help when the sandbox measured that it lacks what the job requires.
+    from agentnode_sdk.gateway.readiness import RequiredPropertyUnavailable
+
+    if isinstance(exc, RequiredPropertyUnavailable):
+        return Refused("sandbox_incompatible", str(exc), exc.what_to_do, exc.refusal_cause)
     return Refused("sandbox_unavailable",
                    "This sandbox could not carry that out: %s" % exc,
                    "Try again; if it keeps happening, tell whoever runs it.")

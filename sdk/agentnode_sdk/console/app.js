@@ -111,6 +111,9 @@ var SAYS = {
     "Das liegt nicht an Ihrem Auftrag. Ohne sichere Ausführung wird nichts gestartet — das ist " +
     "so gewollt. Was als Nächstes hilft, steht darunter.",
     "retry"],
+  sandbox_incompatible: ["Diese Sandbox bietet nicht, was der Auftrag verlangt.",
+    "Der Auftrag ist in Ordnung, aber er verlangt eine Eigenschaft, die diese Sandbox nicht " +
+    "nachweisen kann. Was als Nächstes hilft, steht darunter.", "retry"],
   disclosure_required: ["Dafür fehlt Ihre Zustimmung.",
     "Bitte noch einmal starten: Sie bekommen zuerst zu sehen, was passieren würde.", "retry"],
   no_such_run: ["Das gibt es hier nicht (mehr).", "Bitte die Übersicht neu laden.", "retry"],
