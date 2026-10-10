@@ -3335,7 +3335,7 @@ class GatewayService:
         try:
             record.move_to(final)
         except Exception:                                     # noqa: BLE001 - already terminal
-            pass
+            return
 
     def _run(self, request: JobRequest, artifact: bytes, granted, record: RunRecord) -> None:
         from agentnode_sdk.sandbox.composition import network_mode
@@ -3698,7 +3698,7 @@ class GatewayService:
             return
         if held and held != word:
             self.could_not_record(record, RuntimeError(
-                "the ledger already says %r and the signed line says %r" % (held, word)))
+                f"the ledger already says {held!r} and the signed line says {word!r}"))
 
     #: How long a cancellation waits for the run to actually stop before it answers. The worker
     #: publishes the terminal state LAST, after cleanup -- so waiting for that state is waiting
