@@ -67,6 +67,11 @@ def a_gateway(tmp_path):
                 if all(is_terminal(r.state) for r in list(service.runs.values())):
                     break
                 time.sleep(0.05)
+            # AND THEN CLOSED, before the directory goes. The service owns its run threads and
+            # `close()` is what joins them; a terminal state is what a CLIENT waits for, not proof
+            # that the thread which published it has finished. Removing the directory without this
+            # once met the ledger's temporary file on Windows (`WinError 32`, observation `O3`).
+            service.close()
 
 
 def a_run(conn, service, run_id, seconds=60):
