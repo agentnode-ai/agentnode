@@ -93,16 +93,18 @@ class RequiredPropertyUnavailable(Exception):
         self.not_established = tuple(sorted(not_established))
         self.refusal_cause = self.NOT_PROVIDED if self.not_provided else self.UNMEASURED
         if self.not_provided:
+            named = ", ".join(self.not_provided)
             self.what_to_do = (
-                "This sandbox measured that it does not provide %s. Send the job to a sandbox "
-                "that provides it, or remove the requirement only if the job can safely run "
-                "without it. Sending it here again will not help unless this sandbox's "
-                "configuration changes." % ", ".join(self.not_provided))
+                f"This sandbox measured that it does not provide {named}. Send the job to a "
+                "sandbox that provides it, or remove the requirement only if the job can safely "
+                "run without it. Sending it here again will not help unless this sandbox's "
+                "configuration changes.")
         else:
+            named = ", ".join(self.not_established)
             self.what_to_do = (
-                "This sandbox has not established %s. Send the job to a sandbox that provides "
-                "it, or ask whoever runs this one to measure it; remove the requirement only if "
-                "the job can safely run without it." % ", ".join(self.not_established))
+                f"This sandbox has not established {named}. Send the job to a sandbox that "
+                "provides it, or ask whoever runs this one to measure it; remove the requirement "
+                "only if the job can safely run without it.")
 
 #: Properties this gateway will not run anything without, whatever a job asks for.
 ALWAYS_REQUIRED: tuple[str, ...] = ("container_isolation",)
