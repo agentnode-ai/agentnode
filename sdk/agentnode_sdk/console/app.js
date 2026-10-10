@@ -107,8 +107,9 @@ var SAYS = {
   refused_by_policy: ["Das ist hier nicht erlaubt.",
     "Die Sandbox lässt diesen Auftrag nicht zu. Ein einfacherer Auftrag ohne Netzzugriff " +
     "geht meist.", "retry"],
-  sandbox_unavailable: ["Die Sandbox selbst läuft gerade nicht.",
-    "Ohne sie wird nichts ausgeführt — das ist so gewollt. Bitte später noch einmal versuchen.",
+  sandbox_unavailable: ["Die Sandbox kann diesen Auftrag gerade nicht ausführen.",
+    "Das liegt nicht an Ihrem Auftrag. Ohne sichere Ausführung wird nichts gestartet — das ist " +
+    "so gewollt. Was als Nächstes hilft, steht darunter.",
     "retry"],
   disclosure_required: ["Dafür fehlt Ihre Zustimmung.",
     "Bitte noch einmal starten: Sie bekommen zuerst zu sehen, was passieren würde.", "retry"],
