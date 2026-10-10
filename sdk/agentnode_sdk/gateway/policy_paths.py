@@ -30,6 +30,30 @@ class PolicyPathError(ValueError):
     """A requirement names something this build cannot decide. Always refuse."""
 
 
+class ComposedWider(Exception):
+    """This gateway composed a policy WIDER than the job asked for. Its own fault; always refuse.
+
+    Not a `ProtocolError`, deliberately. That is what it was, and both classifiers turn a
+    `ProtocolError` into `malformed` -- "Correct the request and send it again." -- for a request that
+    was never wrong. It is not a `NotAdmitted` either: nobody's policy refused anything, and the gateway
+    was measured. It is the implementation contradicting itself, which the record names
+    `sandbox_unavailable` with a remedy that says a resend will not help (observation `O2` of the F12
+    arc, and the consultation `Q0001` in its bundle).
+
+    `paths` carries the field NAMES only. What they were widened to is policy, and policy does not go
+    into a diagnostic.
+    """
+
+    def __init__(self, because: str, paths=()) -> None:
+        super().__init__(because)
+        self.paths = tuple(paths)
+
+    #: What both classifiers tell the caller. One definition, so the record and the doors say the
+    #: same thing.
+    WHAT_TO_DO = ("This is a fault in this sandbox, not in the job. Tell whoever runs this sandbox; "
+                  "sending the same job again will not help until it is fixed.")
+
+
 def validate_paths(mandatory, optional) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Both lists, checked together. Fail closed on anything unusable.
 

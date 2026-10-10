@@ -329,6 +329,12 @@ def name_the_refusal(exc: Exception) -> tuple:
             "rather than applying a limit it cannot read.")
     if isinstance(exc, ProtocolError):
         return "malformed", "Correct the request and send it again."
+    # Before the generic branch, whose "Try again" is right for a transient failure and wrong for
+    # this one: the same job meets the same fault.
+    from agentnode_sdk.gateway.policy_paths import ComposedWider
+
+    if isinstance(exc, ComposedWider):
+        return "sandbox_unavailable", ComposedWider.WHAT_TO_DO
     return "sandbox_unavailable", (
         "Try again; if it keeps happening, tell whoever runs this sandbox.")
 
@@ -2767,12 +2773,25 @@ class GatewayService:
         # A gateway may narrow and never widen. Checked rather than assumed: the fold is supposed
         # to guarantee it, and a check that never fires costs nothing while an unchecked
         # assumption costs everything the one time it is wrong.
+        #
+        # WHEN IT FIRES, THE FAULT IS THIS GATEWAY'S, and it is named that way. It raised
+        # `ProtocolError`, which every door rendered as `malformed` -- "Correct the request" -- to a
+        # caller whose request was never wrong. The sentence is unchanged; the type is what tells the
+        # classifiers whose fault it is. And whoever runs the gateway is told, by field name only,
+        # because a refusal counted among ordinary unavailability is one nobody goes looking for.
         widened = widened_paths(requested_shape, effective_shape)
         if widened:
-            raise ProtocolError(
+            from agentnode_sdk.gateway.policy_paths import ComposedWider
+
+            sys.stderr.write(
+                "\n  run %s: this gateway composed a policy wider than the job asked for in %s, "
+                "and refused it. That is a defect in this gateway; nothing ran.\n"
+                % (str(request.run_id)[:12], ", ".join(widened)))
+            sys.stderr.flush()
+            raise ComposedWider(
                 "this gateway composed a policy WIDER than the job asked for in "
-                + ", ".join(widened) + ". Refusing rather than running it."
-            )
+                + ", ".join(widened) + ". Refusing rather than running it.",
+                widened)
 
         narrowed = narrowed_paths(requested_shape, effective_shape)
         broken = [p for p in narrowed if p in mandatory]

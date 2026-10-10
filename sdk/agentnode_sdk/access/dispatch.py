@@ -1935,6 +1935,12 @@ def _translate(exc: Exception) -> Refused:
                        "Wait until the window clears, or ask for a higher ceiling.")
     if isinstance(exc, ProtocolError):
         return Refused("malformed", str(exc), "Correct the request and send it again.")
+    # THE GATEWAY'S OWN FAULT, named before the generic branch for the reason `name_the_refusal`
+    # gives: "Try again" is wrong advice when the same job meets the same fault.
+    from agentnode_sdk.gateway.policy_paths import ComposedWider
+
+    if isinstance(exc, ComposedWider):
+        return Refused("sandbox_unavailable", str(exc), ComposedWider.WHAT_TO_DO)
     return Refused("sandbox_unavailable",
                    "This sandbox could not carry that out: %s" % exc,
                    "Try again; if it keeps happening, tell whoever runs it.")
