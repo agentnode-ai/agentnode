@@ -329,6 +329,10 @@ def name_the_refusal(exc: Exception) -> tuple:
             "rather than applying a limit it cannot read.")
     if isinstance(exc, ProtocolError):
         return "malformed", "Correct the request and send it again."
+    from agentnode_sdk.gateway.readiness import RequiredPropertyUnavailable
+
+    if isinstance(exc, RequiredPropertyUnavailable):
+        return "sandbox_incompatible", exc.what_to_do
     return "sandbox_unavailable", (
         "Try again; if it keeps happening, tell whoever runs this sandbox.")
 
@@ -2675,10 +2679,18 @@ class GatewayService:
         # round up to yes just because a job asked for it.
         missing = [p for p in request.required_properties if not properties.get(p, False)]
         if missing:
-            raise ProtocolError(
+            # NOT A MALFORMED REQUEST, which is what `ProtocolError` made it on every door: the job
+            # used a declared field correctly, and it is this sandbox that cannot meet it. The
+            # sentence is unchanged; the type says whose limit it is, and which of the two situations
+            # -- measured and no, or never established -- so the remedy can be true (`O1`).
+            from agentnode_sdk.gateway.readiness import RequiredPropertyUnavailable
+
+            refuted = set(self.readiness_now().refuted)
+            raise RequiredPropertyUnavailable(
                 "this gateway cannot provide " + ", ".join(sorted(missing))
-                + ". The job was not started."
-            )
+                + ". The job was not started.",
+                not_provided=[p for p in missing if p in refuted],
+                not_established=[p for p in missing if p not in refuted])
 
         from agentnode_sdk.gateway.policy_paths import (
             PolicyPathError,
@@ -2949,6 +2961,10 @@ class GatewayService:
             record.move_to("refused")
             record.refusal = str(exc)
             record.refused_as, record.refusal_remedy = name_the_refusal(exc)
+            # WHICH situation, when the refusal's word covers more than one. The contract door
+            # builds its answer from this record, so a cause that stayed on the exception would
+            # reach nobody.
+            record.refusal_cause = str(getattr(exc, "refusal_cause", "") or "")
             record.finished_at = time.time()
             # Recorded, so a refused job cannot be retried into an acceptance by resending it.
             with self._lock:

@@ -110,6 +110,9 @@ def how_it_should_answer(refusal: str) -> int:
         "refused_by_policy": 403,
         "gateway_stopped": 503,
         "sandbox_unavailable": 503,
+        # Understood and well-formed, and this sandbox cannot meet it. Not 503: that invites a retry,
+        # and a retry here meets the same answer.
+        "sandbox_incompatible": 422,
     }.get(refusal, 400)
 
 

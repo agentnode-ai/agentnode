@@ -455,7 +455,8 @@ class TestAMeasurementDescribesWhatItWasTakenUnder:
                 "required_properties": ["a-property-nobody-has-measured"],
                 "accepted_disclosure": shown["accepted_disclosure"]}, who, service=gateway)
         assert refused.value.refusal in ("malformed", "sandbox_unavailable",
-                                         "refused_by_policy", "disclosure_required")
+                                         "refused_by_policy", "disclosure_required",
+                                         "sandbox_incompatible")
 
 
 # ------------------------------------------------------------------ D7: every refusal path

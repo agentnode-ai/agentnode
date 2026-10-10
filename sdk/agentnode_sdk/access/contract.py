@@ -52,7 +52,11 @@ PROTOCOL_VERSION = "2"
 #:   withdrawn device, an ended session and an unknown credential are all `not_authenticated`.
 #: * `devices.rotate` and the session operations were declared, and the older `/v1/jobs*` and
 #:   `/v1/token/rotate` addresses were withdrawn in favour of them.
-INTRODUCED_IN_2 = ("cancel.accepted", "cancel.attempts", "cancel.problem", "devices.rotate",
+#: * `sandbox_incompatible` was ADDED to the refusals, within 2 and without a new number. A client
+#:   that does not know a refusal word keeps it as text with its sentence and remedy
+#:   (`access/client.py`, `_as_refusal`), so an older client is told the truth in words rather than
+#:   broken -- which a version bump would do to every client for one new word.
+INTRODUCED_IN_2 =("cancel.accepted", "cancel.attempts", "cancel.problem", "devices.rotate",
                    "sessions.list", "sessions.end", "connections.enrol", "connections.check")
 
 # ------------------------------------------------------------------ what a caller may hold
@@ -136,6 +140,13 @@ REFUSALS = (
     "disclosure_required",     # nothing was disclosed to a person, so nothing runs
     "upgrade_required",        # this client cannot express what this operation now requires
     "sandbox_unavailable",     # nothing could run it, and this is not the caller's fault
+    # NOT A DISTINCTION INSIDE `sandbox_unavailable`, which is why it is a word and not a cause
+    # beneath that one. That word, its 503 and its console sentence all mean "this sandbox cannot run
+    # anything right now", and a client's move is to wait. Here the sandbox runs fine and cannot give
+    # THIS job what it requires; a retry here meets the same answer, and the client's move is to go
+    # to another sandbox. It was `malformed` before, for a request that used a declared field
+    # correctly (`O1`).
+    "sandbox_incompatible",    # this sandbox cannot provide what the job requires; another may
 )
 
 
@@ -445,7 +456,7 @@ OPERATIONS = (
                   since="2"),
         ),
         errors=COMMON + ("refused_by_policy", "over_a_ceiling", "sandbox_unavailable",
-                         "disclosure_required", "upgrade_required"),
+                         "disclosure_required", "upgrade_required", "sandbox_incompatible"),
         changes=True,
     ),
     Operation(
