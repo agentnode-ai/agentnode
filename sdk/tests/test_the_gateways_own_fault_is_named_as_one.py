@@ -31,7 +31,6 @@ from __future__ import annotations
 import base64
 import dataclasses
 import hashlib
-import io
 import json
 import os
 import urllib.error
@@ -184,8 +183,9 @@ class TestTheConsoleSaysSomethingTrue:
         own words. Its sentence said the sandbox "is not running right now" and to try later --
         true of a stopped worker, false of a fault that a retry will meet again."""
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        app = io.open(os.path.join(here, "agentnode_sdk", "console", "app.js"),
-                      encoding="utf-8").read()
+        with open(os.path.join(here, "agentnode_sdk", "console", "app.js"),
+                  encoding="utf-8") as fh:
+            app = fh.read()
         line = app[app.index("sandbox_unavailable:"):].split("],", 1)[0]
         assert "läuft gerade nicht" not in line and "später noch einmal" not in line, (
             "the console still tells every sandbox_unavailable refusal that the sandbox is not "
