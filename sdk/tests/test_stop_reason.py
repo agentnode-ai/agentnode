@@ -477,30 +477,82 @@ class TestNothingElseMoved:
         no "killed by a signal" among them: 137 is 128+9 for a container something killed and
         for a program that chose to exit 137, and nothing here tells them apart.
 
-        And then four more again, which are not about the run at all. The ten fall into two
-        groups and the guard pins both, in order:
+        And then four more again, which are not about the run at all. And then five more, which
+        are about a run that never started. The fifteen fall into three groups and the guard pins
+        all three, in order:
 
             the six   what happened to the RUN -- it exited, hit a ceiling, was cancelled, ran
                       out of memory, lost its runtime, lost its transport
             the four  what happened to the GATEWAY -- it was stopped, it failed, it was ended
                       from outside, or what ended it is not established. A run caught by any of
                       them was not ended by anything about itself
+            the nineteen  why it NEVER RAN. Admission already names every cause it refuses for,
+                      and these ARE those names, plus two for the device check at the slot and one
+                      for a refusal carrying no admission reason at all
+
+        THE THIRD GROUP GREW, from five to nineteen, and the reason is the whole of what the second
+        independent round failed this on. The five were four specific words and a coarse fifth, and
+        the mapping wrote the fifth over thirteen of admission's seventeen reasons -- so a ceiling, an
+        unreadable limits file and a policy refusal all came out as one word. The review: "D1 requires
+        the actual terminal reason, not merely some non-empty readable reason. The fallback therefore
+        preserves the same class of information loss." There is now one vocabulary rather than two, the
+        mapping is injective, and `admission.py` asserts both that it covers every reason and that no
+        two reasons share a word.
 
         The last of the four is where the refusal to invent still lives. `gateway_killed` is
         written only when the machine kept running across it, which is a thing the kernel's boot
         identity establishes; when it cannot be established, the word is `gateway_lost` and it
         claims nothing further. Same rule as the absent "killed by a signal": a reason this code
         cannot establish is not one it writes down.
+
+        WHY THE THIRD GROUP WAS ADDED, because this guard existing is the reason that has to be
+        written down rather than the literal quietly extended.
+
+        Every one of the first ten is about a run that was RUNNING. A job stopped while it was
+        still waiting in the queue had none of them to carry, so the field stayed empty -- and
+        `BETA-4` measured the consequence on a two-host stand: three terminal `refused` entries
+        whose customers had each been told the true cause in words, and whose durable record said
+        nothing at all. The criterion asks the closing record to carry the actual terminal reason,
+        and "it never started, because X" is one.
+
+        They could not be written at the call site that knows the cause. `what_disagrees` refuses
+        any reason outside this tuple, so a word invented there would not record a cause -- it
+        would make the terminal record UNREADABLE, an `EVIDENCE_ERROR` in every evidence bundle
+        carrying it. That is why this tuple is where they go, and it is why extending it had to
+        break this test.
+
+        FOUR SPECIFIC AND ONE COARSE, and the split is deliberate: four causes behind one word
+        would carry a reason and lose the distinction the record exists for. The fifth is for a
+        refusal whose cause has no word of its own. It is not a guess -- it is a true statement at
+        a coarser grain, with the refusal sentence recorded beside it -- and what it is not is an
+        absence, which was the defect.
+
+        WHAT IT DOES NOT CHANGE: the outcome a client branches on. `outcome_of` maps a refusal
+        with any of these to what a refusal mapped to before, and
+        `test_a_stopped_waiting_job_says_why_it_stopped.py::test_7` is the guard on that.
         """
         from agentnode_sdk.gateway.protocol import (
-            GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST, GATEWAY_STOPPED, OUT_OF_MEMORY,
-            RUNTIME_LOST, TRANSPORT_LOST,
+ACCOUNT_SUSPENDED, ACCOUNT_CONCURRENT, ACCOUNT_RATE, ACCOUNT_RUNS_WINDOW,
+            ACCOUNT_SECONDS_WINDOW, ACCOUNT_UNREADABLE, ARTIFACT_TOO_LARGE,
+            CAUSE_NOT_ESTABLISHED, CEILINGS_UNREADABLE, DEVICE_CONCURRENT, DEVICE_RATE,
+            DEVICE_RUNS_WINDOW, DEVICE_SECONDS_WINDOW, DEVICE_WITHDRAWN,
+            ENROLMENT_UNREADABLE, GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST,
+            GATEWAY_STOPPED, GATEWAY_UNMEASURED, NOT_TAKING_WORK, OUT_OF_MEMORY,
+            REFUSED_BY_OPERATOR_POLICY, RUNTIME_LOST, TRANSPORT_LOST, USE_UNREADABLE,
         )
 
         assert TERMINATION_REASONS == (EXITED, TIMED_OUT, CANCELLED,
                                        OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST,
                                        GATEWAY_STOPPED, GATEWAY_CRASHED, GATEWAY_KILLED,
-                                       GATEWAY_LOST)
+                                       GATEWAY_LOST,
+                                       ACCOUNT_SUSPENDED, DEVICE_WITHDRAWN, NOT_TAKING_WORK,
+                                       ENROLMENT_UNREADABLE, GATEWAY_UNMEASURED,
+                                       ACCOUNT_UNREADABLE, CEILINGS_UNREADABLE, USE_UNREADABLE,
+                                       DEVICE_RATE, ACCOUNT_RATE, DEVICE_CONCURRENT,
+                                       ACCOUNT_CONCURRENT, DEVICE_RUNS_WINDOW,
+                                       ACCOUNT_RUNS_WINDOW, DEVICE_SECONDS_WINDOW,
+                                       ACCOUNT_SECONDS_WINDOW, ARTIFACT_TOO_LARGE,
+                                       REFUSED_BY_OPERATOR_POLICY, CAUSE_NOT_ESTABLISHED)
 
     def test_and_each_one_names_exactly_one_ending(self):
         """No two of them may be spellings of the same thing: a reader who cannot tell two

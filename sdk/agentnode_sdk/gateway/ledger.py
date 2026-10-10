@@ -364,7 +364,7 @@ class Ledger:
             return want
 
     def note_it_settled(self, run_id: str, settled_as: str,
-                        at: float | None = None) -> tuple[str, bool]:
+                        at: float | None = None, because: str = "") -> tuple[str, bool]:
         """Record WHAT THE SIGNED LINE SAYS this run became. Once. Returns (what it says, wrote).
 
         The word must come from the line, never from the path that is calling. That is the whole
@@ -382,8 +382,26 @@ class Ledger:
         this field mirrors it, so refusing a word the log actually carries would be the original defect
         again -- a durable record disagreeing with the line because a code path preferred its own idea
         of the vocabulary.
+
+        AND `because` IS THE REASON THAT LINE GAVE, stored beside the word.
+
+        Five words cannot tell a timeout from an ordinary ending, and for a while this record did not:
+        a run that hit its limit was written down as `finished`, which made a timeout
+        indistinguishable from normal completion to an operator reading the durable record. That is
+        `EG12` of the beta acceptance at WARN. The information was never missing -- the signed usage
+        line has carried `termination_reason` all along and `protocol.TIMED_OUT` is as old as the
+        protocol -- it was dropped here, where it has to survive a restart.
+
+        A SIXTH WORD WOULD HAVE BEEN THE WRONG REPAIR. `TERMINAL_STATES` is shared with every client,
+        and this module's own note says what a new one costs: "a client that does not recognise a
+        terminal state waits for it forever". A timeout is a `finished` run whose REASON is `timeout`.
+
+        The reason obeys the same rule as the word, for the same reason: first writer wins, a
+        different second answer is refused and recorded rather than resolved, and the same answer
+        twice is not a conflict.
         """
         word = str(settled_as)
+        why = str(because or "")
         when = float(time.time() if at is None else at)
         with self._lock, ProcessLock(self.path):
             self._load()
@@ -391,17 +409,28 @@ class Ledger:
             if entry is None:
                 return "", False
             already = str(entry.get("settled_as") or "")
+            already_because = str(entry.get("settled_because") or "")
             if already:
-                if already != word:
+                # THE WORD AND THE REASON, EACH ON ITS OWN. A second caller may disagree about
+                # either, and a disagreement about the reason is as much worth keeping as one
+                # about the word: it means two paths read two different signed lines.
+                disagrees = (already != word) or (why and already_because and why != already_because)
+                if disagrees:
                     # DURABLY, and without touching the value. A conflict that is only logged is a
                     # conflict nobody finds; one that overwrites is the defect again.
                     conflicts = entry.setdefault("settled_conflicts", [])
                     if isinstance(conflicts, list):
-                        conflicts.append({"at": when, "already": already, "offered": word})
+                        conflicts.append({"at": when, "already": already, "offered": word,
+                                          "already_because": already_because,
+                                          "offered_because": why})
                         self._write_locked()
                 return already, False
             entry["settled_as"] = word
             entry["settled_at"] = when
+            # Written even when empty, so a reader can tell "no reason was given" from "this build
+            # had no such field" -- which is the distinction a record has to survive its own
+            # upgrade with.
+            entry["settled_because"] = why
             # An ending is also the end of the lifecycle. Written here rather than by a second call,
             # so there is no window in which a run has an outcome and is still selectable as
             # mid-flight.

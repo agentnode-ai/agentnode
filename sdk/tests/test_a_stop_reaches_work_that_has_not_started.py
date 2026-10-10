@@ -29,7 +29,13 @@ class TestASuspensionReachesTheQueue:
 
     def test_a_waiting_job_for_a_suspended_account_is_dropped(self):
         slots, _held, _tickets = self._queued("alice")
-        service = SimpleNamespace(_slots=slots)
+        # `runs` AS WELL AS `_slots`. The sweep gained a second pass for a device the operator
+        # withdrew, and that pass reads the run record to learn whose device a ticket belongs
+        # to. This stand-in has no run records, so that pass drops nothing and these four
+        # tests keep asking exactly what they asked before -- which is the point: the
+        # alternative was a defensive `getattr(self, "runs", {})` in the product, and a
+        # sweep that silently skips its own check when an attribute is missing is fail-open.
+        service = SimpleNamespace(_slots=slots, runs={})
         service.standing_of = lambda account, _c: SimpleNamespace(
             suspended_because="by the operator" if account == "alice" else "")
 
@@ -38,14 +44,26 @@ class TestASuspensionReachesTheQueue:
 
     def test_a_waiting_job_for_an_account_in_good_standing_is_left_alone(self):
         slots, _held, _tickets = self._queued("bob")
-        service = SimpleNamespace(_slots=slots)
+        # `runs` AS WELL AS `_slots`. The sweep gained a second pass for a device the operator
+        # withdrew, and that pass reads the run record to learn whose device a ticket belongs
+        # to. This stand-in has no run records, so that pass drops nothing and these four
+        # tests keep asking exactly what they asked before -- which is the point: the
+        # alternative was a defensive `getattr(self, "runs", {})` in the product, and a
+        # sweep that silently skips its own check when an attribute is missing is fail-open.
+        service = SimpleNamespace(_slots=slots, runs={})
         service.standing_of = lambda account, _c: SimpleNamespace(suspended_because="")
 
         assert GatewayService.drop_queued_work_that_is_no_longer_permitted(service) == []
 
     def test_only_the_suspended_accounts_work_goes(self):
         slots, _held, _tickets = self._queued("alice", "bob", "alice")
-        service = SimpleNamespace(_slots=slots)
+        # `runs` AS WELL AS `_slots`. The sweep gained a second pass for a device the operator
+        # withdrew, and that pass reads the run record to learn whose device a ticket belongs
+        # to. This stand-in has no run records, so that pass drops nothing and these four
+        # tests keep asking exactly what they asked before -- which is the point: the
+        # alternative was a defensive `getattr(self, "runs", {})` in the product, and a
+        # sweep that silently skips its own check when an attribute is missing is fail-open.
+        service = SimpleNamespace(_slots=slots, runs={})
         service.standing_of = lambda account, _c: SimpleNamespace(
             suspended_because="by the operator" if account == "alice" else "")
 
@@ -56,7 +74,13 @@ class TestASuspensionReachesTheQueue:
         """Unreadable is not permission -- the admission path already refuses on it, with a
         reason. It is also not a reason for a job to vanish out of a queue on a guess."""
         slots, _held, _tickets = self._queued("alice")
-        service = SimpleNamespace(_slots=slots)
+        # `runs` AS WELL AS `_slots`. The sweep gained a second pass for a device the operator
+        # withdrew, and that pass reads the run record to learn whose device a ticket belongs
+        # to. This stand-in has no run records, so that pass drops nothing and these four
+        # tests keep asking exactly what they asked before -- which is the point: the
+        # alternative was a defensive `getattr(self, "runs", {})` in the product, and a
+        # sweep that silently skips its own check when an attribute is missing is fail-open.
+        service = SimpleNamespace(_slots=slots, runs={})
 
         def unreadable(_account, _client):
             raise RuntimeError("the account file could not be read")

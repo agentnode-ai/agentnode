@@ -391,6 +391,12 @@ def main(argv: list[str] | None = None) -> int:
     gw_status.add_argument("--verbose", action="store_true", help="Show the underlying detail")
     gw_doctor = gw_sub.add_parser("doctor", help="Check what this machine can actually enforce")
     gw_doctor.add_argument("--dir", default=None)
+    # ADDITIVE ONLY. The V1 surface is frozen structurally; this is a new optional flag on one
+    # command that changes no existing output and no existing exit code. PR7 of the beta profile
+    # asks that a host whose install was interrupted report "not ready" in a form an operator's
+    # TOOLING can read, and prose is not that form.
+    gw_doctor.add_argument("--json", dest="json_output", action="store_true",
+                           help="The same answer as a JSON object, for tooling")
     gw_doctor.add_argument("--measure", action="store_true",
                            help="Measure it for real, by running short containers")
     gw_doctor.add_argument("--verbose", action="store_true", help="Show the underlying detail")
@@ -496,7 +502,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_color:
         set_color(False)
 
-    from agentnode_sdk.cli import commands
+    # LAZY, AND LEFT AS THE NAME `commands` so that all thirty-five call sites below are
+    # unchanged. `cli/commands.py` imports `installer`, which imports `httpx` at module scope, so
+    # importing it here killed EVERY command on a host whose install was interrupted -- including
+    # `gateway doctor`, whose job is to say what is wrong. The gateway, worker and pki groups need
+    # none of it; the groups that do reach it through this proxy and import it then. Every other
+    # command group in this dispatcher already imports inside its own branch, so this is the
+    # file's own convention applied to the one import that was not.
+    class _ImportedWhenAsked:
+        def __getattr__(self, name):
+            from agentnode_sdk.cli import commands as _real
+
+            return getattr(_real, name)
+
+    commands = _ImportedWhenAsked()
 
     try:
         if args.command is None:

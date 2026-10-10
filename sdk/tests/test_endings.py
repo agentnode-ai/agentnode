@@ -119,13 +119,47 @@ class TestTheSixEndingsAreToldApart:
         what ended it is not established. They are named here rather than kept in a list of
         their own because a reader branching on `termination_reason` must meet every value it
         can hold in one place.
+
+        AND NINETEEN MORE, FROM `BETA-4`, for a run that never started at all. Admission already
+        names every cause it refuses for and these ARE those names, plus two for the device check at
+        the slot and one for a refusal carrying no admission reason at all.
+
+        THEY WERE FIVE, and a second independent round failed the criterion on that: four specific
+        words and a coarse fifth, with the fifth written over thirteen causes that each had a name.
+        A non-empty readable reason is not the actual reason.
+
+        They exist because every one of the ten above is about a run that was RUNNING, and a job
+        stopped while it was still waiting in the queue had none of them to carry. Measured on a
+        two-host stand: three terminal `refused` entries whose customers had each been told the
+        true cause in words, and whose durable record said nothing. The reason they go into the
+        protocol's own tuple rather than being written where the cause is known is that
+        `what_disagrees` refuses any reason outside it -- a word invented at a call site would
+        make the terminal record unreadable rather than informative.
+
+        THIS TEST IS WHY THE LIST IS HERE AND NOT SOMEWHERE ELSE, and it did its job: the
+        addition broke it, in CI, on a lane I had not run locally. The sentence above about a
+        reader meeting every value in one place is the same sentence that makes this assertion
+        worth keeping exhaustive.
         """
-        from agentnode_sdk.gateway.protocol import (GATEWAY_CRASHED, GATEWAY_KILLED,
-                                                    GATEWAY_LOST, GATEWAY_STOPPED)
+        from agentnode_sdk.gateway.protocol import (
+ACCOUNT_SUSPENDED, ACCOUNT_CONCURRENT, ACCOUNT_RATE, ACCOUNT_RUNS_WINDOW,
+            ACCOUNT_SECONDS_WINDOW, ACCOUNT_UNREADABLE, ARTIFACT_TOO_LARGE,
+            CAUSE_NOT_ESTABLISHED, CEILINGS_UNREADABLE, DEVICE_CONCURRENT, DEVICE_RATE,
+            DEVICE_RUNS_WINDOW, DEVICE_SECONDS_WINDOW, DEVICE_WITHDRAWN,
+            ENROLMENT_UNREADABLE, GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST,
+            GATEWAY_STOPPED, GATEWAY_UNMEASURED, NOT_TAKING_WORK,
+            REFUSED_BY_OPERATOR_POLICY, USE_UNREADABLE,
+        )
 
         assert set(TERMINATION_REASONS) == {
             EXITED, TIMED_OUT, CANCELLED, OUT_OF_MEMORY, RUNTIME_LOST, TRANSPORT_LOST,
             GATEWAY_STOPPED, GATEWAY_CRASHED, GATEWAY_KILLED, GATEWAY_LOST,
+            ACCOUNT_SUSPENDED, DEVICE_WITHDRAWN, NOT_TAKING_WORK, ENROLMENT_UNREADABLE,
+            GATEWAY_UNMEASURED, ACCOUNT_UNREADABLE, CEILINGS_UNREADABLE, USE_UNREADABLE,
+            DEVICE_RATE, ACCOUNT_RATE, DEVICE_CONCURRENT, ACCOUNT_CONCURRENT,
+            DEVICE_RUNS_WINDOW, ACCOUNT_RUNS_WINDOW, DEVICE_SECONDS_WINDOW,
+            ACCOUNT_SECONDS_WINDOW, ARTIFACT_TOO_LARGE, REFUSED_BY_OPERATOR_POLICY,
+            CAUSE_NOT_ESTABLISHED,
         }
         assert len(set(TERMINATION_REASONS)) == len(TERMINATION_REASONS)
 

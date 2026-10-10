@@ -333,6 +333,14 @@ def name_the_refusal(exc: Exception) -> tuple:
         "Try again; if it keeps happening, tell whoever runs this sandbox.")
 
 
+#: WHY THE SWEEP TOOK A TICKET OUT, when the reason is a suspension. One definition, because it is
+#: read at both ends: the sweep writes it onto the ticket and `_wait_for_a_slot` turns it back into a
+#: terminal reason. It was a literal at the sweep and absent from the mapping, and the stand measured
+#: the consequence -- a suspended account's waiting job recorded under the coarse word while its
+#: customer was correctly told the cause (`BETA-4`, `E0318`).
+SWEPT_FOR_A_SUSPENSION = "the account was suspended"
+
+
 def container_name_for(run_id: str) -> str:
     """The name this gateway gives a run's container.
 
@@ -631,6 +639,28 @@ class GatewayService:
         # nothing about its output says nothing; it does not say the run had none.
         return Outcome(**{"exit_code": None, "stdout": "", "stderr": "", **fields})
 
+    def _device_is_still_enrolled(self, client_id: str, account_id: str):
+        """True, False, or None when this gateway cannot tell.
+
+        THREE ANSWERS AND NOT TWO. An unreadable token store is not an enrolled device, and it is
+        not a withdrawn one either -- the same distinction the accounts record already gets with
+        `cannot_tell`, and for the same reason: a gateway that cannot tell whether a device was
+        withdrawn is not one to start its work.
+
+        Asked of the ACCOUNT's own device list, which is the question a customer may ask about
+        their own devices, rather than of the operator-wide listing. A device with no account id
+        to be asked about is answered True: that is not a withdrawal, and refusing on it would
+        refuse every job of a topology that has no accounts.
+        """
+        if not client_id or not account_id:
+            return True
+        try:
+            known = {str(d.get("client_id") or "")
+                     for d in self.state.devices_in(str(account_id))}
+        except Exception:                                     # noqa: BLE001
+            return None
+        return str(client_id) in known
+
     def drop_queued_work_that_is_no_longer_permitted(self) -> list:
         """Take waiting jobs out of the queue when their owner may no longer have them run.
 
@@ -660,7 +690,46 @@ class GatewayService:
                     accounts[account] = False
             return accounts[account]
 
-        return slots.drop_every(no_longer_permitted, "the account was suspended")
+        suspended = slots.drop_every(no_longer_permitted, SWEPT_FOR_A_SUSPENSION)
+
+        # AND A SECOND PASS, FOR A DEVICE THAT IS GONE, with its own reason.
+        #
+        # `R9` above is about a suspended ACCOUNT. A withdrawn DEVICE is a different operator
+        # action with the same structural problem: `agentnode gateway revoke` runs in another
+        # process and cannot reach a ticket. The contract operation `devices.revoke` drops the
+        # ticket itself; the operator's command removes the credential and nothing else, which is
+        # exactly what that handler's own docstring says is not the whole of revocation.
+        #
+        # Measured before this existed: on the two-host stand the operator withdrew a device whose
+        # job was waiting, and that job was promoted when the slot freed, ran for its full 150.7
+        # seconds and was billed for them, while its customer was told only that their job "did
+        # not come back". That is BETA-4 finding A-7.
+        #
+        # TWO PASSES AND NOT ONE PREDICATE: `drop_every` carries one reason, and a withdrawal
+        # reported as a suspension would be the wrong cause for a true condition -- which is the
+        # defect class this whole arc is about. The reason here is the one `_wait_for_a_slot`
+        # already has wording for.
+        known_by_account: dict = {}
+
+        def its_device_is_gone(ticket) -> bool:
+            record = self.runs.get(str(getattr(ticket, "run_id", "") or ""))
+            client = str(getattr(record, "owner_client_id", "") or "") if record else ""
+            account = str(getattr(ticket, "account_id", "") or "")
+            if not client or not account:
+                return False
+            # Keyed by the DEVICE and not by the account: one customer may have several devices
+            # and only one of them withdrawn, and a per-account answer would drop the waiting
+            # jobs of the devices that are still here.
+            if (client, account) not in known_by_account:
+                known_by_account[(client, account)] = self._device_is_still_enrolled(
+                    client, account)
+            # None means this gateway could not read the token store. The sweep does NOT throw a
+            # job away on that: the grant-time check refuses it with an honest cause instead, the
+            # same way the suspension sweep leaves `cannot_tell` to admission.
+            return known_by_account[(client, account)] is False
+
+        withdrawn = slots.drop_every(its_device_is_gone, "revoked")
+        return list(suspended) + list(withdrawn)
 
     def _pair_keys(self, declared: str, tls):
         """The per-pair keys, and the name this gateway answers to. `(None, "")` on the local
@@ -2647,9 +2716,31 @@ class GatewayService:
             # different job from the one that was asked for, decided silently. The dangerous
             # reading -- that an empty list means no restriction -- is the reason this is an
             # explicit refusal rather than a quiet substitution either way.
+            #
+            # BUT AN EMPTY EFFECTIVE LIST HAS TWO CAUSES, and only one of them is about the
+            # client. This check reads the EFFECTIVE list -- the one left after the operator's
+            # policy has been folded in -- and for a while it blamed the job either way, so a
+            # client that had named three hosts and had all three removed was told it named none
+            # and asked to name them. That is `EG3` of the beta profile at WARN: "the remedy text
+            # incorrectly tells a client that already named hosts to name them."
+            #
+            # WHAT IS SAID AND WHAT IS NOT. The client's OWN destinations are named, because it
+            # already knows them and cannot act without knowing which of them was removed. The
+            # operator's allowlist is NOT named: on a shared gateway that is somebody else's
+            # configuration, and a refusal is not a way to read it.
+            _asked_for = tuple(sorted(
+                (self.requested_policy(request).network.allowed_destinations or frozenset())))
+            if not _asked_for:
+                raise ProtocolError(
+                    "this job asked for a restricted network but named no host it may reach, so "
+                    "there is nothing to allow. Name the hosts, or ask for no network at all. "
+                    "Nothing was started."
+                )
             raise ProtocolError(
-                "this job asked for a restricted network but named no host it may reach, so "
-                "there is nothing to allow. Name the hosts, or ask for no network at all. "
+                "this job asked to reach " + ", ".join(_asked_for) +
+                ", and the policy in force here allows none of them, so there is nothing left "
+                "to allow. This is not something the job can change: ask whoever runs this "
+                "sandbox to allow one of those destinations, or ask for no network at all. "
                 "Nothing was started."
             )
         if _mode == "egress":
@@ -2985,22 +3076,53 @@ class GatewayService:
             if not ticket.dropped and record.cancel_requested.is_set():
                 self.slots.drop(record.run_id, "cancelled")
             if not self.slots.wait_for_slot(ticket):
+                from agentnode_sdk.gateway.protocol import (
+                    ACCOUNT_SUSPENDED,
+                    DEVICE_WITHDRAWN,
+                    NOT_TAKING_WORK,
+                    CAUSE_NOT_ESTABLISHED,
+                )
+
                 why = getattr(ticket, "dropped", "") or "dropped"
                 self._end_without_running(
                     record, granted,
                     "cancelled" if why == "cancelled" else "refused",
                     # EVERY REASON SOMETHING ACTUALLY DROPS A TICKET WITH, and no others.
                     #
-                    # A suspension is deliberately absent. It is applied by the operator's CLI,
-                    # which is a DIFFERENT PROCESS from the one holding this queue and cannot
-                    # reach these tickets at all. It is enforced instead a few lines below, by
-                    # asking the account's standing again at the moment the slot is granted --
-                    # the last moment before foreign code runs. A wording here for a case
-                    # nothing can produce would read like a mechanism that exists.
+                    # THIS COMMENT USED TO SAY a suspension was "deliberately absent" here,
+                    # because it is applied by the operator's CLI -- a different process, which
+                    # cannot reach these tickets -- and was therefore enforced only at the grant.
+                    # That was half right and the half it got wrong cost a measurement: the
+                    # gateway's OWN tick sweeps, and the sweep does drop a suspended account's
+                    # ticket, with `SWEPT_FOR_A_SUSPENSION` on it. So the case the comment said
+                    # nothing could produce was being produced every tick, and it arrived here
+                    # with a sentence this map did not know.
+                    #
+                    # The grant-time check below is still the fail-closed half and still matters:
+                    # a sweep is prompt and not instantaneous. Both routes now end in the same
+                    # word for the same cause.
                     {"cancelled": "cancelled by the client while it was waiting for a slot",
                      "stopped": "this sandbox stopped taking work while this job was waiting",
                      "revoked": "the device that submitted this job was withdrawn while it "
-                                "was waiting"}.get(why, why))
+                                "was waiting"}.get(why, why),
+                    # AND THE WORD THE DURABLE RECORD KEEPS, beside the sentence above.
+                    #
+                    # The sentence is for a person; the word is for everything else -- the ledger,
+                    # the evidence checker, a query over a month of runs. Before `D1` the record
+                    # kept only the sentence, so "why did this job never run" was a question only
+                    # a human reading prose could answer. A drop reason this build does not know
+                    # still gets a word rather than an absence.
+                    # MEASURED, NOT REASONED: `E0318` on the stand recorded a suspended
+                    # account's waiting job as the coarse word, because the sweep drops its
+                    # ticket with a SENTENCE and this map knew only the two short reasons. The
+                    # comment a few lines below said a suspension could not arrive by this route
+                    # at all -- true of the operator's CLI, which is another process, and false
+                    # of the gateway's own tick, which sweeps. `SWEPT_FOR_A_SUSPENSION` is that
+                    # one sentence, defined once and used by both ends, so the two cannot drift.
+                    because_word={"stopped": NOT_TAKING_WORK,
+                                  "revoked": DEVICE_WITHDRAWN,
+                                  SWEPT_FOR_A_SUSPENSION: ACCOUNT_SUSPENDED}.get(
+                                      why, CAUSE_NOT_ESTABLISHED))
                 return False
             record.slot_ticket = None
 
@@ -3035,12 +3157,24 @@ class GatewayService:
             self.may_this_caller_proceed(record.owner_account_id, record.owner_client_id,
                                          True)
         except Exception as refused:                          # noqa: BLE001
+            from agentnode_sdk.gateway.protocol import (
+                CAUSE_NOT_ESTABLISHED,
+                WHY_IT_NEVER_RAN,
+            )
+
             because = getattr(refused, "because", "") or str(refused)
             what = getattr(refused, "what_to_do", "")
             self.slots.give_back(record.run_id)
             self._end_without_running(
                 record, granted, "refused",
-                because + ((" " + what) if what else ""))
+                because + ((" " + what) if what else ""),
+                # ADMISSION ALREADY NAMED THE CAUSE and the table says what that name means for a
+                # job that never ran. `admission.py` asserts the table covers every one of its
+                # reasons, so a new reason cannot arrive here without somebody deciding this.
+                # The fallback is for an exception that is not a `NotAdmitted` at all and
+                # therefore carries no reason -- it is still a word rather than an absence.
+                because_word=WHY_IT_NEVER_RAN.get(
+                    str(getattr(refused, "reason", "") or ""), CAUSE_NOT_ESTABLISHED))
             return False
         if record.cancel_requested.is_set():
             self.slots.give_back(record.run_id)
@@ -3048,12 +3182,43 @@ class GatewayService:
                                       "cancelled by the client before it started")
             return False
 
+        # AND THE DEVICE, which the standing check above does not ask about.
+        #
+        # `standing_of` looks up the ACCOUNT. A withdrawn device's account is usually in
+        # perfectly good standing, so a job whose device the operator withdrew while it waited
+        # passed every check here and ran. Measured: BETA-4 finding A-7, 150.7 seconds of work
+        # done and billed for a device that had been withdrawn before it started.
+        #
+        # This is the fail-closed half of the repair and does not depend on the sweep having run:
+        # the sweep is prompt and not instantaneous, and the slot can free in between. It is the
+        # last moment before foreign code runs, which is the only moment that counts.
+        enrolled = self._device_is_still_enrolled(record.owner_client_id,
+                                                 record.owner_account_id)
+        if enrolled is not True:
+            self.slots.give_back(record.run_id)
+            from agentnode_sdk.gateway.protocol import DEVICE_WITHDRAWN, ENROLMENT_UNREADABLE
+
+            self._end_without_running(
+                record, granted, "refused",
+                # The same sentence the queue's own drop reason carries, so a customer reads one
+                # wording whichever of the two noticed first.
+                "the device that submitted this job was withdrawn while it was waiting"
+                if enrolled is False else
+                "this sandbox cannot currently tell whether the device that submitted this job "
+                "is still enrolled, so it is not starting its work",
+                # AND THE TWO ANSWERS KEEP THEIR OWN WORDS. "Withdrawn" and "this gateway cannot
+                # tell" are different facts: one is an operator's decision, the other is this
+                # host's own state, and an operator reading a month of records needs to be able
+                # to tell a policy action from a broken token store.
+                because_word=DEVICE_WITHDRAWN if enrolled is False else ENROLMENT_UNREADABLE)
+            return False
+
         # THE BILLED CLOCK STARTS HERE, and nowhere earlier.
         record.started_at = time.time()
         return True
 
     def _end_without_running(self, record: RunRecord, granted, state: str,
-                             why: str) -> None:
+                             why: str, because_word: str = "") -> None:
         """Finish a run that never ran. Billed nothing, and said so.
 
         It goes through the same publication as any other ending, so a job that waited and was
@@ -3075,6 +3240,33 @@ class GatewayService:
             from agentnode_sdk.gateway.protocol import CANCELLED
 
             record.termination_reason = CANCELLED
+        # AND A REFUSAL ALSO HAS A REASON, which this path used to leave empty.
+        #
+        # Measured on the two-host stand (`BETA-4`, `E0231`): three terminal `refused` entries with
+        # `settled_because` empty, after each of those customers had been told the true cause in
+        # words. I argued that the empty field was the refusal convention rather than a defect --
+        # `TERMINATION_REASONS` answers "why did a RUNNING run stop" and a refused job never ran --
+        # and the independent review rejected that reading. `D1` asks the closing record to carry
+        # the actual terminal reason, and "it never started, because X" is one.
+        #
+        # THE WORDS ARE THE PROTOCOL'S, not this path's: `what_disagrees` refuses any reason outside
+        # `TERMINATION_REASONS`, so a word invented here would make the record unreadable rather than
+        # informative. `STOPPED_BEFORE_IT_RAN` is that vocabulary and `WHY_IT_NEVER_RAN` maps each
+        # admission reason onto it.
+        #
+        # AN UNKNOWN WORD IS REFUSED RATHER THAN STORED. A caller passing something outside the
+        # vocabulary is a programming error here, and storing it would turn one defect -- a missing
+        # reason -- into a worse one: a terminal record that nothing can read. The coarse word is
+        # what an unnamed cause gets, and it is still a true statement.
+        elif state == "refused":
+            from agentnode_sdk.gateway.protocol import (
+                CAUSE_NOT_ESTABLISHED,
+                STOPPED_BEFORE_IT_RAN,
+            )
+
+            word = str(because_word or "") or CAUSE_NOT_ESTABLISHED
+            record.termination_reason = (
+                word if word in STOPPED_BEFORE_IT_RAN else CAUSE_NOT_ESTABLISHED)
         # NOTHING WAS LEFT BEHIND, because nothing was ever created. `container_name` is set in
         # `_run` AFTER the slot is held, so an empty one here is not an assumption -- it is the
         # record saying this job never reached the point of having a sandbox. Guarded on that
@@ -3093,9 +3285,29 @@ class GatewayService:
         # at zero and the wait recorded beside it. A run that vanished silently would be the one
         # kind of run nobody could check afterwards.
         try:
-            self.write_down_what_it_used(record, granted, state)
+            said = self.write_down_what_it_used(record, granted, state)
         except Exception as exc:                              # noqa: BLE001
             self.could_not_record(record, exc)
+            return
+        # AND THE DURABLE RECORD, which this path never settled.
+        #
+        # Measured on the two-host stand: a job stopped while it was waiting got a signed usage
+        # line at 0.0 seconds and its ledger entry stayed `state=accepted settled_as=(none)` for
+        # ever -- after the gateway had already told the customer it did not finish. That is
+        # finding A-1 of BETA-4, and it breaks the invariant this product states itself at
+        # `ledger.unfinished_runs`: "every run that has a signed line has settled_as". Such a run
+        # had a line and no word, so it was both billed-as-ended and counted among the runs that
+        # still owe a closing line.
+        #
+        # THE WORD COMES FROM THE LINE, not from this path: `write_down_what_it_used` returns what
+        # the signed log now says, which is the whole point of its return value. A path that wrote
+        # its own word is the defect `note_it_settled` was written about.
+        if said:
+            try:
+                self.ledger.note_it_settled(record.run_id, said,
+                                            because=record.termination_reason)
+            except Exception as exc:                          # noqa: BLE001
+                self.could_not_record(record, exc)
 
     def _run(self, request: JobRequest, artifact: bytes, granted, record: RunRecord) -> None:
         from agentnode_sdk.sandbox.composition import network_mode
@@ -3421,7 +3633,11 @@ class GatewayService:
                 # moves the record as well as the files. `move_to` refuses rather than assigns, and
                 # being refused here is the invariant holding, not a failure to handle.
                 pass
-            self.ledger.note_it_settled(record.run_id, final)
+            # WITH THE REASON THE SIGNED LINE GAVE. `final` is what the log says; the reason is
+            # what the record carries, and the two are written together so the durable record
+            # cannot hold a word without the reason that produced it.
+            self.ledger.note_it_settled(record.run_id, final,
+                                        because=record.termination_reason)
 
     #: How long a cancellation waits for the run to actually stop before it answers. The worker
     #: publishes the terminal state LAST, after cleanup -- so waiting for that state is waiting
