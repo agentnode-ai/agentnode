@@ -84,13 +84,21 @@ class Writes:
 
 
 def _ask(method: str, url: str, token: str = "", body: dict | None = None):
-    """(status, body), or (None, why) when no HTTP answer came back at all."""
+    """(status, body), or (None, why) when no HTTP answer came back at all.
+
+    Every way of getting no answer counts as no answer, so a door that drops the connection fails
+    the assertion about what the caller was told, with its own message, rather than raising here:
+    a server that closes without a response surfaces as `http.client.RemoteDisconnected`, which is
+    an `OSError` and not wrapped by urllib (counter-check d of `E0011` met exactly that).
+    """
+    import http.client
+
     try:
         if method == "GET":
             return gc._get(url, token=token)
         return gc._post(url, body or {}, headers={rest.TOKEN_HEADER: token} if token else {})
-    except gc.GatewayClientError as exc:
-        return None, {"no answer": str(exc)[:200]}
+    except (gc.GatewayClientError, OSError, http.client.HTTPException) as exc:
+        return None, {"no answer": ("%s: %s" % (type(exc).__name__, exc))[:200]}
 
 
 def _reads_in(monkeypatch, do) -> int:
