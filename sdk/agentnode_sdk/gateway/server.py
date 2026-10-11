@@ -4248,6 +4248,34 @@ class _Cancelled(Exception):
 
 # ---------------------------------------------------------------------------- HTTP
 
+def the_route_named(path: str) -> str:
+    """The route a request was for, as a name this gateway fixed -- never as the caller wrote it.
+
+    A path is caller data. `/v1/jobs/<run>` carries a run id in the address itself, and an unknown
+    address is whatever somebody chose to send; logging either would put a run id, or arbitrary text,
+    in the operator's log (`O6`, review round one, finding O6-R1-F1). So what is returned is a key of
+    the route register, a contract operation's own path, or a console file's -- each a string this
+    code holds -- and anything else is named only as an address this gateway does not name.
+    """
+    from agentnode_sdk import console
+    from agentnode_sdk.access import routes
+
+    bare = str(path or "").split("?", 1)[0].split("#", 1)[0]
+    parts = bare.split("/")
+    if bare.startswith("/v1/jobs/") and len(parts) == 4 and parts[3]:
+        return "/v1/jobs/<run>"
+    if bare.startswith("/v1/jobs/") and len(parts) == 5 and parts[3] and parts[4] == "cancel":
+        return "/v1/jobs/<run>/cancel"
+    for known in (tuple(routes.BY_PATH) + tuple(console.FILES)
+                  + (_rest.SCHEMA_PATH, _rest.MCP_PATH)):
+        if bare == known:
+            return known
+    op = _rest.route_for(bare)
+    if op is not None:
+        return _rest.NAMESPACE + op.name.replace(".", "/")
+    return "an address this gateway does not name"
+
+
 def _answering_an_unreadable_token_file(method):
     """Wrap a request method so that `TokensUnreadable` is answered as `sandbox_unavailable`.
 
@@ -4515,7 +4543,7 @@ class _Handler(BaseHTTPRequestHandler):
         the key an answer is signed with is only valid for a credential this gateway issued, and
         whether it issued this one is exactly what could not be read."""
         bare = self.path.split("?", 1)[0].split("#", 1)[0]
-        tell_the_operator_tokens_unreadable(self.path)
+        tell_the_operator_tokens_unreadable(the_route_named(self.path))
         pairing = bare in ("/v1/pair", "/v1/session")
         said = _dispatch.Refused(
             "sandbox_unavailable", TokensUnreadable.BECAUSE,

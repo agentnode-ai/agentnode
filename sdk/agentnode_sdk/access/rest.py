@@ -153,7 +153,7 @@ def handle(service, path: str, method: str, headers, body: bytes):
             # handler's catch, which has no message to take an id from. Not a refusal RESULT, as
             # the MCP adapter renders a refused operation: nobody was identified, so no method --
             # `initialize` included -- was carried out (`O6`, consultation Q0002).
-            tell_the_operator_tokens_unreadable(bare)
+            tell_the_operator_tokens_unreadable(MCP_PATH)
             said = dispatch.Refused("sandbox_unavailable", TokensUnreadable.BECAUSE,
                                     TokensUnreadable.WHAT_TO_DO)
             return 503, {"jsonrpc": "2.0",
