@@ -1705,7 +1705,13 @@ class GatewayService:
         word = str(line.get("state") or "")
         if word:
             try:
-                self.ledger.note_it_settled(run_id, word)
+                # THE REASON FROM THE SAME LINE AS THE WORD. It used to be the word alone, and
+                # `note_it_settled` wrote "" beside it for good: every run whose ledger was settled
+                # from its line -- one a restart closed, one that died between its two writes, the
+                # handler that lost the race to the meter -- kept no reason, though the line had
+                # one (`O4`, measured).
+                self.ledger.settle_from_the_signed_line(
+                    run_id, word, because=str(line.get("termination_reason") or ""))
             except Exception:                                 # noqa: BLE001
                 pass
         self._reconcile_the_quota_from(run_id, line)
@@ -1854,9 +1860,15 @@ class GatewayService:
             if line is None:
                 continue
             word = str(line.get("state") or "")
-            if word and not str(entry.get("settled_as") or ""):
+            why = str(line.get("termination_reason") or "")
+            # A MISSING WORD, or a word whose reason was dropped. The second used to be skipped, so
+            # an entry the defect had already written -- the right word, no reason -- was never
+            # repaired by the pass that exists to repair caches from the line (`O4`, Q0001).
+            missing = not str(entry.get("settled_as") or "")
+            reasonless = bool(why) and not str(entry.get("settled_because") or "")
+            if word and (missing or reasonless):
                 try:
-                    if self.ledger.note_it_settled(run_id, word)[1]:
+                    if self.ledger.settle_from_the_signed_line(run_id, word, because=why)[1]:
                         settled += 1
                 except Exception:                             # noqa: BLE001
                     pass
