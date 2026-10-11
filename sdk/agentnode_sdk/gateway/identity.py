@@ -92,16 +92,43 @@ class TokensUnreadable(OSError):
 def tell_the_operator_tokens_unreadable(path: str) -> None:
     """One line on stderr for a request the token file could not be read for.
 
-    The request's path without its query, and nothing else: not the exception's text (which can name
-    a path on this machine), not a header, not the body, not anything from the file. Written where
-    the request is answered rather than where the read failed, so one failure is one line.
+    It names the ROUTE, and nothing else: not the exception's text (which can name a path on this
+    machine), not a header, not the body, not anything from the file -- and not the path as the
+    caller sent it. Written where the request is answered rather than where the read failed, so one
+    failure is one line.
     """
     import sys
 
-    where = str(path or "").split("?", 1)[0].split("#", 1)[0]
-    sys.stderr.write(f"\n  tokens.json could not be read while serving {where[:200]}; refused as "
-                     "sandbox_unavailable, and nobody was identified from it.\n")
+    sys.stderr.write(f"\n  tokens.json could not be read while serving {the_route_named(path)}; "
+                     "refused as sandbox_unavailable, and nobody was identified from it.\n")
     sys.stderr.flush()
+
+
+def the_route_named(path: str) -> str:
+    """The route a request was for, as a name this gateway fixed -- never as the caller wrote it.
+
+    A path is caller data. `/v1/jobs/<run>` carries a run id in the address itself, and an unknown
+    address is whatever somebody chose to send; logging either would put a run id, or arbitrary text,
+    in the operator's log (`O6`, review round one, finding O6-R1-F1). So what is returned is a key of
+    the route register, a contract operation's own path, or a console file's -- each a string this
+    code holds -- and anything else is named only as an address this gateway does not name.
+    """
+    from agentnode_sdk import console
+    from agentnode_sdk.access import rest, routes
+
+    bare = str(path or "").split("?", 1)[0].split("#", 1)[0]
+    parts = bare.split("/")
+    if bare.startswith("/v1/jobs/") and len(parts) == 4 and parts[3]:
+        return "/v1/jobs/<run>"
+    if bare.startswith("/v1/jobs/") and len(parts) == 5 and parts[3] and parts[4] == "cancel":
+        return "/v1/jobs/<run>/cancel"
+    for known in tuple(routes.BY_PATH) + tuple(console.FILES) + (rest.SCHEMA_PATH, rest.MCP_PATH):
+        if bare == known:
+            return known
+    op = rest.route_for(bare)
+    if op is not None:
+        return rest.NAMESPACE + op.name.replace(".", "/")
+    return "an address this gateway does not name"
 
 
 def new_pairing_code() -> str:

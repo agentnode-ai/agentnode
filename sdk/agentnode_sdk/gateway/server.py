@@ -4515,7 +4515,7 @@ class _Handler(BaseHTTPRequestHandler):
         the key an answer is signed with is only valid for a credential this gateway issued, and
         whether it issued this one is exactly what could not be read."""
         bare = self.path.split("?", 1)[0].split("#", 1)[0]
-        tell_the_operator_tokens_unreadable(bare)
+        tell_the_operator_tokens_unreadable(self.path)
         pairing = bare in ("/v1/pair", "/v1/session")
         said = _dispatch.Refused(
             "sandbox_unavailable", TokensUnreadable.BECAUSE,

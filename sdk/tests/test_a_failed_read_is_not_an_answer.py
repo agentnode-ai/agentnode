@@ -359,6 +359,30 @@ def test_9_the_operator_is_told_by_path_and_nothing_else(gw, monkeypatch, capsys
         assert secret not in line, "the operator's line carried %r" % secret[:12]
 
 
+def test_9b_the_operator_is_never_given_an_address_as_the_caller_wrote_it(gw, monkeypatch, capsys):
+    """Review round one (O6-R1-F1): test_9 drove a route whose run id is in the BODY. The older
+    status door carries it in the ADDRESS, and an unknown operation's address is whatever the caller
+    chose. The line must name the route, not repeat either."""
+    token = gw.connection.token
+    run_id = gw.a_finished_run()["run_id"]
+    asked = {
+        "/v1/jobs/<run>": lambda: _ask("GET", gw.base + "/v1/jobs/%s?where=QUERYVALUE" % run_id, token),
+        "an address this gateway does not name": lambda: _ask(
+            "POST", gw.base + "/v1/op/zz-CALLERTEXT", token, {}),
+    }
+    for route, asking in asked.items():
+        capsys.readouterr()
+        Reads(monkeypatch, fail_at=1)
+        asking()
+        monkeypatch.undo()
+        said = [line for line in capsys.readouterr().err.splitlines() if TOKENS in line]
+        assert len(said) == 1 and route in said[0], (
+            "the operator was not told the route %r: %r" % (route, said))
+        for caller_data in (run_id, "QUERYVALUE", "zz-CALLERTEXT", token):
+            assert caller_data not in said[0], (
+                "the operator's line repeated what the caller sent: %r" % caller_data[:12])
+
+
 # ------------------------------------------------------------------------------- the controls
 
 def test_10_control_absence_is_a_gateway_nobody_has_paired_with(tmp_path):
