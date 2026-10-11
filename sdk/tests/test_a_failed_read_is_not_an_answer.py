@@ -260,6 +260,13 @@ def test_5_an_unreadable_file_is_not_read_as_nobody(tmp_path):
     for i, (what, content) in enumerate(cases.items()):
         state = GatewayState(str(tmp_path / str(i)), version="test")
         (state.root / TOKENS).write_bytes(content)
+        # Private, as every token file this gateway writes is. Left at the default mode, a POSIX
+        # gateway refuses the file as insecure before its content is looked at -- which is right,
+        # and is not what this test is about (it went red that way on Linux CI, `O6` E0018).
+        import os
+
+        if os.name == "posix":
+            os.chmod(state.root / TOKENS, 0o600)
         try:
             got = state._read_tokens()
         except Exception as exc:                              # noqa: BLE001

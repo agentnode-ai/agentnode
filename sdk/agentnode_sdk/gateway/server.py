@@ -4248,6 +4248,24 @@ class _Cancelled(Exception):
 
 # ---------------------------------------------------------------------------- HTTP
 
+def _answering_an_unreadable_token_file(method):
+    """Wrap a request method so that `TokensUnreadable` is answered as `sandbox_unavailable`.
+
+    The one place that turns it into an answer, for every door the method serves; see the comment
+    above `_Handler._the_token_file_could_not_be_read`.
+    """
+    import functools
+
+    @functools.wraps(method)
+    def answering(self):
+        try:
+            return method(self)
+        except TokensUnreadable:
+            return self._the_token_file_could_not_be_read()
+
+    return answering
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "agentnode-gateway/1"
     service: GatewayService = None                            # set by make_server
@@ -4488,19 +4506,9 @@ class _Handler(BaseHTTPRequestHandler):
     # file that could not be read), not "no such run", not a health document that says all is well.
     # Caught here rather than at each door because the doors are many -- the contract, MCP, the older
     # status, submit, rotate and cancel doors, pairing, sessions, the console and health -- and one
-    # missed door would answer one of those instead (`O6`, consultation Q0002).
-
-    def do_GET(self):
-        try:
-            return self._answer_a_get()
-        except TokensUnreadable:
-            return self._the_token_file_could_not_be_read()
-
-    def do_POST(self):
-        try:
-            return self._answer_a_post()
-        except TokensUnreadable:
-            return self._the_token_file_could_not_be_read()
+    # missed door would answer one of those instead (`O6`, consultation Q0002). Applied to `do_GET`
+    # and `do_POST` as a decorator, so each keeps its body and its name: the route register reads the
+    # addresses the gateway answers on out of those two methods (`test_routes_register.py`).
 
     def _the_token_file_could_not_be_read(self):
         """503 `sandbox_unavailable`, in the shape the door that was asked would refuse in. UNSIGNED:
@@ -4530,7 +4538,8 @@ class _Handler(BaseHTTPRequestHandler):
         body.update(said.as_answer())
         return self._send(503, body)
 
-    def _answer_a_get(self):
+    @_answering_an_unreadable_token_file
+    def do_GET(self):
         if not self._state_is_private():
             return None
         if self._the_contract():
@@ -4587,7 +4596,8 @@ class _Handler(BaseHTTPRequestHandler):
 
         return self._send(404, refusal("no such endpoint"))
 
-    def _answer_a_post(self):
+    @_answering_an_unreadable_token_file
+    def do_POST(self):
         if not self._state_is_private():
             return None
         from agentnode_sdk.access import rest as _rest
