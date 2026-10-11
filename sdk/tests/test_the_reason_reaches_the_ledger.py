@@ -201,6 +201,23 @@ def test_9_control_reconciling_an_agreeing_entry_twice_changes_nothing(gateway):
     assert not gateway.ledger.run_entry("t9").get("settled_conflicts")
 
 
+def test_11_a_contradicting_word_is_not_rewritten_at_every_start(gateway):
+    """Review round one, F001: an entry whose word contradicts the line, with no reason, was visited
+    by every reconciliation, and each visit appended the same conflict and rewrote the ledger."""
+    now = time.time()
+    claim(gateway, "t11", when=now - 30.0, started=now - 20.0)
+    a_line(gateway.state.root, "t11", state="cancelled",
+           outcome=outcome_of("cancelled", CANCELLED, None), termination_reason=CANCELLED)
+    gateway.ledger.note_it_settled("t11", "finished", at=now - 5.0)
+    gateway.reconcile_every_record_against_the_signed_log()
+    first = gateway.ledger.path.read_bytes()
+    conflicts = len(gateway.ledger.run_entry("t11").get("settled_conflicts") or [])
+    gateway.reconcile_every_record_against_the_signed_log()
+    again = len(gateway.ledger.run_entry("t11").get("settled_conflicts") or [])
+    assert gateway.ledger.path.read_bytes() == first and again == conflicts, (
+        "a second reconciliation rewrote the ledger: %d conflict(s), then %d" % (conflicts, again))
+
+
 def test_10_control_still_exactly_one_closing_line(gateway):
     now = time.time()
     claim(gateway, "t10", when=now - 30.0, started=now - 20.0)

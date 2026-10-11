@@ -1865,7 +1865,11 @@ class GatewayService:
             # an entry the defect had already written -- the right word, no reason -- was never
             # repaired by the pass that exists to repair caches from the line (`O4`, Q0001).
             missing = not str(entry.get("settled_as") or "")
-            reasonless = bool(why) and not str(entry.get("settled_because") or "")
+            # AND ONLY BESIDE AN AGREEING WORD. A word that contradicts the line is refused and
+            # recorded the first time it is met; visiting it again on every start re-recorded the
+            # same conflict and rewrote the ledger each time (review round one, F001).
+            reasonless = (bool(why) and not str(entry.get("settled_because") or "")
+                          and str(entry.get("settled_as") or "") == word)
             if word and (missing or reasonless):
                 try:
                     if self.ledger.settle_from_the_signed_line(run_id, word, because=why)[1]:
