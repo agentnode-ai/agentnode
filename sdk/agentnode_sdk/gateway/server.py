@@ -53,7 +53,12 @@ from agentnode_sdk.access.sessions import Sessions
 from agentnode_sdk.access.stopping import Stopping
 from agentnode_sdk.access import dispatch as _dispatch
 from agentnode_sdk.gateway import client as _gc
-from agentnode_sdk.gateway.identity import GatewayState, PairingError
+from agentnode_sdk.gateway.identity import (
+    GatewayState,
+    PairingError,
+    TokensUnreadable,
+    tell_the_operator_tokens_unreadable,
+)
 from agentnode_sdk.gateway import health
 from agentnode_sdk.gateway import challenge as ch
 from agentnode_sdk.gateway.ledger import Ledger
@@ -323,6 +328,12 @@ def name_the_refusal(exc: Exception) -> tuple:
         return "over_a_ceiling", (
             "Wait until the window clears, or ask whoever runs this sandbox for a higher "
             "ceiling. Nothing was started and nothing was counted.")
+    from agentnode_sdk.gateway.identity import TokensUnreadable
+
+    # Before the group below, which it is not part of: that group stops work until somebody looks,
+    # and an unreadable token file is a reason this request could not be decided (`O6`, Q0002).
+    if isinstance(exc, TokensUnreadable):
+        return "sandbox_unavailable", TokensUnreadable.WHAT_TO_DO
     if isinstance(exc, (CannotReadTheCeilings, CannotReadWhatWasUsed, AccountsUnreadable)):
         return "gateway_stopped", (
             "Ask whoever runs this sandbox to look at its state directory. It is refusing work "
@@ -4470,7 +4481,56 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
         return True
 
+    # ONE PLACE WHERE AN UNREADABLE TOKEN FILE IS ANSWERED, for every door this handler serves.
+    #
+    # `TokensUnreadable` means this gateway could not tell who is asking, so no door may answer as
+    # though it had: not "not authenticated" (whose remedy, pairing again, is a write of the very
+    # file that could not be read), not "no such run", not a health document that says all is well.
+    # Caught here rather than at each door because the doors are many -- the contract, MCP, the older
+    # status, submit, rotate and cancel doors, pairing, sessions, the console and health -- and one
+    # missed door would answer one of those instead (`O6`, consultation Q0002).
+
     def do_GET(self):
+        try:
+            return self._answer_a_get()
+        except TokensUnreadable:
+            return self._the_token_file_could_not_be_read()
+
+    def do_POST(self):
+        try:
+            return self._answer_a_post()
+        except TokensUnreadable:
+            return self._the_token_file_could_not_be_read()
+
+    def _the_token_file_could_not_be_read(self):
+        """503 `sandbox_unavailable`, in the shape the door that was asked would refuse in. UNSIGNED:
+        the key an answer is signed with is only valid for a credential this gateway issued, and
+        whether it issued this one is exactly what could not be read."""
+        bare = self.path.split("?", 1)[0].split("#", 1)[0]
+        tell_the_operator_tokens_unreadable(bare)
+        pairing = bare in ("/v1/pair", "/v1/session")
+        said = _dispatch.Refused(
+            "sandbox_unavailable", TokensUnreadable.BECAUSE,
+            TokensUnreadable.WHAT_TO_DO_WHEN_PAIRING if pairing else TokensUnreadable.WHAT_TO_DO)
+        if _rest.ours(bare) and bare != _rest.MCP_PATH:
+            # The contract's own refusal, written the way `_the_contract` writes its answers.
+            data = json.dumps(said.as_answer(), sort_keys=True).encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return None
+        if bare == _rest.MCP_PATH:
+            # Reached only if the MCP adapter did not answer it itself, which it does with the id.
+            return self._send(503, {"jsonrpc": "2.0", "id": None, "error": {
+                "code": -32000, "message": TokensUnreadable.BECAUSE,
+                "data": said.as_answer()}})
+        body = refusal(TokensUnreadable.BECAUSE)
+        body.update(said.as_answer())
+        return self._send(503, body)
+
+    def _answer_a_get(self):
         if not self._state_is_private():
             return None
         if self._the_contract():
@@ -4527,7 +4587,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         return self._send(404, refusal("no such endpoint"))
 
-    def do_POST(self):
+    def _answer_a_post(self):
         if not self._state_is_private():
             return None
         from agentnode_sdk.access import rest as _rest
