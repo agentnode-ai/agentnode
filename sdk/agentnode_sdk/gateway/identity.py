@@ -99,8 +99,8 @@ def tell_the_operator_tokens_unreadable(path: str) -> None:
     import sys
 
     where = str(path or "").split("?", 1)[0].split("#", 1)[0]
-    sys.stderr.write("\n  tokens.json could not be read while serving %s; refused as "
-                     "sandbox_unavailable, and nobody was identified from it.\n" % where[:200])
+    sys.stderr.write(f"\n  tokens.json could not be read while serving {where[:200]}; refused as "
+                     "sandbox_unavailable, and nobody was identified from it.\n")
     sys.stderr.flush()
 
 
