@@ -53,7 +53,12 @@ from agentnode_sdk.access.sessions import Sessions
 from agentnode_sdk.access.stopping import Stopping
 from agentnode_sdk.access import dispatch as _dispatch
 from agentnode_sdk.gateway import client as _gc
-from agentnode_sdk.gateway.identity import GatewayState, PairingError
+from agentnode_sdk.gateway.identity import (
+    GatewayState,
+    PairingError,
+    TokensUnreadable,
+    tell_the_operator_tokens_unreadable,
+)
 from agentnode_sdk.gateway import health
 from agentnode_sdk.gateway import challenge as ch
 from agentnode_sdk.gateway.ledger import Ledger
@@ -323,6 +328,12 @@ def name_the_refusal(exc: Exception) -> tuple:
         return "over_a_ceiling", (
             "Wait until the window clears, or ask whoever runs this sandbox for a higher "
             "ceiling. Nothing was started and nothing was counted.")
+    from agentnode_sdk.gateway.identity import TokensUnreadable
+
+    # Before the group below, which it is not part of: that group stops work until somebody looks,
+    # and an unreadable token file is a reason this request could not be decided (`O6`, Q0002).
+    if isinstance(exc, TokensUnreadable):
+        return "sandbox_unavailable", TokensUnreadable.WHAT_TO_DO
     if isinstance(exc, (CannotReadTheCeilings, CannotReadWhatWasUsed, AccountsUnreadable)):
         return "gateway_stopped", (
             "Ask whoever runs this sandbox to look at its state directory. It is refusing work "
@@ -4253,6 +4264,52 @@ class _Cancelled(Exception):
 
 # ---------------------------------------------------------------------------- HTTP
 
+def the_route_named(path: str) -> str:
+    """The route a request was for, as a name this gateway fixed -- never as the caller wrote it.
+
+    A path is caller data. `/v1/jobs/<run>` carries a run id in the address itself, and an unknown
+    address is whatever somebody chose to send; logging either would put a run id, or arbitrary text,
+    in the operator's log (`O6`, review round one, finding O6-R1-F1). So what is returned is a key of
+    the route register, a contract operation's own path, or a console file's -- each a string this
+    code holds -- and anything else is named only as an address this gateway does not name.
+    """
+    from agentnode_sdk import console
+    from agentnode_sdk.access import routes
+
+    bare = str(path or "").split("?", 1)[0].split("#", 1)[0]
+    parts = bare.split("/")
+    if bare.startswith("/v1/jobs/") and len(parts) == 4 and parts[3]:
+        return "/v1/jobs/<run>"
+    if bare.startswith("/v1/jobs/") and len(parts) == 5 and parts[3] and parts[4] == "cancel":
+        return "/v1/jobs/<run>/cancel"
+    for known in (tuple(routes.BY_PATH) + tuple(console.FILES)
+                  + (_rest.SCHEMA_PATH, _rest.MCP_PATH)):
+        if bare == known:
+            return known
+    op = _rest.route_for(bare)
+    if op is not None:
+        return _rest.NAMESPACE + op.name.replace(".", "/")
+    return "an address this gateway does not name"
+
+
+def _answering_an_unreadable_token_file(method):
+    """Wrap a request method so that `TokensUnreadable` is answered as `sandbox_unavailable`.
+
+    The one place that turns it into an answer, for every door the method serves; see the comment
+    above `_Handler._the_token_file_could_not_be_read`.
+    """
+    import functools
+
+    @functools.wraps(method)
+    def answering(self):
+        try:
+            return method(self)
+        except TokensUnreadable:
+            return self._the_token_file_could_not_be_read()
+
+    return answering
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "agentnode-gateway/1"
     service: GatewayService = None                            # set by make_server
@@ -4486,6 +4543,46 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
         return True
 
+    # ONE PLACE WHERE AN UNREADABLE TOKEN FILE IS ANSWERED, for every door this handler serves.
+    #
+    # `TokensUnreadable` means this gateway could not tell who is asking, so no door may answer as
+    # though it had: not "not authenticated" (whose remedy, pairing again, is a write of the very
+    # file that could not be read), not "no such run", not a health document that says all is well.
+    # Caught here rather than at each door because the doors are many -- the contract, MCP, the older
+    # status, submit, rotate and cancel doors, pairing, sessions, the console and health -- and one
+    # missed door would answer one of those instead (`O6`, consultation Q0002). Applied to `do_GET`
+    # and `do_POST` as a decorator, so each keeps its body and its name: the route register reads the
+    # addresses the gateway answers on out of those two methods (`test_routes_register.py`).
+
+    def _the_token_file_could_not_be_read(self):
+        """503 `sandbox_unavailable`, in the shape the door that was asked would refuse in. UNSIGNED:
+        the key an answer is signed with is only valid for a credential this gateway issued, and
+        whether it issued this one is exactly what could not be read."""
+        bare = self.path.split("?", 1)[0].split("#", 1)[0]
+        tell_the_operator_tokens_unreadable(the_route_named(self.path))
+        pairing = bare in ("/v1/pair", "/v1/session")
+        said = _dispatch.Refused(
+            "sandbox_unavailable", TokensUnreadable.BECAUSE,
+            TokensUnreadable.WHAT_TO_DO_WHEN_PAIRING if pairing else TokensUnreadable.WHAT_TO_DO)
+        if _rest.ours(bare) and bare != _rest.MCP_PATH:
+            # The contract's own refusal, written the way `_the_contract` writes its answers.
+            data = json.dumps(said.as_answer(), sort_keys=True).encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return None
+        if bare == _rest.MCP_PATH:
+            # Reached only if the MCP adapter did not answer it itself, which it does with the id.
+            return self._send(503, {"jsonrpc": "2.0", "id": None, "error": {
+                "code": -32000, "message": TokensUnreadable.BECAUSE,
+                "data": said.as_answer()}})
+        body = refusal(TokensUnreadable.BECAUSE)
+        body.update(said.as_answer())
+        return self._send(503, body)
+
+    @_answering_an_unreadable_token_file
     def do_GET(self):
         if not self._state_is_private():
             return None
@@ -4543,6 +4640,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         return self._send(404, refusal("no such endpoint"))
 
+    @_answering_an_unreadable_token_file
     def do_POST(self):
         if not self._state_is_private():
             return None
