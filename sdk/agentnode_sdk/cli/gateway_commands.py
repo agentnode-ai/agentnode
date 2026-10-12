@@ -1335,30 +1335,25 @@ def cmd_accounts(args) -> int:
     return 0
 
 
-def _resolve_client(state, wanted: str) -> str:
-    """Match on the client id or its name. Returns the token hash key, or ''."""
-    tokens = state._read_tokens()                      # noqa: SLF001 - same package, one owner
-    wanted = str(wanted or "").strip()
-    for token_hash, entry in tokens.items():
-        if str(entry.get("client_id", "")).startswith(wanted) and wanted:
-            return token_hash
-        if str(entry.get("client_name", "")) == wanted and wanted:
-            return token_hash
-    return ""
-
-
 def cmd_revoke(args) -> int:
     root = _root(args)
     state, _unused = _service(root)
-    key = _resolve_client(state, getattr(args, "client", ""))
-    if not key:
+    # FOUND AND WITHDRAWN IN ONE LOCKED READ, by the state rather than here. This used to look the
+    # client up in one read and delete it from a second, written back with nothing in between: a
+    # pairing in that gap was lost, or brought the withdrawn client back (follow-up L, measured).
+    said = state.revoke_named_client(getattr(args, "client", ""))
+    if said["outcome"] == "none":
         print(f"  No connected client matches {getattr(args, 'client', '')!r}.")
         print("  Run `agentnode gateway clients` to see the list.")
         return 1
-    tokens = state._read_tokens()                      # noqa: SLF001
-    name = str(tokens[key].get("client_name") or "unnamed")
-    del tokens[key]
-    state._write_tokens(tokens)                        # noqa: SLF001
+    if said["outcome"] == "ambiguous":
+        print(f"  More than one connected client matches {getattr(args, 'client', '')!r}, "
+              "so none was revoked:")
+        for client_id, client_name in said["matches"]:
+            print(f"    {client_id}  {client_name or 'unnamed'}")
+        print("  Run it again with more of the client id.")
+        return 1
+    name = said["client_name"] or "unnamed"
     print()
     print(f"  {bold(name)} can no longer send work here, starting now.")
     print("  Anything it had already submitted keeps running; it just cannot ask about it.")

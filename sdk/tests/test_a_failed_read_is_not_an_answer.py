@@ -223,10 +223,11 @@ def test_4_no_writer_writes_over_what_it_could_not_read(tmp_path, monkeypatch):
 def test_4b_the_revoke_command_writes_nothing_and_finds_nobody_falsely(tmp_path, monkeypatch, capsys):
     from agentnode_sdk.cli import gateway_commands
 
-    # The command's own two reads: the one that finds the client, and the one before its write.
-    # Reads made while it builds its service object are not counted, so neither position moves.
-    positions = {1: dict(inside="_resolve_client"),
-                 2: dict(inside="cmd_revoke", outside=("_resolve_client", "_service"))}
+    # The command's own read: since follow-up L it finds the client and deletes it under ONE locked
+    # read, in `GatewayState.revoke_named_client`. It used to make two -- one to find the client, one
+    # before its write -- and both positions were checked here. Reads made while it builds its
+    # service object are not counted, so the position does not move.
+    positions = {1: dict(inside="revoke_named_client")}
     for k, where in positions.items():
         state, first, second, account = _state_with_two(tmp_path / str(k))
         client_id = state.client_id_for(first)

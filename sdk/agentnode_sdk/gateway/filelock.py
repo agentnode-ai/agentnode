@@ -72,6 +72,16 @@ def _local_lock(path: Path) -> threading.Lock:
         return lock
 
 
+def _local_lock_named(key: str) -> threading.Lock:
+    """The same table, for a caller that names the lock by what the file is rather than by a path."""
+    with _LOCAL_GUARD:
+        lock = _LOCAL.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _LOCAL[key] = lock
+        return lock
+
+
 class LockUnavailable(Exception):
     """The lock could not be taken in time. Callers fail closed rather than proceeding."""
 
@@ -178,12 +188,19 @@ class ProcessLock:
     """An exclusive lock on `<path>.lock`, held for the duration of a `with` block."""
 
     def __init__(self, path: str | os.PathLike[str], timeout: float = 10.0,
-                 poll: float = 0.02) -> None:
+                 poll: float = 0.02, *, open_with=None, local_key: str = "") -> None:
+        """`open_with`, when given, opens the lock file and returns its descriptor -- for a caller that
+        must not open it by pathname, such as one holding a verified directory descriptor. It then
+        also names `local_key`, the in-process lock it shares: keyed by what the file IS rather than
+        by a path, so two holders of one directory under two names still exclude each other."""
         self.path = Path(str(path) + ".lock")
         self.timeout = timeout
         self.poll = poll
+        self._open_with = open_with
         self._fd: int | None = None
-        self._local = _local_lock(self.path)
+        if open_with is not None and not local_key:
+            raise ValueError("a lock opened by its caller must say which in-process lock it shares")
+        self._local = _local_lock_named(local_key) if local_key else _local_lock(self.path)
         self._held_local = False
 
     def _try_acquire(self, fd: int) -> bool:
@@ -207,14 +224,18 @@ class ProcessLock:
         )
 
     def __enter__(self) -> "ProcessLock":
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self._open_with is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self._local.acquire(timeout=self.timeout):
             raise LockUnavailable(
                 f"another thread has held {self.path.name} for more than {self.timeout:.0f}s"
             )
         self._held_local = True
         try:
-            fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
+            if self._open_with is not None:
+                fd = self._open_with()
+            else:
+                fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
         except BaseException:
             self._release_local()
             raise
