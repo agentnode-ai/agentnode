@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import errno
 import hashlib
 import hmac
 import json
@@ -933,10 +934,25 @@ class GatewayState:
             return TokensUnreadable("this gateway's record of paired devices (tokens.json) "
                                     "could not be used")
 
-        try:
-            raw = self._read_private("tokens.json")
-        except (OSError, ValueError) as exc:          # ValueError: UnicodeDecodeError while reading
-            raise unusable() from exc
+        # A transient Windows denial is waited out, and nothing else (follow-up R; the bound below).
+        deadline = time.monotonic() + self.TOKENS_READ_DEADLINE
+        retries = 0
+        while True:
+            try:
+                raw = self._read_private("tokens.json")
+                break
+            except PermissionError as exc:
+                if not (self.RETRY_A_SHARING_VIOLATION and exc.errno == errno.EACCES):
+                    raise unusable() from exc
+                if retries >= self.TOKENS_READ_RETRIES:
+                    raise unusable() from exc
+                # Never START a pause that would end past the deadline.
+                if deadline - time.monotonic() < self.TOKENS_READ_PAUSE:
+                    raise unusable() from exc
+                time.sleep(self.TOKENS_READ_PAUSE)
+                retries += 1
+            except (OSError, ValueError) as exc:      # ValueError: UnicodeDecodeError while reading
+                raise unusable() from exc
         if raw is None:
             return {}
         try:
@@ -946,6 +962,18 @@ class GatewayState:
         if not isinstance(tokens, dict) or not all(isinstance(v, dict) for v in tokens.values()):
             raise unusable()
         return tokens
+
+    #: Whether a denied open of the token file is waited out. Only on Windows: there, opening a file that
+    #: another holder is replacing fails with PermissionError(EACCES) -- `winerror` None, because CPython
+    #: builds it from the C runtime's errno -- and since O6 that refused whoever asked. Measured: 37 of
+    #: 3000 reads beside a writing thread, 612 of 34991 beside a writing process (follow-up R).
+    RETRY_A_SHARING_VIOLATION = os.name == "nt"
+    #: The bound (Q0001, Q0007): one open, then at most this many retries, this far apart, inside this
+    #: deadline. A real access-denied looks exactly the same at this layer; the bound is what keeps it
+    #: from hiding, and it ends as `TokensUnreadable` with the denial as its cause.
+    TOKENS_READ_RETRIES = 100
+    TOKENS_READ_PAUSE = 0.02
+    TOKENS_READ_DEADLINE = 2.0
 
     def token_record(self, token: str) -> dict | None:
         """This credential's record, from ONE read of the token file, or None if it was not issued
