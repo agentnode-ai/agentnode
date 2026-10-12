@@ -438,6 +438,40 @@ class Ledger:
             self._write_locked()
             return word, True
 
+    def settle_from_the_signed_line(self, run_id: str, settled_as: str, because: str,
+                                    at: float | None = None) -> tuple[str, bool]:
+        """`note_it_settled`, for a caller that HOLDS THE SIGNED LINE -- and, for that caller only, the
+        repair of a reason the ledger was never given. Returns (what it says, wrote).
+
+        Everything `note_it_settled` decides, it still decides: the first word wins, a different word
+        or a different reason is refused and recorded. The one thing added is narrow. When the stored
+        word AGREES with the line, the stored reason is EMPTY and the line gives one, the reason is
+        filled in -- `settled_because` only, with `settled_as` and `settled_at` left as they were and
+        no conflict recorded, because there is nothing to disagree with.
+
+        That is an exception to first-writer-wins, and a deliberate one: an empty reason beside an
+        agreeing word is not an answer somebody gave, it is the answer this gateway dropped. Every path
+        that settled the ledger from a signed line used to pass the word and not the reason, and
+        `note_it_settled` wrote "" beside it for good (`O4`, measured). It lives HERE, under this name,
+        and not in `note_it_settled`, so that only a caller reading the line can fill a reason -- never
+        a handler with its own idea of how the run ended (consultation `Q0001`).
+        """
+        word = str(settled_as)
+        why = str(because or "")
+        held, wrote = self.note_it_settled(run_id, word, at=at, because=why)
+        if wrote or held != word or not why:
+            return held, wrote
+        with self._lock, ProcessLock(self.path):
+            self._load()
+            entry = self._data["runs"].get(str(run_id))
+            if entry is None or str(entry.get("settled_as") or "") != word:
+                return held, False
+            if str(entry.get("settled_because") or ""):
+                return word, False
+            entry["settled_because"] = why
+            self._write_locked()
+            return word, True
+
     def settled_as(self, run_id: str) -> str:
         """What the signed line says this run became, or "" if nothing has established it yet."""
         with self._lock, ProcessLock(self.path):
