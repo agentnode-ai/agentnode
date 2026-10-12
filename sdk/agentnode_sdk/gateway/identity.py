@@ -708,10 +708,25 @@ class GatewayState:
             return TokensUnreadable("this gateway's record of paired devices (tokens.json) "
                                     "could not be used")
 
-        try:
-            raw = self._read_the_token_file()
-        except (OSError, ValueError) as exc:          # ValueError: UnicodeDecodeError while reading
-            raise unusable() from exc
+        # A transient Windows denial is waited out, and nothing else (follow-up R; the bound below).
+        deadline = time.monotonic() + self.TOKENS_READ_DEADLINE
+        retries = 0
+        while True:
+            try:
+                raw = self._read_private("tokens.json")
+                break
+            except PermissionError as exc:
+                if not (self.RETRY_A_SHARING_VIOLATION and exc.errno == errno.EACCES):
+                    raise unusable() from exc
+                if retries >= self.TOKENS_READ_RETRIES:
+                    raise unusable() from exc
+                # Never START a pause that would end past the deadline.
+                if deadline - time.monotonic() < self.TOKENS_READ_PAUSE:
+                    raise unusable() from exc
+                time.sleep(self.TOKENS_READ_PAUSE)
+                retries += 1
+            except (OSError, ValueError) as exc:      # ValueError: UnicodeDecodeError while reading
+                raise unusable() from exc
         if raw is None:
             return {}
         try:
@@ -733,24 +748,6 @@ class GatewayState:
     TOKENS_READ_RETRIES = 100
     TOKENS_READ_PAUSE = 0.02
     TOKENS_READ_DEADLINE = 2.0
-
-    def _read_the_token_file(self) -> str | None:
-        """`_read_private("tokens.json")`, with a transient Windows denial waited out and nothing else."""
-        deadline = time.monotonic() + self.TOKENS_READ_DEADLINE
-        retries = 0
-        while True:
-            try:
-                return self._read_private("tokens.json")
-            except PermissionError as exc:
-                if not (self.RETRY_A_SHARING_VIOLATION and exc.errno == errno.EACCES):
-                    raise
-                if retries >= self.TOKENS_READ_RETRIES:
-                    raise
-                # Never START a pause that would end past the deadline.
-                if deadline - time.monotonic() < self.TOKENS_READ_PAUSE:
-                    raise
-                time.sleep(self.TOKENS_READ_PAUSE)
-                retries += 1
 
     def token_record(self, token: str) -> dict | None:
         """This credential's record, from ONE read of the token file, or None if it was not issued
