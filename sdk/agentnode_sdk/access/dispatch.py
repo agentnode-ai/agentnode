@@ -328,9 +328,13 @@ def identify(service, token: str, proof=None, via: str = "") -> Principal:
     client_id = str(record.get("client_id") or hash_token(token))
     account_id = str(record.get("account_id")
                      or _accounts.solo_account_for(str(record.get("client_id") or "")))
+    # The name the device was PAIRED as. Pairing writes `client_name`; this read `name`, which only a
+    # record from before `client_name` existed carries, so a device identified by its token had no name
+    # (follow-up N, measured). The same order `identify_client` uses.
     return Principal(token=token, device_id=client_id, client_id=client_id,
                      account_id=account_id, capabilities=what_it_may_do(record),
-                     device_name=str(record.get("name", "") or ""), proved=proved, via=via)
+                     device_name=str(record.get("client_name") or record.get("name") or ""),
+                     proved=proved, via=via)
 
 
 def what_it_may_do(record: dict) -> tuple:
