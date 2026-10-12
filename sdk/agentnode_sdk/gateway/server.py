@@ -373,6 +373,30 @@ def container_name_for(run_id: str) -> str:
     return "agentnode-em3c-" + str(run_id)[:16]
 
 
+def what_went_wrong(exc: BaseException) -> str:
+    """`<ExcClass>: <detail>`, safe to put on one line of an operator's stderr.
+
+    The detail is an OSError's `strerror` and NEVER `str()` of it, because that appends `filename` and
+    `filename2` -- which can be a path somebody else chose. Anything else gives `str(exc)`. Either way
+    it is made one line and cut to the 160 characters `could_not_record` already allows itself.
+    """
+    if isinstance(exc, OSError):
+        detail = str(exc.strerror or "")
+    else:
+        detail = str(exc)
+    detail = "".join(ch if ch.isprintable() else " " for ch in detail)[:160]
+    return "%s: %s" % (type(exc).__name__, detail)
+
+
+def tell_the_operator(line: str) -> None:
+    """One line on stderr, flushed. For a failure that is not a refusal and must not be a silence."""
+    try:
+        sys.stderr.write("  " + line + "\n")
+        sys.stderr.flush()
+    except Exception:                                         # noqa: BLE001 - never mask the caller
+        pass
+
+
 class GatewayService:
     """The decisions. Kept apart from HTTP so they can be tested without a socket."""
 
@@ -1723,10 +1747,26 @@ class GatewayService:
                 # one (`O4`, measured).
                 self.ledger.settle_from_the_signed_line(
                     run_id, word, because=str(line.get("termination_reason") or ""))
-            except Exception:                                 # noqa: BLE001
-                pass
+            except Exception as exc:                          # noqa: BLE001
+                # TOLD, AND THEN ON AS BEFORE. The line is the authority and it exists; only its
+                # cache is stale, and the entry -- still without a word -- is one the next start
+                # settles. So this is not a reason to fail the caller or to stop taking work. It
+                # used to be `pass`, and a ledger that disagreed with its own log said nothing about
+                # why (`O7`, measured).
+                self._the_ledger_could_not_be_settled(run_id, exc)
         self._reconcile_the_quota_from(run_id, line)
         return word
+
+    @staticmethod
+    def _the_ledger_could_not_be_settled(run_id: str, exc: BaseException) -> None:
+        """One line per failed attempt, naming the run as `could_not_record` does.
+
+        Not `could_not_record` itself, and no `stop_everything`: that one is for a LINE that is missing,
+        where the authority is gone. Here the authority is there and a cache is stale, so the honest
+        answer is to say so and keep the entry where the next start settles it (DECISION-0001 of `O7`).
+        """
+        tell_the_operator("run %s: the ledger could not be settled from the signed line (%s); it will "
+                          "be settled again at the next start" % (str(run_id)[:12], what_went_wrong(exc)))
 
     def _reconcile_the_quota_from(self, run_id: str, line: dict, *,
                                   entry: dict | None = None,
@@ -1851,7 +1891,10 @@ class GatewayService:
 
         try:
             said = meter.read(self.state.root)
-        except Exception:                                     # noqa: BLE001
+        except Exception as exc:                              # noqa: BLE001
+            # Nothing can be repaired without the authority, and nothing is; but it is said.
+            tell_the_operator("the start-up reconciliation did not run: the signed log could not be "
+                              "read (%s)" % what_went_wrong(exc))
             return {"read": False, "settled": 0, "quota": 0}
         lines: dict = {}
         for line in said:
@@ -1863,7 +1906,14 @@ class GatewayService:
         # ONE READ OF EACH FILE, not one per run. A pass that asked the ledger and the quota run by
         # run would take a file lock and parse a whole document for every run in a month of history,
         # on every start, just to find out that it has nothing to do.
-        runs = self.ledger.snapshot()
+        try:
+            runs = self.ledger.snapshot()
+        except Exception as exc:                              # noqa: BLE001
+            # Caught HERE, and not only by the catch around the whole pass, so that the line can
+            # name the part that failed: that catch receives every other failure too.
+            tell_the_operator("the start-up reconciliation did not run: the ledger could not be "
+                              "read (%s)" % what_went_wrong(exc))
+            return {"read": False, "settled": 0, "quota": 0}
         charged = self.use.snapshot()
         settled = quota = 0
         for run_id, entry in sorted(runs.items()):
@@ -1885,8 +1935,9 @@ class GatewayService:
                 try:
                     if self.ledger.settle_from_the_signed_line(run_id, word, because=why)[1]:
                         settled += 1
-                except Exception:                             # noqa: BLE001
-                    pass
+                except Exception as exc:                      # noqa: BLE001
+                    # Told, and the pass goes on to the next run (`O7`).
+                    self._the_ledger_could_not_be_settled(run_id, exc)
             if self._reconcile_the_quota_from(run_id, line, entry=entry, quota=charged):
                 quota += 1
                 # The write prunes by window as it goes, so the copy taken above is stale for every
@@ -2102,11 +2153,14 @@ class GatewayService:
         """
         try:
             self.reconcile_every_record_against_the_signed_log()
-        except Exception:                                     # noqa: BLE001
+        except Exception as exc:                              # noqa: BLE001
             # A reconciliation that cannot run is not a reason to refuse to start -- what it repairs
             # is a disagreement between records, and starting without it leaves exactly the state
             # the previous version left. The sets below still select conservatively.
-            pass
+            #
+            # BUT IT IS SAID. The two failures that can be named are named inside the pass; this is
+            # everything else, so it does not guess which part it was (`O7`).
+            tell_the_operator("the start-up reconciliation did not finish (%s)" % what_went_wrong(exc))
         budget = time.monotonic() + RECOVERY_BUDGET_SECONDS
         for run_id in self.ledger.runs_left_unswept():
             if time.monotonic() >= budget:
