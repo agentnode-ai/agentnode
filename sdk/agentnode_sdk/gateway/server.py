@@ -542,6 +542,18 @@ class GatewayService:
         self._closing = threading.Event()
         if recover:
             self._restore_interrupted()
+            # A pairing a previous process left half done is resolved HERE and only here: this is
+            # the take-over, after `OnlyOneGateway`, so no redemption of that process is still
+            # running. Elsewhere a half-done journal may belong to a live one (follow-up T, Q0004).
+            # A recovery that cannot run does not stop the start: what it leaves is a journal nobody
+            # can redeem, never a credential handed out. It is said, not swallowed.
+            try:
+                self.state.recover_pairings()
+            except Exception as exc:                          # noqa: BLE001
+                sys.stderr.write("\n  a pairing left half done by the previous process could not be "
+                                 f"resolved ({type(exc).__name__}); its invitation stays unusable "
+                                 "until the next start.\n")
+                sys.stderr.flush()
             # And now this process is the one serving. After recovery, so that a gateway which
             # dies during recovery is still read as having been lost rather than as having
             # served and stopped.
@@ -4304,10 +4316,22 @@ def _answering_an_unreadable_token_file(method):
     def answering(self):
         try:
             return method(self)
-        except TokensUnreadable:
-            return self._the_token_file_could_not_be_read()
+        except TokensUnreadable as exc:
+            return self._the_token_file_could_not_be_read(exc)
 
     return answering
+
+
+def the_pairing_remedy(exc) -> str:
+    """What a redeemer whose pairing failed on this gateway's side is told to do.
+
+    "Try again" ONLY when the pairing says it kept the invitation (follow-up T: a verified pairing that
+    failed is rolled back and its invitation stays redeemable). Otherwise the invitation may already be
+    spent, and saying "try again" would send them round a loop that cannot succeed.
+    """
+    if getattr(exc, "invitation_kept", False) is True:
+        return TokensUnreadable.WHAT_TO_DO
+    return TokensUnreadable.WHAT_TO_DO_WHEN_PAIRING
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -4554,7 +4578,7 @@ class _Handler(BaseHTTPRequestHandler):
     # and `do_POST` as a decorator, so each keeps its body and its name: the route register reads the
     # addresses the gateway answers on out of those two methods (`test_routes_register.py`).
 
-    def _the_token_file_could_not_be_read(self):
+    def _the_token_file_could_not_be_read(self, exc=None):
         """503 `sandbox_unavailable`, in the shape the door that was asked would refuse in. UNSIGNED:
         the key an answer is signed with is only valid for a credential this gateway issued, and
         whether it issued this one is exactly what could not be read."""
@@ -4563,7 +4587,7 @@ class _Handler(BaseHTTPRequestHandler):
         pairing = bare in ("/v1/pair", "/v1/session")
         said = _dispatch.Refused(
             "sandbox_unavailable", TokensUnreadable.BECAUSE,
-            TokensUnreadable.WHAT_TO_DO_WHEN_PAIRING if pairing else TokensUnreadable.WHAT_TO_DO)
+            the_pairing_remedy(exc) if pairing else TokensUnreadable.WHAT_TO_DO)
         if _rest.ours(bare) and bare != _rest.MCP_PATH:
             # The contract's own refusal, written the way `_the_contract` writes its answers.
             data = json.dumps(said.as_answer(), sort_keys=True).encode("utf-8")
