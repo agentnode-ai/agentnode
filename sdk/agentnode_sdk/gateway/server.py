@@ -385,7 +385,7 @@ def what_went_wrong(exc: BaseException) -> str:
     else:
         detail = str(exc)
     detail = "".join(ch if ch.isprintable() else " " for ch in detail)[:160]
-    return "%s: %s" % (type(exc).__name__, detail)
+    return f"{type(exc).__name__}: {detail}"
 
 
 def tell_the_operator(line: str) -> None:
@@ -1765,8 +1765,8 @@ class GatewayService:
         where the authority is gone. Here the authority is there and a cache is stale, so the honest
         answer is to say so and keep the entry where the next start settles it (DECISION-0001 of `O7`).
         """
-        tell_the_operator("run %s: the ledger could not be settled from the signed line (%s); it will "
-                          "be settled again at the next start" % (str(run_id)[:12], what_went_wrong(exc)))
+        tell_the_operator(f"run {str(run_id)[:12]}: the ledger could not be settled from the signed line "
+                          f"({what_went_wrong(exc)}); it will be settled again at the next start")
 
     def _reconcile_the_quota_from(self, run_id: str, line: dict, *,
                                   entry: dict | None = None,
@@ -1894,7 +1894,7 @@ class GatewayService:
         except Exception as exc:                              # noqa: BLE001
             # Nothing can be repaired without the authority, and nothing is; but it is said.
             tell_the_operator("the start-up reconciliation did not run: the signed log could not be "
-                              "read (%s)" % what_went_wrong(exc))
+                              f"read ({what_went_wrong(exc)})")
             return {"read": False, "settled": 0, "quota": 0}
         lines: dict = {}
         for line in said:
@@ -1912,7 +1912,7 @@ class GatewayService:
             # Caught HERE, and not only by the catch around the whole pass, so that the line can
             # name the part that failed: that catch receives every other failure too.
             tell_the_operator("the start-up reconciliation did not run: the ledger could not be "
-                              "read (%s)" % what_went_wrong(exc))
+                              f"read ({what_went_wrong(exc)})")
             return {"read": False, "settled": 0, "quota": 0}
         charged = self.use.snapshot()
         settled = quota = 0
@@ -2160,7 +2160,7 @@ class GatewayService:
             #
             # BUT IT IS SAID. The two failures that can be named are named inside the pass; this is
             # everything else, so it does not guess which part it was (`O7`).
-            tell_the_operator("the start-up reconciliation did not finish (%s)" % what_went_wrong(exc))
+            tell_the_operator(f"the start-up reconciliation did not finish ({what_went_wrong(exc)})")
         budget = time.monotonic() + RECOVERY_BUDGET_SECONDS
         for run_id in self.ledger.runs_left_unswept():
             if time.monotonic() >= budget:
