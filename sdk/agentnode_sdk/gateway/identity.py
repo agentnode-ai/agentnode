@@ -45,6 +45,8 @@ from agentnode_sdk.gateway.throttle import Budget, Locked, Store, Throttle
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 CODE_GROUPS, CODE_GROUP_LEN = 3, 4
 PAIRING_TTL_SECONDS = 15 * 60
+#: The journal of one redemption in progress, or of one that failed and kept its invitation (DECISION-T).
+JOURNAL_PREFIX = ".pairing-redemption-"
 
 
 def hash_token(token: str) -> str:
@@ -331,7 +333,10 @@ class GatewayState:
                 % str(for_account)[:64])
         code = new_pairing_code()
         expires = now + PAIRING_TTL_SECONDS
-        with self._pairing_lock:
+        with self._pairing_lock, self._pairing_transaction():
+            # A kept invitation (a pairing that failed half way) is an invitation too, and only one is
+            # live: the new one replaces it as it replaces `pairing.json` (DECISION-T).
+            self._discard_kept_invitations()
             self._pairing = (code, expires)
             # Also on disk, because `agentnode gateway pair` and `agentnode gateway start` are
             # separate processes. A code held only in the memory of whoever issued it could never
@@ -383,16 +388,35 @@ class GatewayState:
             return self._claim_relative(claimed)
         return self._claim_by_path(self.root / claimed)
 
-    def _claim_relative(self, claimed: str) -> dict | None:
+    def _claim_into_journal(self) -> tuple[str, dict] | None:
+        """The same claim, but what was claimed STAYS, as the journal of this one redemption.
+
+        `(journal name, the invitation)`, or None when there was no invitation to claim. The rename is
+        still the claim. What changed is the `finally` that deleted the claimed file: a redemption that
+        then failed had spent the invitation for good (follow-up T, measured). The journal is removed
+        only when the pairing is done, or by `recover_pairings` (DECISION-T).
+        """
+        name = JOURNAL_PREFIX + secrets.token_hex(16) + ".json"
+        if securedir.SUPPORTED:
+            got = self._claim_relative(name, keep=True)
+        else:
+            got = self._claim_by_path(self.root / name, keep=True)
+        if not isinstance(got, dict):
+            return None
+        return name, got
+
+    def _claim_relative(self, claimed: str, keep: bool = False) -> dict | None:
         """Claim and read the live pairing record without ever going through a name twice.
 
         `EM3C-EXTERNAL-0007` found this operating on pathnames while the rest had moved to
         descriptors, which meant the one secret with the shortest life and the highest value was
-        the one still reachable by replacing a path.
+        the one still reachable by replacing a path. `keep` leaves a record that was read as a
+        dict where it is, as a journal.
         """
         fd = self._fd()
         if not securedir.claim_secret(fd, "pairing.json", claimed):
             return None                              # somebody else got there first, or none
+        found = None
         try:
             deadline = time.monotonic() + 2.0
             while True:
@@ -406,13 +430,15 @@ class GatewayState:
                 if raw is None:
                     return None
                 try:
-                    return json.loads(raw)
+                    found = json.loads(raw)
                 except ValueError:
                     return None
+                return found
         finally:
-            securedir.remove_secret(fd, claimed)
+            if not (keep and isinstance(found, dict)):
+                securedir.remove_secret(fd, claimed)
 
-    def _claim_by_path(self, claimed) -> dict | None:
+    def _claim_by_path(self, claimed, keep: bool = False) -> dict | None:
         try:
             os.rename(self._pairing_path, claimed)
         except OSError:
@@ -422,11 +448,13 @@ class GatewayState:
         # an indexer, a scanner. Giving up there threw away a code this caller had already claimed
         # and consumed it for everyone, which showed up as a race where NOBODY paired. Retry
         # briefly: the claim is already ours, so there is nothing to race against any more.
+        found = None
         try:
             deadline = time.monotonic() + 2.0
             while True:
                 try:
-                    return json.loads(claimed.read_text(encoding="utf-8"))
+                    found = json.loads(claimed.read_text(encoding="utf-8"))
+                    return found
                 except OSError:
                     if time.monotonic() >= deadline:
                         raise
@@ -436,10 +464,11 @@ class GatewayState:
         except OSError:
             return None
         finally:
-            try:
-                os.unlink(claimed)
-            except OSError:
-                pass
+            if not (keep and isinstance(found, dict)):
+                try:
+                    os.unlink(claimed)
+                except OSError:
+                    pass
 
     def withdraw_pairing(self) -> bool:
         """Take back a code that has not been used yet. True when there was one to take back.
@@ -453,9 +482,10 @@ class GatewayState:
         The same claim-and-clear the redemption uses, so a withdrawal and a redemption racing
         each other cannot both win.
         """
-        with self._pairing_lock:
+        with self._pairing_lock, self._pairing_transaction():
             self._pairing = None
-            return self._claim_pairing_file() is not None
+            kept = self._discard_kept_invitations()
+            return (self._claim_pairing_file() is not None) or kept
 
     def redeem_joining(self, presented: str, account_id: str, client_name: str = "",
                        now: float | None = None) -> str:
@@ -535,30 +565,42 @@ class GatewayState:
         # the issuing process could still redeem after another process had won the rename: one
         # code, two tokens. The in-memory copy is cleared here so it cannot be reused, but it is
         # never a substitute for winning the claim.
+        #
+        # ONE TRANSACTION, under the pairing lock from choosing the invitation to the end (follow-up T,
+        # DECISION-T). The claim used to delete what it claimed in a `finally`, so a pairing that then
+        # failed -- the token file unreadable, a full disk -- had spent the invitation for good and
+        # left a new customer's account holding nothing. Now what is claimed stays as this
+        # redemption's journal until the pairing is done; a failure before then rolls back and KEEPS
+        # the invitation. A lock that cannot be had is a refusal that touched nothing.
+        # The same order as `start_pairing`: this object's thread lock, then the pairing lock.
         with self._pairing_lock:
-            self._pairing = None
-            on_disk = self._claim_pairing_file()
-        pending = None
-        expected_hash = ""
-        joins_account = ""
-        if on_disk is not None:
-            pending = ("", float(on_disk.get("expires", 0)))
-            expected_hash = str(on_disk.get("code_sha256", ""))
-            # Read out of the claimed invitation, which the operator wrote and the redeemer
-            # cannot reach. An invitation from before this field existed carries none, and that
-            # means a new customer -- which is what every invitation used to mean.
-            joins_account = str(on_disk.get("for_account", "") or "")
-            if joins_account and not _accounts.well_formed(joins_account):
-                joins_account = ""
+            try:
+                transaction = self._pairing_transaction()
+                transaction.__enter__()
+            except filelock.LockUnavailable as exc:
+                refused = TokensUnreadable("this gateway's pairing could not be started, because "
+                                           "another pairing held it too long")
+                refused.invitation_kept = True
+                raise refused from exc
+            try:
+                self._pairing = None
+                return self._redeem_in_the_transaction(presented, client_name, now)
+            finally:
+                transaction.__exit__(None, None, None)
 
-        if pending is None:
+    def _redeem_in_the_transaction(self, presented: str, client_name: str, now: float) -> str:
+        """Choose the one live invitation, verify the code against it, complete. Under the pairing lock."""
+        self._discard_kept_invitations(only_expired=True, now=now)
+        target = self._claim_into_journal() or self._the_kept_invitation(now)
+        if target is None:
             self._throttle.record_failure(now)
             raise PairingError(
                 "this gateway is not accepting pairings right now. Run `agentnode gateway pair` "
                 "on the server to show a new code."
             )
-        _code, expires = pending
-        if expires <= now:
+        journal, invitation = target
+        if float(invitation.get("expires", 0)) <= now:
+            self._spend(journal, invitation)
             self._throttle.record_failure(now)
             raise PairingError(
                 "that pairing code has expired. Run `agentnode gateway pair` on the server for a "
@@ -567,9 +609,12 @@ class GatewayState:
         try:
             presented_norm = normalise_code(presented)
         except PairingError:
+            self._spend(journal, invitation)
             self._throttle.record_failure(now)
             raise
-        if not hmac.compare_digest(hash_token(presented_norm), expected_hash):
+        if not hmac.compare_digest(hash_token(presented_norm), str(invitation.get("code_sha256", ""))):
+            # The one invitation this attempt targeted is spent, and nothing else.
+            self._spend(journal, invitation)
             self._throttle.record_failure(now)
             raise PairingError(
                 "that pairing code does not match. The code can be used once, so ask the server "
@@ -577,10 +622,191 @@ class GatewayState:
             )
         # Someone who proved they know the code is not who the throttle guards against.
         self._throttle.record_success(now)
-        # No account named means a NEW customer, which is what redeeming an invitation usually
-        # is. An invitation issued against an existing account names it, and that is how a
-        # customer adds a second machine without becoming a second customer.
-        return self._issue_token(client_name=client_name, now=now, account_id=joins_account)
+        # No account named means a NEW customer, which is what redeeming an invitation usually is. An
+        # invitation issued against an existing account names it, and that is how a customer adds a
+        # second machine without becoming a second customer.
+        return self._complete_the_pairing(journal, invitation, client_name, now)
+
+    # ------------------------------------------------- pairing, as a transaction (follow-up T)
+
+    def _private_lock(self, name: str, timeout: float) -> filelock.ProcessLock:
+        """`ProcessLock` on `<name>.lock` in this directory, opened as L opens the token lock."""
+        if securedir.SUPPORTED:
+            held = self._fd()
+            info = os.fstat(held)
+            return filelock.ProcessLock(
+                self.root / name, timeout=timeout,
+                open_with=lambda: securedir.open_lock(held, name + ".lock"),
+                local_key=f"dir:{info.st_dev}:{info.st_ino}:{name}.lock")
+        self._guard_private()
+        return filelock.ProcessLock(self.root / name, timeout=timeout)
+
+    def _pairing_transaction(self) -> filelock.ProcessLock:
+        """The outermost lock of DECISION-T: pairing, then tokens, then accounts, never otherwise."""
+        return self._private_lock("pairing.json", self.TOKENS_LOCK_SECONDS)
+
+    def _journal_names(self) -> list[str]:
+        where = self._fd() if securedir.SUPPORTED else str(self.root)
+        return sorted(n for n in os.listdir(where) if n.startswith(JOURNAL_PREFIX) and n.endswith(".json"))
+
+    def _read_journal(self, name: str) -> dict | None:
+        try:
+            raw = self._read_private(name)
+            loaded = json.loads(raw) if raw is not None else None
+        except (OSError, ValueError):
+            return None
+        return loaded if isinstance(loaded, dict) else None
+
+    def _write_journal(self, name: str, document: dict) -> None:
+        self._write_private(name, json.dumps(document, sort_keys=True))
+
+    def _remove_journal(self, name: str) -> None:
+        if securedir.SUPPORTED:
+            securedir.remove_secret(self._fd(), name)
+            return
+        try:
+            os.unlink(self.root / name)
+        except FileNotFoundError:
+            pass
+
+    def _the_kept_invitation(self, now: float) -> tuple[str, dict] | None:
+        """The single unexpired `retryable` journal, if there is one: the live invitation when
+        `pairing.json` is gone. More than one cannot arise (a new invitation discards the old); if it
+        did, the newest is the live one and the others are left for `start_pairing` to discard."""
+        kept = [(n, d) for n in self._journal_names()
+                for d in [self._read_journal(n)]
+                if d and d.get("state") == "retryable" and float(d.get("expires", 0)) > now]
+        return max(kept, key=lambda nd: float(nd[1].get("expires", 0))) if kept else None
+
+    def _spend(self, journal: str, invitation: dict) -> None:
+        """The invitation this attempt targeted is used up: nothing of it stays in force."""
+        self._revoke_and_forget(invitation)
+        self._remove_journal(journal)
+
+    def _discard_kept_invitations(self, only_expired: bool = False, now: float | None = None) -> bool:
+        """Spend every `retryable` journal (or only the expired ones). True if any was discarded.
+        An in-flight `verified` journal is never touched here -- only take-over may judge it."""
+        now = time.time() if now is None else now
+        discarded = False
+        for name in self._journal_names():
+            doc = self._read_journal(name)
+            if not doc or doc.get("state") != "retryable":
+                continue
+            if only_expired and float(doc.get("expires", 0)) > now:
+                continue
+            self._spend(name, doc)
+            discarded = True
+        return discarded
+
+    def _complete_the_pairing(self, journal: str, invitation: dict, client_name: str, now: float) -> str:
+        """Steps verified -> account -> token -> removal of DECISION-T. Rolls back before the removal."""
+        # Read out of the claimed invitation, which the operator wrote and the redeemer cannot reach.
+        # An invitation from before this field existed carries none, and that means a new customer.
+        joins = str(invitation.get("for_account", "") or "")
+        if joins and not _accounts.well_formed(joins):
+            joins = ""
+        verified = dict(invitation)
+        verified.setdefault("operation_id", secrets.token_hex(16))
+        verified.setdefault("new_account", not joins)
+        verified.setdefault("account_id", joins or _accounts.new_account_id())
+        verified.setdefault("issued_at", now)
+        verified["state"] = "verified"
+        committed = False
+        try:
+            self._write_journal(journal, verified)
+            if verified["new_account"]:
+                self.accounts.create(name=client_name, now=float(verified["issued_at"]),
+                                     account_id=str(verified["account_id"]))
+            token = self._commit_pairing_token(verified, client_name)
+            committed = True
+            # THE COMMIT-TO-RETURN BOUNDARY. Nothing after this removal is rolled back.
+            self._remove_journal(journal)
+        except Exception as exc:                              # rolled back, then raised
+            kept = self._roll_back(journal, verified, committed)
+            if isinstance(exc, (TokensUnreadable, OSError)):
+                refused = TokensUnreadable("this gateway's record of paired devices (tokens.json) "
+                                           "could not be used")
+                refused.invitation_kept = kept
+                raise refused from exc
+            exc.invitation_kept = kept
+            raise
+        return token
+
+    def _commit_pairing_token(self, verified: dict, client_name: str) -> str:
+        """Insert this operation's record, under the token lock. The commit point of a pairing.
+
+        Keyed by the operation id: a record an earlier attempt of the same operation left is replaced,
+        never kept beside the new one, so the operation has at most one working credential."""
+        return self._issue_token(client_name=client_name, now=float(verified["issued_at"]),
+                                 account_id=str(verified["account_id"]),
+                                 pairing_operation_id=str(verified["operation_id"]))
+
+    def _revoke_and_forget(self, doc: dict) -> None:
+        """Undo whatever an operation put in force: its token first, durably, then its account.
+
+        Two steps under the token lock, in that order, because the account must never go while a
+        token naming it still works. The account is forgotten only if this operation made it -- its
+        record carries the creation time this operation wrote -- and no token names it."""
+        op = str(doc.get("operation_id") or "")
+        if not op:
+            return
+        with self._mutating_tokens() as tokens:
+            for stale in [h for h, r in tokens.items() if r.get("pairing_operation_id") == op]:
+                del tokens[stale]
+        if not doc.get("new_account"):
+            return
+        account = str(doc.get("account_id") or "")
+        with self._mutating_tokens() as tokens:
+            if account and not any(str(r.get("account_id") or "") == account for r in tokens.values()):
+                self.accounts.forget_created_at(account, float(doc.get("issued_at") or -1))
+
+    def _roll_back(self, journal: str, verified: dict, committed: bool) -> bool:
+        """Before the commit-to-return boundary: revoke, forget, keep the invitation. True if all of it
+        is durable; False leaves the journal for take-over, and the redeemer is told it may be spent.
+
+        What THIS attempt committed is known here. If its token never reached the file, there is no
+        token to revoke and none can name the account: the account id is this operation's own, a
+        `retryable` operation reaches this point only after its earlier token was revoked, and the
+        pairing lock keeps every other redemption out. So the account is forgotten without reading the
+        token file -- which is what lets a pairing that failed BECAUSE that file was unreadable still
+        roll back and keep its invitation."""
+        try:
+            if committed:
+                self._revoke_and_forget(verified)
+            elif verified.get("new_account"):
+                self.accounts.forget_created_at(str(verified.get("account_id") or ""),
+                                                float(verified.get("issued_at") or -1))
+            self._write_journal(journal, dict(verified, state="retryable"))
+            return True
+        except Exception:                                     # noqa: BLE001 - reported as kept=False
+            return False
+
+    def recover_pairings(self, now: float | None = None) -> list[str]:
+        """Resolve every journal a previous process left. Only at take-over (`GatewayService(recover=
+        True)`), where no redemption of that process can still be running. Returns what it did.
+
+        claimed            -> removed: nothing proves its code.
+        verified/retryable -> its token revoked and its account forgotten, durably, THEN kept as
+                              `retryable` until it expires (or removed if it has).
+        """
+        now = time.time() if now is None else now
+        done = []
+        with self._pairing_lock, self._pairing_transaction():
+            for name in self._journal_names():
+                doc = self._read_journal(name)
+                state = (doc or {}).get("state") or "claimed"
+                if doc is None or state == "claimed":
+                    self._remove_journal(name)
+                    done.append("removed an unproved claim")
+                    continue
+                self._revoke_and_forget(doc)
+                if float(doc.get("expires", 0)) <= now:
+                    self._remove_journal(name)
+                    done.append("removed an expired invitation")
+                else:
+                    self._write_journal(name, dict(doc, state="retryable"))
+                    done.append("kept an invitation")
+        return done
 
     # ---------------------------------------------------------------- tokens
 
@@ -776,15 +1002,7 @@ class GatewayState:
         to rule out (Q0002 of follow-up L). Elsewhere it is opened by path, after the same guard every
         other private file here gets.
         """
-        if securedir.SUPPORTED:
-            held = self._fd()
-            info = os.fstat(held)
-            return filelock.ProcessLock(
-                self._tokens_path, timeout=self.TOKENS_LOCK_SECONDS,
-                open_with=lambda: securedir.open_lock(held, "tokens.json.lock"),
-                local_key=f"dir:{info.st_dev}:{info.st_ino}:tokens.json.lock")
-        self._guard_private()
-        return filelock.ProcessLock(self._tokens_path, timeout=self.TOKENS_LOCK_SECONDS)
+        return self._private_lock("tokens.json", self.TOKENS_LOCK_SECONDS)
 
     @contextlib.contextmanager
     def _mutating_tokens(self):
@@ -854,7 +1072,7 @@ class GatewayState:
         return None
 
     def _issue_token(self, client_name: str = "", now: float | None = None,
-                     account_id: str = "") -> str:
+                     account_id: str = "", pairing_operation_id: str = "") -> str:
         """Mint a credential, belonging to a device, belonging to an account.
 
         `account_id` is not optional in effect: a credential with no account would be one whose
@@ -862,6 +1080,10 @@ class GatewayState:
         that leave it out get a fresh account rather than none. What is refused is an account id
         that is not one this gateway could have issued -- a caller-shaped value ends up as a key
         in counter files and in the meter, where one account could otherwise name another's.
+
+        `pairing_operation_id` marks the record as the commit of one redemption (follow-up T): a
+        record an earlier attempt of the same operation left is REPLACED in the same write, never kept
+        beside the new one, so one redemption never has two working credentials.
         """
         now = time.time() if now is None else now
         if account_id and not _accounts.well_formed(account_id):
@@ -874,8 +1096,7 @@ class GatewayState:
         belongs_to = str(account_id) or self.accounts.create(name=client_name, now=now).account_id
         token = secrets.token_urlsafe(32)
         with self._mutating_tokens() as tokens:
-            # Only the hash is stored. A leaked token file must not hand over working credentials.
-            tokens[hash_token(token)] = {
+            record = {
                 "client_name": str(client_name or "")[:64],
                 "issued_at": now,
                 # A client's identity is not its credential. The token can be replaced; who the
@@ -887,6 +1108,13 @@ class GatewayState:
                 # off this rather than off any one credential.
                 "account_id": belongs_to,
             }
+            if pairing_operation_id:
+                for stale in [h for h, r in tokens.items()
+                              if r.get("pairing_operation_id") == pairing_operation_id]:
+                    del tokens[stale]
+                record["pairing_operation_id"] = str(pairing_operation_id)
+            # Only the hash is stored. A leaked token file must not hand over working credentials.
+            tokens[hash_token(token)] = record
         return token
 
     def account_of_client(self, client_id: str) -> str:
