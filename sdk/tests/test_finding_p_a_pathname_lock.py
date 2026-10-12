@@ -43,14 +43,27 @@ def wait(n, limit=30.0):
         time.sleep(0.01)
 
 state = GatewayState(root, version="probe")
-first = {"paused": False}
+once = {"read": False, "enter": False}
+
+# A pauses AFTER its read, still holding its lock. B pauses AFTER it acquires its lock, BEFORE its read -- so the
+# test can take B's lock while the path is a different directory (the defect: the lock is by path), then restore
+# the path so B's descriptor re-check passes and B reads and writes the real file. Both then write a stale read.
+from agentnode_sdk.gateway import filelock
+_real_enter = filelock.ProcessLock.__enter__
+def _enter(self, *a, **k):
+    r = _real_enter(self, *a, **k)
+    if role == "B" and not once["enter"]:
+        once["enter"] = True
+        mark("B-locked"); wait("B-continue")
+    return r
+filelock.ProcessLock.__enter__ = _enter
 
 def pause_after_read(owner, name):
     real = getattr(owner, name)
     def hooked(self, *a, **k):
         r = real(self, *a, **k)
-        if role == "A" and not first["paused"]:
-            first["paused"] = True
+        if role == "A" and not once["read"]:
+            once["read"] = True
             mark("A-read"); wait("A-go")
         return r
     setattr(owner, name, hooked)
@@ -127,37 +140,53 @@ def _start(root, role, ctl, what, arg):
 def _race(tmp_path, what, swap):
     root, ctl, a_id, b_id = _setup(tmp_path, what)
     a = _start(root, "A", ctl, what, a_id)
-    _wait(ctl, "A-read")                                 # A has read and is paused inside its critical section
+    _wait(ctl, "A-read")                                 # A holds its lock, has read, and is paused
     b = _start(root, "B", ctl, what, b_id)
-    _wait(ctl, "B-ready")
+    _wait(ctl, "B-ready")                                # B is constructed (its descriptor is the real dir)
     if swap:
         os.rename(root, root + ".held")
         os.mkdir(root, 0o700)                            # a different directory now sits at the pathname
     open(os.path.join(ctl, "B-go"), "w").close()
-    time.sleep(0.5)                                      # let B take "the" lock and read
-    b_done_before_a = b.poll() is not None
+    _wait(ctl, "B-locked")                               # B has taken "the" lock (by path, in the other dir)
+    b_locked_while_a_held = True
     if swap:
         os.rename(root, root + ".other")
-        os.rename(root + ".held", root)                 # the real directory is back for B's write and A's
-    open(os.path.join(ctl, "A-go"), "w").close()
-    out_a = a.communicate(timeout=60)[0].strip()
+        os.rename(root + ".held", root)                 # the real dir is back, so B's descriptor re-check passes
+    open(os.path.join(ctl, "B-continue"), "w").close()   # B reads and writes
     out_b = b.communicate(timeout=60)[0].strip()
-    return root, out_a, out_b, b_done_before_a
+    open(os.path.join(ctl, "A-go"), "w").close()         # then A writes its stale read
+    out_a = a.communicate(timeout=60)[0].strip()
+    return root, out_a, out_b, b_locked_while_a_held
 
 
 def test_p0_accounts_control_without_a_swap_both_stand(tmp_path):
-    root, out_a, out_b, b_done_before_a = _race(tmp_path, "accounts", swap=False)
-    print("P0 accounts: A %r B %r; B finished before A was released: %s; suspended %d"
-          % (out_a, out_b, b_done_before_a, _count(root, "accounts")))
-    assert not b_done_before_a, "B passed the lock while A held it, with no swap"
+    """No swap: B takes the SAME lock A holds, so it blocks until A releases. Both suspensions stand."""
+    root, ctl, a_id, b_id = _setup(tmp_path, "accounts")
+    a = _start(root, "A", ctl, "accounts", a_id)
+    _wait(ctl, "A-read")
+    b = _start(root, "B", ctl, "accounts", b_id)
+    _wait(ctl, "B-ready")
+    open(os.path.join(ctl, "B-go"), "w").close()
+    time.sleep(1.0)
+    b_locked_while_a_held = os.path.exists(os.path.join(ctl, "B-locked"))
+    open(os.path.join(ctl, "A-go"), "w").close()         # release A; only now can B take the lock
+    _wait(ctl, "B-locked")
+    open(os.path.join(ctl, "B-continue"), "w").close()
+    out_a = a.communicate(timeout=60)[0].strip()
+    out_b = b.communicate(timeout=60)[0].strip()
+    suspended = _count(root, "accounts")
+    print("P0 accounts: A %r B %r; B took the lock while A held it: %s; suspended %d"
+          % (out_a, out_b, b_locked_while_a_held, suspended))
+    assert not b_locked_while_a_held, "B took the lock while A held it, with no swap"
     assert out_a == "OK" and out_b == "OK"
-    assert _count(root, "accounts") == 2
+    assert suspended == 2
 
 
 @pytest.mark.parametrize("what", ["accounts", "throttle", "budget"])
 def test_p1_a_swapped_path_loses_a_mutation(tmp_path, what):
-    root, out_a, out_b, _ = _race(tmp_path, what, swap=True)
+    root, out_a, out_b, b_locked_while_a_held = _race(tmp_path, what, swap=True)
     count = _count(root, what)
-    print("P1 %s: A %r B %r; count %d" % (what, out_a, out_b, count))
+    print("P1 %s: A %r B %r; B locked while A held: %s; count %d"
+          % (what, out_a, out_b, b_locked_while_a_held, count))
     assert out_a == "OK" and out_b == "OK", "a worker failed: A %r B %r" % (out_a, out_b)
     assert count == 2, "two answered %s mutations, but the count is %d (one was lost)" % (what, count)
