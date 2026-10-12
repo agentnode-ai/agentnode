@@ -301,6 +301,23 @@ class Accounts:
             self._store(body)
             return account
 
+    def forget_created_at(self, account_id: str, created_at: float) -> bool:
+        """Remove an account ONLY if its record is the one made at `created_at`. True if it was.
+
+        For a pairing that failed half way (follow-up T): the account it pre-allocated is forgotten, and
+        nothing else may be. `create` returns an existing record unchanged, so "this attempt asked for
+        that id" is not proof the attempt made it; the time it was made, recorded by that attempt, is.
+        """
+        wanted = str(account_id)
+        with self._guard():
+            body = self._load()
+            record = body.get(wanted)
+            if not isinstance(record, dict) or float(record.get("created_at") or -1) != float(created_at):
+                return False
+            del body[wanted]
+            self._store(body)
+            return True
+
     def forget(self, account_id: str) -> bool:
         """Remove the record entirely. Used by deletion; not a way to lift a suspension.
 
