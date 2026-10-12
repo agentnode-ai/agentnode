@@ -139,9 +139,27 @@ def handle(service, path: str, method: str, headers, body: bytes):
                 "bad_request")
             return 400, {"jsonrpc": "2.0", "id": None,
                          "error": {"code": -32700, "message": "that is not JSON"}}
-        reply = mcp.handle(service, message,
-                           dispatch.identify(service, _header(headers, TOKEN_HEADER),
-                                             via="mcp"))
+        from agentnode_sdk.gateway.identity import (
+            TokensUnreadable,
+            tell_the_operator_tokens_unreadable,
+        )
+
+        try:
+            reply = mcp.handle(service, message,
+                               dispatch.identify(service, _header(headers, TOKEN_HEADER),
+                                                 via="mcp"))
+        except TokensUnreadable:
+            # Answered HERE, in JSON-RPC and with the request's own id, rather than by the HTTP
+            # handler's catch, which has no message to take an id from. Not a refusal RESULT, as
+            # the MCP adapter renders a refused operation: nobody was identified, so no method --
+            # `initialize` included -- was carried out (`O6`, consultation Q0002).
+            tell_the_operator_tokens_unreadable(MCP_PATH)
+            said = dispatch.Refused("sandbox_unavailable", TokensUnreadable.BECAUSE,
+                                    TokensUnreadable.WHAT_TO_DO)
+            return 503, {"jsonrpc": "2.0",
+                         "id": message.get("id") if isinstance(message, dict) else None,
+                         "error": {"code": -32000, "message": TokensUnreadable.BECAUSE,
+                                   "data": said.as_answer()}}
         # A notification gets no reply. 202 rather than 200 with an empty body, because "accepted,
         # nothing to say" and "here is nothing" are different things.
         return (202, {}) if reply is None else (200, reply)

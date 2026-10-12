@@ -55,8 +55,58 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
 
 
+def secret_for(token: str) -> bytes:
+    """The HMAC key a token signs with. Derived from the token alone, so computing it reads nothing;
+    whether the token is one this gateway issued is a separate question, asked of the token file."""
+    return hashlib.sha256(f"em3c-sig\n{token}".encode()).digest()
+
+
 class PairingError(Exception):
     """The pairing attempt is refused. The message says what a person can do about it."""
+
+
+class TokensUnreadable(OSError):
+    """The record of who holds a credential exists and cannot be used, so nobody is decided from it.
+
+    Its own type because the caller must tell it from an absent file, as with `AccountsUnreadable`.
+    Absent means nobody has paired with this gateway yet. Unreadable means somebody may have, and this
+    gateway cannot see who. `_read_tokens` used to return `{}` for both, and one failed read inside a
+    request then told the owner of a run it did not exist, handed a narrowed device the defaults, and
+    let a pairing write back a file holding only the new device (`O6`, measured before this change).
+
+    The message names the file and nothing in it; what failed underneath travels as `__cause__`, for
+    the operator's side only.
+    """
+
+    #: What a caller is told. Fixed, because the exception's own text must never reach a door.
+    BECAUSE = ("This gateway could not read its record of paired devices, so it did not decide "
+               "who you are.")
+    WHAT_TO_DO = ("Try again shortly. If it keeps happening, tell whoever runs this gateway. "
+                  "Nothing about your device was changed.")
+    #: For pairing, where the invitation may already have been spent before the read failed.
+    WHAT_TO_DO_WHEN_PAIRING = ("Tell whoever runs this gateway. Once it is repaired you may need a "
+                               "fresh invitation, because the one you used may already have been "
+                               "spent.")
+
+
+def tell_the_operator_tokens_unreadable(route: str) -> None:
+    """One line on stderr for a request the token file could not be read for.
+
+    `route` is a NAME the caller fixed -- `server.the_route_named`, or a constant -- never the path as
+    the request sent it: a path is caller data and can carry a run id (`O6`, review round one,
+    O6-R1-F1). Nothing else goes in: not the exception's text (which can name a path on this machine),
+    not a header, not the body, not anything from the file. Written where the request is answered
+    rather than where the read failed, so one failure is one line.
+
+    The naming lives in the gateway's HTTP module and not here because this module is also reached
+    from a worker's command line, which must not import the control plane's doors
+    (`test_the_two_roles_are_separable.py`).
+    """
+    import sys
+
+    sys.stderr.write(f"\n  tokens.json could not be read while serving {route}; "
+                     "refused as sandbox_unavailable, and nobody was identified from it.\n")
+    sys.stderr.flush()
 
 
 def new_pairing_code() -> str:
@@ -644,16 +694,42 @@ class GatewayState:
             _os.close(fd)
 
     def _read_tokens(self) -> dict[str, dict]:
+        """Every credential this gateway issued, by hash. `{}` ONLY when the file is absent.
+
+        Anything else that stops the file being used -- it could not be read, it is not UTF-8, it is
+        not JSON, or it is not an object of objects -- raises `TokensUnreadable`. None of those is
+        evidence that nobody is paired, and every caller of this function either decides who
+        somebody is or writes the file back, so treating them as "nobody" decided and overwrote.
+        """
+        def unusable():
+            return TokensUnreadable("this gateway's record of paired devices (tokens.json) "
+                                    "could not be used")
+
         try:
             raw = self._read_private("tokens.json")
-        except OSError:
-            return {}
+        except (OSError, ValueError) as exc:          # ValueError: UnicodeDecodeError while reading
+            raise unusable() from exc
         if raw is None:
             return {}
         try:
-            return json.loads(raw)
-        except ValueError:
-            return {}
+            tokens = json.loads(raw)
+        except ValueError as exc:
+            raise unusable() from exc
+        if not isinstance(tokens, dict) or not all(isinstance(v, dict) for v in tokens.values()):
+            raise unusable()
+        return tokens
+
+    def token_record(self, token: str) -> dict | None:
+        """This credential's record, from ONE read of the token file, or None if it was not issued
+        here. Raises `TokensUnreadable` rather than answering None for a file it could not read.
+
+        One read, so that everything decided from it -- whether the credential exists, which device,
+        which account, what it may do -- comes from the same file. Building a caller out of several
+        reads let one of them fail while the others succeeded, and the caller was then somebody
+        with no account, or with the defaults instead of what the record says.
+        """
+        entry = self._read_tokens().get(hash_token(token))
+        return dict(entry) if entry is not None else None
 
     def _write_tokens(self, tokens: dict[str, dict]) -> None:
         self._write_private("tokens.json", json.dumps(tokens, indent=2, sort_keys=True))
@@ -815,7 +891,7 @@ class GatewayState:
         token_hash = hash_token(token)
         if token_hash not in self._read_tokens():
             return None
-        return hashlib.sha256(f"em3c-sig\n{token}".encode()).digest()
+        return secret_for(token)
 
     def rotate_token(self, token: str, now: float | None = None) -> str | None:
         """Issue a replacement and retire the old one in a single write.

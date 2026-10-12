@@ -288,32 +288,62 @@ def identify(service, token: str, proof=None, via: str = "") -> Principal:
     Verifying it here rather than at the door is the point. Checking a signature is transport
     work, but deciding WHO IS ASKING is not, and there is one place that decides. A proof that
     does not verify makes the caller nobody, not a partly-trusted somebody.
+
+    ## One read of the token file, and a read that fails is not "nobody"
+
+    Everything below comes from ONE record, read once (`token_record`). It used to be four reads --
+    the proof's, then the client id's, the device list's and the account's -- and one of them could
+    fail while the others succeeded: measured (`O6`), the owner of a run was told it did not exist
+    because only the account read failed, and a device recorded as read-only was handed the defaults
+    because only the device-list read failed. A file that cannot be read now raises
+    `TokensUnreadable`, which is not caught here: deciding that somebody is nobody because the record
+    of who they are could not be read is the same mistake as deciding they are somebody else.
     """
+    from agentnode_sdk.gateway import accounts as _accounts
+    from agentnode_sdk.gateway.identity import hash_token, secret_for
+    from agentnode_sdk.gateway.protocol import verify_signature
+
     if not token:
+        return NOBODY
+    if proof is not None:
+        # The privacy check `authenticate` made first, kept first, and failing the way it failed.
+        try:
+            service.require_private_state()
+        except Exception:                                     # noqa: BLE001
+            return NOBODY
+    record = service.state.token_record(token)
+    if record is None:
         return NOBODY
     proved = False
     if proof is not None:
         payload, signature = proof
         try:
-            service.authenticate(token, payload or {}, signature or "")
-        except Exception:                                     # noqa: BLE001
+            verified = verify_signature(secret_for(token), payload or {}, signature or "")
+        except Exception:                                     # noqa: BLE001 - a malformed proof
+            verified = False
+        if not verified:
             return NOBODY
         proved = True
-    client_id = service.state.client_id_for(token)
-    if not client_id:
-        return NOBODY
-    name = ""
-    held = (contract.RUN, contract.READ, contract.MANAGE_DEVICES)
-    for device in service.state.paired_clients():
-        if device.get("client_id") == client_id:
-            name = str(device.get("name", "") or "")
-            recorded = device.get("capabilities")
-            if recorded:
-                held = tuple(c for c in recorded if c in contract.CAPABILITIES)
-            break
+    # The same fallbacks `client_id_for` and `account_id_for` apply, from the same record.
+    client_id = str(record.get("client_id") or hash_token(token))
+    account_id = str(record.get("account_id")
+                     or _accounts.solo_account_for(str(record.get("client_id") or "")))
     return Principal(token=token, device_id=client_id, client_id=client_id,
-                     account_id=service.state.account_id_for(token),
-                     capabilities=held, device_name=name, proved=proved, via=via)
+                     account_id=account_id, capabilities=what_it_may_do(record),
+                     device_name=str(record.get("name", "") or ""), proved=proved, via=via)
+
+
+def what_it_may_do(record: dict) -> tuple:
+    """A device's capabilities, from its record and from nothing else.
+
+    A record WITHOUT the key predates recorded capabilities and holds the defaults, as it always has.
+    A record WITH the key holds exactly the recognised values in it -- possibly none. What stood in
+    `identify_client` filtered and then fell back to the defaults when nothing was left, so an
+    explicitly empty list, or one of unknown values, was widened to everything.
+    """
+    if "capabilities" not in record:
+        return contract.CAPABILITIES
+    return tuple(c for c in (record.get("capabilities") or ()) if c in contract.CAPABILITIES)
 
 
 def identify_session(service, session_id: str, csrf: str = "", via: str = "browser"):
@@ -372,14 +402,12 @@ def identify_client(service, client_id: str, via: str = ""):
     for device in service.state.paired_clients():
         if device.get("client_id") != str(client_id):
             continue
-        held = tuple(c for c in (device.get("capabilities") or contract.CAPABILITIES)
-                     if c in contract.CAPABILITIES)
         from agentnode_sdk.gateway import accounts as _accounts
 
         return Principal(token="", device_id=str(client_id), client_id=str(client_id),
                          account_id=str(device.get("account_id")
                                         or _accounts.solo_account_for(str(client_id))),
-                         capabilities=held or contract.CAPABILITIES,
+                         capabilities=what_it_may_do(device),
                          device_name=str(device.get("client_name")
                                          or device.get("name") or ""), via=via)
     return NOBODY
@@ -1920,6 +1948,14 @@ def _translate(exc: Exception) -> Refused:
     cannot_read = _admission.what_it_cannot_read(exc)
     if cannot_read is not None:
         return Refused(cannot_read.refusal, cannot_read.because, cannot_read.what_to_do)
+    # THE RECORD OF WHO IS PAIRED, unreadable. Not one of admission's reasons above: those name why a
+    # job was refused and are kept durably, and this is about whether anybody can be identified at
+    # all (`O6`, consultation Q0002). Its own fixed sentence, because the generic branch below would
+    # put the exception's text -- and with it a path on this machine -- in front of the caller.
+    from agentnode_sdk.gateway.identity import TokensUnreadable
+
+    if isinstance(exc, TokensUnreadable):
+        return Refused("sandbox_unavailable", TokensUnreadable.BECAUSE, TokensUnreadable.WHAT_TO_DO)
     # THE MACHINE IS FULL, which is a ceiling and not a fault.
     #
     # Without this it fell through to `sandbox_unavailable` -- "nothing could run it, and this
