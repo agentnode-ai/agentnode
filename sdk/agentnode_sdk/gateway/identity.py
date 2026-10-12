@@ -21,6 +21,8 @@ No key or certificate is ever edited by hand. This module generates, stores and 
 """
 from __future__ import annotations
 
+import contextlib
+import copy
 import hashlib
 import hmac
 import json
@@ -734,6 +736,54 @@ class GatewayState:
     def _write_tokens(self, tokens: dict[str, dict]) -> None:
         self._write_private("tokens.json", json.dumps(tokens, indent=2, sort_keys=True))
 
+    #: How long a change to the token file waits for another change to finish before it refuses.
+    TOKENS_LOCK_SECONDS = 10.0
+
+    def _tokens_lock(self) -> filelock.ProcessLock:
+        """The one lock every change to `tokens.json` holds, across threads and processes.
+
+        Where the directory is held by descriptor, the lock file is opened relative to it and its
+        in-process half is keyed by the directory's device and inode: a lock opened by pathname could
+        belong to a different directory from the file it guards, the thing the held descriptor exists
+        to rule out (Q0002 of follow-up L). Elsewhere it is opened by path, after the same guard every
+        other private file here gets.
+        """
+        if securedir.SUPPORTED:
+            held = self._fd()
+            info = os.fstat(held)
+            return filelock.ProcessLock(
+                self._tokens_path, timeout=self.TOKENS_LOCK_SECONDS,
+                open_with=lambda: securedir.open_lock(held, "tokens.json.lock"),
+                local_key=f"dir:{info.st_dev}:{info.st_ino}:tokens.json.lock")
+        self._guard_private()
+        return filelock.ProcessLock(self._tokens_path, timeout=self.TOKENS_LOCK_SECONDS)
+
+    @contextlib.contextmanager
+    def _mutating_tokens(self):
+        """Every change to the token file: lock, read, decide, write back -- as ONE step.
+
+        Each change used to read the whole file, change its copy and write the copy back with nothing
+        between two of them, so two that overlapped kept only the one that wrote last: a pairing that
+        answered with a credential that did not work, and a revocation that answered True and was then
+        undone by a pairing writing after it (follow-up L, measured on main).
+
+        The dict yielded is the one read under the lock; it is written back only if the change altered
+        it, and not at all if the change raised. Nothing inside may call another of these -- the lock
+        is not re-entrant, and every caller of this is a public change, so none of them calls another.
+        A lock that cannot be had in time is `TokensUnreadable`, which every door already answers
+        without deciding anything: this gateway could not get a state it can safely change.
+        """
+        try:
+            with self._tokens_lock():
+                tokens = self._read_tokens()
+                before = copy.deepcopy(tokens)
+                yield tokens
+                if tokens != before:
+                    self._write_tokens(tokens)
+        except filelock.LockUnavailable as exc:
+            raise TokensUnreadable("this gateway's record of paired devices (tokens.json) could not "
+                                   "be changed, because another change held it too long") from exc
+
     def set_client_allowance(self, token: str, allowance) -> bool:
         """Record what a client may reach, against its token.
 
@@ -741,15 +791,14 @@ class GatewayState:
         ceiling that the operator above still narrows further. Stored against the token hash, so
         it is bound to an authenticated identity rather than to anything a job carries.
         """
-        tokens = self._read_tokens()
-        token_hash = hash_token(token)
-        if token_hash not in tokens:
-            return False
-        tokens[token_hash]["allowance"] = (
-            None if allowance is None else sorted({str(h) for h in allowance})
-        )
-        self._write_tokens(tokens)
-        return True
+        with self._mutating_tokens() as tokens:
+            token_hash = hash_token(token)
+            if token_hash not in tokens:
+                return False
+            tokens[token_hash]["allowance"] = (
+                None if allowance is None else sorted({str(h) for h in allowance})
+            )
+            return True
 
     def client_allowance(self, token: str):
         """The recorded allowance, or None when this client has no ceiling of its own."""
@@ -791,23 +840,25 @@ class GatewayState:
             raise PairingError(
                 "%r is not an account this gateway issued, so nothing was created for it."
                 % str(account_id)[:64])
+        # The account is made OUTSIDE the token lock: holding one file's lock while taking another's
+        # makes no pair of writes atomic and adds a lock order. That a pairing can fail after its
+        # account exists is follow-up T's subject, not this lock's.
         belongs_to = str(account_id) or self.accounts.create(name=client_name, now=now).account_id
         token = secrets.token_urlsafe(32)
-        tokens = self._read_tokens()
-        # Only the hash is stored. A leaked token file must not hand over working credentials.
-        tokens[hash_token(token)] = {
-            "client_name": str(client_name or "")[:64],
-            "issued_at": now,
-            # A client's identity is not its credential. The token can be replaced; who the
-            # client IS must survive that, or rotating a token would orphan the client's own
-            # runs -- which is what happened the first time this was written.
-            "client_id": secrets.token_hex(8),
-            # WHICH CUSTOMER. Not the same question as which device: a customer has several,
-            # and everything a customer is -- ceilings, suspension, billing, deletion -- hangs
-            # off this rather than off any one credential.
-            "account_id": belongs_to,
-        }
-        self._write_tokens(tokens)
+        with self._mutating_tokens() as tokens:
+            # Only the hash is stored. A leaked token file must not hand over working credentials.
+            tokens[hash_token(token)] = {
+                "client_name": str(client_name or "")[:64],
+                "issued_at": now,
+                # A client's identity is not its credential. The token can be replaced; who the
+                # client IS must survive that, or rotating a token would orphan the client's own
+                # runs -- which is what happened the first time this was written.
+                "client_id": secrets.token_hex(8),
+                # WHICH CUSTOMER. Not the same question as which device: a customer has several,
+                # and everything a customer is -- ceilings, suspension, billing, deletion -- hangs
+                # off this rather than off any one credential.
+                "account_id": belongs_to,
+            }
         return token
 
     def account_of_client(self, client_id: str) -> str:
@@ -845,15 +896,14 @@ class GatewayState:
         if not _accounts.well_formed(account_id):
             raise PairingError(
                 "%r is not an account this gateway issued." % str(account_id)[:64])
-        tokens = self._read_tokens()
-        for token_hash, record in list(tokens.items()):
-            if record.get("client_id") != str(client_id):
-                continue
-            record["account_id"] = str(account_id)
-            tokens[token_hash] = record
-            self._write_tokens(tokens)
-            return True
-        return False
+        with self._mutating_tokens() as tokens:
+            for token_hash, record in list(tokens.items()):
+                if record.get("client_id") != str(client_id):
+                    continue
+                record["account_id"] = str(account_id)
+                tokens[token_hash] = record
+                return True
+            return False
 
     def devices_in(self, account_id: str) -> list[dict]:
         """The devices of ONE account, which is what a customer may be shown.
@@ -904,31 +954,29 @@ class GatewayState:
         Returns None when the token is not one this gateway issued -- the caller says so; this
         does not invent a client.
         """
-        tokens = self._read_tokens()
-        old_hash = hash_token(token)
-        previous = tokens.get(old_hash)
-        if previous is None:
-            return None
-        now = time.time() if now is None else now
-        replacement = secrets.token_urlsafe(32)
-        entry = dict(previous)          # client_id travels with it: same client, new secret
-        entry["issued_at"] = now
-        entry["rotated_from"] = old_hash[:12]      # enough to correlate, not enough to reverse
-        tokens[hash_token(replacement)] = entry
-        # Removed in the same write as the replacement is added, so there is never a moment on
-        # disk where both work and never one where neither does.
-        del tokens[old_hash]
-        self._write_tokens(tokens)
-        return replacement
+        with self._mutating_tokens() as tokens:
+            old_hash = hash_token(token)
+            previous = tokens.get(old_hash)
+            if previous is None:
+                return None
+            now = time.time() if now is None else now
+            replacement = secrets.token_urlsafe(32)
+            entry = dict(previous)          # client_id travels with it: same client, new secret
+            entry["issued_at"] = now
+            entry["rotated_from"] = old_hash[:12]      # enough to correlate, not enough to reverse
+            tokens[hash_token(replacement)] = entry
+            # Removed in the same write as the replacement is added, so there is never a moment on
+            # disk where both work and never one where neither does.
+            del tokens[old_hash]
+            return replacement
 
     def revoke(self, token: str) -> bool:
-        tokens = self._read_tokens()
-        token_hash = hash_token(token)
-        if token_hash not in tokens:
-            return False
-        del tokens[token_hash]
-        self._write_tokens(tokens)
-        return True
+        with self._mutating_tokens() as tokens:
+            token_hash = hash_token(token)
+            if token_hash not in tokens:
+                return False
+            del tokens[token_hash]
+            return True
 
     def redeem_for_connection(self, client_name: str = "", account_id: str = "") -> str:
         """Issue a credential for a connection somebody has already been authorised to set up.
@@ -962,22 +1010,48 @@ class GatewayState:
         required the token would mean the only party able to withdraw a device was the device
         itself, which is exactly backwards.
         """
-        tokens = self._read_tokens()
-        for token_hash, record in list(tokens.items()):
-            if record.get("client_id") != client_id:
-                continue
-            if within_account:
-                belongs = str(record.get("account_id")
-                              or _accounts.solo_account_for(str(record.get("client_id") or "")))
-                if belongs != str(within_account):
-                    # Not this customer's device. The caller is told the same thing it would be
-                    # told about a device that does not exist, because telling somebody that a
-                    # device exists but is not theirs tells them it exists.
-                    return False
+        with self._mutating_tokens() as tokens:
+            for token_hash, record in list(tokens.items()):
+                if record.get("client_id") != client_id:
+                    continue
+                if within_account:
+                    belongs = str(record.get("account_id")
+                                  or _accounts.solo_account_for(str(record.get("client_id") or "")))
+                    if belongs != str(within_account):
+                        # Not this customer's device. The caller is told the same thing it would be
+                        # told about a device that does not exist, because telling somebody that a
+                        # device exists but is not theirs tells them it exists.
+                        return False
+                del tokens[token_hash]
+                return True
+            return False
+
+    def revoke_named_client(self, wanted: str) -> dict:
+        """The operator's revoke: find a device by its name or the start of its id, and withdraw it.
+
+        Found and withdrawn under ONE locked read. The command used to look the device up in one read
+        and delete it from another, written back with nothing in between -- so a pairing in that gap
+        was lost, or brought the revoked device back -- and it took the first match, so which device a
+        shared name or a short prefix withdrew depended on the order of a dict.
+
+        Returns `{"outcome": "revoked", "client_name", "client_id"}` for exactly one match, and
+        `{"outcome": "none"}` or `{"outcome": "ambiguous", "matches": [...]}` without writing anything.
+        """
+        wanted = str(wanted or "").strip()
+        with self._mutating_tokens() as tokens:
+            found = [(token_hash, record) for token_hash, record in tokens.items()
+                     if wanted and (str(record.get("client_name", "")) == wanted
+                                    or str(record.get("client_id", "")).startswith(wanted))]
+            if not found:
+                return {"outcome": "none"}
+            if len(found) > 1:
+                return {"outcome": "ambiguous",
+                        "matches": sorted((str(r.get("client_id", "")), str(r.get("client_name", "")))
+                                          for _h, r in found)}
+            token_hash, record = found[0]
             del tokens[token_hash]
-            self._write_tokens(tokens)
-            return True
-        return False
+            return {"outcome": "revoked", "client_name": str(record.get("client_name") or ""),
+                    "client_id": str(record.get("client_id") or "")}
 
     def paired_clients(self) -> list[dict]:
         return sorted(self._read_tokens().values(), key=lambda t: t.get("issued_at", 0))

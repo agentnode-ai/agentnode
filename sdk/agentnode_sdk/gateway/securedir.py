@@ -196,6 +196,27 @@ def read_secret(fd: int, name: str, attempts_left: int = 5) -> str | None:
         os.close(handle)
 
 
+def open_lock(fd: int, name: str) -> int:
+    """Open (creating if need be) a lock file inside the verified directory. The caller closes it.
+
+    Relative to the held descriptor, like every other file here, so the lock belongs to the same
+    directory as the file it guards however the name is manipulated; never through a link; owner-only;
+    and judged once open, exactly as a secret is. A lock file holds no bytes anybody reads, but one
+    somebody else could open is one somebody else could hold, and then no change could be made.
+    """
+    _require_supported()
+    try:
+        handle = os.open(name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+    except OSError as exc:
+        raise UnverifiableState(f"{name} could not be opened safely: {exc}") from exc
+    try:
+        _judge(os.fstat(handle), name, expect_dir=False)
+    except BaseException:
+        os.close(handle)
+        raise
+    return handle
+
+
 def write_secret(fd: int, name: str, text: str) -> None:
     """Replace a file inside the verified directory, atomically and owner-only.
 
