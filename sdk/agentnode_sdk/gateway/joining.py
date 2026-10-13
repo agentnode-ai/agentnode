@@ -66,6 +66,18 @@ class TooManyOutstanding(Exception):
     """This account already has as many invitations open as it may."""
 
 
+class _Redemption:
+    """What `Joining.redeeming` yields: the claimed invitation, and a switch to remove it on success."""
+
+    def __init__(self, fingerprint: str, entry):
+        self.fingerprint = fingerprint
+        self.entry = entry
+        self._removed = False
+
+    def remove(self) -> None:
+        self._removed = True
+
+
 def new_code() -> str:
     return "-".join("".join(secrets.choice(_ALPHABET) for _ in range(GROUP_LEN))
                     for _ in range(GROUPS))
@@ -150,6 +162,50 @@ class Joining:
             if now >= float(found.get("expires_at", 0)):
                 return ""
             return str(found.get("account_id") or "")
+
+    # ------------------------------------------------- redeeming as a transaction (finding J)
+
+    def redeeming(self, presented: str):
+        """A context manager holding both locks across a joining redemption, so the caller can write its
+        journal and only THEN remove the invitation from this store, all while nobody else can touch it.
+
+        It yields a small object: `.fingerprint` and `.entry` (the live entry, or None when the code is not
+        one of ours or has expired), and `.remove()`, which deletes that fingerprint under the held lock.
+        The caller writes the journal before calling `.remove()`, so a crash between the two leaves BOTH the
+        journal and the store entry, which recovery deduplicates -- never neither, which is finding J.
+
+        `redeem` is left exactly as it was; the dispatch path uses this instead.
+        """
+        import contextlib
+
+        @contextlib.contextmanager
+        def _redeeming():
+            code = normalise(presented)
+            now = self._clock()
+            with self._lock, ProcessLock(self.path):
+                kept = self._tidied(self._read(), now)
+                fingerprint = _fingerprint(code) if code and _SHAPE.match(code) else ""
+                entry = kept.get(fingerprint) if fingerprint else None
+                box = _Redemption(fingerprint, dict(entry) if isinstance(entry, dict) else None)
+                yield box
+                if box._removed and fingerprint in kept:
+                    del kept[fingerprint]
+                    self._write(kept)
+        return _redeeming()
+
+    def restore(self, fingerprint: str, entry: dict) -> bool:
+        """Put an entry back if it is absent. For a rollback or a recovery. True if it was restored."""
+        with self._lock, ProcessLock(self.path):
+            kept = self._read()
+            if str(fingerprint) in kept:
+                return False
+            kept[str(fingerprint)] = dict(entry)
+            self._write(kept)
+            return True
+
+    def has(self, fingerprint: str) -> bool:
+        with self._lock, ProcessLock(self.path):
+            return str(fingerprint) in self._read()
 
     # ------------------------------------------------------------------ looking at them
 

@@ -492,25 +492,82 @@ class GatewayState:
             kept = self._discard_kept_invitations()
             return (self._claim_pairing_file() is not None) or kept
 
-    def redeem_joining(self, presented: str, account_id: str, client_name: str = "",
-                       now: float | None = None) -> str:
-        """Issue a credential into an account that already exists, for a code that named it.
+    def redeem_joining(self, presented: str, joining, client_name: str = "",
+                       now: float | None = None) -> str | None:
+        """Redeem an invitation into an account that already exists. Returns the credential, or `None`
+        when the code is not a live joining invitation (so the caller falls through to the operator path).
 
-        Reached only from `dispatch._pair`, and only after `Joining.redeem` has atomically
-        claimed the code and returned WHICH account it was for. The account therefore comes from
-        the invitation, exactly as it does for the operator's own: nothing a redeemer sends
-        chooses it.
+        A TRANSACTION, like the operator path (finding J, DECISION-J). It used to be reached only after
+        `Joining.redeem` had already removed the code, then called `_issue_token` straight away -- so a
+        token-file failure spent the invitation and refused the device. Now the invitation is claimed into
+        a `kind: "joining"` journal and removed from the Joining store only once that journal is written;
+        the token is committed under the journal's operation id; a failure before the commit-to-return
+        boundary rolls back and RESTORES the invitation. The account comes only from the stored entry,
+        never from a parameter. Locks: pairing (so take-over cannot race), then the Joining store's lock
+        across the lookup-journal-remove, then the token lock inside.
 
-        The same guards as any other pairing apply before this is reached -- the attempt budget
-        and the failure lockout -- because a code that can be guessed is a code that can be
-        ground at, whichever store it lives in.
+        The `joining` store is PASSED IN, not held: this module is on the worker's import graph and must not
+        reach `gateway/joining`, which is the control plane's (test_the_two_roles_are_separable). The
+        caller -- `dispatch._pair`, in the control plane -- supplies `service.joining`.
         """
         now = time.time() if now is None else now
         self._guard_private()
-        if not _accounts.well_formed(account_id):
-            raise PairingError(
-                "that invitation names an account this gateway does not recognise.")
-        return self._issue_token(client_name=client_name, now=now, account_id=account_id)
+        with self._pairing_lock, self._pairing_transaction():
+            with joining.redeeming(presented) as claim:
+                if claim.entry is None:
+                    return None                              # not a live joining code: fall through
+                account_id = str(claim.entry.get("account_id") or "")
+                if not _accounts.well_formed(account_id):
+                    # A stored entry whose account is not well-formed is not one this gateway issued;
+                    # remove it and decline rather than issue into a bad id.
+                    claim.remove()
+                    raise PairingError(
+                        "that invitation names an account this gateway does not recognise.")
+                verified = {
+                    "kind": "joining",
+                    "state": "verified",
+                    "operation_id": secrets.token_hex(16),
+                    "fingerprint": claim.fingerprint,
+                    "entry": dict(claim.entry),
+                    "account_id": account_id,
+                    "new_account": False,
+                    "expires": float(claim.entry.get("expires_at", 0)),
+                    "issued_at": now,
+                }
+                journal = JOURNAL_PREFIX + verified["operation_id"] + ".json"
+                self._write_journal(journal, verified)       # BEFORE the removal, so a crash leaves both
+                claim.remove()                               # removed from the Joining store, under its lock
+            return self._complete_a_joining(journal, verified, client_name, joining)
+
+    def _complete_a_joining(self, journal: str, verified: dict, client_name: str, joining) -> str:
+        """Commit the token for a claimed joining invitation; roll back and restore it on failure."""
+        committed = False
+        try:
+            token = self._commit_pairing_token(verified, client_name)
+            committed = True
+            self._remove_journal(journal)                    # the commit-to-return boundary
+        except Exception as exc:                             # rolled back, then raised
+            kept = self._roll_back_a_joining(journal, verified, committed, joining)
+            if isinstance(exc, (TokensUnreadable, OSError)):
+                refused = TokensUnreadable("this gateway's record of paired devices (tokens.json) "
+                                           "could not be used")
+                refused.invitation_kept = kept
+                raise refused from exc
+            exc.invitation_kept = kept
+            raise
+        return token
+
+    def _roll_back_a_joining(self, journal: str, verified: dict, committed: bool, joining) -> bool:
+        """Revoke any token this operation committed, restore the joining invitation, remove the journal.
+        True when all of it is durable; False leaves the journal for take-over."""
+        try:
+            if committed:
+                self._revoke_and_forget(verified)            # new_account is False, so no account is forgotten
+            joining.restore(str(verified["fingerprint"]), dict(verified["entry"]))
+            self._remove_journal(journal)
+            return True
+        except Exception:                                    # noqa: BLE001 - reported as kept=False
+            return False
 
     def spend_a_pairing_attempt(self, now: float | None = None) -> None:
         """The budget and the lockout, without claiming any particular code.
@@ -786,13 +843,16 @@ class GatewayState:
         except Exception:                                     # noqa: BLE001 - reported as kept=False
             return False
 
-    def recover_pairings(self, now: float | None = None) -> list[str]:
+    def recover_pairings(self, now: float | None = None, joining=None) -> list[str]:
         """Resolve every journal a previous process left. Only at take-over (`GatewayService(recover=
         True)`), where no redemption of that process can still be running. Returns what it did.
 
         claimed            -> removed: nothing proves its code.
         verified/retryable -> its token revoked and its account forgotten, durably, THEN kept as
                               `retryable` until it expires (or removed if it has).
+
+        `joining` is the control plane's store, passed in (this module must not import it); a joining
+        journal with no store to reconcile against has its token revoked and is left for a later start.
         """
         now = time.time() if now is None else now
         done = []
@@ -804,6 +864,9 @@ class GatewayState:
                     self._remove_journal(name)
                     done.append("removed an unproved claim")
                     continue
+                if str(doc.get("kind") or "operator") == "joining":
+                    done.append(self._recover_a_joining(name, doc, now, joining))
+                    continue
                 self._revoke_and_forget(doc)
                 if float(doc.get("expires", 0)) <= now:
                     self._remove_journal(name)
@@ -812,6 +875,26 @@ class GatewayState:
                     self._write_journal(name, dict(doc, state="retryable"))
                     done.append("kept an invitation")
         return done
+
+    def _recover_a_joining(self, name: str, doc: dict, now: float, joining) -> str:
+        """A joining journal (finding J): revoke any token of its operation, then reconcile the joining
+        store -- restore the invitation unless it has expired -- and only then remove the journal. The
+        account already existed (`new_account` is False), so `_revoke_and_forget` never touches it.
+
+        The token is revoked first, durably, whatever the store is. If no store was passed (a recovery
+        with none available), the journal is LEFT so a later start with the store can finish it, rather
+        than removed with the invitation unreconciled."""
+        self._revoke_and_forget(doc)
+        if joining is None:
+            return "revoked a joining token; left its journal for a start with the store"
+        fingerprint, entry = str(doc.get("fingerprint") or ""), doc.get("entry") or {}
+        if float(doc.get("expires", 0)) <= now:
+            self._remove_journal(name)
+            return "removed an expired joining invitation"
+        if fingerprint and not joining.has(fingerprint):
+            joining.restore(fingerprint, dict(entry))
+        self._remove_journal(name)
+        return "restored a joining invitation"
 
     # ---------------------------------------------------------------- tokens
 
