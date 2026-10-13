@@ -231,7 +231,7 @@ def _pair(service, params: dict) -> dict:
         # `redeem_joining` returns the credential for a live joining invitation, or None when the code is
         # not one, in which case the operator store is tried. The account comes from the stored invitation
         # inside `redeem_joining`, never from here.
-        token = service.state.redeem_joining(presented, client_name=named)
+        token = service.state.redeem_joining(presented, service.joining, client_name=named)
         if token is not None:
             service.state.a_pairing_attempt_worked()
         else:

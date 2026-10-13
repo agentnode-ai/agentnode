@@ -526,10 +526,12 @@ class GatewayService:
         self.connections = Connections(self.state.root)
         #: Invitations into an account that already exists -- "add my other laptop". Separate
         #: from the operator's single live pairing code, which creates a NEW customer; see
-        #: `gateway/joining.py` for why one slot is right there and wrong here. ONE instance, owned by the
-        #: state: the joining redemption is now a transaction inside `GatewayState` (finding J), so the
-        #: store it claims from must be the same object, not a second one over the same file.
-        self.joining = self.state.joining
+        #: `gateway/joining.py` for why one slot is right there and wrong here. Built on the SERVICE (the
+        #: control plane), never on the state, so `gateway/identity` stays off the worker's import graph;
+        #: the joining redemption, which lives on the state (finding J), takes this store as a parameter.
+        from agentnode_sdk.gateway.joining import Joining
+
+        self.joining = Joining(self.state.root)
         self.stopping = Stopping(self.state.root, self._stop_it_and_confirm)
         # RECOVERY IS WHAT A GATEWAY DOES WHEN IT TAKES OVER A DIRECTORY, not what happens
         # whenever this object is constructed -- and the difference is not academic.
@@ -572,7 +574,7 @@ class GatewayService:
             # A recovery that cannot run does not stop the start: what it leaves is a journal nobody
             # can redeem, never a credential handed out. It is said, not swallowed.
             try:
-                self.state.recover_pairings()
+                self.state.recover_pairings(joining=self.joining)
             except Exception as exc:                          # noqa: BLE001
                 sys.stderr.write("\n  a pairing left half done by the previous process could not be "
                                  f"resolved ({type(exc).__name__}); its invitation stays unusable "
