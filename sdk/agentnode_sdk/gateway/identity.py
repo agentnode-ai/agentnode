@@ -245,10 +245,13 @@ class GatewayState:
         self._pairing_lock = threading.Lock()
         self._pairing_path = self.root / "pairing.json"
         # The counters go through the same verified descriptor as every other secret: one of
-        # them decides whether pairing is locked, so a pathname was the wrong footing for it.
+        # them decides whether pairing is locked, so a pathname was the wrong footing for it --
+        # and so is a pathname LOCK beside descriptor-relative I/O (finding P, measured). The
+        # store carries the same descriptor-relative lock the token file uses.
         counters = Store(
             read=lambda name: self._read_private(name),
             write=lambda name, text: self._write_private(name, text),
+            lock=lambda name: self._private_lock(name, self.TOKENS_LOCK_SECONDS),
         ) if securedir.SUPPORTED else None
         self._throttle = Throttle(
             store=counters,
@@ -272,9 +275,11 @@ class GatewayState:
             write=lambda name, textual: self._write_private(name, textual),
             # Held across load-mutate-store, so two changes to the same file cannot each read
             # the state before the other and write it back afterwards. The lock is on the FILE
-            # rather than on this object: `Accounts` is built fresh by several callers -- a
-            # deletion builds its own -- so a lock belonging to an instance guards nothing.
-            guard=lambda: filelock.ProcessLock(self.root / _accounts.ACCOUNTS_NAME),
+            # rather than on this object: separate `GatewayState` holders of one directory --
+            # including the one a deletion reaches through `state.accounts` -- must converge on
+            # the same lock. Opened relative to the held descriptor, like the token lock, so a
+            # path rebound under a running gateway cannot split it in two (finding P, measured).
+            guard=lambda: self._private_lock(_accounts.ACCOUNTS_NAME, self.TOKENS_LOCK_SECONDS),
         )
 
     @staticmethod

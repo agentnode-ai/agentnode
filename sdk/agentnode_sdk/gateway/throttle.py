@@ -102,6 +102,8 @@ class Throttle:
         """The lock that actually excludes the other interpreter, or a no-op in memory."""
         if self.path is None:
             return _NoLock()
+        if self.store is not None and getattr(self.store, "lock", None) is not None:
+            return self.store.lock(Path(self.path).name)
         return ProcessLock(self.path)
 
     def _fail_closed(self, now: float) -> None:
@@ -311,6 +313,8 @@ class Budget:
     def _across_processes(self):
         if self.path is None:
             return _NoLock()
+        if self.store is not None and getattr(self.store, "lock", None) is not None:
+            return self.store.lock(Path(self.path).name)
         return ProcessLock(self.path)
 
     def _read(self, now: float) -> None:
@@ -455,13 +459,17 @@ class Store:
     descriptor; anything constructed without one falls back to the path, which is what a standalone
     unit test wants and what a gateway never uses.
 
-    The lock file beside them is still addressed by name, and that is deliberate: it holds nothing.
-    Its whole content is the fact that somebody has it open.
+    The lock file beside them holds nothing -- its whole content is that somebody has it open -- but WHERE
+    it is opened still matters: `finding P` measured that a lock opened by pathname, beside I/O done through
+    the held descriptor, stops excluding anyone once the path is rebound under a running gateway. So a
+    gateway now supplies the lock too, opened relative to the same descriptor; `lock` is None only on the
+    standalone path, which keeps the pathname lock.
     """
 
-    def __init__(self, read, write):
+    def __init__(self, read, write, lock=None):
         self.read = read
         self.write = write
+        self.lock = lock
 
 
 def steady(last_seen: float, now: float, max_step: float = MAX_CREDITED_STEP) -> float:
