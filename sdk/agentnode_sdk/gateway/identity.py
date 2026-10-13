@@ -249,6 +249,7 @@ class GatewayState:
         counters = Store(
             read=lambda name: self._read_private(name),
             write=lambda name, text: self._write_private(name, text),
+            lock=lambda name: self._private_lock(name, self.TOKENS_LOCK_SECONDS),
         ) if securedir.SUPPORTED else None
         self._throttle = Throttle(
             store=counters,
@@ -274,7 +275,7 @@ class GatewayState:
             # the state before the other and write it back afterwards. The lock is on the FILE
             # rather than on this object: `Accounts` is built fresh by several callers -- a
             # deletion builds its own -- so a lock belonging to an instance guards nothing.
-            guard=lambda: filelock.ProcessLock(self.root / _accounts.ACCOUNTS_NAME),
+            guard=lambda: self._private_lock(_accounts.ACCOUNTS_NAME, self.TOKENS_LOCK_SECONDS),
         )
 
     @staticmethod

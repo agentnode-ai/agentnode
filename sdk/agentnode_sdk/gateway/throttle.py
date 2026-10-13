@@ -102,6 +102,8 @@ class Throttle:
         """The lock that actually excludes the other interpreter, or a no-op in memory."""
         if self.path is None:
             return _NoLock()
+        if self.store is not None and getattr(self.store, "lock", None) is not None:
+            return self.store.lock(Path(self.path).name)
         return ProcessLock(self.path)
 
     def _fail_closed(self, now: float) -> None:
@@ -311,6 +313,8 @@ class Budget:
     def _across_processes(self):
         if self.path is None:
             return _NoLock()
+        if self.store is not None and getattr(self.store, "lock", None) is not None:
+            return self.store.lock(Path(self.path).name)
         return ProcessLock(self.path)
 
     def _read(self, now: float) -> None:
@@ -459,9 +463,10 @@ class Store:
     Its whole content is the fact that somebody has it open.
     """
 
-    def __init__(self, read, write):
+    def __init__(self, read, write, lock=None):
         self.read = read
         self.write = write
+        self.lock = lock
 
 
 def steady(last_seen: float, now: float, max_step: float = MAX_CREDITED_STEP) -> float:
