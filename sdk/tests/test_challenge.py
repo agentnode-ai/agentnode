@@ -16,6 +16,7 @@ from __future__ import annotations
 import inspect
 import io
 import json
+import re
 import sys
 import time
 
@@ -238,9 +239,21 @@ class TestWhatTheGatewayDoes:
         consent.submit(conn, b"print('x')", granted=_granted(service), run_id="forgotten")
         gc.wait_for(conn, "forgotten", timeout=20)
         assert service.runs["forgotten"].challenge == ""
-        # And it was never in the ledger to begin with.
-        assert "challenge_sha256" in service.ledger.challenge_for("forgotten")
-        assert json.dumps(service.ledger.challenge_for("forgotten")).count("a1b2") == 0
+        # And it was never in the ledger to begin with: the record carries the challenge's DIGEST, and
+        # nothing in it digests to that digest -- i.e. the raw value is not present. The old check counted
+        # the substring "a1b2" (a fragment of the UNIT tests' fixed fake value, unrelated to this run's
+        # random one); it fired ~0.09% of the time when "a1b2" fell inside the 64-hex digest by chance and
+        # tested nothing, and would miss a real leak without those four chars (finding O9). This mirrors the
+        # idiom of test_the_gateway_puts_no_value_in_the_spec. Overlapping matches, so a 32-hex window at any
+        # offset is checked.
+        record = service.ledger.challenge_for("forgotten")
+        assert "challenge_sha256" in record
+        written = json.dumps(record)
+        candidates = {m.group(1) for m
+                      in re.finditer(r"(?=([0-9a-f]{%d}))" % (ch.CHALLENGE_BYTES * 2), written)}
+        for token in candidates:
+            assert ch.digest_of(token) != record["challenge_sha256"], \
+                "the raw challenge value is in the ledger record"
 
     def test_it_is_not_in_what_a_client_may_see(self, a_gateway):
         base, state, service, backend = a_gateway
