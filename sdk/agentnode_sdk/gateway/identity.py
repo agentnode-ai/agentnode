@@ -279,7 +279,7 @@ class GatewayState:
             # including the one a deletion reaches through `state.accounts` -- must converge on
             # the same lock. Opened relative to the held descriptor, like the token lock, so a
             # path rebound under a running gateway cannot split it in two (finding P, measured).
-            guard=lambda: self._private_lock(_accounts.ACCOUNTS_NAME, self.TOKENS_LOCK_SECONDS),
+            guard=lambda: filelock.ProcessLock(self.root / _accounts.ACCOUNTS_NAME),
         )
 
     @staticmethod
