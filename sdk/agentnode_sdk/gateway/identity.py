@@ -251,7 +251,6 @@ class GatewayState:
         counters = Store(
             read=lambda name: self._read_private(name),
             write=lambda name, text: self._write_private(name, text),
-            lock=lambda name: self._private_lock(name, self.TOKENS_LOCK_SECONDS),
         ) if securedir.SUPPORTED else None
         self._throttle = Throttle(
             store=counters,
