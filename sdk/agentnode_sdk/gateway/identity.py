@@ -296,12 +296,22 @@ class GatewayState:
     @property
     def identity(self) -> GatewayIdentity:
         """Stable across restarts, generated once. The version comes from the running build."""
-        existing = self._read_private("identity.json")
+        # The read is waited out through the shared bound (finding W): a transient Windows share
+        # violation here used to escape as a bare PermissionError, before the parse `try` below. A
+        # persistent one lands in the same `PairingError` a corrupt identity already raises.
+        try:
+            existing = filelock.read_retrying_on_a_windows_share(
+                lambda: self._read_private("identity.json"))
+        except OSError as exc:
+            raise PairingError(
+                f"the gateway's identity file could not be read ({exc}). Try again shortly; if it "
+                f"persists, tell whoever runs this gateway."
+            ) from exc
         if existing is not None:
             try:
                 data = json.loads(existing)
                 gid = str(data["gateway_id"])
-            except (OSError, ValueError, KeyError) as exc:
+            except (ValueError, KeyError) as exc:
                 raise PairingError(
                     f"the gateway's identity file is unreadable ({exc}). Remove "
                     f"{self._identity_path} and start the gateway again to issue a new identity; "
@@ -369,10 +379,15 @@ class GatewayState:
         self._write_private("pairing.json", json.dumps(document))
 
     def _read_pairing(self) -> dict | None:
+        # An ABSENT file is "no live pairing" (None). A file that EXISTS but cannot be read is NOT: after
+        # the shared bounded retry (finding W), a persistent read failure raises, rather than being read
+        # as "no invitation" -- which would let a live invitation be reported absent (a fail-open).
         try:
-            raw = self._read_private("pairing.json")
-        except OSError:
-            return None
+            raw = filelock.read_retrying_on_a_windows_share(lambda: self._read_private("pairing.json"))
+        except OSError as exc:
+            raise PairingError(
+                "this gateway could not read its live pairing code; try again shortly."
+            ) from exc
         if raw is None:
             return None
         try:
@@ -1023,6 +1038,8 @@ class GatewayState:
                                     "could not be used")
 
         # A transient Windows denial is waited out, and nothing else (follow-up R; the bound below).
+        # Left exactly as R wrote it: refactoring it onto finding W's shared helper would change the
+        # class attributes R's frozen tests pin, so tokens.json keeps its own loop and W does not touch it.
         deadline = time.monotonic() + self.TOKENS_READ_DEADLINE
         retries = 0
         while True:
@@ -1051,14 +1068,10 @@ class GatewayState:
             raise unusable()
         return tokens
 
-    #: Whether a denied open of the token file is waited out. Only on Windows: there, opening a file that
-    #: another holder is replacing fails with PermissionError(EACCES) -- `winerror` None, because CPython
-    #: builds it from the C runtime's errno -- and since O6 that refused whoever asked. Measured: 37 of
-    #: 3000 reads beside a writing thread, 612 of 34991 beside a writing process (follow-up R).
+    #: R's token-file retry policy, kept here because R's frozen tests pin these names; finding W's shared
+    #: helper (gateway/filelock.read_retrying_on_a_windows_share) carries the same bound for every OTHER
+    #: private read.
     RETRY_A_SHARING_VIOLATION = os.name == "nt"
-    #: The bound (Q0001, Q0007): one open, then at most this many retries, this far apart, inside this
-    #: deadline. A real access-denied looks exactly the same at this layer; the bound is what keeps it
-    #: from hiding, and it ends as `TokensUnreadable` with the denial as its cause.
     TOKENS_READ_RETRIES = 100
     TOKENS_READ_PAUSE = 0.02
     TOKENS_READ_DEADLINE = 2.0

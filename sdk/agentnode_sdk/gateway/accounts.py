@@ -177,8 +177,12 @@ class Accounts:
     # ------------------------------------------------------------------ the file
 
     def _load(self) -> dict:
+        from agentnode_sdk.gateway.filelock import read_retrying_on_a_windows_share
+
         try:
-            raw = self._read_raw(ACCOUNTS_NAME)
+            # A transient Windows share violation is waited out (finding W); a persistent read failure
+            # still fails closed as AccountsUnreadable, which is this file's existing, correct answer.
+            raw = read_retrying_on_a_windows_share(lambda: self._read_raw(ACCOUNTS_NAME))
         except OSError as exc:
             raise AccountsUnreadable(
                 "this gateway cannot read which of its accounts are suspended (%s), so it is "

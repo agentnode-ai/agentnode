@@ -66,6 +66,14 @@ class TooManyOutstanding(Exception):
     """This account already has as many invitations open as it may."""
 
 
+class JoiningUnreadable(OSError):
+    """The record of account invitations EXISTS and could not be read, so it is not read as empty.
+
+    Its own type, as `TokensUnreadable` is for the token file: an absent file is a legitimately empty
+    store, but a persistent read failure must not become "no invitations" and let a live one vanish
+    (finding W). A missing file still reads as empty."""
+
+
 class _Redemption:
     """What `Joining.redeeming` yields: the claimed invitation, and a switch to remove it on success."""
 
@@ -281,9 +289,23 @@ class Joining:
         return {k: v for k, v in kept.items() if now < float(v.get("expires_at", 0))}
 
     def _read(self) -> dict:
+        from agentnode_sdk.gateway.filelock import read_retrying_on_a_windows_share
+
+        # An ABSENT file is a legitimately empty store ({}). A file that EXISTS but cannot be read is NOT:
+        # after the shared bounded retry (finding W), a persistent read failure raises JoiningUnreadable
+        # rather than being read as "no invitations" -- which would let live invitations vanish (fail-open).
+        # Malformed JSON keeps its old reading of {}.
         try:
-            body = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            raw = read_retrying_on_a_windows_share(lambda: self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except OSError as exc:
+            raise JoiningUnreadable(
+                "this gateway could not read its record of account invitations; try again shortly."
+            ) from exc
+        try:
+            body = json.loads(raw)
+        except ValueError:
             return {}
         return body if isinstance(body, dict) else {}
 

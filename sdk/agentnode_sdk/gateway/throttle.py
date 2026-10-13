@@ -320,10 +320,15 @@ class Budget:
     def _read(self, now: float) -> None:
         if self.path is None:
             return
+        from agentnode_sdk.gateway.filelock import read_retrying_on_a_windows_share
+
         target = Path(self.path)
         try:
-            raw = (self.store.read(target.name) if self.store is not None
-                   else (target.read_text(encoding="utf-8") if target.exists() else None))
+            # A transient Windows share violation is waited out (finding W); a persistent read failure
+            # still fails closed below -- the whole window counted spent, this budget's existing answer.
+            raw = read_retrying_on_a_windows_share(
+                lambda: (self.store.read(target.name) if self.store is not None
+                         else (target.read_text(encoding="utf-8") if target.exists() else None)))
         except OSError:
             self._spent = [now] * self.allowance
             return

@@ -36,10 +36,45 @@ first, and the OS lock second. Same order everywhere, so the pair cannot deadloc
 """
 from __future__ import annotations
 
+import errno
 import os
 import threading
 import time
 from pathlib import Path
+
+#: Whether a denied open of a PRIVATE FILE is waited out. Only on Windows: there, opening a file another
+#: holder is replacing fails with PermissionError(EACCES) -- `winerror` None, since CPython builds it from
+#: the C runtime's errno. Follow-up R measured and fixed this for tokens.json; finding W applies the same
+#: bound to every other private read. A real access-denial looks identical at this layer, so the BOUND is
+#: what keeps it from hiding: after it, the caller translates the denial into that file's own refusal.
+RETRY_A_SHARING_VIOLATION = os.name == "nt"
+WINDOWS_SHARE_READ_RETRIES = 100
+WINDOWS_SHARE_READ_PAUSE = 0.02
+WINDOWS_SHARE_READ_DEADLINE = 2.0
+
+
+def read_retrying_on_a_windows_share(open_once):
+    """Run `open_once()` (one open-and-read); on a transient Windows share violation, wait and try again,
+    bounded; re-raise the final error UNCHANGED so the caller can translate it for that file.
+
+    One shared bound for every private reader (finding W). Not `read_text_with_retry`, which retries every
+    PermissionError on every platform for the cancellation journal -- a different, looser contract kept for
+    that one consumer.
+    """
+    deadline = time.monotonic() + WINDOWS_SHARE_READ_DEADLINE
+    retries = 0
+    while True:
+        try:
+            return open_once()
+        except PermissionError as exc:
+            if not (RETRY_A_SHARING_VIOLATION and exc.errno == errno.EACCES):
+                raise
+            if retries >= WINDOWS_SHARE_READ_RETRIES:
+                raise
+            if deadline - time.monotonic() < WINDOWS_SHARE_READ_PAUSE:   # never start a pause past the deadline
+                raise
+            time.sleep(WINDOWS_SHARE_READ_PAUSE)
+            retries += 1
 
 try:                                                          # POSIX
     import fcntl
