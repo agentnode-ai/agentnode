@@ -526,10 +526,10 @@ class GatewayService:
         self.connections = Connections(self.state.root)
         #: Invitations into an account that already exists -- "add my other laptop". Separate
         #: from the operator's single live pairing code, which creates a NEW customer; see
-        #: `gateway/joining.py` for why one slot is right there and wrong here.
-        from agentnode_sdk.gateway.joining import Joining
-
-        self.joining = Joining(self.state.root)
+        #: `gateway/joining.py` for why one slot is right there and wrong here. ONE instance, owned by the
+        #: state: the joining redemption is now a transaction inside `GatewayState` (finding J), so the
+        #: store it claims from must be the same object, not a second one over the same file.
+        self.joining = self.state.joining
         self.stopping = Stopping(self.state.root, self._stop_it_and_confirm)
         # RECOVERY IS WHAT A GATEWAY DOES WHEN IT TAKES OVER A DIRECTORY, not what happens
         # whenever this object is constructed -- and the difference is not academic.

@@ -227,9 +227,12 @@ def _pair(service, params: dict) -> dict:
         # is tried FIRST so that presenting one does not consume the operator's outstanding
         # code, which is single-use and would otherwise be spent by somebody else's join.
         service.state.spend_a_pairing_attempt()
-        joins = service.joining.redeem(presented)
-        if joins:
-            token = service.state.redeem_joining(presented, joins, client_name=named)
+        # The join store is tried FIRST, and it now claims and commits in one transaction (finding J):
+        # `redeem_joining` returns the credential for a live joining invitation, or None when the code is
+        # not one, in which case the operator store is tried. The account comes from the stored invitation
+        # inside `redeem_joining`, never from here.
+        token = service.state.redeem_joining(presented, client_name=named)
+        if token is not None:
             service.state.a_pairing_attempt_worked()
         else:
             token = service.state.redeem_pairing(presented, client_name=named, charge=False)
