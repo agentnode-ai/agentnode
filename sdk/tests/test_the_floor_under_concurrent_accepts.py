@@ -240,6 +240,38 @@ class TestI3MechanismsAreRegressionSensitive:
         assert _persisted(floor.path) == 1000.0
         assert floor.highest == 1000.0
 
+    def test_a_directory_close_failure_after_the_rename_is_not_fatal(self, tmp_path, monkeypatch):
+        """The whole directory sync -- including closing the descriptor -- is best effort. A close that
+        fails AFTER the atomic rename must not become CannotRememberTheFloor, because by then the new
+        floor is already on disk; and the in-memory mark must still advance to match it (I3/I5)."""
+        floor = wire.Floor(tmp_path / "replay-floor.json")
+        real_open, real_close = os.open, os.close
+        dir_fds: set = set()
+
+        def open_spy(path, *args, **kwargs):
+            fd = real_open(path, *args, **kwargs)
+            try:
+                if os.path.isdir(path):
+                    dir_fds.add(fd)
+            except (TypeError, ValueError, OSError):
+                pass
+            return fd
+
+        def close_maybe_raise(fd):
+            if fd in dir_fds:                  # the directory descriptor, opened after the rename
+                dir_fds.discard(fd)
+                real_close(fd)
+                raise OSError("closing the directory refused")
+            return real_close(fd)
+
+        monkeypatch.setattr(wire.os, "open", open_spy)
+        monkeypatch.setattr(wire.os, "close", close_maybe_raise)
+        floor.accepted(1000.0)                 # must NOT raise
+        assert _persisted(floor.path) == 1000.0
+        assert floor.highest == 1000.0, (
+            "the on-disk floor advanced but the in-memory mark did not: a post-rename close failure "
+            "was wrongly treated as a write failure")
+
     def test_a_continuous_reader_never_sees_a_torn_floor(self, tmp_path):
         """Crash-safety as atomicity: while accepts hammer the floor, a reader only ever sees a whole,
         well-formed document -- never a partial write."""

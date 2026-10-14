@@ -501,7 +501,15 @@ class Floor:
         except OSError:
             pass
         finally:
-            os.close(dir_fd)
+            # The CLOSE is best effort too: by here the atomic rename has already made the new floor
+            # visible, so a failure to close the directory descriptor must never become a failure to
+            # remember the floor -- which it would, since this runs inside `_persist`'s write-failure
+            # arm and `accepted()` has not yet raised the in-memory mark. Nothing this method does after
+            # the rename may escape it.
+            try:
+                os.close(dir_fd)
+            except OSError:
+                pass
 
 
 
