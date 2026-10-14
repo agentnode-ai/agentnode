@@ -44,6 +44,8 @@ import json
 import os
 import secrets
 import struct
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -365,10 +367,24 @@ class Floor:
 
     It is deliberately not a lock-out that needs clearing by hand: as soon as the clock is
     correct, the window covers the present again and the receiver carries on.
+
+    ## One floor, many connections
+
+    The TLS listener runs one thread per accepted connection and they share ONE `Floor` (the
+    product's contract: one worker process, one `Bench.floor`). So the advance below -- compare,
+    persist, then raise the in-memory mark -- is done under a lock: without it two simultaneous
+    valid requests raced here, one losing the shared temp file and surfacing as a dropped run, and
+    a lost update could move the mark backwards against the only-forward contract this class is.
+    The lock guards only that short state transition; the connections themselves stay concurrent.
+    It synchronises THIS object; it does not coordinate two separate `Floor` objects on one path,
+    and nothing in the product makes two.
     """
 
     def __init__(self, path=None) -> None:
         self.path = Path(path) if path else None
+        # Set unconditionally, before any early return, so every Floor -- including the absent-file
+        # first-run case -- has the lock its advance and its startup probe take.
+        self._lock = threading.Lock()
         self._highest = 0.0
         if self.path is None or not self.path.exists():
             # Absent is the ordinary case on a first run, and the only one that starts at zero.
@@ -405,11 +421,17 @@ class Floor:
         memory is one that a restart resets, and a receiver that kept accepting while unable to
         record what it accepted would be building exactly the gap this closes -- silently, and
         for as long as the disk stayed full.
+
+        Under the lock, so the compare-persist-set is one step: two threads cannot both decide to
+        advance and then lose each other's update, and the mark is raised only after the file that
+        records it was replaced. Waiting for the lock is ordinary contention, not a failure.
         """
-        if float(issued_at) <= self._highest:
-            return
-        self._persist(float(issued_at))
-        self._highest = float(issued_at)
+        issued_at = float(issued_at)
+        with self._lock:
+            if issued_at <= self._highest:
+                return
+            self._persist(issued_at)
+            self._highest = issued_at
 
     def can_be_written(self) -> None:
         """Raise unless this floor can actually be recorded. Asked BEFORE a worker listens.
@@ -418,17 +440,43 @@ class Floor:
         writable and a file that can be written are different questions, and only the second one
         matters. It writes back the value it already holds, so the probe does not move the thing
         it is testing.
+
+        Under the same lock as `accepted`, so the probe cannot write a stale value back over an
+        advance that is happening at the same moment.
         """
-        self._persist(self._highest)
+        with self._lock:
+            self._persist(self._highest)
 
     def _persist(self, value: float) -> None:
+        # Called under `self._lock` by `accepted`/`can_be_written`, and never takes it itself, so the
+        # lock stays non-reentrant. The write goes to a UNIQUE temp in the floor's own directory and is
+        # put in place by an atomic rename, so two writers can never collide on a shared name and a
+        # reader (or a restart) ever only sees a whole old value or a whole new value. The file is
+        # flushed and fsync'd before the rename, so a crash cannot leave the new name pointing at bytes
+        # that never reached the disk.
         if self.path is None:
             return
+        tmp = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".new")
-            tmp.write_text(json.dumps({"highest": float(value)}), encoding="utf-8")
-            os.replace(tmp, self.path)
+            fd, tmp = tempfile.mkstemp(dir=str(self.path.parent),
+                                       prefix=self.path.name + ".", suffix=".new")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(json.dumps({"highest": float(value)}))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp, self.path)
+                tmp = None                     # it is in place now; there is nothing to clean up
+                self._sync_directory(self.path.parent)
+            finally:
+                # Best effort, and it must never replace the exception that brought us here: only the
+                # temp this call made, only if the rename did not consume it.
+                if tmp is not None and os.path.exists(tmp):
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
         except (OSError, ValueError) as exc:
             # ValueError as well as OSError: a path the platform will not even accept is the same
             # condition as one it will not write, and only one of those is an OSError.
@@ -436,6 +484,24 @@ class Floor:
                 "this worker could not write down what it has accepted (" + str(exc)[:120]
                 + "). Carrying on would mean a restart forgetting it, and a message captured now "
                 "being acceptable again afterwards.") from exc
+
+    @staticmethod
+    def _sync_directory(directory) -> None:
+        # The rename is durable on POSIX only once the DIRECTORY is fsync'd. This is best effort on
+        # purpose: not every platform lets a directory be opened and fsync'd (Windows does not), and by
+        # the time this runs the new floor is already visible through the atomic rename -- so a failure
+        # to sync the directory must never be reported as a failure to remember the floor, nor leave the
+        # in-memory mark behind a value that is already on disk.
+        try:
+            dir_fd = os.open(str(directory), os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(dir_fd)
+        except OSError:
+            pass
+        finally:
+            os.close(dir_fd)
 
 
 
