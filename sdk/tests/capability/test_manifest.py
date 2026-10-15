@@ -33,9 +33,9 @@ def _manifest(name: str = "echo-server") -> dict:
         "source": source,
         "permissions": {"network": {"allowed_domains": []}, "env_keys": [],
                         "code_execution": True, "user_approval": "required"},
-        "tools": [_tool()],
+        "tools": [TOOL := _tool()],
         "artifact_digest": M.artifact_digest_for_stdio(source),
-        "schema_digest": M.schema_digest(),
+        "schema_digest": M.schema_digest([TOOL]),
         "signer_role": "importing_publisher",
     }
 
@@ -135,6 +135,23 @@ def test_tool_schema_digest_detects_a_changed_schema():
     man["tools"][0]["input_schema"]["properties"]["text"]["type"] = "number"
     # the stored tool_schema_digest no longer matches the (now changed) schema
     assert any("tool_schema_digest" in e for e in M.validate_manifest(man))
+
+
+def test_schema_digest_binds_the_capability_schema_and_per_tool_schemas():
+    base = _manifest()
+    other = _manifest()
+    # change a tool's input schema -> its tool_schema_digest changes -> schema_digest must change
+    other["tools"][0]["input_schema"] = {"type": "object", "properties": {"a": {"type": "string"}}}
+    other["tools"][0]["tool_schema_digest"] = M.tool_schema_digest(other["tools"][0])
+    other["schema_digest"] = M.schema_digest(other["tools"])
+    assert base["schema_digest"]["domain"] == "agentnode.capability.v1/schema+tools"
+    assert base["schema_digest"]["value"] != other["schema_digest"]["value"]
+    # and a manifest whose stored schema_digest ignores a tool change is rejected by validation
+    tampered = _manifest()
+    tampered["tools"][0]["input_schema"] = {"type": "object"}
+    tampered["tools"][0]["tool_schema_digest"] = M.tool_schema_digest(tampered["tools"][0])
+    # stored schema_digest still the old aggregate -> mismatch
+    assert any("schema_digest does not match" in e for e in M.validate_manifest(tampered))
 
 
 def test_signing_as_a_role_records_that_role_not_a_vague_signed():

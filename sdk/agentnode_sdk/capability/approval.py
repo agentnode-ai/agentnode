@@ -42,6 +42,7 @@ class ApprovalError(Exception):
 class Approval:
     approval_id: str
     invocation_hash: str
+    audience: str          # who this approval is FOR (the capability it authorises)
     human_actor: str
     granted_scope: dict[str, Any]
     issued_at: float
@@ -52,10 +53,10 @@ class Approval:
 
     def to_dict(self) -> dict[str, Any]:
         return {"approval_id": self.approval_id, "invocation_hash": self.invocation_hash,
-                "human_actor": self.human_actor, "granted_scope": self.granted_scope,
-                "issued_at": self.issued_at, "expires_at": self.expires_at,
-                "operator_key_id": self.operator_key_id, "operator_public": self.operator_public,
-                "signature": self.signature}
+                "audience": self.audience, "human_actor": self.human_actor,
+                "granted_scope": self.granted_scope, "issued_at": self.issued_at,
+                "expires_at": self.expires_at, "operator_key_id": self.operator_key_id,
+                "operator_public": self.operator_public, "signature": self.signature}
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "Approval":
@@ -65,6 +66,7 @@ class Approval:
         return b"agentnode.capability.v1/approval\n" + _canon({
             "approval_id": self.approval_id,
             "invocation_hash": self.invocation_hash,
+            "audience": self.audience,
             "human_actor": self.human_actor,
             "granted_scope": self.granted_scope,
             "issued_at": self.issued_at,
@@ -76,6 +78,7 @@ class Approval:
 def grant(
     invocation_hash: str,
     *,
+    audience: str,
     human_actor: str,
     operator_private: Ed25519PrivateKey,
     operator_public_bytes: bytes,
@@ -83,15 +86,18 @@ def grant(
     granted_scope: dict[str, Any] | None = None,
     now: float | None = None,
 ) -> Approval:
-    """Operator-only: issue a single-use approval bound to *invocation_hash*.
+    """Operator-only: issue a single-use approval bound to *invocation_hash* and *audience*.
 
     Requires the operator's private key -- this is the human channel. The model
-    path cannot call this (it has no key).
+    path cannot call this (it has no key). ``audience`` is the capability the
+    approval is for, and is enforced at consumption so an approval cannot be
+    presented to a different audience.
     """
     t = time.time() if now is None else now
     body_fields = {
         "approval_id": uuid.uuid4().hex,
         "invocation_hash": invocation_hash,
+        "audience": audience,
         "human_actor": human_actor,
         "granted_scope": granted_scope or {},
         "issued_at": t,
@@ -105,11 +111,11 @@ def grant(
 
 
 def verify(approval: Approval, invocation_hash: str, *, trusted_operator_public_bytes: bytes,
-           now: float | None = None) -> None:
-    """Raise ApprovalError unless *approval* is a valid, unexpired approval for *invocation_hash*.
+           expected_audience: str, now: float | None = None) -> None:
+    """Raise ApprovalError unless *approval* is a valid, unexpired approval for this invocation+audience.
 
     Checks, in order: the operator key is the trusted one; the signature verifies;
-    the approval binds exactly this invocation; it has not expired.
+    the approval binds exactly this invocation; the audience matches; not expired.
     """
     t = time.time() if now is None else now
     if bytes.fromhex(approval.operator_public) != trusted_operator_public_bytes:
@@ -123,17 +129,44 @@ def verify(approval: Approval, invocation_hash: str, *, trusted_operator_public_
         raise ApprovalError(f"approval signature does not verify: {type(exc).__name__}") from exc
     if approval.invocation_hash != invocation_hash:
         raise ApprovalError("approval does not bind this invocation (tuple changed after approval)")
+    if approval.audience != expected_audience:
+        raise ApprovalError(
+            f"approval audience {approval.audience!r} does not match {expected_audience!r}")
     if t > approval.expires_at:
         raise ApprovalError("approval has expired")
 
 
 class ApprovalStore:
-    """Holds issued approvals and consumes each exactly once, atomically."""
+    """Holds issued approvals and consumes each exactly once, atomically and DURABLY.
 
-    def __init__(self) -> None:
+    If ``consumed_dir`` is given, consumption is recorded by creating a file named by
+    the approval_id with ``O_CREAT|O_EXCL`` -- so a second consume (even after the
+    process restarts and reloads the same signed approval file from disk) sees the
+    marker and refuses. Without a dir, consumption is process-local only.
+    """
+
+    def __init__(self, consumed_dir: str | os.PathLike[str] | None = None) -> None:
         self._lock = threading.Lock()
         self._issued: dict[str, Approval] = {}
         self._consumed: set[str] = set()
+        self._consumed_dir = Path(consumed_dir) if consumed_dir else None
+        if self._consumed_dir:
+            self._consumed_dir.mkdir(parents=True, exist_ok=True)
+
+    def _mark_consumed_durably(self, approval_id: str) -> None:
+        """Atomically claim the approval_id; raise ApprovalError if already claimed on disk."""
+        if self._consumed_dir is None:
+            return
+        marker = self._consumed_dir / approval_id
+        try:
+            fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            raise ApprovalError("approval already used (single-use, durable)") from exc
+        with os.fdopen(fd, "w") as fh:
+            fh.write(str(time.time()))
+
+    def _already_consumed_durably(self, approval_id: str) -> bool:
+        return self._consumed_dir is not None and (self._consumed_dir / approval_id).exists()
 
     def put(self, approval: Approval) -> None:
         with self._lock:
@@ -162,15 +195,19 @@ class ApprovalStore:
         return n
 
     def consume(self, approval_id: str, invocation_hash: str, *,
-                trusted_operator_public_bytes: bytes, now: float | None = None) -> Approval:
-        """Atomically verify + mark consumed. A second consume of the same id refuses."""
+                trusted_operator_public_bytes: bytes, expected_audience: str,
+                now: float | None = None) -> Approval:
+        """Atomically verify + mark consumed (durably). A second consume of the same id refuses."""
         with self._lock:
-            if approval_id in self._consumed:
+            if approval_id in self._consumed or self._already_consumed_durably(approval_id):
                 raise ApprovalError("approval already used (single-use)")
             ap = self._issued.get(approval_id)
             if ap is None:
                 raise ApprovalError("no such approval")
-            verify(ap, invocation_hash, trusted_operator_public_bytes=trusted_operator_public_bytes, now=now)
+            verify(ap, invocation_hash, trusted_operator_public_bytes=trusted_operator_public_bytes,
+                   expected_audience=expected_audience, now=now)
+            # claim durably BEFORE returning, so a crash/restart cannot re-consume
+            self._mark_consumed_durably(approval_id)
             self._consumed.add(approval_id)
             return ap
 

@@ -105,16 +105,23 @@ def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def schema_digest() -> dict[str, str]:
-    """Digest of the exact capability-schema bytes this module validates against.
+def schema_digest(tools: list[dict[str, Any]] | None = None) -> dict[str, str]:
+    """Digest binding the capability-schema bytes AND the ordered per-tool schema digests.
 
-    A digest of the framework schema alone does not bind the per-tool schemas;
-    those are bound separately by ``tool_schema_digest`` inside each tool.
+    A digest of the framework schema alone does not bind the exposed tool schemas, so
+    this aggregates the capability schema with each tool's input/output schema digest in
+    manifest order. Two manifests whose tools differ therefore have different
+    ``schema_digest`` values; adding, removing or reordering a tool changes it.
     """
+    per_tool = [tool_schema_digest(t)["value"] for t in (tools or [])]
+    aggregate = {
+        "capability_schema": _sha256_hex(_canonical_json(CAPABILITY_V1_SCHEMA)),
+        "per_tool_schema_digests": per_tool,
+    }
     return {
         "algorithm": "sha256",
-        "domain": "agentnode.capability.v1/schema",
-        "value": _sha256_hex(_canonical_json(CAPABILITY_V1_SCHEMA)),
+        "domain": "agentnode.capability.v1/schema+tools",
+        "value": _sha256_hex(_canonical_json(aggregate)),
     }
 
 
@@ -283,14 +290,14 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
             if tsd is not None and tsd != tool_schema_digest(tool):
                 errors.append(f"tools[{i}].tool_schema_digest does not match its schemas")
 
-    for key, builder in (("artifact_digest", None), ("schema_digest", schema_digest)):
+    for key in ("artifact_digest", "schema_digest"):
         dig = manifest.get(key)
         if not isinstance(dig, dict) or dig.get("algorithm") != "sha256" \
                 or not isinstance(dig.get("value"), str) or not dig.get("domain"):
             errors.append(f"{key} must be a sha256 digest with algorithm, domain and value")
-    if isinstance(manifest.get("schema_digest"), dict) \
-            and manifest["schema_digest"] != schema_digest():
-        errors.append("schema_digest does not match this capability schema")
+    if isinstance(manifest.get("schema_digest"), dict) and isinstance(manifest.get("tools"), list) \
+            and manifest["schema_digest"] != schema_digest(manifest["tools"]):
+        errors.append("schema_digest does not match the capability schema and per-tool schemas")
 
     return errors
 

@@ -67,7 +67,7 @@ def test_tools_call_is_gated_until_an_operator_approves_then_runs(tmp_path):
     inv_hash = r1["result"]["structuredContent"]["invocation_hash"]
 
     # 2) the operator (holding the key the adapter does NOT have) approves THAT invocation
-    ap = approval.grant(inv_hash, human_actor="operator@acme",
+    ap = approval.grant(inv_hash, audience="acme/add-server", human_actor="operator@acme",
                         operator_private=op_priv, operator_public_bytes=op_pub)
     client.approval_store.put(ap)
 

@@ -132,6 +132,9 @@ def execute(
     if invocation.execution_model != "agentnode_executed_mcp":
         raise NotImplementedModel(invocation.execution_model)
 
+    # defence in depth: the arguments that run are the exact approved ones
+    invocation.assert_consistent()
+
     if worker is None:
         raise ExecutionError("no worker: a capability run never falls back to local execution")
 

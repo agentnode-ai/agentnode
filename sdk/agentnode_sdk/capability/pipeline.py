@@ -38,9 +38,12 @@ def submit(
     worker_identity: str,
     now: float | None = None,
 ) -> SubmitResult:
-    # 1. consume a single-use approval bound to THIS invocation (refuses otherwise)
+    # 0. refuse an invocation whose mutable arguments were changed after prepare/approval
+    invocation.assert_consistent()
+    # 1. consume a single-use approval bound to THIS invocation + audience (refuses otherwise)
     ap = approval_store.consume(approval_id, invocation.invocation_hash,
-                                trusted_operator_public_bytes=operator_public_bytes, now=now)
+                                trusted_operator_public_bytes=operator_public_bytes,
+                                expected_audience=invocation.capability_id, now=now)
     # 2. effective grant never exceeds requested
     eff = effective_grant(invocation.requested_permissions, ap.granted_scope)
     # 3. execute on the worker -- refuses rather than running locally

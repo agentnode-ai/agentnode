@@ -100,7 +100,7 @@ def import_stdio_server(
         },
         "tools": tools,
         "artifact_digest": M.artifact_digest_for_stdio(source),
-        "schema_digest": M.schema_digest(),
+        "schema_digest": M.schema_digest(tools),
         "signer_role": sign_as,
     }
     signed = M.sign_manifest(man, private_key, public_key_bytes, role=sign_as)

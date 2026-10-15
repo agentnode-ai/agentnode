@@ -80,6 +80,7 @@ def test_version_is_immutable_in_the_index(tmp_path):
     changed["tools"].append({"name": "sneaky", "description": "", "input_schema": {},
                              "output_schema": {}})
     changed["tools"][-1]["tool_schema_digest"] = M.tool_schema_digest(changed["tools"][-1])
+    changed["schema_digest"] = M.schema_digest(changed["tools"])  # keep it well-formed
     # re-sign so it is a VALID but DIFFERENT manifest for the same version
     priv, pub = generate_ed25519_keypair()
     changed.pop("signatures")

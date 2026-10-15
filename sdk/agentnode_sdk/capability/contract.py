@@ -59,6 +59,21 @@ class Invocation:
     nonce: str
     invocation_hash: str = ""
 
+    def assert_consistent(self) -> None:
+        """Refuse an Invocation whose (mutable) arguments were changed after prepare.
+
+        The arguments dict is mutable; a caller could mutate it in place after approval
+        while input_digest/invocation_hash stayed at the approved values, and execution
+        would then run the changed arguments. This recomputes the input digest from the
+        CURRENT arguments and the hash from the binding, and raises on any mismatch. It
+        is called at submit before the approval is consumed and again before execution.
+        """
+        _, recomputed_input = normalize_input(self.arguments)
+        if recomputed_input != self.input_digest:
+            raise ValueError("invocation arguments were mutated after prepare (input_digest mismatch)")
+        if _hash_invocation(self.binding()) != self.invocation_hash:
+            raise ValueError("invocation binding was mutated after prepare (invocation_hash mismatch)")
+
     def binding(self) -> dict[str, Any]:
         """The exact tuple the invocation_hash commits to (approval + audit bind to this)."""
         return {

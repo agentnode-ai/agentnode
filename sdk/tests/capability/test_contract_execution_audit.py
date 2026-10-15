@@ -67,8 +67,9 @@ def _setup(tmp_path, *, model="agentnode_executed_mcp"):
 
 
 def _grant(store, op_priv, op_pub, invocation, **kw):
-    ap = approval.grant(invocation.invocation_hash, human_actor="operator@acme",
-                        operator_private=op_priv, operator_public_bytes=op_pub, **kw)
+    ap = approval.grant(invocation.invocation_hash, audience=invocation.capability_id,
+                        human_actor="operator@acme", operator_private=op_priv,
+                        operator_public_bytes=op_pub, **kw)
     store.put(ap)
     return ap
 
@@ -136,16 +137,20 @@ def test_expired_approval_is_refused(tmp_path):
     inv = contract.prepare(idx.resolve("acme/add-server"), "add", {"a": 5, "b": 6})
     ap = _grant(store, op_priv, op_pub, inv, ttl_seconds=-1.0)  # already expired
     with pytest.raises(ApprovalError):
-        store.consume(ap.approval_id, inv.invocation_hash, trusted_operator_public_bytes=op_pub)
+        store.consume(ap.approval_id, inv.invocation_hash, trusted_operator_public_bytes=op_pub,
+                      expected_audience=inv.capability_id)
 
 
 def test_approval_from_an_untrusted_operator_key_is_refused(tmp_path):
     idx, store, op_priv, op_pub, au_pub, ledger = _setup(tmp_path)
     inv = contract.prepare(idx.resolve("acme/add-server"), "add", {"a": 1, "b": 1})
     other_priv, other_pub = generate_ed25519_keypair()  # a model forging its own "approval"
-    ap = _grant(store, other_priv, other_pub, inv)
+    ap = approval.grant(inv.invocation_hash, audience=inv.capability_id, human_actor="x",
+                        operator_private=other_priv, operator_public_bytes=other_pub)
+    store.put(ap)
     with pytest.raises(ApprovalError):
-        store.consume(ap.approval_id, inv.invocation_hash, trusted_operator_public_bytes=op_pub)
+        store.consume(ap.approval_id, inv.invocation_hash, trusted_operator_public_bytes=op_pub,
+                      expected_audience=inv.capability_id)
 
 
 def test_changing_the_input_after_approval_is_refused(tmp_path):
@@ -159,6 +164,46 @@ def test_changing_the_input_after_approval_is_refused(tmp_path):
         pipeline.submit(inv_b, approval_id=ap.approval_id, approval_store=store,
                         operator_public_bytes=op_pub, worker=FakeWorker(), index=idx,
                         audit_ledger=ledger, worker_identity="x")
+
+
+def test_mutating_arguments_in_place_after_approval_is_refused(tmp_path):
+    idx, store, op_priv, op_pub, au_pub, ledger = _setup(tmp_path)
+    inv = contract.prepare(idx.resolve("acme/add-server"), "add", {"a": 2, "b": 40})
+    ap = _grant(store, op_priv, op_pub, inv)
+    inv.arguments["b"] = 41  # in-place mutation; input_digest and invocation_hash unchanged
+    with pytest.raises(ValueError):  # assert_consistent fires before the approval is consumed
+        pipeline.submit(inv, approval_id=ap.approval_id, approval_store=store,
+                        operator_public_bytes=op_pub, worker=FakeWorker(), index=idx,
+                        audit_ledger=ledger, worker_identity="x")
+
+
+def test_durable_single_use_refuses_replay_after_store_restart(tmp_path):
+    idx, _store, op_priv, op_pub, au_pub, ledger = _setup(tmp_path)
+    cdir = tmp_path / "consumed"
+    store = ApprovalStore(consumed_dir=cdir)
+    inv = contract.prepare(idx.resolve("acme/add-server"), "add", {"a": 9, "b": 9})
+    ap = _grant(store, op_priv, op_pub, inv)
+    pipeline.submit(inv, approval_id=ap.approval_id, approval_store=store, operator_public_bytes=op_pub,
+                    worker=FakeWorker(), index=idx, audit_ledger=ledger, worker_identity="x")
+    # a fresh store (process restart) that reloads the SAME signed approval must still refuse it
+    restarted = ApprovalStore(consumed_dir=cdir)
+    restarted.put(ap)
+    with pytest.raises(ApprovalError):
+        pipeline.submit(inv, approval_id=ap.approval_id, approval_store=restarted,
+                        operator_public_bytes=op_pub, worker=FakeWorker(), index=idx,
+                        audit_ledger=ledger, worker_identity="x")
+
+
+def test_approval_audience_mismatch_is_refused(tmp_path):
+    idx, store, op_priv, op_pub, au_pub, ledger = _setup(tmp_path)
+    inv = contract.prepare(idx.resolve("acme/add-server"), "add", {"a": 1, "b": 1})
+    # an approval minted for a DIFFERENT audience must not authorise this capability
+    ap = approval.grant(inv.invocation_hash, audience="acme/other-capability", human_actor="op",
+                        operator_private=op_priv, operator_public_bytes=op_pub)
+    store.put(ap)
+    with pytest.raises(ApprovalError):
+        store.consume(ap.approval_id, inv.invocation_hash, trusted_operator_public_bytes=op_pub,
+                      expected_audience=inv.capability_id)
 
 
 @pytest.mark.parametrize("model", ["external_remote_mcp", "native_integration"])

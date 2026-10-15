@@ -142,7 +142,8 @@ def _build_from_stand(stand: str) -> "CapabilityMCPAdapter":
                          signer_private=au_priv, signer_public_bytes=au_pub)
     worker = LocalWorker(ContainerBackend())
     client = CapabilityClient(index=idx, worker=worker, audit_ledger=ledger,
-                              approval_store=ApprovalStore(), operator_public_bytes=op_pub,
+                              approval_store=ApprovalStore(consumed_dir=os.path.join(stand, "consumed")),
+                              operator_public_bytes=op_pub,
                               worker_identity="host:" + worker.configuration_sha256()[:16])
     return CapabilityMCPAdapter(client, cap_id, approvals_dir=os.path.join(stand, "approvals"))
 
