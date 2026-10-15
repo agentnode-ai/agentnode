@@ -80,7 +80,8 @@ def _cmd_import_npm(args) -> int:
     imp = npm_import.import_vendored_tree(
         vt.tree_dir, publisher=args.publisher_namespace, name=args.name, version=args.version,
         entry=vt.entry, interpreter=vt.interpreter, private_key=op_priv,
-        public_key_bytes=_raw_pub(op_priv), registry=vt.registry, timeout=args.timeout)
+        public_key_bytes=_raw_pub(op_priv), registry=vt.registry,
+        discovered_tools=vt.discovered_tools, timeout=args.timeout)
     idx = LocalIndex(str(s / "index"))
     stored = idx.put_blob(imp.tar_bytes)
     assert stored == imp.tar_sha256, "blob sha mismatch"

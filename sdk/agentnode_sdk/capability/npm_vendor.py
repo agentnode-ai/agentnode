@@ -41,6 +41,20 @@ class VendoredTree:
     entry: str
     interpreter: str
     registry: dict[str, Any]
+    discovered_tools: list[dict[str, Any]]
+
+
+# A real MCP stdio handshake (initialize -> initialized -> tools/list) fed to the server entry.
+# `printf` writes one JSON-RPC message per line; the literal JSON braces are left untouched (this is
+# a plain string, never str.format). __INTERP__/__ENTRY__ are substituted by .replace, not format.
+_DISCOVER_SH = (
+    "export HOME=/tmp/home; mkdir -p \"$HOME\"; "
+    "printf '%s\\n' "
+    "'{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"d\",\"version\":\"0\"}}}' "
+    "'{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}' "
+    "'{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}' "
+    "| __INTERP__ /install/__ENTRY__ 2>/dev/null"
+)
 
 
 def _run_image(runtime: str, image: str, script: str) -> bytes:
@@ -50,6 +64,33 @@ def _run_image(runtime: str, image: str, script: str) -> bytes:
         raise RuntimeError(
             f"image command failed (exit {done.returncode}): {done.stderr.decode('utf-8', 'replace')[:2000]}")
     return done.stdout
+
+
+def discover_tools_in_image(tree_dir: str | os.PathLike[str], entry: str, interpreter: str, *,
+                            runtime: str = "podman", image: str = _BASE_IMAGE,
+                            timeout: float = 120.0) -> list[dict[str, Any]]:
+    """Ask the vendored server what it exposes, by running it in the PINNED IMAGE over a real stdio
+    ``tools/list`` handshake. The host needs no node/python for the server -- the interpreter lives
+    in the image. The tree is mounted read-only; this is build-time discovery, not the run path.
+    """
+    interp = "node" if interpreter == "node" else "python3"
+    script = _DISCOVER_SH.replace("__INTERP__", interp).replace("__ENTRY__", entry)
+    argv = [runtime, "run", "--rm", "-v", f"{os.path.abspath(str(tree_dir))}:/install:ro,Z",
+            image, "sh", "-c", script]
+    out = subprocess.run(argv, capture_output=True, timeout=timeout, check=False).stdout.decode(
+        "utf-8", "replace")
+    tools: list[dict[str, Any]] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except Exception:  # noqa: BLE001 -- non-JSON log lines on stdout are ignored
+            continue
+        if isinstance(msg, dict) and msg.get("id") == 2:
+            tools = (msg.get("result") or {}).get("tools", [])
+    return tools
 
 
 def _parse_npm_view_fields(raw: str) -> dict[str, str]:
@@ -108,6 +149,10 @@ def vendor_npm(package: str, version: str, dest_dir: str | os.PathLike[str], *,
 
     entry = _resolve_entry(dest, package)
 
+    # discover tools IN THE IMAGE (the host has no node); carried into the import so the host
+    # never needs the server's interpreter.
+    discovered_tools = discover_tools_in_image(dest, entry, "node", runtime=runtime, image=image)
+
     integrity = tarball = resolved_version = ""
     try:
         raw = _run_image(runtime, image, _META_SH.format(pkg=package, ver=version)).decode(
@@ -131,4 +176,5 @@ def vendor_npm(package: str, version: str, dest_dir: str | os.PathLike[str], *,
         "upstream_publisher": publisher,
         "image": image,
     }
-    return VendoredTree(tree_dir=str(dest), entry=entry, interpreter="node", registry=registry)
+    return VendoredTree(tree_dir=str(dest), entry=entry, interpreter="node", registry=registry,
+                        discovered_tools=discovered_tools)
