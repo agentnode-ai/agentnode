@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from agentnode_sdk.capability import client_config
-from agentnode_sdk.capability.approval import ApprovalStore, grant
+from agentnode_sdk.capability.approval import ApprovalError, ApprovalStore, grant
 from agentnode_sdk.capability.audit import AuditLedger
 from agentnode_sdk.capability.index import LocalIndex
 from agentnode_sdk.capability.usability import UsabilityClient
@@ -155,7 +155,14 @@ def _cmd_run(args) -> int:
     if approval_id is None:
         print(json.dumps(c.approval_required(inv).to_dict(), indent=2))
         return 3
-    res = c.submit(inv, approval_id)
+    try:
+        res = c.submit(inv, approval_id)
+    except ApprovalError as exc:
+        # a spent single-use approval (durably consumed, e.g. the same call run twice) refuses
+        # cleanly here rather than surfacing a traceback -- step 7 of USABILITY.md.
+        print(json.dumps({"status": "refused", "reason": str(exc),
+                          "invocation_hash": inv.invocation_hash}, indent=2))
+        return 4
     print(json.dumps(c.bound_result(inv, res), indent=2, default=str))
     return 0
 

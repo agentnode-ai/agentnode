@@ -15,8 +15,9 @@ worker; nothing runs unsandboxed, and no model can approve its own call.
 
 ## Prerequisites
 
-- **Python 3.10+** and the `agentnode_sdk` package on your `PYTHONPATH` (the SDK you already
-  have). The capability CLI is `python -m agentnode_sdk.capability.usability_cli`.
+- **Python 3.10–3.12** with the `agentnode_sdk` package installed — you do **not** need a
+  pre-existing SDK; see **0. Install** below. The capability CLI is then
+  `python -m agentnode_sdk.capability.usability_cli`.
 - A **container runtime** (Podman or Docker) and the pinned AgentNode sandbox image. The
   image is acquired explicitly (`agentnode sandbox pull`) and is never auto-pulled; if it is
   absent, execution stays fail-closed (it refuses, it never runs on the host). Importing an
@@ -26,6 +27,23 @@ worker; nothing runs unsandboxed, and no model can approve its own call.
   audit key, approvals). Below it is `./stand`.
 
 No account, API key, or network credential is required: this capability is credential-free.
+
+## 0. Install the capability SDK (fresh environment)
+
+You do not need any pre-existing AgentNode install. In a clean environment:
+
+```
+python -m venv .venv
+. .venv/bin/activate                     # Windows: .venv\Scripts\activate
+pip install agentnode_sdk                # closed beta: install the wheel we provide, e.g.
+                                         #   pip install ./agentnode_sdk-0.25.0-py3-none-any.whl
+                                         # or from the source tree:  pip install ./sdk
+python -m agentnode_sdk.capability.usability_cli --help   # the CLI is now available
+```
+
+`pip` pulls the only two runtime dependencies (`mcp` and `cryptography`) automatically. The
+container runtime and the sandbox image (above) are separate OS-level prerequisites, not
+Python packages.
 
 ## 1. Import the real server (unchanged)
 
