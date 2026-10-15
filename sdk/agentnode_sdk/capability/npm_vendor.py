@@ -1,0 +1,180 @@
+"""Vendor a pinned npm MCP server + its dependency closure into a local tree (Slice 2).
+
+Build-time only. Runs the SAME pinned sandbox image the capability executes in, installs the
+exact ``package@version`` with the image's own ``npm`` (build-time network, like the frozen
+sandbox's own MCP pre-install build), and extracts the resulting ``/install`` tree locally so
+``npm_import.import_vendored_tree`` can pack + pin it deterministically. Nothing is installed
+on the host; no host node/npm is needed; the RUN path never has network.
+
+This is a convenience/orchestration helper, not part of the capability core execution path:
+the core only ever runs the already-pinned tree over the Worker/Job path.
+"""
+from __future__ import annotations
+
+import io
+import json
+import os
+import subprocess
+import tarfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from agentnode_sdk.sandbox.container_backend import _BASE_IMAGE
+
+_INSTALL_SH = (
+    "set -e; export HOME=/tmp/home; mkdir -p \"$HOME\" /tmp/npm-cache; "
+    "export npm_config_cache=/tmp/npm-cache; "
+    "npm install -g --prefix /install '{pkg}@{ver}' 1>&2; "
+    "tar -C /install -cf - ."
+)
+_META_SH = (
+    "set -e; export HOME=/tmp/home; mkdir -p \"$HOME\" /tmp/npm-cache; "
+    "export npm_config_cache=/tmp/npm-cache; "
+    "npm view '{pkg}@{ver}' dist.integrity dist.tarball version 2>/dev/null"
+)
+
+
+@dataclass(frozen=True)
+class VendoredTree:
+    tree_dir: str
+    entry: str
+    interpreter: str
+    registry: dict[str, Any]
+    discovered_tools: list[dict[str, Any]]
+
+
+# A real MCP stdio handshake (initialize -> initialized -> tools/list) fed to the server entry.
+# `printf` writes one JSON-RPC message per line; the literal JSON braces are left untouched (this is
+# a plain string, never str.format). __INTERP__/__ENTRY__ are substituted by .replace, not format.
+_DISCOVER_SH = (
+    "export HOME=/tmp/home; mkdir -p \"$HOME\"; "
+    "printf '%s\\n' "
+    "'{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"d\",\"version\":\"0\"}}}' "
+    "'{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}' "
+    "'{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}' "
+    "| __INTERP__ /install/__ENTRY__ 2>/dev/null"
+)
+
+
+def _run_image(runtime: str, image: str, script: str) -> bytes:
+    argv = [runtime, "run", "--rm", image, "sh", "-c", script]
+    done = subprocess.run(argv, capture_output=True, timeout=600, check=False)
+    if done.returncode != 0:
+        raise RuntimeError(
+            f"image command failed (exit {done.returncode}): {done.stderr.decode('utf-8', 'replace')[:2000]}")
+    return done.stdout
+
+
+def discover_tools_in_image(tree_dir: str | os.PathLike[str], entry: str, interpreter: str, *,
+                            runtime: str = "podman", image: str = _BASE_IMAGE,
+                            timeout: float = 120.0) -> list[dict[str, Any]]:
+    """Ask the vendored server what it exposes, by running it in the PINNED IMAGE over a real stdio
+    ``tools/list`` handshake. The host needs no node/python for the server -- the interpreter lives
+    in the image. The tree is mounted read-only; this is build-time discovery, not the run path.
+    """
+    interp = "node" if interpreter == "node" else "python3"
+    script = _DISCOVER_SH.replace("__INTERP__", interp).replace("__ENTRY__", entry)
+    argv = [runtime, "run", "--rm", "-v", f"{os.path.abspath(str(tree_dir))}:/install:ro,Z",
+            image, "sh", "-c", script]
+    out = subprocess.run(argv, capture_output=True, timeout=timeout, check=False).stdout.decode(
+        "utf-8", "replace")
+    tools: list[dict[str, Any]] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except Exception:  # noqa: BLE001 -- non-JSON log lines on stdout are ignored
+            continue
+        if isinstance(msg, dict) and msg.get("id") == 2:
+            tools = (msg.get("result") or {}).get("tools", [])
+    return tools
+
+
+def _parse_npm_view_fields(raw: str) -> dict[str, str]:
+    """Parse ``npm view '<pkg>@<ver>' <f1> <f2> ...`` output into ``{field: value}``.
+
+    npm prints a bare value only when a SINGLE field is requested; with MORE THAN ONE field it
+    prints ``key = value`` lines (values single-quoted). We always request several fields, so we
+    key by field name rather than by position -- the positional read mistook the ``key`` and ``=``
+    tokens for the integrity and tarball values.
+    """
+    out: dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        key, sep, value = line.partition(" = ")
+        if not sep:
+            continue
+        out[key.strip()] = value.strip().strip("'").strip('"')
+    return out
+
+
+def _resolve_entry(install_root: Path, package: str) -> str:
+    """The server entry file RELATIVE to the install root, from the installed package.json."""
+    pkg_dir = install_root / "lib" / "node_modules" / package
+    pj = pkg_dir / "package.json"
+    meta = json.loads(pj.read_text(encoding="utf-8"))
+    binv = meta.get("bin")
+    rel_file: str | None = None
+    if isinstance(binv, str):
+        rel_file = binv
+    elif isinstance(binv, dict) and binv:
+        rel_file = next(iter(binv.values()))
+    if not rel_file:
+        rel_file = meta.get("main") or "index.js"
+    entry_abs = (pkg_dir / rel_file).resolve()
+    return os.path.relpath(entry_abs, install_root.resolve()).replace(os.sep, "/")
+
+
+def vendor_npm(package: str, version: str, dest_dir: str | os.PathLike[str], *,
+               runtime: str = "podman", image: str = _BASE_IMAGE,
+               source_url: str = "", license_: str = "", publisher: str = "") -> VendoredTree:
+    """Install ``package@version`` in the pinned image and extract its /install tree into *dest_dir*."""
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+
+    tar_bytes = _run_image(runtime, image, _INSTALL_SH.format(pkg=package, ver=version))
+    dest_abs = os.path.abspath(str(dest))
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as tar:
+        # trusted: produced by our own install in the pinned image; still extract under dest only.
+        for m in tar.getmembers():
+            target = os.path.abspath(os.path.join(dest_abs, m.name))
+            if os.path.commonpath([dest_abs, target]) != dest_abs:
+                raise RuntimeError(f"refusing tar member escaping dest: {m.name!r}")
+        tar.extractall(dest_abs)
+
+    entry = _resolve_entry(dest, package)
+
+    # discover tools IN THE IMAGE (the host has no node); carried into the import so the host
+    # never needs the server's interpreter.
+    discovered_tools = discover_tools_in_image(dest, entry, "node", runtime=runtime, image=image)
+
+    integrity = tarball = resolved_version = ""
+    try:
+        raw = _run_image(runtime, image, _META_SH.format(pkg=package, ver=version)).decode(
+            "utf-8", "replace")
+        fields = _parse_npm_view_fields(raw)
+        integrity = fields.get("dist.integrity", "")
+        tarball = fields.get("dist.tarball", "")
+        resolved_version = fields.get("version", "")
+    except Exception:  # noqa: BLE001 -- metadata is provenance-nice-to-have, not required to pin
+        pass
+
+    registry = {
+        "manager": "npm",
+        "name": package,
+        "version": version,
+        "resolved_version": resolved_version or version,
+        "dist_integrity": integrity,
+        "dist_tarball": tarball,
+        "source_url": source_url,
+        "license": license_,
+        "upstream_publisher": publisher,
+        "image": image,
+    }
+    return VendoredTree(tree_dir=str(dest), entry=entry, interpreter="node", registry=registry,
+                        discovered_tools=discovered_tools)
