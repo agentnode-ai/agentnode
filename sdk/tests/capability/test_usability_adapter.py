@@ -81,3 +81,24 @@ def test_after_operator_approval_runs_on_worker(tmp_path):
     third = adapter.handle({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
                             "params": {"name": "echo_sum", "arguments": {"a": 20, "b": 22}}})
     assert third["result"]["structuredContent"]["status"] == "approval_required"
+
+
+def test_forged_non_operator_approval_is_refused(tmp_path):
+    # A model driving the adapter mints its OWN approval (its own key), correctly bound to the exact
+    # invocation + audience, and deposits it in the human channel. The adapter must STILL refuse: only
+    # the trusted operator key authorises, and the adapter holds no operator key to mint one. This is
+    # U12(a) -- no self-approval / no model-minted grant: with the operator-key guard removed, the
+    # forged approval would be accepted and the tool would run.
+    adapter, op_priv, approvals = _adapter(tmp_path)
+    first = adapter.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                            "params": {"name": "echo_sum", "arguments": {"a": 20, "b": 22}}})
+    inv_hash = first["result"]["structuredContent"]["invocation_hash"]
+    model_priv = Ed25519PrivateKey.generate()  # the model's OWN key, not the operator's
+    forged = grant(inv_hash, audience=CAP_ID, human_actor="model-self",
+                   operator_private=model_priv, operator_public_bytes=_raw_pub(model_priv))
+    (approvals / f"{forged.approval_id}.json").write_text(json.dumps(forged.to_dict()), encoding="utf-8")
+    resp = adapter.handle({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                           "params": {"name": "echo_sum", "arguments": {"a": 20, "b": 22}}})
+    sc = resp["result"].get("structuredContent") or {}
+    assert "call" not in sc, "a non-operator (self-minted) approval must never run the tool"
+    assert resp["result"].get("isError") is True
