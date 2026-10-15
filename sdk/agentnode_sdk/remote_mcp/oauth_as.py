@@ -1,0 +1,259 @@
+"""OAuth 2.1 Authorization Server for the remote MCP service (R3, R4).
+
+Framework-agnostic: every endpoint is a method returning ``(status, headers, body_bytes)`` so
+the ASGI layer and the counter-checks drive it identically. It issues through the SHARED
+:class:`~agentnode_sdk.remote_mcp.tokens.TokenStore` (``issuance_kind="oauth"``), so an OAuth
+token and a human-minted personal token are the same record and pass the same verifier.
+
+Implements, per MCP 2026-07-28 authorization:
+  * RFC 8414 AS metadata at ``/.well-known/oauth-authorization-server`` advertising
+    ``client_id_metadata_document_supported: true`` (CIMD primary), S256 PKCE, auth-code only.
+  * CIMD client resolution: an HTTPS-URL ``client_id`` whose document is fetched SSRF-safely,
+    whose ``client_id`` MUST equal its own URL, with exact ``redirect_uris`` matching.
+  * Authorization-code grant with mandatory PKCE S256 and the RFC 8707 ``resource`` indicator
+    bound into the issued token's audience.
+  * DCR (RFC 7591) ONLY when ``enable_dcr=True`` (a bounded, measured per-client fallback);
+    off by default and NOT advertised when off.
+
+Secrets discipline: authorization codes, PKCE verifiers and tokens are never logged; errors
+carry OAuth error codes only.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import ipaddress
+import json
+import secrets
+import socket
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
+from urllib.parse import urlsplit
+
+from agentnode_sdk.remote_mcp.tokens import TokenStore
+
+JSON = [("content-type", "application/json")]
+
+
+def _b64url_no_pad(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def pkce_s256_challenge(verifier: str) -> str:
+    return _b64url_no_pad(hashlib.sha256(verifier.encode("ascii")).digest())
+
+
+def _json(status: int, obj: Any, extra_headers: Optional[list] = None) -> tuple[int, list, bytes]:
+    return status, JSON + (extra_headers or []), json.dumps(obj, sort_keys=True).encode("utf-8")
+
+
+# ---- CIMD client metadata (SSRF-safe fetch) ----------------------------------------------- #
+
+class CIMDError(Exception):
+    pass
+
+
+def _is_public_host(host: str) -> bool:
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False
+    for *_rest, sockaddr in infos:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return False
+    return True
+
+
+def default_cimd_fetcher(client_id_url: str, *, max_bytes: int = 64 * 1024,
+                         timeout: float = 5.0) -> dict:
+    """Fetch and parse a Client-ID Metadata Document from an HTTPS URL, SSRF-safely.
+
+    Only https, only a public host, bounded size/time, no redirects followed. The AS still
+    validates the document's contents; this only gets the bytes safely.
+    """
+    import urllib.request
+
+    parts = urlsplit(client_id_url)
+    if parts.scheme != "https" or not parts.netloc:
+        raise CIMDError("client_id must be an https URL")
+    if not _is_public_host(parts.hostname or ""):
+        raise CIMDError("client_id host is not a public address")
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):  # noqa: D401, ANN002
+            raise CIMDError("client_id document must not redirect")
+
+    opener = urllib.request.build_opener(_NoRedirect)
+    req = urllib.request.Request(client_id_url, headers={"Accept": "application/json"})
+    with opener.open(req, timeout=timeout) as resp:  # noqa: S310 -- scheme checked above
+        if resp.status != 200:
+            raise CIMDError("client_id document HTTP %s" % resp.status)
+        data = resp.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise CIMDError("client_id document too large")
+    try:
+        return json.loads(data)
+    except Exception as exc:  # noqa: BLE001
+        raise CIMDError("client_id document is not JSON") from exc
+
+
+@dataclass
+class ResolvedClient:
+    client_id: str
+    redirect_uris: tuple[str, ...]
+    source: str   # "cimd" | "preregistered" | "dcr"
+
+
+@dataclass
+class _AuthCode:
+    client_id: str
+    redirect_uri: str
+    code_challenge: str
+    resource: str
+    principal_id: str
+    scopes: tuple[str, ...]
+    expires_at: float
+    used: bool = False
+
+
+class AuthorizationServer:
+    def __init__(self, *, issuer: str, resource: str, token_store: TokenStore,
+                 scopes_supported: tuple[str, ...] = ("mcp:use",),
+                 preregistered: Optional[dict[str, tuple[str, ...]]] = None,
+                 cimd_fetcher: Callable[[str], dict] = default_cimd_fetcher,
+                 enable_dcr: bool = False,
+                 code_ttl_seconds: int = 60,
+                 token_ttl_seconds: int = 600,
+                 clock: Callable[[], float] = time.time):
+        self.issuer = issuer.rstrip("/")
+        self.resource = resource
+        self.tokens = token_store
+        self.scopes_supported = scopes_supported
+        self.preregistered = dict(preregistered or {})       # client_id -> redirect_uris
+        self.cimd_fetcher = cimd_fetcher
+        self.enable_dcr = enable_dcr
+        self.code_ttl = code_ttl_seconds
+        self.token_ttl = token_ttl_seconds
+        self._clock = clock
+        self._codes: dict[str, _AuthCode] = {}
+        self._dcr_clients: dict[str, tuple[str, ...]] = {}
+
+    # discovery ------------------------------------------------------------ #
+    def metadata(self) -> tuple[int, list, bytes]:
+        doc = {
+            "issuer": self.issuer,
+            "authorization_endpoint": "%s/authorize" % self.issuer,
+            "token_endpoint": "%s/token" % self.issuer,
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code"],
+            "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": ["none"],
+            "scopes_supported": list(self.scopes_supported),
+            "client_id_metadata_document_supported": True,
+        }
+        if self.enable_dcr:
+            doc["registration_endpoint"] = "%s/register" % self.issuer
+        return _json(200, doc)
+
+    # client resolution ---------------------------------------------------- #
+    def _resolve_client(self, client_id: str) -> ResolvedClient:
+        if client_id in self.preregistered:
+            return ResolvedClient(client_id, tuple(self.preregistered[client_id]), "preregistered")
+        if self.enable_dcr and client_id in self._dcr_clients:
+            return ResolvedClient(client_id, tuple(self._dcr_clients[client_id]), "dcr")
+        # CIMD: client_id is an https URL naming its own document (primary dynamic path)
+        if client_id.startswith("https://"):
+            doc = self.cimd_fetcher(client_id)
+            if doc.get("client_id") != client_id:
+                raise CIMDError("document client_id does not equal its URL")
+            redirects = doc.get("redirect_uris")
+            if not isinstance(redirects, list) or not redirects:
+                raise CIMDError("document missing redirect_uris")
+            if "client_name" not in doc:
+                raise CIMDError("document missing client_name")
+            return ResolvedClient(client_id, tuple(redirects), "cimd")
+        raise CIMDError("unknown client_id and not a CIMD https URL")
+
+    # authorize ------------------------------------------------------------ #
+    def authorize(self, params: dict[str, str], *, principal_id: str,
+                  granted_scopes: Optional[tuple[str, ...]] = None) -> tuple[int, list, bytes]:
+        """The user has authenticated to AgentNode out of band; ``principal_id`` is that
+        identity and ``granted_scopes`` what they consented to. Returns a 302 redirect with the
+        code, or a JSON error. (Never redirects to an unvalidated redirect_uri.)"""
+        for req in ("client_id", "redirect_uri", "response_type", "code_challenge",
+                    "code_challenge_method", "resource"):
+            if not params.get(req):
+                return _json(400, {"error": "invalid_request", "error_description": "missing %s" % req})
+        if params["response_type"] != "code":
+            return _json(400, {"error": "unsupported_response_type"})
+        if params["code_challenge_method"] != "S256":
+            return _json(400, {"error": "invalid_request", "error_description": "PKCE S256 required"})
+        if params["resource"] != self.resource:
+            return _json(400, {"error": "invalid_target", "error_description": "resource mismatch"})
+        try:
+            client = self._resolve_client(params["client_id"])
+        except CIMDError as exc:
+            return _json(400, {"error": "invalid_client", "error_description": str(exc)})
+        if params["redirect_uri"] not in client.redirect_uris:
+            # per OAuth, an unregistered redirect_uri must NOT be redirected to
+            return _json(400, {"error": "invalid_request", "error_description": "redirect_uri mismatch"})
+
+        scopes = granted_scopes if granted_scopes is not None else self.scopes_supported
+        scopes = tuple(s for s in scopes if s in self.scopes_supported)
+        code = secrets.token_urlsafe(24)
+        self._codes[code] = _AuthCode(
+            client_id=client.client_id, redirect_uri=params["redirect_uri"],
+            code_challenge=params["code_challenge"], resource=params["resource"],
+            principal_id=principal_id, scopes=scopes,
+            expires_at=self._clock() + self.code_ttl)
+        state = params.get("state", "")
+        sep = "&" if "?" in params["redirect_uri"] else "?"
+        location = "%s%scode=%s%s" % (params["redirect_uri"], sep, code,
+                                      ("&state=%s" % state) if state else "")
+        return 302, [("location", location)], b""
+
+    # token ---------------------------------------------------------------- #
+    def token(self, params: dict[str, str]) -> tuple[int, list, bytes]:
+        if params.get("grant_type") != "authorization_code":
+            return _json(400, {"error": "unsupported_grant_type"})
+        for req in ("code", "redirect_uri", "code_verifier", "client_id", "resource"):
+            if not params.get(req):
+                return _json(400, {"error": "invalid_request", "error_description": "missing %s" % req})
+        rec = self._codes.get(params["code"])
+        if rec is None or rec.used or self._clock() >= rec.expires_at:
+            return _json(400, {"error": "invalid_grant", "error_description": "code invalid or expired"})
+        if rec.client_id != params["client_id"] or rec.redirect_uri != params["redirect_uri"]:
+            return _json(400, {"error": "invalid_grant", "error_description": "code binding mismatch"})
+        if rec.resource != params["resource"] or params["resource"] != self.resource:
+            return _json(400, {"error": "invalid_target"})
+        if pkce_s256_challenge(params["code_verifier"]) != rec.code_challenge:
+            return _json(400, {"error": "invalid_grant", "error_description": "PKCE verification failed"})
+        rec.used = True  # single-use code
+        issued = self.tokens.mint(principal_id=rec.principal_id, audience=rec.resource,
+                                  scopes=rec.scopes, issuance_kind="oauth",
+                                  ttl_seconds=self.token_ttl, label="oauth")
+        return _json(200, {
+            "access_token": issued.plaintext,
+            "token_type": "Bearer",
+            "expires_in": self.token_ttl,
+            "scope": " ".join(issued.record.scopes),
+        })
+
+    # DCR (bounded, off by default) ---------------------------------------- #
+    def register(self, body: dict) -> tuple[int, list, bytes]:
+        if not self.enable_dcr:
+            return _json(404, {"error": "not_found"})
+        redirects = body.get("redirect_uris")
+        if not isinstance(redirects, list) or not redirects:
+            return _json(400, {"error": "invalid_client_metadata",
+                               "error_description": "redirect_uris required"})
+        if any(not str(u).startswith("https://") and not str(u).startswith("http://127.0.0.1")
+               for u in redirects):
+            return _json(400, {"error": "invalid_redirect_uri"})
+        client_id = "dcr-" + secrets.token_hex(8)
+        self._dcr_clients[client_id] = tuple(redirects)
+        return _json(201, {"client_id": client_id, "redirect_uris": list(redirects),
+                           "token_endpoint_auth_method": "none",
+                           "grant_types": ["authorization_code"], "response_types": ["code"]})
