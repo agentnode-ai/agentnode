@@ -52,6 +52,26 @@ def _run_image(runtime: str, image: str, script: str) -> bytes:
     return done.stdout
 
 
+def _parse_npm_view_fields(raw: str) -> dict[str, str]:
+    """Parse ``npm view '<pkg>@<ver>' <f1> <f2> ...`` output into ``{field: value}``.
+
+    npm prints a bare value only when a SINGLE field is requested; with MORE THAN ONE field it
+    prints ``key = value`` lines (values single-quoted). We always request several fields, so we
+    key by field name rather than by position -- the positional read mistook the ``key`` and ``=``
+    tokens for the integrity and tarball values.
+    """
+    out: dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        key, sep, value = line.partition(" = ")
+        if not sep:
+            continue
+        out[key.strip()] = value.strip().strip("'").strip('"')
+    return out
+
+
 def _resolve_entry(install_root: Path, package: str) -> str:
     """The server entry file RELATIVE to the install root, from the installed package.json."""
     pkg_dir = install_root / "lib" / "node_modules" / package
@@ -90,12 +110,12 @@ def vendor_npm(package: str, version: str, dest_dir: str | os.PathLike[str], *,
 
     integrity = tarball = resolved_version = ""
     try:
-        meta = _run_image(runtime, image, _META_SH.format(pkg=package, ver=version)).decode(
-            "utf-8", "replace").split()
-        if meta:
-            integrity = meta[0] if len(meta) > 0 else ""
-            tarball = meta[1] if len(meta) > 1 else ""
-            resolved_version = meta[2] if len(meta) > 2 else ""
+        raw = _run_image(runtime, image, _META_SH.format(pkg=package, ver=version)).decode(
+            "utf-8", "replace")
+        fields = _parse_npm_view_fields(raw)
+        integrity = fields.get("dist.integrity", "")
+        tarball = fields.get("dist.tarball", "")
+        resolved_version = fields.get("version", "")
     except Exception:  # noqa: BLE001 -- metadata is provenance-nice-to-have, not required to pin
         pass
 
