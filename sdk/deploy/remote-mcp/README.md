@@ -14,6 +14,17 @@ gateway login on `127.0.0.1:8099`). Nothing listens on port 80, nothing on IPv6.
 | `cert.env.example` | non-secret settings → `/etc/agentnode-mcp/cert.env` |
 | `cert-drill.sh` | forced-renewal mechanics drill against a local ACME test CA |
 
+## Limits (decided table, Q-RMCP-0001 §6)
+
+nginx: header block 16 KiB / 8 KiB per field, header read 10 s, body 256 KiB read within
+15 s, upstream 135 s, and 10 requests/min/IP (burst 5) for requests carrying neither a bearer
+credential nor a gateway session cookie (429 + `Retry-After`). The app enforces the rest
+(`agentnode_sdk/remote_mcp/limits.py`): JSON depth 32 / 2,000 members / 64 KiB strings,
+1 MiB results, discovery/list 60/min/account (burst 15), tools/call 10/min/account and
+30/min/token (burst 3), 2 calls in flight per account, 8 running per process, a 32-deep queue
+with a 5 s maximum wait, 125 s per call. The service runs as ONE process, so its caps are the
+deployment caps; a second process needs the shared lease/semaphore first.
+
 ## How a renewal pass works
 
 1. `lego run --renew-days 30` obtains the certificate (first run) or renews it when due. The

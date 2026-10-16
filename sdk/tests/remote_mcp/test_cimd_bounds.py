@@ -62,7 +62,8 @@ def test_total_deadline_cannot_be_stretched_by_a_trickling_peer():
     def trickle():
         conn, _ = srv.accept()
         try:
-            while not stop.is_set():                 # one byte every 0.2 s, forever
+            end = time.monotonic() + 4.0             # one byte every 0.2 s for 4 s: without the
+            while not stop.is_set() and time.monotonic() < end:   # total deadline this takes >= 4 s
                 conn.sendall(b"\x16")
                 time.sleep(0.2)
         except OSError:

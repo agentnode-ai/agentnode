@@ -28,7 +28,8 @@ import secrets
 from typing import Any, Awaitable, Callable, Optional
 
 from agentnode_sdk.capability.usability_adapter import UsabilityMCPAdapter
-from agentnode_sdk.remote_mcp.limits import ConcurrencyGate, Limits, RateLimiter
+from agentnode_sdk.remote_mcp.limits import (ConcurrencyGate, Limits, PrincipalInFlight, RateLimiter,
+                                             json_limit_violation, retry_after)
 from agentnode_sdk.remote_mcp.oauth_as import AuthorizationServer, parse_unique_params
 from agentnode_sdk.remote_mcp.prm import ResourceConfig
 from agentnode_sdk.remote_mcp.tokens import Principal, TokenStore, TokenVerifyError
@@ -158,7 +159,10 @@ class RemoteMCPApp:
         self.allow_x_access_token = allow_x_access_token
         clock = clock or time.time
         self._now = clock
-        self._rate = RateLimiter(self.limits.calls_per_minute_per_principal, clock)
+        self._rate = RateLimiter(self.limits.calls_per_minute_per_principal, clock, burst=self.limits.call_burst)
+        self._token_rate = RateLimiter(self.limits.calls_per_minute_per_token, clock, burst=self.limits.call_burst)
+        self._list_rate = RateLimiter(self.limits.list_per_minute_per_principal, clock, burst=self.limits.list_burst)
+        self._inflight = PrincipalInFlight(self.limits.max_concurrent_calls_per_principal)
         self._gate = ConcurrencyGate(self.limits.max_concurrent_calls, self.limits.max_queued_calls)
         # the run slots a queued tools/call waits for (one event loop serves the app)
         self._run_slots = asyncio.Semaphore(self.limits.max_concurrent_calls)
@@ -248,9 +252,17 @@ class RemoteMCPApp:
             return await self._rpc_error(send, None, -32700, "parse error")
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
             return await self._rpc_error(send, None, -32600, "invalid request")
+        too_big = json_limit_violation(msg, self.limits)
+        if too_big is not None:
+            return await self._rpc_error(send, msg.get("id"), -32600, "request exceeds limits: %s" % too_big)
         mid = msg.get("id")
         rpc_method = msg.get("method")
         header_pv = headers.get("mcp-protocol-version")
+        if rpc_method != "tools/call":
+            # discovery / list / lifecycle requests: their own per-account budget
+            wait = self._list_rate.wait_for(principal.principal_id)
+            if wait:
+                return await self._refuse_429(send, "rate_limited", wait)
 
         # ERA ROUTING by the protocol-version header: a modern version, or a server/discover,
         # takes the stateless modern path; a legacy (handshake) version takes the initialize
@@ -431,28 +443,44 @@ class RemoteMCPApp:
             result["_meta"] = {**raw_meta, SERVER_INFO_META_KEY: dict(SERVER_INFO)}
         return {**resp, "result": result}
 
+    async def _refuse_429(self, send, error: str, seconds: float) -> None:
+        return await self._send(send, 429, {"error": error}, extra=[("retry-after", retry_after(seconds))])
+
     async def _tools_call(self, send, msg, principal: Principal, modern: bool = False) -> None:
-        if not self._rate.allow(principal.principal_id):
-            return await self._send(send, 429, {"error": "rate_limited"},
-                                    extra=[("retry-after", "60")])
-        if not self._gate.try_enter_queue():
-            return await self._send(send, 503, {"error": "overloaded"})
-        # wait (queued) for one of max_concurrent_calls run slots
+        who = principal.principal_id
+        wait = self._rate.wait_for(who)
+        if wait:
+            return await self._refuse_429(send, "rate_limited", wait)
+        wait = self._token_rate.wait_for(principal.token_id)
+        if wait:
+            return await self._refuse_429(send, "rate_limited", wait)
+        if not self._inflight.try_enter(who):          # 2 calls in flight per account
+            return await self._refuse_429(send, "too_many_concurrent_calls", self.limits.max_queue_wait_seconds)
+        if not self._gate.try_enter_queue():            # bounded queue behind the run slots
+            self._inflight.leave(who)
+            return await self._refuse_429(send, "overloaded", self.limits.max_queue_wait_seconds)
+        # wait (queued, at most max_queue_wait_seconds) for one of max_concurrent_calls run slots
         try:
-            await self._run_slots.acquire()
+            await asyncio.wait_for(self._run_slots.acquire(), timeout=self.limits.max_queue_wait_seconds)
+        except asyncio.TimeoutError:
+            self._gate.leave_queue()
+            self._inflight.leave(who)
+            return await self._refuse_429(send, "queue_wait_exceeded", self.limits.max_queue_wait_seconds)
         except BaseException:
             self._gate.leave_queue()
+            self._inflight.leave(who)
             raise
         self._gate.promote_to_active()
         freed = []
 
         def free_slot(_f=None):
             # exactly once, and only when the worker call has REALLY finished: a timed-out
-            # call keeps running in its thread, so it keeps its slot until then.
+            # call keeps running in its thread, so it keeps its slots until then.
             if not freed:
                 freed.append(True)
                 self._gate.release()
                 self._run_slots.release()
+                self._inflight.leave(who)
         loop = asyncio.get_event_loop()
         fut = loop.run_in_executor(None, self.adapter.handle, msg)
         try:
@@ -464,13 +492,20 @@ class RemoteMCPApp:
             fut.add_done_callback(lambda f: loop.call_soon_threadsafe(free_slot))
             raise
         free_slot()
-        return await self._raw(send, 200, json.dumps(
-            self._stamp_modern(resp, modern, msg.get("method"))).encode())
+        return await self._send_result(send, msg, resp, modern)
 
     async def _rpc_passthrough(self, send, msg, modern: bool = False) -> None:
         resp = self.adapter.handle(msg)
-        return await self._raw(send, 200, json.dumps(
-            self._stamp_modern(resp, modern, msg.get("method"))).encode())
+        return await self._send_result(send, msg, resp, modern)
+
+    async def _send_result(self, send, msg, resp, modern: bool) -> None:
+        body = json.dumps(self._stamp_modern(resp, modern, msg.get("method"))).encode()
+        if len(body) > self.limits.max_tool_output_bytes:
+            # never truncate a tool result silently: a safe error instead (the call itself ran;
+            # its approval was consumed exactly as the frozen pipeline defines)
+            return await self._rpc_error(send, msg.get("id"), -32603,
+                                         "result exceeds the %d-byte output limit" % self.limits.max_tool_output_bytes)
+        return await self._raw(send, 200, body)
 
     # ---- continuation handles (login bridge) ----------------------------- #
     def _sweep_continuations(self) -> None:
