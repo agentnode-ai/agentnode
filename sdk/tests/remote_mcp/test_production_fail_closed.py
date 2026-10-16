@@ -94,6 +94,13 @@ def test_build_production_app_has_no_local_worker_param():
     assert "local_worker" not in inspect.signature(build_production_app).parameters
 
 
+def test_server_module_resolves_remote_adapter_symbols():
+    # _build_remote_adapter references these at runtime; a missing import only shows up when a
+    # real stand is built, so pin the names here (regression: NameError UsabilityMCPAdapter).
+    from agentnode_sdk.remote_mcp import server as S
+    assert hasattr(S, "UsabilityMCPAdapter") and hasattr(S, "build_from_stand")
+
+
 def test_production_entrypoint_has_no_local_fallback():
     # Check the CODE, not the module docstring (which names these words deliberately in prose).
     body = inspect.getsource(production_entry).split('"""', 2)[2]

@@ -22,7 +22,7 @@ import argparse
 import io
 import os
 
-from agentnode_sdk.capability.usability_adapter import build_from_stand
+from agentnode_sdk.capability.usability_adapter import UsabilityMCPAdapter, build_from_stand
 from agentnode_sdk.remote_mcp.http_transport import RemoteMCPApp
 from agentnode_sdk.remote_mcp.limits import Limits
 from agentnode_sdk.remote_mcp.oauth_as import AuthorizationServer
