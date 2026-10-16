@@ -1,0 +1,11 @@
+[Unit]
+Description=remote MCP origin: certificate check, daily (and 10 minutes after boot)
+
+[Timer]
+OnBootSec=10min
+OnCalendar=daily
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

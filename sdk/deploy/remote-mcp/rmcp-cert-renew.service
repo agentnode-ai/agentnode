@@ -1,0 +1,18 @@
+[Unit]
+Description=remote MCP origin: unattended ACME DNS-01 certificate renewal (KAS), atomic install + validated nginx reload + rollback
+Documentation=file:///opt/agentnode/sdk/deploy/remote-mcp/README.md
+Wants=network-online.target
+After=network-online.target nginx.service
+OnFailure=rmcp-alert@%n.service
+
+[Service]
+Type=oneshot
+# The KAS API login/password: root-only files, exposed to this unit alone, read by lego via *_FILE.
+LoadCredential=kas_login:/etc/agentnode-mcp/credentials/kas_login
+LoadCredential=kas_password:/etc/agentnode-mcp/credentials/kas_password
+Environment=RMCP_CERT_CONF=/etc/agentnode-mcp/cert.env
+ExecStart=/opt/agentnode/sdk/deploy/remote-mcp/rmcp-cert-renew.sh
+TimeoutStartSec=45min
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes
