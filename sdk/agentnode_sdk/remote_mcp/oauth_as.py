@@ -75,8 +75,10 @@ class CIMDError(Exception):
 
 def _reject_non_public(ip_text: str) -> None:
     ip = ipaddress.ip_address(ip_text)
+    # `is_global` also excludes shared/CGNAT space (100.64.0.0/10), documentation and
+    # benchmarking ranges that the individual flags below do not name.
     if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-            or ip.is_multicast or ip.is_unspecified):
+            or ip.is_multicast or ip.is_unspecified or not ip.is_global):
         raise CIMDError("client_id resolves to a non-public address: %s" % ip)
 
 
@@ -104,15 +106,30 @@ def resolve_public_ips(host: str, port: int = 443, *,
 
 
 def _pinned_https_get(ip: str, port: int, hostname: str, path: str, timeout: float,
-                      max_bytes: int) -> tuple[int, str, bytes]:
+                      max_bytes: int) -> tuple[int, str, bytes, str]:
     """HTTPS GET to the already-validated ``ip`` with SNI + certificate validation against
     ``hostname``. Pinning the socket to the pre-resolved IP is what closes the DNS-rebinding
-    window; redirects are never followed (any non-200 is rejected by the caller)."""
+    window; redirects are never followed (any non-200 is rejected by the caller).
+
+    ``timeout`` is a TOTAL deadline for the whole exchange, not a per-operation one: a watchdog
+    shuts the socket when it expires, so a peer trickling bytes cannot hold the fetch open."""
     import http.client
     import ssl
+    import threading
 
     ctx = ssl.create_default_context()
     raw = socket.create_connection((ip, port), timeout=timeout)
+    expired = []
+
+    def kill():
+        expired.append(True)
+        try:
+            raw.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    watchdog = threading.Timer(timeout, kill)
+    watchdog.daemon = True
+    watchdog.start()
     try:
         conn = http.client.HTTPSConnection(hostname, port, timeout=timeout, context=ctx)
         conn.sock = ctx.wrap_socket(raw, server_hostname=hostname)
@@ -121,31 +138,87 @@ def _pinned_https_get(ip: str, port: int, hostname: str, path: str, timeout: flo
         resp = conn.getresponse()
         data = resp.read(max_bytes + 1)
         status, ctype = resp.status, resp.getheader("content-type", "")
+        cache_control = resp.getheader("cache-control", "") or ""
         conn.close()
-        return status, ctype, data
+        if expired:
+            raise CIMDError("client_id document fetch exceeded %.0f s" % timeout)
+        return status, ctype, data, cache_control
+    except (OSError, http.client.HTTPException) as exc:   # ssl.SSLError is an OSError
+        if expired:
+            raise CIMDError("client_id document fetch exceeded %.0f s" % timeout) from None
+        raise CIMDError("client_id document fetch failed: %s" % type(exc).__name__) from None
     finally:
+        watchdog.cancel()
         try:
             raw.close()
         except OSError:
             pass
 
 
-#: injectable so SSRF / rebinding counter-checks drive the fetch without a real network
-Connector = Callable[[str, int, str, str, float, int], tuple[int, str, bytes]]
+#: injectable so SSRF / rebinding counter-checks drive the fetch without a real network; it
+#: returns (status, content-type, body) or (status, content-type, body, cache-control)
+Connector = Callable[[str, int, str, str, float, int], tuple]
+
+#: at most this many CIMD fetches in flight at once; more are refused, never queued
+MAX_CONCURRENT_CIMD_FETCHES = 4
+_CIMD_SLOTS = None
 
 
-def default_cimd_fetcher(client_id_url: str, *, max_bytes: int = 64 * 1024,
-                         timeout: float = 5.0,
-                         getaddrinfo: Callable = socket.getaddrinfo,
-                         connector: Optional[Connector] = None) -> dict:
-    """Fetch and parse a Client-ID Metadata Document from an HTTPS URL, SSRF-safely.
+def _cimd_slots():
+    global _CIMD_SLOTS
+    if _CIMD_SLOTS is None:
+        import threading
+        _CIMD_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_CIMD_FETCHES)
+    return _CIMD_SLOTS
+
+
+#: longest a fetched client document is reused, whatever its Cache-Control says
+MAX_CIMD_CACHE_SECONDS = 3600
+
+
+def cache_lifetime(cache_control: str) -> int:
+    """Seconds a CIMD document may be reused per its HTTP caching directives: ``no-store`` /
+    ``no-cache`` or no ``max-age`` -> 0 (fetch again next time); else ``max-age`` capped."""
+    directives = [d.strip().lower() for d in (cache_control or "").split(",") if d.strip()]
+    if any(d in ("no-store", "no-cache") for d in directives):
+        return 0
+    for d in directives:
+        if d.startswith("max-age="):
+            try:
+                return max(0, min(int(d.split("=", 1)[1]), MAX_CIMD_CACHE_SECONDS))
+            except ValueError:
+                return 0
+    return 0
+
+
+def fetch_cimd_document(client_id_url: str, *, max_bytes: int = 64 * 1024,
+                        timeout: float = 5.0,
+                        getaddrinfo: Callable = socket.getaddrinfo,
+                        connector: Optional[Connector] = None) -> tuple[dict, int]:
+    """Fetch and parse a Client-ID Metadata Document from an HTTPS URL, SSRF-safely, returning
+    ``(document, cache_lifetime_seconds)``.
 
     HTTPS only; no embedded credentials; the host is resolved exactly once and rejected if any
-    resolved address is non-public; the connection is pinned to that address (no rebind); no
-    redirects are followed (non-200 rejected); response size, time and content-type are bounded.
-    The AS still validates the document contents (``client_id`` must equal its own URL); this
-    only gets the bytes safely.
+    resolved address is not globally routable; the connection is pinned to that address (no
+    rebind); no redirects are followed (non-200 rejected); response size, TOTAL time and
+    content-type are bounded; at most MAX_CONCURRENT_CIMD_FETCHES run at once. The AS still
+    validates the document contents (``client_id`` must equal its own URL).
     """
+    slots = _cimd_slots()
+    if not slots.acquire(blocking=False):
+        raise CIMDError("too many client metadata fetches in progress; retry shortly")
+    try:
+        return _fetch_cimd(client_id_url, max_bytes, timeout, getaddrinfo, connector)
+    finally:
+        slots.release()
+
+
+def default_cimd_fetcher(client_id_url: str, **kw) -> dict:
+    """The document only (no caching information); see :func:`fetch_cimd_document`."""
+    return fetch_cimd_document(client_id_url, **kw)[0]
+
+
+def _fetch_cimd(client_id_url, max_bytes, timeout, getaddrinfo, connector) -> tuple[dict, int]:
     parts = urlsplit(client_id_url)
     if parts.scheme != "https" or not parts.hostname:
         raise CIMDError("client_id must be an https URL")
@@ -158,7 +231,14 @@ def default_cimd_fetcher(client_id_url: str, *, max_bytes: int = 64 * 1024,
     if parts.query:
         path += "?" + parts.query
     get = connector or _pinned_https_get
-    status, ctype, data = get(ip, port, host, path, timeout, max_bytes)
+    try:
+        got = get(ip, port, host, path, timeout, max_bytes)
+    except CIMDError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- any transport failure is a refused client, not a 500
+        raise CIMDError("client_id document fetch failed: %s" % type(exc).__name__) from None
+    status, ctype, data = got[0], got[1], got[2]
+    cache_control = got[3] if len(got) > 3 else ""
     if status != 200:
         raise CIMDError("client_id document HTTP %s (redirects not followed)" % status)
     if ctype.split(";")[0].strip().lower() != "application/json":
@@ -166,9 +246,12 @@ def default_cimd_fetcher(client_id_url: str, *, max_bytes: int = 64 * 1024,
     if len(data) > max_bytes:
         raise CIMDError("client_id document too large")
     try:
-        return json.loads(data)
+        doc = json.loads(data)
     except Exception as exc:  # noqa: BLE001
         raise CIMDError("client_id document is not JSON") from exc
+    if not isinstance(doc, dict):
+        raise CIMDError("client_id document is not a JSON object")
+    return doc, cache_lifetime(cache_control)
 
 
 @dataclass
@@ -195,7 +278,8 @@ class AuthorizationServer:
     def __init__(self, *, issuer: str, resource: str, token_store: TokenStore,
                  scopes_supported: tuple[str, ...] = ("mcp:use",),
                  preregistered: Optional[dict[str, tuple[str, ...]]] = None,
-                 cimd_fetcher: Callable[[str], dict] = default_cimd_fetcher,
+                 cimd_fetcher: Optional[Callable[[str], dict]] = None,
+                 cimd_cache_entries: int = 256,
                  enable_dcr: bool = False,
                  code_ttl_seconds: int = 60,
                  token_ttl_seconds: int = 600,
@@ -205,7 +289,11 @@ class AuthorizationServer:
         self.tokens = token_store
         self.scopes_supported = scopes_supported
         self.preregistered = dict(preregistered or {})       # client_id -> redirect_uris
-        self.cimd_fetcher = cimd_fetcher
+        # production: the SSRF-safe fetch behind a small cache that honours the document's
+        # HTTP caching directives; an injected fetcher (tests) is used as given, uncached.
+        self.cimd_fetcher = cimd_fetcher if cimd_fetcher is not None else self._cached_cimd
+        self._cimd_cache: dict[str, tuple[dict, float]] = {}
+        self._cimd_cache_entries = int(cimd_cache_entries)
         self.enable_dcr = enable_dcr
         self.code_ttl = code_ttl_seconds
         self.token_ttl = token_ttl_seconds
@@ -231,6 +319,21 @@ class AuthorizationServer:
         return _json(200, doc)
 
     # client resolution ---------------------------------------------------- #
+    def _cached_cimd(self, client_id_url: str, *, fetch: Callable = fetch_cimd_document) -> dict:
+        now = self._clock()
+        hit = self._cimd_cache.get(client_id_url)
+        if hit is not None and now < hit[1]:
+            return hit[0]
+        doc, lifetime = fetch(client_id_url)
+        self._cimd_cache.pop(client_id_url, None)
+        if lifetime > 0:
+            for url in [u for u, (_d, exp) in self._cimd_cache.items() if now >= exp]:
+                self._cimd_cache.pop(url, None)
+            while len(self._cimd_cache) >= self._cimd_cache_entries:
+                self._cimd_cache.pop(next(iter(self._cimd_cache)))   # oldest insertion first
+            self._cimd_cache[client_id_url] = (doc, now + lifetime)
+        return doc
+
     def _resolve_client(self, client_id: str) -> ResolvedClient:
         if client_id in self.preregistered:
             return ResolvedClient(client_id, tuple(self.preregistered[client_id]), "preregistered")
@@ -238,7 +341,14 @@ class AuthorizationServer:
             return ResolvedClient(client_id, tuple(self._dcr_clients[client_id]), "dcr")
         # CIMD: client_id is an https URL naming its own document (primary dynamic path)
         if client_id.startswith("https://"):
-            doc = self.cimd_fetcher(client_id)
+            try:
+                doc = self.cimd_fetcher(client_id)
+            except CIMDError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- a broken fetch refuses the client, never a 500
+                raise CIMDError("client_id document could not be fetched: %s" % type(exc).__name__) from None
+            if not isinstance(doc, dict):
+                raise CIMDError("client_id document is not a JSON object")
             if doc.get("client_id") != client_id:
                 raise CIMDError("document client_id does not equal its URL")
             redirects = doc.get("redirect_uris")

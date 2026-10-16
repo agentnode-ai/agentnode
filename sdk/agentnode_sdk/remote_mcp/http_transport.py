@@ -521,7 +521,8 @@ class RemoteMCPApp:
             principal_id = self.principal_resolver(scope, headers) if self.principal_resolver else None
             if not principal_id:
                 return await self._send(send, 401, {"error": "login_required"})
-            return await self._triple(send, self.authz.authorize(params, principal_id=principal_id))
+            return await self._triple(send, await self._off_loop(
+                self.authz.authorize, params, principal_id=principal_id))
         return await self._authorize_production(scope, headers, params, send)
 
     async def _authorize_production(self, scope, headers, params, send) -> None:
@@ -543,7 +544,8 @@ class RemoteMCPApp:
             return await self._consent(send, norm, subject)
 
         # Fresh request: FULLY validate before any login/pairing is ever offered.
-        norm, err = self.authz.validate(params)
+        # may fetch a CIMD document over the network: never on the event loop
+        norm, err = await self._off_loop(self.authz.validate, params)
         if err is not None:
             return await self._triple(send, err)
         subject = self.login_provider.subject(scope, headers)
@@ -582,9 +584,16 @@ class RemoteMCPApp:
                                            "<p>No authorization was granted.</p>")
         # authz.authorize re-validates everything (client, exact redirect_uri, PKCE, resource)
         # before issuing, so the consent form's embedded fields are never trusted on their own.
-        return await self._triple(send, self.authz.authorize(
-            form, principal_id=subject.principal_id, granted_scopes=subject.scopes,
-            device_id=subject.device_id))
+        return await self._triple(send, await self._off_loop(
+            self.authz.authorize, form, principal_id=subject.principal_id,
+            granted_scopes=subject.scopes, device_id=subject.device_id))
+
+    @staticmethod
+    async def _off_loop(fn, *args, **kwargs):
+        """Run blocking work (a CIMD fetch can take up to its total deadline) in the executor so
+        one slow or hostile client document never stalls every other request on the loop."""
+        import functools
+        return await asyncio.get_event_loop().run_in_executor(None, functools.partial(fn, *args, **kwargs))
 
     def _consent_html(self, norm: dict, subject) -> str:
         # Every value goes into an HTML ATTRIBUTE via html.escape(quote=True); there is NO inline
