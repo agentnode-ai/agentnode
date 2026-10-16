@@ -53,7 +53,40 @@ def test_transport_failure_refuses_the_client_not_a_crash():
     assert norm is None and err[0] == 400 and json.loads(err[2])["error"] == "invalid_client"
 
 
-def test_total_deadline_cannot_be_stretched_by_a_trickling_peer():
+def _tls_material(tmp_path):
+    import datetime as dt
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+    now = dt.datetime.now(dt.timezone.utc)
+    ca_key = ec.generate_private_key(ec.SECP256R1())
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test ca")])
+    ca = (x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name)
+          .public_key(ca_key.public_key()).serial_number(x509.random_serial_number())
+          .not_valid_before(now - dt.timedelta(hours=1)).not_valid_after(now + dt.timedelta(days=1))
+          .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+          .sign(ca_key, hashes.SHA256()))
+    key = ec.generate_private_key(ec.SECP256R1())
+    leaf = (x509.CertificateBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "client.example")]))
+            .issuer_name(ca_name).public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - dt.timedelta(hours=1)).not_valid_after(now + dt.timedelta(days=1))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName("client.example")]), critical=False)
+            .sign(ca_key, hashes.SHA256()))
+    (tmp_path / "ca.pem").write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+    (tmp_path / "leaf.pem").write_bytes(leaf.public_bytes(serialization.Encoding.PEM))
+    (tmp_path / "leaf.key").write_bytes(key.private_bytes(serialization.Encoding.PEM,
+                                        serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    return str(tmp_path / "ca.pem"), str(tmp_path / "leaf.pem"), str(tmp_path / "leaf.key")
+
+
+def test_total_deadline_cannot_be_stretched_by_a_trickling_peer(tmp_path, monkeypatch):
+    import ssl
+    cafile, certfile, keyfile = _tls_material(tmp_path)
+    real_ctx = ssl.create_default_context
+    monkeypatch.setattr(ssl, "create_default_context", lambda *a, **k: real_ctx(cafile=cafile))
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(certfile, keyfile)
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0))
     srv.listen(1)
@@ -62,19 +95,17 @@ def test_total_deadline_cannot_be_stretched_by_a_trickling_peer():
     def trickle():
         conn, _ = srv.accept()
         try:
-            conn.recv(4096)                          # the ClientHello
-            # a well-formed TLS record header announcing 16 KiB, then its body one byte every
-            # 0.2 s for 4 s: every single read succeeds well within any per-read timeout, so
-            # only a TOTAL deadline can end this before the peer gives up (>= 4 s)
-            conn.sendall(b"\x16\x03\x03\x40\x00")
-            end = time.monotonic() + 4.0
-            while not stop.is_set() and time.monotonic() < end:
-                conn.sendall(b"\x00")
-                time.sleep(0.2)
+            with server_ctx.wrap_socket(conn, server_side=True) as tls:   # a REAL, valid handshake
+                tls.recv(4096)                                               # the GET
+                tls.sendall(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n")
+                # then the body one byte every 0.2 s for 4 s: each read succeeds well within any
+                # per-read timeout, so only a TOTAL deadline ends this before the peer does
+                end = time.monotonic() + 4.0
+                while not stop.is_set() and time.monotonic() < end:
+                    tls.sendall(b" ")
+                    time.sleep(0.2)
         except OSError:
             pass
-        finally:
-            conn.close()
     threading.Thread(target=trickle, daemon=True).start()
     t0 = time.monotonic()
     try:

@@ -120,11 +120,15 @@ def _pinned_https_get(ip: str, port: int, hostname: str, path: str, timeout: flo
     ctx = ssl.create_default_context()
     raw = socket.create_connection((ip, port), timeout=timeout)
     expired = []
+    # wrap_socket DETACHES `raw`, so the watchdog must act on whichever socket currently owns the
+    # descriptor; it shuts that descriptor at the OS level (below the TLS layer), which wakes a
+    # read blocked in another thread.
+    live = [raw]
 
     def kill():
         expired.append(True)
         try:
-            raw.shutdown(socket.SHUT_RDWR)
+            socket.socket.shutdown(live[0], socket.SHUT_RDWR)
         except OSError:
             pass
     watchdog = threading.Timer(timeout, kill)
@@ -132,7 +136,7 @@ def _pinned_https_get(ip: str, port: int, hostname: str, path: str, timeout: flo
     watchdog.start()
     try:
         conn = http.client.HTTPSConnection(hostname, port, timeout=timeout, context=ctx)
-        conn.sock = ctx.wrap_socket(raw, server_hostname=hostname)
+        live[0] = conn.sock = ctx.wrap_socket(raw, server_hostname=hostname)
         conn.request("GET", path, headers={"Accept": "application/json", "Host": hostname,
                                             "Connection": "close"})
         resp = conn.getresponse()
