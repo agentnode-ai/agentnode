@@ -230,42 +230,68 @@ class AuthorizationServer:
             return ResolvedClient(client_id, tuple(redirects), "cimd")
         raise CIMDError("unknown client_id and not a CIMD https URL")
 
+    # validation (done BEFORE any login/pairing is ever offered) ----------- #
+    #: fields a normalized, validated authorization request carries forward.
+    REQUEST_FIELDS = ("client_id", "redirect_uri", "response_type", "code_challenge",
+                      "code_challenge_method", "resource", "state", "scope")
+    #: per-field length cap, so an oversized value cannot be stashed or reflected.
+    MAX_FIELD_LEN = 2048
+
+    def validate(self, params: dict[str, str]):
+        """Fully validate an authorization request: registered/CIMD client, EXACT redirect_uri,
+        response_type=code, PKCE S256, resource, scope and size limits. Returns
+        ``(normalized_request, None)`` or ``(None, error_triple)``. No side effects, mints
+        nothing — so an INVALID request can be rejected before any login or device pairing."""
+        for k, v in params.items():
+            if isinstance(v, str) and len(v) > self.MAX_FIELD_LEN:
+                return None, _json(400, {"error": "invalid_request",
+                                         "error_description": "%s too long" % k})
+        for req in ("client_id", "redirect_uri", "response_type", "code_challenge",
+                    "code_challenge_method", "resource"):
+            if not params.get(req):
+                return None, _json(400, {"error": "invalid_request",
+                                         "error_description": "missing %s" % req})
+        if params["response_type"] != "code":
+            return None, _json(400, {"error": "unsupported_response_type"})
+        if params["code_challenge_method"] != "S256":
+            return None, _json(400, {"error": "invalid_request",
+                                     "error_description": "PKCE S256 required"})
+        if params["resource"] != self.resource:
+            return None, _json(400, {"error": "invalid_target",
+                                     "error_description": "resource mismatch"})
+        try:
+            client = self._resolve_client(params["client_id"])
+        except CIMDError as exc:
+            return None, _json(400, {"error": "invalid_client", "error_description": str(exc)})
+        if params["redirect_uri"] not in client.redirect_uris:
+            # per OAuth, an unregistered redirect_uri must NOT be redirected to
+            return None, _json(400, {"error": "invalid_request",
+                                     "error_description": "redirect_uri mismatch"})
+        norm = {k: str(params.get(k, "")) for k in self.REQUEST_FIELDS}
+        norm["client_id"] = client.client_id
+        return norm, None
+
     # authorize ------------------------------------------------------------ #
     def authorize(self, params: dict[str, str], *, principal_id: str,
                   granted_scopes: Optional[tuple[str, ...]] = None,
                   device_id: str = "") -> tuple[int, list, bytes]:
         """The user has authenticated to AgentNode out of band; ``principal_id`` is that
         identity and ``granted_scopes`` what they consented to. Returns a 302 redirect with the
-        code, or a JSON error. (Never redirects to an unvalidated redirect_uri.)"""
-        for req in ("client_id", "redirect_uri", "response_type", "code_challenge",
-                    "code_challenge_method", "resource"):
-            if not params.get(req):
-                return _json(400, {"error": "invalid_request", "error_description": "missing %s" % req})
-        if params["response_type"] != "code":
-            return _json(400, {"error": "unsupported_response_type"})
-        if params["code_challenge_method"] != "S256":
-            return _json(400, {"error": "invalid_request", "error_description": "PKCE S256 required"})
-        if params["resource"] != self.resource:
-            return _json(400, {"error": "invalid_target", "error_description": "resource mismatch"})
-        try:
-            client = self._resolve_client(params["client_id"])
-        except CIMDError as exc:
-            return _json(400, {"error": "invalid_client", "error_description": str(exc)})
-        if params["redirect_uri"] not in client.redirect_uris:
-            # per OAuth, an unregistered redirect_uri must NOT be redirected to
-            return _json(400, {"error": "invalid_request", "error_description": "redirect_uri mismatch"})
-
+        code, or a JSON error. Re-validates everything (never trusts a prevalidation)."""
+        norm, err = self.validate(params)
+        if err is not None:
+            return err
         scopes = granted_scopes if granted_scopes is not None else self.scopes_supported
         scopes = tuple(s for s in scopes if s in self.scopes_supported)
         code = secrets.token_urlsafe(24)
         self._codes[code] = _AuthCode(
-            client_id=client.client_id, redirect_uri=params["redirect_uri"],
-            code_challenge=params["code_challenge"], resource=params["resource"],
+            client_id=norm["client_id"], redirect_uri=norm["redirect_uri"],
+            code_challenge=norm["code_challenge"], resource=norm["resource"],
             principal_id=principal_id, scopes=scopes, device_id=device_id,
             expires_at=self._clock() + self.code_ttl)
-        state = params.get("state", "")
-        sep = "&" if "?" in params["redirect_uri"] else "?"
-        location = "%s%scode=%s%s" % (params["redirect_uri"], sep, code,
+        state = norm.get("state", "")
+        sep = "&" if "?" in norm["redirect_uri"] else "?"
+        location = "%s%scode=%s%s" % (norm["redirect_uri"], sep, code,
                                       ("&state=%s" % state) if state else "")
         return 302, [("location", location)], b""
 

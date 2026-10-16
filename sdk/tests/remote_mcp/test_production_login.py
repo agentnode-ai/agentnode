@@ -173,33 +173,164 @@ def test_no_session_bounces_to_signin(tmp_path):
     run(_bounces_to_signin(app))
 
 
-def test_samesite_retry_then_login(tmp_path):
-    # first hop (no _ss) is a same-origin redirect to pick up a SameSite=Strict cookie;
-    # still no cookie -> second hop goes to /login carrying return_to=/authorize.
+def _mint_handle(app):
+    """Drive a valid-but-signed-out GET /authorize and return the continuation handle the server
+    stashed (the 302 target is /authorize?resume=<handle>, server-generated — never a free URL)."""
+    async def go():
+        async with client(app) as c:
+            r = await c.get("/authorize", params=dict(AUTHZ_PARAMS,
+                                                      code_challenge=pkce_s256_challenge("v" * 64)))
+            assert r.status_code == 302
+            loc = r.headers["location"]
+            assert loc.startswith("/authorize?resume=")
+            return loc.split("resume=", 1)[1]
+    return run(go())
+
+
+def test_valid_signed_out_mints_handle_then_login(tmp_path):
     app, *_ = make_login_app(str(tmp_path))
+    handle = _mint_handle(app)
+    assert re.fullmatch(r"[A-Za-z0-9_-]{16,128}", handle)
 
     async def go():
-        async with client(app) as c:  # no auto-follow
-            r1 = await c.get("/authorize", params=dict(AUTHZ_PARAMS, code_challenge="x"))
-            assert r1.status_code == 302 and "_ss=1" in r1.headers["location"]
-            r2 = await c.get(r1.headers["location"])
-            assert r2.status_code == 302
-            loc = r2.headers["location"]
-            assert loc.startswith("/login?return_to=") and "%2Fauthorize" in loc
+        async with client(app) as c:
+            r = await c.get("/authorize", params={"resume": handle})   # not signed in
+            assert r.status_code == 302 and r.headers["location"] == "/login?k=" + handle
+            r2 = await c.get("/login", params={"k": handle})
+            assert r2.status_code == 200 and "Sign in to AgentNode" in r2.text
+            # the page carries ONLY the handle and resumes via a server path, no free URL
+            assert ("/authorize?resume='+encodeURIComponent(k)" in r2.text
+                    or "resume='+encodeURIComponent(k)" in r2.text)
 
     run(go())
 
 
-def test_login_page_sanitizes_return_to(tmp_path):
+def test_login_requires_a_handle_and_ignores_return_to(tmp_path):
     app, *_ = make_login_app(str(tmp_path))
 
     async def go():
         async with client(app) as c:
-            r = await c.get("/login", params={"return_to": "https://evil.example/x"})
-            assert r.status_code == 200
-            # open-redirect target rejected -> falls back to the same-origin /authorize
-            assert '"/authorize"' in r.text or "'/authorize'" in r.text
-            assert "evil.example" not in r.text
+            # no handle -> rejected, never a sign-in prompt
+            r = await c.get("/login")
+            assert r.status_code == 400 and "Sign in to AgentNode" not in r.text
+            # a free return_to is ignored entirely (not reflected, no open redirect)
+            r2 = await c.get("/login", params={"return_to": "https://evil.example/x", "k": "bad"})
+            assert r2.status_code == 400 and "evil.example" not in r2.text
+
+    run(go())
+
+
+def test_invalid_oauth_request_rejected_before_login(tmp_path):
+    app, *_ = make_login_app(str(tmp_path))
+
+    async def go():
+        async with client(app) as c:
+            for bad in (dict(AUTHZ_PARAMS, client_id="not-registered", code_challenge="x"),
+                        dict(AUTHZ_PARAMS, redirect_uri="https://evil.example/cb", code_challenge="x"),
+                        dict(AUTHZ_PARAMS, response_type="token", code_challenge="x"),
+                        dict(AUTHZ_PARAMS, code_challenge_method="plain", code_challenge="x"),
+                        dict(AUTHZ_PARAMS, resource="https://other.example/mcp", code_challenge="x"),
+                        {k: v for k, v in dict(AUTHZ_PARAMS, code_challenge="x").items()
+                         if k != "code_challenge"}):
+                r = await c.get("/authorize", params=bad)
+                # a 4xx error, NOT a 302 bounce to login/pairing
+                assert 400 <= r.status_code < 500, (bad, r.status_code)
+                assert r.status_code != 302 and "/login" not in r.headers.get("location", "")
+
+    run(go())
+
+
+def test_unknown_and_reused_and_expired_handle(tmp_path):
+    app, store, acct, sid, csrf = make_login_app(str(tmp_path))
+    cookie = {"cookie": "%s=%s" % (COOKIE, sid)}
+    handle = _mint_handle(app)                                    # minted outside the loop
+    handle2 = _mint_handle(app)
+    app._continuations[handle2] = (app._continuations[handle2][0], 0.0)  # force-expire
+
+    async def go():
+        async with client(app) as c:
+            # unknown handle
+            r = await c.get("/authorize", params={"resume": "Z" * 40})
+            assert r.status_code == 400 and "expired" in r.text.lower()
+            r = await c.get("/login", params={"k": "Z" * 40})
+            assert r.status_code == 400
+            # signed in -> consent consumes the single-use handle
+            r2 = await c.get("/authorize", params={"resume": handle}, headers=cookie)
+            assert r2.status_code == 200 and "Authorize access" in r2.text
+            # reused -> gone (single use)
+            r3 = await c.get("/authorize", params={"resume": handle}, headers=cookie)
+            assert r3.status_code == 400 and "expired" in r3.text.lower()
+            # expired -> rejected
+            r4 = await c.get("/authorize", params={"resume": handle2}, headers=cookie)
+            assert r4.status_code == 400
+
+    run(go())
+
+
+def test_handle_rejects_injection_charset(tmp_path):
+    app, *_ = make_login_app(str(tmp_path))
+    evil = "</script><script>alert(1)</script>"
+
+    async def go():
+        async with client(app) as c:
+            r = await c.get("/login", params={"k": evil})
+            assert r.status_code == 400
+            assert "<script>alert" not in r.text and evil not in r.text
+            r2 = await c.get("/authorize", params={"resume": evil})
+            assert r2.status_code == 400
+
+    run(go())
+
+
+def test_consent_escapes_injection_in_state(tmp_path):
+    # a signed-in request whose state carries HTML/script + a unicode line separator must be
+    # escaped into the consent page (attribute context), never reflected raw into any script.
+    app, store, acct, sid, csrf = make_login_app(str(tmp_path))
+    cookie = {"cookie": "%s=%s" % (COOKIE, sid)}
+    evil_state = "\"><script>alert(1)</script> x"
+    params = dict(AUTHZ_PARAMS, code_challenge=pkce_s256_challenge("v" * 64), state=evil_state)
+
+    async def go():
+        async with client(app) as c:
+            r = await c.get("/authorize", params=params, headers=cookie)
+            assert r.status_code == 200 and "Authorize access" in r.text
+            assert "<script>alert(1)" not in r.text        # escaped, not executable
+            assert " " not in r.text or "&" in r.text  # no raw line separator into a script
+
+    run(go())
+
+
+def test_security_headers_on_login_and_consent(tmp_path):
+    app, store, acct, sid, csrf = make_login_app(str(tmp_path))
+    cookie = {"cookie": "%s=%s" % (COOKIE, sid)}
+    handle = _mint_handle(app)
+
+    def check(h):
+        csp = h.get("content-security-policy", "")
+        assert "frame-ancestors 'none'" in csp and "base-uri 'none'" in csp
+        assert "form-action 'self'" in csp
+        assert h.get("x-frame-options") == "DENY"
+        assert h.get("referrer-policy") == "no-referrer"
+        assert h.get("x-content-type-options") == "nosniff"
+        assert h.get("cache-control") == "no-store"
+
+    async def go():
+        async with client(app) as c:
+            check((await c.get("/login", params={"k": handle})).headers)        # login page
+            check((await c.get("/authorize", params={"resume": handle},
+                               headers=cookie)).headers)                         # consent page
+
+    run(go())
+
+
+def test_oversize_authorize_query_rejected(tmp_path):
+    app, *_ = make_login_app(str(tmp_path))
+
+    async def go():
+        async with client(app) as c:
+            r = await c.get("/authorize", params=dict(AUTHZ_PARAMS, code_challenge="x",
+                                                      state="A" * 5000))
+            assert r.status_code == 414
 
     run(go())
 

@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import secrets
 from typing import Any, Awaitable, Callable, Optional
-from urllib.parse import parse_qsl, quote
 
 from agentnode_sdk.capability.usability_adapter import UsabilityMCPAdapter
 from agentnode_sdk.remote_mcp.limits import ConcurrencyGate, Limits, RateLimiter
@@ -37,6 +38,20 @@ def _h(value: str) -> str:
 SUPPORTED_VERSIONS = ("2026-07-28", "2025-11-25")
 PRIMARY_VERSION = "2026-07-28"
 REQUIRED_SCOPE = "mcp:use"
+#: cap on the /authorize query so an oversized request cannot be stashed or reflected.
+MAX_AUTHORIZE_QUERY = 4096
+#: how long a login continuation handle is valid before it must be re-initiated.
+CONTINUATION_TTL = 300.0
+#: the only shape a continuation handle may take (so it is safe to embed and to key on).
+_HANDLE_RE = re.compile(r"[A-Za-z0-9_-]{16,128}\Z")
+
+
+def _js_string(value: str) -> str:
+    """A JSON string literal safe to place inside an HTML <script>: `json.dumps` alone is not
+    (it leaves `</script>`, `<`, `>`, `&` and the U+2028/U+2029 line separators intact)."""
+    s = json.dumps(value)
+    return (s.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+             .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
 #: a request that merely authenticates still cannot run a tool without a human approval
 PrincipalResolver = Callable[[dict, dict], Optional[str]]  # (scope, headers) -> principal_id
 
@@ -71,8 +86,12 @@ class RemoteMCPApp:
         self.limits = limits or Limits()
         self.allow_x_access_token = allow_x_access_token
         clock = clock or time.time
+        self._now = clock
         self._rate = RateLimiter(self.limits.calls_per_minute_per_principal, clock)
         self._gate = ConcurrencyGate(self.limits.max_concurrent_calls, self.limits.max_queued_calls)
+        # short-lived, single-use, crypto-random continuation handles for the login bridge:
+        # handle -> (normalized validated request, expires_at). /login carries only the handle.
+        self._continuations: dict[str, tuple[dict, float]] = {}
 
     # ---- ASGI entrypoint ------------------------------------------------- #
     async def __call__(self, scope: dict, receive: Callable[[], Awaitable[dict]],
@@ -242,43 +261,79 @@ class RemoteMCPApp:
         resp = self.adapter.handle(msg)
         return await self._raw(send, 200, json.dumps(resp).encode())
 
+    # ---- continuation handles (login bridge) ----------------------------- #
+    def _mint_continuation(self, norm: dict) -> str:
+        handle = secrets.token_urlsafe(24)
+        self._continuations[handle] = (norm, self._now() + CONTINUATION_TTL)
+        return handle
+
+    def _peek_continuation(self, handle: str) -> Optional[dict]:
+        if not handle or not _HANDLE_RE.match(handle):
+            return None
+        rec = self._continuations.get(handle)
+        if rec is None:
+            return None
+        norm, exp = rec
+        if self._now() >= exp:
+            self._continuations.pop(handle, None)
+            return None
+        return norm
+
+    def _redeem_continuation(self, handle: str) -> Optional[dict]:
+        """Single-use: the handle is removed on redemption, so it cannot be replayed."""
+        norm = self._peek_continuation(handle)
+        if norm is not None:
+            self._continuations.pop(handle, None)  # single-use consume
+        return norm
+
     # ---- AS endpoints ---------------------------------------------------- #
     async def _authorize(self, scope, headers, send) -> None:
+        if len(scope.get("query_string", b"")) > MAX_AUTHORIZE_QUERY:
+            return await self._send(send, 414, {"error": "request_too_long"})
         params = self._query(scope)
-        if self.login_provider is not None:
-            return await self._authorize_consent_page(scope, headers, params, send)
-        # Stand path: a pre-shared-secret resolver, used ONLY by build_stand_app.
-        principal_id = self.principal_resolver(scope, headers) if self.principal_resolver else None
-        if not principal_id:
-            return await self._send(send, 401, {"error": "login_required"})
-        return await self._triple(send, self.authz.authorize(params, principal_id=principal_id))
+        if self.login_provider is None:
+            # Stand path: a pre-shared-secret resolver, used ONLY by build_stand_app.
+            principal_id = self.principal_resolver(scope, headers) if self.principal_resolver else None
+            if not principal_id:
+                return await self._send(send, 401, {"error": "login_required"})
+            return await self._triple(send, self.authz.authorize(params, principal_id=principal_id))
+        return await self._authorize_production(scope, headers, params, send)
 
-    async def _authorize_consent_page(self, scope, headers, params, send) -> None:
-        """GET /authorize in production: render a consent page for the signed-in account.
+    async def _authorize_production(self, scope, headers, params, send) -> None:
+        resume = params.get("resume", "")
+        if resume:
+            # Continuation of a request validated BEFORE the login bounce. The handle is the only
+            # thing /login ever carried; the request itself was never a free URL.
+            norm = self._peek_continuation(resume)
+            if norm is None:
+                return await self._secure_page(send, 400, "<h1>Link expired</h1><p>Please start "
+                                               "the authorization again.</p>")
+            subject = self.login_provider.subject(scope, headers)
+            if subject is None:
+                return await self._redirect(send, "/login?k=" + resume)   # go sign in
+            self._redeem_continuation(resume)                              # single-use
+            if not subject.permitted:
+                return await self._secure_page(send, 403, "<h1>Not permitted</h1><p>This device "
+                                               "may not run work (no RUN), so no mcp:use.</p>")
+            return await self._consent(send, norm, subject)
 
-        The account comes from the gateway session cookie via the login provider; the page
-        POSTs the same OAuth parameters back with a CSRF confirmation to actually issue a code.
-        No code is ever issued on this GET.
-        """
+        # Fresh request: FULLY validate before any login/pairing is ever offered.
+        norm, err = self.authz.validate(params)
+        if err is not None:
+            return await self._triple(send, err)
         subject = self.login_provider.subject(scope, headers)
-        if subject is None:
-            # The login -> return-to-/authorize bridge. Two reasons `subject` is None:
-            # (1) the browser IS signed in but arrived by a cross-site top-level navigation, so
-            #     the SameSite=Strict `__Host-agentnode` cookie was withheld on this first hop;
-            #     one same-origin redirect back to /authorize makes the browser resend it.
-            # (2) the browser is genuinely signed out; send it to the same-origin sign-in landing
-            #     carrying this exact /authorize URL as return_to, and it comes back here after.
-            qs = scope.get("query_string", b"").decode("latin1")
-            if "_ss=1" not in qs:
-                sep = "&" if qs else ""
-                return await self._redirect(send, "/authorize?%s%s_ss=1" % (qs, sep))
-            return await self._redirect(
-                send, "/login?return_to=" + quote("/authorize?" + qs, safe=""))
-        if not subject.permitted:
-            return await self._html(send, 403,
-                                    "<h1>Not permitted</h1><p>This device may not run work "
-                                    "(no RUN capability), so it cannot be granted mcp:use.</p>")
-        return await self._html(send, 200, self._consent_html(params, subject))
+        if subject is not None:
+            if not subject.permitted:
+                return await self._secure_page(send, 403, "<h1>Not permitted</h1><p>This device "
+                                               "may not run work (no RUN), so no mcp:use.</p>")
+            return await self._consent(send, norm, subject)
+        # Valid but not signed in: stash the normalized request under a single-use handle and
+        # bounce once same-origin (which also makes a SameSite=Strict cookie be resent).
+        handle = self._mint_continuation(norm)
+        return await self._redirect(send, "/authorize?resume=" + handle)
+
+    async def _consent(self, send, norm: dict, subject) -> None:
+        return await self._secure_page(send, 200, self._consent_html(norm, subject))
 
     async def _authorize_post(self, scope, headers, receive, send) -> None:
         body, too_big = await self._read_body(receive, self.limits.max_body_bytes)
@@ -287,25 +342,24 @@ class RemoteMCPApp:
         form = self._parse_form(body)
         subject = self.login_provider.confirmed_subject(scope, headers, form)
         if subject is None:
-            return await self._html(send, 403, "<h1>Could not confirm</h1>"
-                                    "<p>Your session or confirmation was not valid.</p>")
+            return await self._secure_page(send, 403, "<h1>Could not confirm</h1>"
+                                           "<p>Your session or confirmation was not valid.</p>")
         if form.get("decision") != "allow" or not subject.permitted:
-            # Deny WITHOUT redirecting: an un-validated redirect_uri must never be a redirect
-            # target, and declining consent is not an error to hand back to the client.
-            return await self._html(send, 200, "<h1>Request declined</h1>"
-                                    "<p>No authorization was granted.</p>")
+            return await self._secure_page(send, 200, "<h1>Request declined</h1>"
+                                           "<p>No authorization was granted.</p>")
+        # authz.authorize re-validates everything (client, exact redirect_uri, PKCE, resource)
+        # before issuing, so the consent form's embedded fields are never trusted on their own.
         return await self._triple(send, self.authz.authorize(
             form, principal_id=subject.principal_id, granted_scopes=subject.scopes,
             device_id=subject.device_id))
 
-    def _consent_html(self, params: dict, subject) -> str:
-        fields = {k: params.get(k, "") for k in (
-            "client_id", "redirect_uri", "response_type", "code_challenge",
-            "code_challenge_method", "resource", "state", "scope")}
-        hidden = "".join('<input type="hidden" name="%s" value="%s">' % (k, _h(v))
-                         for k, v in fields.items())
+    def _consent_html(self, norm: dict, subject) -> str:
+        # Every value goes into an HTML ATTRIBUTE via html.escape(quote=True); there is NO inline
+        # script on this page (CSP script-src 'none'), so no value reaches a script context.
+        hidden = "".join('<input type="hidden" name="%s" value="%s">' % (k, _h(norm.get(k, "")))
+                         for k in self.authz.REQUEST_FIELDS)
         return (
-            "<!doctype html><meta charset=utf-8><title>Authorize</title>"
+            "<!doctype html><meta charset=\"utf-8\"><title>Authorize</title>"
             "<h1>Authorize access</h1>"
             "<p>Client <code>%s</code> is requesting <code>%s</code> on "
             "<code>%s</code> for account <code>%s</code>.</p>"
@@ -313,8 +367,8 @@ class RemoteMCPApp:
             "<input type=\"hidden\" name=\"confirm\" value=\"%s\">"
             "<button name=\"decision\" value=\"allow\">Allow</button> "
             "<button name=\"decision\" value=\"deny\">Deny</button></form>" % (
-                _h(fields["client_id"]), _h(" ".join(subject.scopes) or "(none)"),
-                _h(fields["resource"]), _h(subject.principal_id), hidden,
+                _h(norm.get("client_id", "")), _h(" ".join(subject.scopes) or "(none)"),
+                _h(norm.get("resource", "")), _h(subject.principal_id), hidden,
                 _h(subject.consent_token)))
 
     async def _form_endpoint(self, receive, send, fn) -> None:
@@ -366,30 +420,48 @@ class RemoteMCPApp:
     async def _redirect(self, send, location: str) -> None:
         return await self._raw(send, 302, b"", [("location", location)])
 
+    async def _secure_page(self, send, status: int, body_html: str,
+                           nonce: Optional[str] = None) -> None:
+        """Serve a login/consent page with restrictive headers (CSP incl. frame-ancestors/base-uri
+        /form-action, no-referrer, nosniff, no-store, and X-Frame-Options for old agents)."""
+        script_src = "'nonce-%s'" % nonce if nonce else "'none'"
+        csp = ("default-src 'none'; style-src 'unsafe-inline'; connect-src 'self'; "
+               "form-action 'self'; base-uri 'none'; frame-ancestors 'none'; script-src %s"
+               % script_src)
+        headers = [("content-type", "text/html; charset=utf-8"),
+                   ("content-security-policy", csp), ("x-frame-options", "DENY"),
+                   ("referrer-policy", "no-referrer"), ("x-content-type-options", "nosniff"),
+                   ("cache-control", "no-store")]
+        return await self._raw(send, status, body_html.encode("utf-8"), headers)
+
     async def _login_page(self, scope, send) -> None:
-        """A same-origin sign-in landing that drives the REAL gateway redeem (POST /v1/session,
-        served same-origin by the gateway) and then returns to the pending /authorize. It mints
-        no session itself and injects no cookie; it only carries ``return_to`` the product lacks.
-        ``return_to`` is constrained to a /authorize path so it can never be an open redirect."""
-        q = dict(parse_qsl(scope.get("query_string", b"").decode("latin1")))
-        return_to = q.get("return_to", "/authorize")
-        if not return_to.startswith("/authorize"):
-            return_to = "/authorize"
+        """A same-origin sign-in landing that carries ONLY a single-use continuation handle (never
+        a free URL). It drives the REAL gateway redeem (POST /v1/session, same origin) and then
+        resumes the pre-validated request via /authorize?resume=<handle>. Mints no session and
+        injects no cookie. The handle's restricted charset + script-safe encoding keep the inline
+        script XSS-free, and it runs only under a per-response CSP nonce."""
+        params = self._query(scope)
+        handle = params.get("k", "")
+        if self._peek_continuation(handle) is None:   # unknown / expired / malformed handle
+            return await self._secure_page(send, 400, "<h1>Link expired</h1><p>Please start the "
+                                           "authorization again.</p>")
+        nonce = secrets.token_urlsafe(16)
         html = (
-            "<!doctype html><meta charset=utf-8><title>Sign in</title>"
+            "<!doctype html><meta charset=\"utf-8\"><title>Sign in</title>"
             "<h1>Sign in to AgentNode</h1>"
             "<p>Enter the pairing code from your invitation to authorize this request.</p>"
             "<form id=\"f\"><input name=\"code\" placeholder=\"ABCD-EFGH-JKLM\" autocomplete=\"off\"> "
             "<input name=\"client_name\" value=\"browser\"> "
             "<button type=\"submit\">Sign in</button></form><p id=\"msg\"></p>"
-            "<script>const rt=%s;"
+            "<script nonce=\"%s\">const k=%s;"
             "document.getElementById('f').addEventListener('submit',async e=>{e.preventDefault();"
             "const fd=new FormData(e.target);"
             "const r=await fetch('/v1/session',{method:'POST',headers:{'content-type':'application/json'},"
             "body:JSON.stringify({code:fd.get('code'),client_name:fd.get('client_name')})});"
-            "if(r.ok){window.location=rt;}else{document.getElementById('msg').textContent="
-            "'sign-in failed ('+r.status+')';}});</script>" % json.dumps(return_to))
-        return await self._html(send, 200, html)
+            "if(r.ok){window.location='/authorize?resume='+encodeURIComponent(k);}"
+            "else{document.getElementById('msg').textContent='sign-in failed ('+r.status+')';}});"
+            "</script>" % (nonce, _js_string(handle)))
+        return await self._secure_page(send, 200, html, nonce=nonce)
 
     async def _triple(self, send, triple) -> None:
         status, headers, body = triple
