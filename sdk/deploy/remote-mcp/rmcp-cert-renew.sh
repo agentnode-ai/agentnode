@@ -91,23 +91,36 @@ install -m 0600 "$ISSUED_KEY" "$rel/privkey.pem"
 sync
 prev=$(readlink "$TLS_DIR/live" 2>/dev/null || true)
 swap_to() { ln -sfn "$1" "$TLS_DIR/live.next" && mv -T "$TLS_DIR/live.next" "$TLS_DIR/live"; }
+served_fp() {
+  echo | openssl s_client -connect "$SERVE_CHECK_ADDR:443" -servername "$DOMAIN" 2>/dev/null \
+    | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d : | tr 'A-F' 'a-f' || true
+}
+wait_served() {  # a reload is asynchronous for nginx workers: wait (bounded) for $1 to be served
+  local fp=""
+  for _ in $(seq 1 15); do fp=$(served_fp); [ "$fp" = "$1" ] && break; sleep 1; done
+  echo "$fp"
+}
 rollback() {
   log "ROLLBACK: $1"
-  if [ -n "$prev" ]; then swap_to "$prev"; "$NGINX_BIN" -t && systemctl reload nginx || true; fi
+  if [ -n "$prev" ]; then
+    swap_to "$prev"
+    if "$NGINX_BIN" -t && systemctl reload nginx; then
+      want=$(leaf_fp "$prev/fullchain.pem")
+      got=$(wait_served "$want")
+      if [ "$got" = "$want" ]; then log "rollback verified: serving ${want:0:16} again"
+      else log "rollback NOT verified: serving '${got:0:16}', expected ${want:0:16}"; fi
+    else
+      log "rollback reload failed: nginx needs an operator"
+    fi
+  fi
   die "$1 (rolled back to ${prev:-nothing})"
 }
 swap_to "$rel"
 "$NGINX_BIN" -t 2>&1 || rollback "nginx -t rejected the configuration with the new certificate"
 systemctl reload nginx || rollback "nginx reload failed"
 
-# --- confirm nginx actually serves it (the reload is asynchronous for workers) ----------------
-served=""
-for _ in $(seq 1 15); do
-  served=$(echo | openssl s_client -connect "$SERVE_CHECK_ADDR:443" -servername "$DOMAIN" 2>/dev/null \
-           | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d : | tr 'A-F' 'a-f' || true)
-  [ "$served" = "$after" ] && break
-  sleep 1
-done
+# --- confirm nginx actually serves it ---------------------------------------------------------
+served=$(wait_served "$after")
 [ "$served" = "$after" ] || rollback "nginx serves ${served:0:16}, not the new ${after:0:16}"
 
 # --- keep a bounded history of releases (never the live or previous one) ---------------------
