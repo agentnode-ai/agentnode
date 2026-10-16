@@ -22,8 +22,11 @@ CONF=${RMCP_CERT_CONF:-/etc/agentnode-mcp/cert.env}
 # shellcheck disable=SC1090
 . "$CONF"
 : "${DOMAIN:?}" "${EMAIL:?}" "${ACME_SERVER:?}" "${LEGO_BIN:?}" "${LEGO_PATH:?}" "${TLS_DIR:?}"
+# the address nginx actually listens on (nginx-mcp.conf LISTEN_ADDR): the post-install check
+# must connect THERE, or a correct install would be "not served" and rolled back. No default.
+: "${SERVE_CHECK_ADDR:?SERVE_CHECK_ADDR must equal nginx LISTEN_ADDR}"
 : "${DNS_PROVIDER:=allinkl}" "${RENEW_DAYS:=30}" "${ATTEMPTS:=3}" "${KEEP_RELEASES:=5}"
-: "${STATE_DIR:=/var/lib/agentnode-mcp/cert}" "${NGINX_BIN:=nginx}" "${SERVE_CHECK_ADDR:=127.0.0.1}"
+: "${STATE_DIR:=/var/lib/agentnode-mcp/cert}" "${NGINX_BIN:=nginx}"
 : "${PYTHON:=python3}"
 
 log() { echo "rmcp-cert-renew: $*"; }

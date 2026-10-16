@@ -21,10 +21,12 @@ SDK=${1:?sdk dir}; DRILL=${2:?drill dir}; PY=${3:?python}
 DEP="$SDK/deploy/remote-mcp"; BIN="$DRILL/bin"; EV="$DRILL/drill-evidence.jsonl"
 TLS_DIR=/etc/agentnode-mcp/tls; STATE=/var/lib/agentnode-mcp/cert; ALERTS=/var/lib/agentnode-mcp/alerts/alerts.log
 DOMAIN=mcp.agentnode.net
+# nginx deliberately NOT on 127.0.0.1: the serve check must follow SERVE_CHECK_ADDR, not assume loopback
+EDGE=127.0.0.2
 : > "$EV"
 ev() { "$PY" -c 'import json,sys,time; print(json.dumps({"t": round(time.time(),1), "phase": sys.argv[1], "check": sys.argv[2], "ok": sys.argv[3] == "1", "detail": sys.argv[4]}))' "$@" >> "$EV"; }
 fp_file() { openssl x509 -in "$1" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d : | tr 'A-F' 'a-f'; }
-fp_served() { echo | openssl s_client -connect 127.0.0.1:443 -servername "$DOMAIN" 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d : | tr 'A-F' 'a-f'; }
+fp_served() { echo | openssl s_client -connect "$EDGE:443" -servername "$DOMAIN" 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d : | tr 'A-F' 'a-f'; }
 no80() { if ss -ltnH | awk '{print $4}' | grep -Eq '(^|:)80$'; then ev "$1" "no port 80 listener" 0 "$(ss -ltnH | grep ':80 ')"; else ev "$1" "no port 80 listener" 1 "none"; fi; }
 txt_clean() { local t; t=$(dig +short @127.0.0.1 -p 8053 TXT "_acme-challenge.$DOMAIN"); [ -z "$t" ] && ev "$1" "challenge TXT removed after the run" 1 "empty" || ev "$1" "challenge TXT removed after the run" 0 "$t"; }
 alerts_for() { local n; n=$(grep -c "$1" "$ALERTS" 2>/dev/null); echo "${n:-0}"; }
@@ -97,6 +99,7 @@ DNS_RESOLVERS=127.0.0.1:8053
 LEGO_BIN=$BIN/lego
 LEGO_PATH=$DRILL/lego
 TLS_DIR=$TLS_DIR
+SERVE_CHECK_ADDR=$EDGE
 STATE_DIR=$STATE
 RENEW_DAYS=30
 ATTEMPTS=2
@@ -111,8 +114,8 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -su
 ln -sfn "$TLS_DIR/releases/bootstrap" "$TLS_DIR/live"
 [ -f /etc/nginx/nginx.conf.distro ] || cp -p /etc/nginx/nginx.conf /etc/nginx/nginx.conf.distro
 install -m 0644 "$DEP/nginx-main.conf" /etc/nginx/nginx.conf
-sed 's/LISTEN_ADDR/127.0.0.1/g' "$DEP/nginx-mcp.conf" > /etc/nginx/conf.d/rmcp-mcp.conf
-nginx -t 2>/dev/null && systemctl restart nginx && ev setup "nginx (shipped config, 127.0.0.1:443, bootstrap cert)" 1 "$(nginx -v 2>&1)" \
+sed "s/LISTEN_ADDR/$EDGE/g" "$DEP/nginx-mcp.conf" > /etc/nginx/conf.d/rmcp-mcp.conf
+nginx -t 2>/dev/null && systemctl restart nginx && ev setup "nginx (shipped config, $EDGE:443, bootstrap cert)" 1 "$(nginx -v 2>&1)" \
   || { ev setup "nginx up" 0 "$(nginx -t 2>&1 | tail -2)"; exit 1; }
 for u in rmcp-cert-renew.service rmcp-cert-renew.timer rmcp-cert-check.service rmcp-cert-check.timer rmcp-alert@.service; do
   install -m 0644 "$DEP/$u" /etc/systemd/system/
@@ -133,7 +136,7 @@ check_dropin() {  # $1 = min days
 Environment=PYTHONPATH=$SDK
 ProtectHome=no
 ExecStart=
-ExecStart=$PY -m agentnode_sdk.remote_mcp.cert_check --domain $DOMAIN --connect 127.0.0.1 --cafile $DRILL/pebble/pebble-root.pem --min-days $1 --installed $TLS_DIR/live/fullchain.pem --timer rmcp-cert-renew.timer --stamp $STATE/last-success --max-renew-age-hours 36
+ExecStart=$PY -m agentnode_sdk.remote_mcp.cert_check --domain $DOMAIN --connect $EDGE --issuer-contains Pebble --cafile $DRILL/pebble/pebble-root.pem --min-days $1 --installed $TLS_DIR/live/fullchain.pem --timer rmcp-cert-renew.timer --stamp $STATE/last-success --max-renew-age-hours 36
 EOF
   systemctl daemon-reload
 }
@@ -184,6 +187,19 @@ ev E "live rolled back to the previous release and still served" $([ "$E_FP" = "
 ev E "rollback logged" $(journalctl -u rmcp-cert-renew.service -n 30 --no-pager -o cat | grep -q ROLLBACK && echo 1 || echo 0) "$(journalctl -u rmcp-cert-renew.service -n 30 --no-pager -o cat | grep -E 'ROLLBACK|FAILED' | tr '\n' ';')"
 ev E "alert raised for the failed renewal" $(wait_alert rmcp-cert-renew.service "$a0" && echo 1 || echo 0) "$(tail -1 "$ALERTS" 2>/dev/null)"
 sed -i '/^NGINX_BIN=/d;/^RENEW_FORCE=/d' /etc/agentnode-mcp/cert.env
+systemctl reset-failed rmcp-cert-renew.service
+
+# ---- G: the serve check is load-bearing: pointed at an address nginx does not serve, a correct
+#         install is "not served" -> rollback + alert (this is the check that catches a
+#         SERVE_CHECK_ADDR / LISTEN_ADDR mismatch before it can strand a certificate) ----------
+a0=$(alerts_for rmcp-cert-renew.service)
+printf 'RENEW_FORCE=1\nSERVE_CHECK_ADDR=127.0.0.3\n' >> /etc/agentnode-mcp/cert.env
+systemctl start rmcp-cert-renew.service; rc=$?
+G_FP=$(fp_file "$TLS_DIR/live/fullchain.pem"); SERVED=$(fp_served)
+ev G "renewal FAILS when nothing serves the new certificate at SERVE_CHECK_ADDR" $([ $rc != 0 ] && echo 1 || echo 0) "rc=$rc"
+ev G "live rolled back; the previous certificate is still served" $([ "$G_FP" = "$D_FP" ] && [ "$SERVED" = "$D_FP" ] && echo 1 || echo 0) "live=${G_FP:0:16} served=${SERVED:0:16}"
+ev G "alert raised" $(wait_alert rmcp-cert-renew.service "$a0" && echo 1 || echo 0) "$(tail -1 "$ALERTS" 2>/dev/null)"
+sed -i '/^RENEW_FORCE=/d;/^SERVE_CHECK_ADDR=127.0.0.3/d' /etc/agentnode-mcp/cert.env
 systemctl reset-failed rmcp-cert-renew.service
 
 # ---- F: monitor alerts ----------------------------------------------------------------------

@@ -9,7 +9,7 @@ Type=oneshot
 Environment=PYTHONPATH=/opt/agentnode/sdk
 # Connects to the PUBLIC name as a client does, so it checks what the world is served.
 ExecStart=/opt/agentnode/venv/bin/python -m agentnode_sdk.remote_mcp.cert_check \
-    --domain mcp.agentnode.net --min-days 21 \
+    --domain mcp.agentnode.net --min-days 21 "--issuer-contains=Let's Encrypt" \
     --installed /etc/agentnode-mcp/tls/live/fullchain.pem \
     --timer rmcp-cert-renew.timer --stamp /var/lib/agentnode-mcp/cert/last-success \
     --max-renew-age-hours 36
