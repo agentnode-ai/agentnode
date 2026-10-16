@@ -660,6 +660,34 @@ def test_stamp_merges_existing_meta_and_respects_handler_value():
     assert A._stamp_modern(legacy, False) is legacy
 
 
+def test_cacheable_modern_results_carry_required_cache_hints():
+    # 2026-07-28 (SEP-2549): DiscoverResult and ListToolsResult REQUIRE ttlMs + cacheScope; the
+    # official SDK client rejects a tools/list without them. A tool call result carries none.
+    app, store, *_ = make_app()
+    tok = mint(store)
+    disc = drive(app, "POST", "/mcp", headers=mcp_headers(tok, method="server/discover"),
+                 content=discover_body()).json()["result"]
+    tl = drive(app, "POST", "/mcp", headers=mcp_headers(tok), content=rpc("tools/list")).json()["result"]
+    for res in (disc, tl):
+        assert res["ttlMs"] == 0 and res["cacheScope"] == "private"
+    call = drive(app, "POST", "/mcp", headers=mcp_headers(tok, method="tools/call"), content=rpc(
+        "tools/call", params={"name": "sequentialthinking", "arguments": {}})).json()["result"]
+    assert "ttlMs" not in call and "cacheScope" not in call
+    legacy = drive(app, "POST", "/mcp", headers=mcp_headers(tok, version="2025-11-25"),
+                   content=rpc("tools/list", modern="2025-11-25")).json()["result"]
+    assert "ttlMs" not in legacy and "cacheScope" not in legacy
+
+
+def test_cache_hint_respects_handler_value_and_skips_input_required():
+    from agentnode_sdk.remote_mcp.http_transport import RemoteMCPApp as A
+    out = A._stamp_modern({"jsonrpc": "2.0", "id": 1, "result": {"tools": [], "ttlMs": 5000,
+                                                               "cacheScope": "public"}}, True, "tools/list")
+    assert out["result"]["ttlMs"] == 5000 and out["result"]["cacheScope"] == "public"
+    out = A._stamp_modern({"jsonrpc": "2.0", "id": 1, "result": {"resultType": "input_required",
+                                                               "requestState": "s"}}, True, "tools/list")
+    assert "ttlMs" not in out["result"] and out["result"]["resultType"] == "input_required"
+
+
 # ---- modern _meta envelope is TYPED, not merely present ------------------------------- #
 
 def test_invalid_client_capabilities_or_info_refused():

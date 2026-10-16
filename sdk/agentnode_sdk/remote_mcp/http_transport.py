@@ -59,6 +59,13 @@ HEADER_MISMATCH = -32020
 UNSUPPORTED_PROTOCOL_VERSION = -32022
 #: the identity stamped on every modern result; copied per response so none aliases another.
 SERVER_INFO = {"name": "agentnode-remote-mcp", "version": "1"}
+#: 2026-07-28 (SEP-2549): results of these methods REQUIRE ttlMs + cacheScope
+#: (mcp_types.methods.CACHEABLE_METHODS).
+CACHEABLE_METHODS = frozenset({"prompts/list", "resources/list", "resources/read",
+                               "resources/templates/list", "server/discover", "tools/list"})
+#: the SDK reference default hint: immediately stale, never shared across authorization
+#: contexts — the tool list here is per account, so nothing may be served from a shared cache.
+CACHE_HINT = {"ttlMs": 0, "cacheScope": "private"}
 #: ClientCapabilities members that, when present, must themselves be objects.
 _CAPABILITY_OBJECT_FIELDS = ("experimental", "sampling", "elicitation", "roots", "extensions", "tasks")
 
@@ -296,7 +303,7 @@ class RemoteMCPApp:
             return await self._raw(send, 200, json.dumps(self._stamp_modern({
                 "jsonrpc": "2.0", "id": mid, "result": {
                     "supportedVersions": list(MODERN_VERSIONS),
-                    "capabilities": {"tools": {"listChanged": False}}}}, True)).encode())
+                    "capabilities": {"tools": {"listChanged": False}}}}, True, method)).encode())
         if method == "tools/list":
             return await self._rpc_passthrough(send, msg, modern=True)
         if method == "tools/call":
@@ -387,9 +394,11 @@ class RemoteMCPApp:
         return principal
 
     @staticmethod
-    def _stamp_modern(resp: dict, modern: bool) -> dict:
-        """Stamp a modern (2026-07-28) RESULT on the way out, as the official SDK runner does:
-        a required ``resultType`` (absent/null -> "complete") and the serverInfo identity under
+    def _stamp_modern(resp: dict, modern: bool, method: Optional[str] = None) -> dict:
+        """Shape a modern (2026-07-28) RESULT on the way out, as the official SDK runner does:
+        cache hints (``ttlMs``/``cacheScope``) on a cacheable method's result where the handler
+        left them unset (never on an ``input_required`` interim result), a required
+        ``resultType`` (absent/null -> "complete") and the serverInfo identity under
         ``_meta["io.modelcontextprotocol/serverInfo"]``. A handler-authored stamp wins, a null
         one is stamped over, a non-object ``_meta`` stays the handler's, and the existing
         ``_meta`` is merged into a NEW dict (never written into). JSON-RPC errors and legacy
@@ -397,6 +406,8 @@ class RemoteMCPApp:
         if not modern or not isinstance(resp, dict) or not isinstance(resp.get("result"), dict):
             return resp
         result = dict(resp["result"])
+        if method in CACHEABLE_METHODS and result.get("resultType") != "input_required":
+            result = {**CACHE_HINT, **result}
         if result.get("resultType") is None:
             result["resultType"] = "complete"
         raw_meta = result.get("_meta")
@@ -421,11 +432,13 @@ class RemoteMCPApp:
             return await self._rpc_error(send, msg.get("id"), -32001, "call timed out")
         finally:
             self._gate.release()
-        return await self._raw(send, 200, json.dumps(self._stamp_modern(resp, modern)).encode())
+        return await self._raw(send, 200, json.dumps(
+            self._stamp_modern(resp, modern, msg.get("method"))).encode())
 
     async def _rpc_passthrough(self, send, msg, modern: bool = False) -> None:
         resp = self.adapter.handle(msg)
-        return await self._raw(send, 200, json.dumps(self._stamp_modern(resp, modern)).encode())
+        return await self._raw(send, 200, json.dumps(
+            self._stamp_modern(resp, modern, msg.get("method"))).encode())
 
     # ---- continuation handles (login bridge) ----------------------------- #
     def _sweep_continuations(self) -> None:
