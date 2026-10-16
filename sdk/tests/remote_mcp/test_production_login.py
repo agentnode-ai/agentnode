@@ -144,7 +144,9 @@ def test_browser_consent_code_pkce_token_and_call(tmp_path):
                 "mcp-name": "sequentialthinking",
                 "authorization": "Bearer %s" % token},
                 content=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                                    "params": {"name": "sequentialthinking", "arguments": {}}}))
+                                    "params": {"name": "sequentialthinking", "arguments": {},
+                                               "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                                         "io.modelcontextprotocol/clientCapabilities": {}}}}))
             assert r4.status_code == 200 and r4.json()["result"]["isError"] is False
             # the principal on the token is the real gateway account
             principal = store.verify(token, expected_audience=RESOURCE, required_scopes=("mcp:use",))

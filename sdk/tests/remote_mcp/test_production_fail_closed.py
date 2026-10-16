@@ -82,7 +82,9 @@ def call(app, token, *, mid=1):
                 "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call",
                 "mcp-name": "sequentialthinking", "authorization": "Bearer %s" % token},
                 content=json.dumps({"jsonrpc": "2.0", "id": mid, "method": "tools/call",
-                                    "params": {"name": "sequentialthinking", "arguments": {}}}))
+                                    "params": {"name": "sequentialthinking", "arguments": {},
+                                               "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                                         "io.modelcontextprotocol/clientCapabilities": {}}}}))
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(go())

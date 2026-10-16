@@ -35,9 +35,30 @@ def _h(value: str) -> str:
     return html.escape(str(value), quote=True)
 
 
-SUPPORTED_VERSIONS = ("2026-07-28", "2025-11-25")
+#: the modern, stateless era: server/discover, per-request `_meta` envelope, no sessions.
+MODERN_VERSIONS = ("2026-07-28",)
+#: the legacy dual-era path, deliberately negotiated via initialize. Only 2025-11-25 is served.
+LEGACY_VERSIONS = ("2025-11-25",)
+SUPPORTED_VERSIONS = MODERN_VERSIONS + LEGACY_VERSIONS
 PRIMARY_VERSION = "2026-07-28"
 REQUIRED_SCOPE = "mcp:use"
+#: MCP 2026-07-28 per-request `_meta` envelope keys (from mcp_types; reverse-DNS).
+PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion"
+CLIENT_CAPABILITIES_META_KEY = "io.modelcontextprotocol/clientCapabilities"
+SERVER_INFO_META_KEY = "io.modelcontextprotocol/serverInfo"
+#: which param carries the name a modern Mcp-Name header must equal, per method.
+NAME_BEARING_METHODS = {"tools/call": "name", "prompts/get": "name", "resources/read": "uri"}
+
+
+def _decode_mcp_name(value: str) -> str:
+    """Reverse the SDK's header encoding: a non-ASCII name is wrapped `=?b?<base64>?=`."""
+    import base64
+    if value.startswith("=?b?") and value.endswith("?="):
+        try:
+            return base64.b64decode(value[4:-2]).decode("utf-8")
+        except Exception:  # noqa: BLE001
+            return value
+    return value
 #: cap on the /authorize query so an oversized request cannot be stashed or reflected.
 MAX_AUTHORIZE_QUERY = 4096
 #: how long a login continuation handle is valid before it must be re-initiated.
@@ -172,41 +193,94 @@ class RemoteMCPApp:
             return await self._rpc_error(send, None, -32600, "invalid request")
         mid = msg.get("id")
         rpc_method = msg.get("method")
+        header_pv = headers.get("mcp-protocol-version")
 
-        # protocol version negotiation (never infer era from a missing header)
-        version, verr = self._negotiate_version(headers, msg)
-        if verr is not None:
-            return await self._triple(send, verr)
+        # ERA ROUTING by the protocol-version header (the era is NEVER inferred from a missing
+        # one): a modern version, or a server/discover, takes the stateless modern path; a legacy
+        # (handshake) version takes the initialize/session path. The two never mix.
+        if header_pv in MODERN_VERSIONS or rpc_method == "server/discover":
+            return await self._mcp_modern(send, headers, msg, mid, rpc_method, header_pv, principal)
+        if header_pv is None:
+            return await self._send(send, 400, {"error": "protocol_version_required"})
+        if header_pv in LEGACY_VERSIONS:
+            return await self._mcp_legacy(send, msg, mid, rpc_method, principal)
+        # a stated but unsupported version
+        return await self._rpc_error_data(send, mid, -32022, "unsupported protocol version",
+                                          {"supported": list(SUPPORTED_VERSIONS), "requested": header_pv})
 
-        if rpc_method == "initialize":
+    # ---- modern era (2026-07-28): stateless, server/discover, _meta envelope ------------- #
+    async def _mcp_modern(self, send, headers, msg, mid, method, header_pv, principal) -> None:
+        params = msg.get("params") or {}
+        meta = params.get("_meta") if isinstance(params, dict) else None
+        # rung 1: the modern _meta envelope must carry protocolVersion + clientCapabilities
+        _meta_ok = isinstance(meta, dict) and meta.get(PROTOCOL_VERSION_META_KEY) is not None and CLIENT_CAPABILITIES_META_KEY in meta
+        if not _meta_ok:
+            return await self._rpc_error(send, mid, -32602,
+                                         "modern request requires _meta.protocolVersion and clientCapabilities")
+        body_pv = meta.get(PROTOCOL_VERSION_META_KEY)
+        # rung 2: header must be present and agree with _meta; Mcp-Method == method; Mcp-Name ==
+        # the named param for a name-bearing method. Any disagreement is HEADER_MISMATCH.
+        if header_pv is None or header_pv != body_pv:
+            return await self._rpc_error(send, mid, -32600, "protocol version header/_meta disagree")
+        hm = headers.get("mcp-method")
+        if hm is None or hm != method:
+            return await self._rpc_error(send, mid, -32600, "Mcp-Method header required and must equal the method")
+        name_key = NAME_BEARING_METHODS.get(method)
+        if name_key is not None and isinstance(params.get(name_key), str):
+            hn = headers.get("mcp-name")
+            if hn is None or _decode_mcp_name(hn) != params[name_key]:
+                return await self._rpc_error(send, mid, -32600, "Mcp-Name header required and must equal the named param")
+        # rung 3: the version must be a supported MODERN version
+        if body_pv not in MODERN_VERSIONS:
+            return await self._rpc_error_data(send, mid, -32022, "unsupported protocol version",
+                                              {"supported": list(MODERN_VERSIONS), "requested": body_pv})
+        # a modern `initialize` is NOT a modern handshake; the modern era uses server/discover.
+        if method in ("initialize", "notifications/initialized"):
+            return await self._rpc_error_data(send, mid, -32022,
+                                              "initialize is not valid in the modern era; use server/discover",
+                                              {"supported": list(MODERN_VERSIONS), "requested": body_pv})
+        self._log_era("modern", body_pv, method)
+        if method == "server/discover":
             return await self._rpc_result(send, mid, {
-                "protocolVersion": version,
-                "serverInfo": {"name": "agentnode-remote-mcp", "version": "1"},
-                "capabilities": {"tools": {}}})
-        if rpc_method == "notifications/initialized":
+                "supportedVersions": list(MODERN_VERSIONS),
+                "capabilities": {"tools": {"listChanged": False}},
+                "resultType": "complete",
+                "_meta": {SERVER_INFO_META_KEY: {"name": "agentnode-remote-mcp", "version": "1"}}})
+        if method == "tools/list":
+            return await self._rpc_passthrough(send, msg, modern=True)
+        if method == "tools/call":
+            return await self._tools_call(send, msg, principal, modern=True)
+        if mid is None:
             return await self._raw(send, 202, b"")
+        return await self._rpc_error(send, mid, -32601, "method not found: %s" % method)
 
-        # SEP-2243: for the modern (2026-07-28) era the per-request metadata headers are
-        # REQUIRED, not optional — a modern tools/list or tools/call MUST carry Mcp-Method (and
-        # tools/call MUST carry Mcp-Name), each agreeing with the body. Missing or mismatched is
-        # refused; it never proceeds. (initialize / notifications/initialized precede this.)
-        if version == PRIMARY_VERSION and rpc_method in ("tools/list", "tools/call"):
-            hm = headers.get("mcp-method")
-            if hm is None or hm != rpc_method:
-                return await self._rpc_error(send, mid, -32600,
-                                             "Mcp-Method header required and must equal the method")
-            if rpc_method == "tools/call":
-                hn = headers.get("mcp-name")
-                bn = (msg.get("params") or {}).get("name")
-                if hn is None or hn != bn:
-                    return await self._rpc_error(send, mid, -32600,
-                                                 "Mcp-Name header required and must equal params.name")
-
-        if rpc_method == "tools/list":
+    # ---- legacy era (2025-11-25): initialize handshake, stateless (no session id) -------- #
+    async def _mcp_legacy(self, send, msg, mid, method, principal) -> None:
+        params = msg.get("params") or {}
+        meta = params.get("_meta") if isinstance(params, dict) else None
+        # strict separation: a modern envelope must not ride a legacy request
+        if isinstance(meta, dict) and PROTOCOL_VERSION_META_KEY in meta:
+            return await self._rpc_error(send, mid, -32600, "modern _meta envelope on a legacy request")
+        self._log_era("legacy", "2025-11-25", method)
+        if method == "initialize":
+            return await self._rpc_result(send, mid, {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": "agentnode-remote-mcp", "version": "1"}})
+        if method == "notifications/initialized":
+            return await self._raw(send, 202, b"")
+        if method == "tools/list":
             return await self._rpc_passthrough(send, msg)
-        if rpc_method == "tools/call":
+        if method == "tools/call":
             return await self._tools_call(send, msg, principal)
-        return await self._rpc_error(send, mid, -32601, "method not found: %s" % rpc_method)
+        if mid is None:
+            return await self._raw(send, 202, b"")
+        return await self._rpc_error(send, mid, -32601, "method not found: %s" % method)
+
+    def _log_era(self, era: str, version: str, method: str) -> None:
+        import logging
+        logging.getLogger("agentnode.remote_mcp").info(
+            "mcp request era=%s negotiated_version=%s method=%s", era, version, method)
 
     def _authenticate(self, headers: dict) -> Principal:
         auth = headers.get("authorization")
@@ -233,37 +307,15 @@ class RemoteMCPApp:
                 raise TokenVerifyError(reason, 403)
         return principal
 
-    def _negotiate_version(self, headers: dict, msg: dict):
-        header_ver = headers.get("mcp-protocol-version")
-        # A version declared in the body (initialize params, or a `_meta.protocolVersion`) must,
-        # if a header is also present, AGREE with it — a header/body disagreement is refused, not
-        # silently resolved to one of them.
-        params = msg.get("params") or {}
-        body_ver = None
-        if msg.get("method") == "initialize":
-            body_ver = params.get("protocolVersion")
-        if body_ver is None:
-            meta = params.get("_meta") or {}
-            if isinstance(meta, dict):
-                body_ver = meta.get("protocolVersion")
-        if header_ver is not None and body_ver is not None and header_ver != body_ver:
-            return None, (400, [("content-type", "application/json")],
-                          json.dumps({"error": "invalid_request",
-                                      "error_description": "protocol version header/body disagree"}).encode())
-        declared = header_ver if header_ver is not None else body_ver
-        if declared is None:
-            # the era is NEVER inferred from a missing version: it must be stated somewhere.
-            return None, (400, [("content-type", "application/json")],
-                          json.dumps({"error": "protocol_version_required"}).encode())
-        if declared not in SUPPORTED_VERSIONS:
-            err = {"jsonrpc": "2.0", "id": msg.get("id"),
-                   "error": {"code": -32022, "message": "unsupported protocol version",
-                             "data": {"supported": list(SUPPORTED_VERSIONS)}}}
-            return None, (200, [("content-type", "application/json")],
-                          json.dumps(err).encode())
-        return declared, None
+    @staticmethod
+    def _stamp_modern(resp: dict, modern: bool) -> dict:
+        """Modern (2026-07-28) results MUST carry resultType; the frozen adapter does not know
+        about it, so it is stamped here on the way out. Legacy results omit it (client bridges)."""
+        if modern and isinstance(resp, dict) and isinstance(resp.get("result"), dict):
+            resp["result"].setdefault("resultType", "complete")
+        return resp
 
-    async def _tools_call(self, send, msg, principal: Principal) -> None:
+    async def _tools_call(self, send, msg, principal: Principal, modern: bool = False) -> None:
         if not self._rate.allow(principal.principal_id):
             return await self._send(send, 429, {"error": "rate_limited"},
                                     extra=[("retry-after", "60")])
@@ -278,11 +330,11 @@ class RemoteMCPApp:
             return await self._rpc_error(send, msg.get("id"), -32001, "call timed out")
         finally:
             self._gate.release()
-        return await self._raw(send, 200, json.dumps(resp).encode())
+        return await self._raw(send, 200, json.dumps(self._stamp_modern(resp, modern)).encode())
 
-    async def _rpc_passthrough(self, send, msg) -> None:
+    async def _rpc_passthrough(self, send, msg, modern: bool = False) -> None:
         resp = self.adapter.handle(msg)
-        return await self._raw(send, 200, json.dumps(resp).encode())
+        return await self._raw(send, 200, json.dumps(self._stamp_modern(resp, modern)).encode())
 
     # ---- continuation handles (login bridge) ----------------------------- #
     def _sweep_continuations(self) -> None:
@@ -532,6 +584,21 @@ class RemoteMCPApp:
     async def _rpc_result(self, send, mid, result) -> None:
         await self._raw(send, 200, json.dumps({"jsonrpc": "2.0", "id": mid, "result": result}).encode())
 
+    @staticmethod
+    def _http_for(code: int) -> int:
+        # MCP's ERROR_CODE_HTTP_STATUS: classifier/parse/version errors -> 400, method-not-found
+        # -> 404, everything else (internal, timeout) -> 200 with the JSON-RPC error body.
+        if code == -32601:
+            return 404
+        if code in (-32700, -32600, -32602, -32022):
+            return 400
+        return 200
+
     async def _rpc_error(self, send, mid, code, message) -> None:
-        await self._raw(send, 200, json.dumps(
+        await self._raw(send, self._http_for(code), json.dumps(
             {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}).encode())
+
+    async def _rpc_error_data(self, send, mid, code, message, data) -> None:
+        await self._raw(send, self._http_for(code), json.dumps(
+            {"jsonrpc": "2.0", "id": mid,
+             "error": {"code": code, "message": message, "data": data}}).encode())

@@ -86,10 +86,18 @@ def drive(app, method, path, *, headers=None, content=None):
     return asyncio.run(_go())
 
 
-def rpc(method, *, mid=1, params=None):
+PV_META = "io.modelcontextprotocol/protocolVersion"
+CAPS_META = "io.modelcontextprotocol/clientCapabilities"
+
+
+def rpc(method, *, mid=1, params=None, modern="2026-07-28", meta=True):
+    # A modern (2026-07-28) request carries the per-request _meta envelope the spec requires.
+    p = dict(params or {})
+    if meta and modern == "2026-07-28":
+        p["_meta"] = {PV_META: modern, CAPS_META: {}}
     msg = {"jsonrpc": "2.0", "id": mid, "method": method}
-    if params is not None:
-        msg["params"] = params
+    if p:
+        msg["params"] = p
     return json.dumps(msg).encode()
 
 
@@ -102,13 +110,18 @@ def mcp_headers(token=None, *, version="2026-07-28", method="tools/list",
         h["mcp-protocol-version"] = version
     if token:
         h["authorization"] = "Bearer %s" % token
-    if version == "2026-07-28" and method in ("tools/list", "tools/call"):
+    if version == "2026-07-28" and method in ("tools/list", "tools/call", "server/discover"):
         h["mcp-method"] = method
         if method == "tools/call":
             h["mcp-name"] = name
     if extra:
         h.update(extra)
     return h
+
+
+def discover_body(mid=1, pv="2026-07-28"):
+    return json.dumps({"jsonrpc": "2.0", "id": mid, "method": "server/discover",
+                       "params": {"_meta": {PV_META: pv, CAPS_META: {}}}}).encode()
 
 
 # ---- discovery ------------------------------------------------------------------------ #
@@ -204,11 +217,62 @@ def test_unapproved_tools_call_returns_approval_required():
     assert adapter.calls, "transport must delegate to the frozen adapter"
 
 
-def test_initialize_negotiates_primary_version():
+def test_server_discover_modern():
+    app, store, *_ = make_app()
+    r = drive(app, "POST", "/mcp", headers=mcp_headers(mint(store), method="server/discover"),
+              content=discover_body())
+    assert r.status_code == 200, r.text
+    res = r.json()["result"]
+    assert res["supportedVersions"] == ["2026-07-28"]
+    assert res["resultType"] == "complete"
+    assert "tools" in res["capabilities"]
+    assert res["_meta"]["io.modelcontextprotocol/serverInfo"]["name"]
+
+
+def test_modern_initialize_is_rejected_not_a_handshake():
+    app, store, *_ = make_app()
+    h = mcp_headers(mint(store), extra={"mcp-method": "initialize"})
+    r = drive(app, "POST", "/mcp", headers=h,
+              content=rpc("initialize", params={"protocolVersion": "2026-07-28"}))
+    # a modern initialize must NOT be a successful handshake; it is refused as unsupported
+    assert "result" not in r.json() or r.json().get("result", {}).get("protocolVersion") is None
+    assert r.json()["error"]["code"] == -32022
+
+
+def test_legacy_initialize_handshake():
+    app, store, *_ = make_app()
+    h = mcp_headers(mint(store), version="2025-11-25")
+    r = drive(app, "POST", "/mcp", headers=h,
+              content=rpc("initialize", params={"protocolVersion": "2025-11-25"}, modern="2025-11-25"))
+    res = r.json()["result"]
+    assert res["protocolVersion"] == "2025-11-25" and res["serverInfo"]["name"]
+
+
+def test_legacy_tools_list_no_meta_required():
+    app, store, *_ = make_app()
+    h = mcp_headers(mint(store), version="2025-11-25")
+    r = drive(app, "POST", "/mcp", headers=h, content=rpc("tools/list", modern="2025-11-25"))
+    assert r.status_code == 200 and r.json()["result"]["tools"]
+
+
+def test_modern_tools_list_has_result_type():
+    app, store, *_ = make_app()
+    r = drive(app, "POST", "/mcp", headers=mcp_headers(mint(store)), content=rpc("tools/list"))
+    assert r.json()["result"]["resultType"] == "complete"
+
+
+def test_modern_request_without_meta_envelope_rejected():
     app, store, *_ = make_app()
     r = drive(app, "POST", "/mcp", headers=mcp_headers(mint(store)),
-              content=rpc("initialize", params={"protocolVersion": "2026-07-28"}))
-    assert r.json()["result"]["protocolVersion"] == "2026-07-28"
+              content=rpc("tools/list", meta=False))   # no _meta envelope
+    assert r.status_code == 400 and r.json()["error"]["code"] == -32602
+
+
+def test_legacy_request_with_modern_meta_rejected():
+    app, store, *_ = make_app()
+    h = mcp_headers(mint(store), version="2025-11-25")
+    r = drive(app, "POST", "/mcp", headers=h, content=rpc("tools/list"))  # modern _meta on legacy
+    assert r.json()["error"]["code"] == -32600
 
 
 # ---- auth refusals (R7, R8) ----------------------------------------------------------- #
@@ -448,9 +512,10 @@ def test_modern_tools_call_requires_mcp_name_header():
     assert r.json()["error"]["code"] == -32600
 
 
-def test_protocol_version_header_body_disagreement_rejected():
+def test_protocol_version_header_meta_disagreement_rejected():
     app, store, *_ = make_app()
-    h = mcp_headers(mint(store), method="tools/call")   # header says 2026-07-28
-    r = drive(app, "POST", "/mcp", headers=h,
-              content=rpc("initialize", params={"protocolVersion": "2025-11-25"}))
-    assert r.status_code == 400 and "disagree" in r.text
+    h = mcp_headers(mint(store))                        # header says 2026-07-28, mcp-method tools/list
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list",
+                       "params": {"_meta": {PV_META: "2025-11-25", CAPS_META: {}}}}).encode()
+    r = drive(app, "POST", "/mcp", headers=h, content=body)
+    assert r.status_code == 400 and r.json()["error"]["code"] == -32600 and "disagree" in r.text
