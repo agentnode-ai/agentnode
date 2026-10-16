@@ -31,10 +31,22 @@ def main(argv=None) -> int:
     p.add_argument("--port", type=int, default=8800)
     args = p.parse_args(argv)
 
+    # Optional preregistered OAuth clients (client_id -> [redirect_uri,...]) from a stand file.
+    # CIMD stays the primary dynamic path; this is for a named, pre-agreed client whose metadata
+    # URL cannot be fetched (e.g. a closed/loopback deployment), not a substitute for it.
+    import json
+    import os
+    prereg = None
+    prereg_path = os.path.join(args.stand, "preregistered_clients.json")
+    if os.path.exists(prereg_path):
+        with open(prereg_path, encoding="utf-8") as fh:
+            prereg = {cid: tuple(uris) for cid, uris in json.load(fh).items()}
+
     app = build_production_app(
         args.stand, resource=args.resource, issuer=args.issuer,
         allowed_hosts=tuple(args.allowed_hosts), gateway_dir=args.gateway_dir,
-        console_url=args.console_url, allowed_origins=tuple(args.allowed_origins))
+        console_url=args.console_url, allowed_origins=tuple(args.allowed_origins),
+        preregistered=prereg)
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
