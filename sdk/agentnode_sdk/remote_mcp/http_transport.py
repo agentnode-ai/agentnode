@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any, Awaitable, Callable, Optional
+from urllib.parse import parse_qsl, quote
 
 from agentnode_sdk.capability.usability_adapter import UsabilityMCPAdapter
 from agentnode_sdk.remote_mcp.limits import ConcurrencyGate, Limits, RateLimiter
@@ -95,6 +96,8 @@ class RemoteMCPApp:
             return await self._authorize(scope, headers, send)
         if path == "/authorize" and method == "POST" and self.login_provider is not None:
             return await self._authorize_post(scope, headers, receive, send)
+        if path == "/login" and method == "GET" and self.login_provider is not None:
+            return await self._login_page(scope, send)
         if path == "/token" and method == "POST":
             return await self._form_endpoint(receive, send, self.authz.token)
         if path == "/register" and method == "POST":
@@ -259,10 +262,18 @@ class RemoteMCPApp:
         """
         subject = self.login_provider.subject(scope, headers)
         if subject is None:
-            link = (" <a href=\"%s\">Sign in</a>" % _h(self.console_url)) if self.console_url else ""
-            return await self._html(send, 401,
-                                    "<h1>Sign in required</h1><p>Authenticate to AgentNode in "
-                                    "the console, then retry.%s</p>" % link)
+            # The login -> return-to-/authorize bridge. Two reasons `subject` is None:
+            # (1) the browser IS signed in but arrived by a cross-site top-level navigation, so
+            #     the SameSite=Strict `__Host-agentnode` cookie was withheld on this first hop;
+            #     one same-origin redirect back to /authorize makes the browser resend it.
+            # (2) the browser is genuinely signed out; send it to the same-origin sign-in landing
+            #     carrying this exact /authorize URL as return_to, and it comes back here after.
+            qs = scope.get("query_string", b"").decode("latin1")
+            if "_ss=1" not in qs:
+                sep = "&" if qs else ""
+                return await self._redirect(send, "/authorize?%s%s_ss=1" % (qs, sep))
+            return await self._redirect(
+                send, "/login?return_to=" + quote("/authorize?" + qs, safe=""))
         if not subject.permitted:
             return await self._html(send, 403,
                                     "<h1>Not permitted</h1><p>This device may not run work "
@@ -351,6 +362,34 @@ class RemoteMCPApp:
     async def _html(self, send, status: int, body_html: str) -> None:
         return await self._raw(send, status, body_html.encode("utf-8"),
                                [("content-type", "text/html; charset=utf-8")])
+
+    async def _redirect(self, send, location: str) -> None:
+        return await self._raw(send, 302, b"", [("location", location)])
+
+    async def _login_page(self, scope, send) -> None:
+        """A same-origin sign-in landing that drives the REAL gateway redeem (POST /v1/session,
+        served same-origin by the gateway) and then returns to the pending /authorize. It mints
+        no session itself and injects no cookie; it only carries ``return_to`` the product lacks.
+        ``return_to`` is constrained to a /authorize path so it can never be an open redirect."""
+        q = dict(parse_qsl(scope.get("query_string", b"").decode("latin1")))
+        return_to = q.get("return_to", "/authorize")
+        if not return_to.startswith("/authorize"):
+            return_to = "/authorize"
+        html = (
+            "<!doctype html><meta charset=utf-8><title>Sign in</title>"
+            "<h1>Sign in to AgentNode</h1>"
+            "<p>Enter the pairing code from your invitation to authorize this request.</p>"
+            "<form id=\"f\"><input name=\"code\" placeholder=\"ABCD-EFGH-JKLM\" autocomplete=\"off\"> "
+            "<input name=\"client_name\" value=\"browser\"> "
+            "<button type=\"submit\">Sign in</button></form><p id=\"msg\"></p>"
+            "<script>const rt=%s;"
+            "document.getElementById('f').addEventListener('submit',async e=>{e.preventDefault();"
+            "const fd=new FormData(e.target);"
+            "const r=await fetch('/v1/session',{method:'POST',headers:{'content-type':'application/json'},"
+            "body:JSON.stringify({code:fd.get('code'),client_name:fd.get('client_name')})});"
+            "if(r.ok){window.location=rt;}else{document.getElementById('msg').textContent="
+            "'sign-in failed ('+r.status+')';}});</script>" % json.dumps(return_to))
+        return await self._html(send, 200, html)
 
     async def _triple(self, send, triple) -> None:
         status, headers, body = triple

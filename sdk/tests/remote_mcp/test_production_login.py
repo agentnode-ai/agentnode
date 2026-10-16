@@ -151,40 +151,68 @@ def test_browser_consent_code_pkce_token_and_call(tmp_path):
 
 # ---- refusals / revocations --------------------------------------------------------------- #
 
-def test_no_session_is_login_required(tmp_path):
+def fclient(app):
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                             base_url="http://%s" % HOST, follow_redirects=True)
+
+
+async def _bounces_to_signin(app, headers=None):
+    """GET /authorize with no valid session must bounce (via the SameSite retry) to the
+    same-origin /login sign-in page, and NEVER reach a consent page or issue a code."""
+    async with fclient(app) as c:
+        r = await c.get("/authorize", params=dict(AUTHZ_PARAMS, code_challenge="x"),
+                        headers=headers or {})
+    assert str(r.url).endswith("/login") or "/login?" in str(r.url), str(r.url)
+    assert "Sign in to AgentNode" in r.text
+    assert "Authorize access" not in r.text and "code=" not in str(r.url)
+    return r
+
+
+def test_no_session_bounces_to_signin(tmp_path):
+    app, *_ = make_login_app(str(tmp_path))
+    run(_bounces_to_signin(app))
+
+
+def test_samesite_retry_then_login(tmp_path):
+    # first hop (no _ss) is a same-origin redirect to pick up a SameSite=Strict cookie;
+    # still no cookie -> second hop goes to /login carrying return_to=/authorize.
+    app, *_ = make_login_app(str(tmp_path))
+
+    async def go():
+        async with client(app) as c:  # no auto-follow
+            r1 = await c.get("/authorize", params=dict(AUTHZ_PARAMS, code_challenge="x"))
+            assert r1.status_code == 302 and "_ss=1" in r1.headers["location"]
+            r2 = await c.get(r1.headers["location"])
+            assert r2.status_code == 302
+            loc = r2.headers["location"]
+            assert loc.startswith("/login?return_to=") and "%2Fauthorize" in loc
+
+    run(go())
+
+
+def test_login_page_sanitizes_return_to(tmp_path):
     app, *_ = make_login_app(str(tmp_path))
 
     async def go():
         async with client(app) as c:
-            r = await c.get("/authorize", params=dict(AUTHZ_PARAMS, code_challenge="x"))
-            assert r.status_code == 401 and "Sign in" in r.text
+            r = await c.get("/login", params={"return_to": "https://evil.example/x"})
+            assert r.status_code == 200
+            # open-redirect target rejected -> falls back to the same-origin /authorize
+            assert '"/authorize"' in r.text or "'/authorize'" in r.text
+            assert "evil.example" not in r.text
 
     run(go())
 
 
 def test_x_agentnode_login_header_is_dead_in_production(tmp_path):
-    # The stand shim header must do nothing when there is no real session.
+    # The stand shim header must do nothing: it still bounces to sign-in, never authenticates.
     app, *_ = make_login_app(str(tmp_path))
-
-    async def go():
-        async with client(app) as c:
-            r = await c.get("/authorize", params=dict(AUTHZ_PARAMS, code_challenge="x"),
-                            headers={"x-agentnode-login": "stand-login-secret"})
-            assert r.status_code == 401
-
-    run(go())
+    run(_bounces_to_signin(app, headers={"x-agentnode-login": "stand-login-secret"}))
 
 
 def test_suspended_account_cannot_authorize(tmp_path):
     app, store, acct, sid, csrf = make_login_app(str(tmp_path), suspended=True)
-
-    async def go():
-        async with client(app) as c:
-            r = await c.get("/authorize", params=dict(AUTHZ_PARAMS, code_challenge="x"),
-                            headers={"cookie": "%s=%s" % (COOKIE, sid)})
-            assert r.status_code == 401   # suspended reads as not-signed-in
-
-    run(go())
+    run(_bounces_to_signin(app, headers={"cookie": "%s=%s" % (COOKIE, sid)}))
 
 
 def test_device_without_run_is_not_permitted(tmp_path):
@@ -202,27 +230,13 @@ def test_device_without_run_is_not_permitted(tmp_path):
 def test_ended_session_stops_authorizing(tmp_path):
     app, store, acct, sid, csrf = make_login_app(str(tmp_path))
     Sessions(str(tmp_path)).end(sid)   # the person logged out
-
-    async def go():
-        async with client(app) as c:
-            r = await c.get("/authorize", params=dict(AUTHZ_PARAMS, code_challenge="x"),
-                            headers={"cookie": "%s=%s" % (COOKIE, sid)})
-            assert r.status_code == 401
-
-    run(go())
+    run(_bounces_to_signin(app, headers={"cookie": "%s=%s" % (COOKIE, sid)}))
 
 
 def test_withdrawn_device_stops_authorizing(tmp_path):
     app, store, acct, sid, csrf = make_login_app(str(tmp_path))
     os.remove(os.path.join(str(tmp_path), "tokens.json"))   # device record gone
-
-    async def go():
-        async with client(app) as c:
-            r = await c.get("/authorize", params=dict(AUTHZ_PARAMS, code_challenge="x"),
-                            headers={"cookie": "%s=%s" % (COOKIE, sid)})
-            assert r.status_code == 401
-
-    run(go())
+    run(_bounces_to_signin(app, headers={"cookie": "%s=%s" % (COOKIE, sid)}))
 
 
 def test_declined_consent_issues_no_code(tmp_path):
