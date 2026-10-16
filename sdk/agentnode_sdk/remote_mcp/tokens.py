@@ -131,6 +131,12 @@ class TokenStore:
         # the hashed file an operator revokes/mints in, followed live by a serving store
         self._watch_path: Optional[str] = None
         self._watch_sig: Optional[tuple] = None
+        # revocations of tokens this file does not hold (OAuth tokens live in the serving
+        # process): token_id -> revoked_at. Merged into the serving store like any revocation.
+        self._revoked_ids: dict[str, int] = {}
+        #: called with each new record (the serving process publishes a hash-free list of the
+        #: OAuth tokens it holds, so an operator can name one to revoke)
+        self.on_mint: Optional[Any] = None
 
     # issuance ------------------------------------------------------------- #
     def _hash_secret(self, secret: str) -> str:
@@ -168,6 +174,8 @@ class TokenStore:
             label=label,
         )
         self._by_id[token_id] = rec
+        if self.on_mint is not None:
+            self.on_mint(rec)
         return IssuedToken(plaintext=plaintext, record=rec)
 
     # lifecycle ------------------------------------------------------------ #
@@ -178,6 +186,11 @@ class TokenStore:
         rec.revoked_at = _now()
         rec.revocation_reason = reason
         return True
+
+    def record_revocation(self, token_id: str) -> None:
+        """Revoke a token this store does not hold (an OAuth token held by the serving process):
+        a tombstone in the file the serving store follows; it revokes there on the next request."""
+        self._revoked_ids.setdefault(token_id, _now())
 
     def revoke_all_for(self, principal_id: str) -> int:
         """Bump the principal's generation: every token minted at the old generation is dead."""
@@ -208,7 +221,7 @@ class TokenStore:
         # constant-time compare of the keyed digest; a wrong secret with a real id fails here
         if not hmac.compare_digest(rec.token_hash, self._hash_secret(secret)):
             raise TokenVerifyError("bad_token", 401)
-        if rec.revoked_at is not None:
+        if rec.revoked_at is not None or rec.token_id in self._revoked_ids:
             raise TokenVerifyError("revoked_token", 401)
         if _now() >= rec.expires_at:
             raise TokenVerifyError("expired_token", 401)
@@ -228,7 +241,8 @@ class TokenStore:
     def dump_hashed(self, path: str) -> None:
         """Persist ONLY hashed records + generations. No plaintext is ever written."""
         payload = {"records": [asdict(r) for r in self._by_id.values()],
-                   "account_generation": self._account_generation}
+                   "account_generation": self._account_generation,
+                   "revoked_token_ids": self._revoked_ids}
         tmp = path + ".tmp"
         with io.open(tmp, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=1, sort_keys=True)
@@ -267,9 +281,16 @@ class TokenStore:
                     payload = json.load(fh)
                 records = [dict(d, scopes=tuple(d.get("scopes", []))) for d in payload.get("records", [])]
                 generations = {str(k): int(v) for k, v in payload.get("account_generation", {}).items()}
+                tombstones = {str(k): int(v) for k, v in payload.get("revoked_token_ids", {}).items()}
                 parsed = [TokenRecord(**d) for d in records]
-            except (OSError, ValueError, TypeError, KeyError):
+            except (OSError, ValueError, TypeError, KeyError, AttributeError):
                 raise TokenVerifyError("token_store_unreadable", 503)
+            for tid, at in tombstones.items():
+                self._revoked_ids.setdefault(tid, at)
+                mine = self._by_id.get(tid)
+                if mine is not None and mine.revoked_at is None:
+                    mine.revoked_at = at
+                    mine.revocation_reason = "operator"
             for principal, gen in generations.items():
                 self._account_generation[principal] = max(gen, self._account_generation.get(principal, 0))
             for rec in parsed:
@@ -287,6 +308,7 @@ class TokenStore:
         with io.open(path, encoding="utf-8") as fh:
             payload = json.load(fh)
         store._account_generation = dict(payload.get("account_generation", {}))
+        store._revoked_ids = {str(k): int(v) for k, v in payload.get("revoked_token_ids", {}).items()}
         for d in payload.get("records", []):
             d["scopes"] = tuple(d.get("scopes", []))
             store._by_id[d["token_id"]] = TokenRecord(**d)

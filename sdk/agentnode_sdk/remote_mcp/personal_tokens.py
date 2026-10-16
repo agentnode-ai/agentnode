@@ -7,7 +7,13 @@ plaintext is shown exactly once; the store keeps only the keyed hash.
   python -m agentnode_sdk.remote_mcp.personal_tokens mint  --store S --key-file K \
       --principal <id> --audience https://mcp.agentnode.net/mcp --scope mcp:use --ttl 3600 [--label L] [--service]
   python -m agentnode_sdk.remote_mcp.personal_tokens revoke --store S --key-file K --token-id <id>
+  python -m agentnode_sdk.remote_mcp.personal_tokens revoke-principal --store S --key-file K --principal <id>
   python -m agentnode_sdk.remote_mcp.personal_tokens list   --store S --key-file K
+
+`revoke` works for ANY token id: a personal/service token held in the store file is revoked
+there; an OAuth token (held only by the running service, listed from the service's hash-free
+`tokens.oauth.public.json` next to the store) is tombstoned in the store file. Either way the
+running service refuses it from its next request (it follows the store file).
 """
 from __future__ import annotations
 
@@ -36,7 +42,7 @@ def _store(args) -> TokenStore:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="personal_tokens")
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name in ("mint", "revoke", "list"):
+    for name in ("mint", "revoke", "revoke-principal", "list"):
         sp = sub.add_parser(name)
         sp.add_argument("--store", required=True)
         sp.add_argument("--key-file", required=True)
@@ -53,6 +59,8 @@ def main(argv=None) -> int:
             sp.add_argument("--service", action="store_true")
         if name == "revoke":
             sp.add_argument("--token-id", required=True)
+        if name == "revoke-principal":
+            sp.add_argument("--principal", required=True)
     args = p.parse_args(argv)
     store = _store(args)
 
@@ -68,16 +76,34 @@ def main(argv=None) -> int:
         sys.stdout.write("ACCESS TOKEN (shown once, store it now):\n%s\n" % issued.plaintext)
         return 0
     if args.cmd == "revoke":
-        ok = store.revoke(args.token_id, reason="operator")
+        if store.get(args.token_id) is not None:
+            ok = store.revoke(args.token_id, reason="operator")
+            store.dump_hashed(args.store)
+            sys.stdout.write("revoked\n" if ok else "already revoked\n")
+            return 0 if ok else 1
+        # not held in the file: an OAuth token of the running service -> tombstone it
+        store.record_revocation(args.token_id)
         store.dump_hashed(args.store)
-        sys.stdout.write("revoked\n" if ok else "no such active token\n")
-        return 0 if ok else 1
+        sys.stdout.write("revocation recorded; the running service refuses it from its next request\n")
+        return 0
+    if args.cmd == "revoke-principal":
+        gen = store.revoke_all_for(args.principal)
+        store.dump_hashed(args.store)
+        sys.stdout.write("all tokens of %s revoked (generation %d)\n" % (args.principal, gen))
+        return 0
     if args.cmd == "list":
-        for rec in sorted(store._by_id.values(), key=lambda r: r.issued_at):  # noqa: SLF001
-            v = rec.public_view()
+        views = [rec.public_view() for rec in store._by_id.values()]  # noqa: SLF001
+        public = os.path.join(os.path.dirname(os.path.abspath(args.store)), "tokens.oauth.public.json")
+        if os.path.exists(public):
+            import json
+            with io.open(public, encoding="utf-8") as fh:
+                views += json.load(fh).get("oauth_tokens", [])
+        tomb = store._revoked_ids  # noqa: SLF001
+        for v in sorted(views, key=lambda r: r["issued_at"]):
+            revoked = v["revoked_at"] or tomb.get(v["token_id"])
             sys.stdout.write("%s  principal=%s kind=%s scopes=%s exp=%s revoked=%s label=%s\n" % (
                 v["token_id"], v["principal_id"], v["issuance_kind"], v["scopes"],
-                v["expires_at"], v["revoked_at"], v["label"]))
+                v["expires_at"], revoked, v["label"]))
         return 0
     return 2
 

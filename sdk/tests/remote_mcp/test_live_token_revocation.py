@@ -111,6 +111,53 @@ def test_unreadable_store_file_refuses_instead_of_serving_stale_state(tmp_path, 
     assert "www-authenticate" not in r.headers
 
 
+def _serving_from_stand(tmp_path):
+    """The serving store exactly as the service builds it (watch + OAuth publication)."""
+    from agentnode_sdk.remote_mcp import server as S
+    stand = str(tmp_path)
+    with open(os.path.join(stand, S.KEY_FILE), "wb") as fh:
+        fh.write(KEY)
+    store = S._load_store(stand)
+    app = RemoteMCPApp(adapter=Adapter(), token_store=store,
+                       authz=AuthorizationServer(issuer="https://mcp.agentnode.net", resource=RESOURCE,
+                                                 token_store=store),
+                       resource=ResourceConfig(resource=RESOURCE, authorization_server="https://mcp.agentnode.net"),
+                       allowed_hosts=(HOST,), limits=Limits())
+    return app, store, os.path.join(stand, S.TOKENS_FILE), os.path.join(stand, S.KEY_FILE), \
+        os.path.join(stand, S.OAUTH_PUBLIC_FILE)
+
+
+def test_an_oauth_token_can_be_listed_and_revoked_by_id_through_the_cli(tmp_path, capsys):
+    app, store, path, keyfile, public = _serving_from_stand(tmp_path)
+    oauth = store.mint(principal_id="acct-o", audience=RESOURCE, scopes=("mcp:use",),
+                       issuance_kind="oauth", ttl_seconds=600)          # held only by the service
+    assert tools_list(app, oauth.plaintext).status_code == 200
+    pub = json.load(open(public))["oauth_tokens"]
+    assert [v["token_id"] for v in pub] == [oauth.record.token_id]
+    assert "token_hash" not in json.dumps(pub) and oauth.plaintext.split("_", 2)[2] not in json.dumps(pub)
+    rc, out = cli("list", "--store", path, "--key-file", keyfile, capsys=capsys)
+    assert rc == 0 and oauth.record.token_id in out
+    rc, out = cli("revoke", "--store", path, "--key-file", keyfile, "--token-id", oauth.record.token_id,
+                  capsys=capsys)
+    assert rc == 0 and "recorded" in out
+    r = tools_list(app, oauth.plaintext)                        # same running service, next request
+    assert r.status_code == 401 and r.json()["error"] == "revoked_token"
+
+
+def test_revoke_principal_through_the_cli_kills_its_oauth_tokens(tmp_path, capsys):
+    app, store, path, keyfile, _ = _serving_from_stand(tmp_path)
+    oauth = store.mint(principal_id="acct-p", audience=RESOURCE, scopes=("mcp:use",),
+                       issuance_kind="oauth", ttl_seconds=600)
+    other = store.mint(principal_id="acct-q", audience=RESOURCE, scopes=("mcp:use",),
+                       issuance_kind="oauth", ttl_seconds=600)
+    assert tools_list(app, oauth.plaintext).status_code == 200
+    rc, _ = cli("revoke-principal", "--store", path, "--key-file", keyfile, "--principal", "acct-p",
+                capsys=capsys)
+    assert rc == 0
+    assert tools_list(app, oauth.plaintext).status_code == 401
+    assert tools_list(app, other.plaintext).status_code == 200      # only that principal
+
+
 def test_unwatched_store_is_unchanged(tmp_path):
     store = TokenStore(KEY)
     tok = store.mint(principal_id="p", audience=RESOURCE, scopes=("mcp:use",), issuance_kind="oauth",

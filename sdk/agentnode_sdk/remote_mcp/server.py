@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
+import time
 
 from agentnode_sdk.capability.usability_adapter import UsabilityMCPAdapter, build_from_stand
 from agentnode_sdk.remote_mcp.http_transport import RemoteMCPApp
@@ -31,6 +33,8 @@ from agentnode_sdk.remote_mcp.tokens import TokenStore
 
 TOKENS_FILE = "tokens.hashed.json"
 KEY_FILE = "token_server_key.bin"
+#: hash-free list of the OAuth tokens the serving process holds (operator visibility only)
+OAUTH_PUBLIC_FILE = "tokens.oauth.public.json"
 
 
 def _server_key(stand: str) -> bytes:
@@ -68,6 +72,22 @@ def _load_store(stand: str) -> TokenStore:
     key = _server_key(stand)
     tokens_path = os.path.join(stand, TOKENS_FILE)
     store = TokenStore.load_hashed(tokens_path, key) if os.path.exists(tokens_path) else TokenStore(key)
+    public_path = os.path.join(stand, OAUTH_PUBLIC_FILE)
+
+    def publish(rec):
+        # OAuth tokens live only in this process; publish their hash-free views so an operator
+        # can name one to `personal_tokens revoke --token-id` (which tombstones it in the file).
+        if rec.issuance_kind != "oauth":
+            return
+        now = int(time.time())
+        views = [r.public_view() for r in store._by_id.values()  # noqa: SLF001
+                 if r.issuance_kind == "oauth" and r.expires_at > now]
+        tmp = public_path + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"oauth_tokens": views}, fh, indent=1, sort_keys=True)
+        os.replace(tmp, public_path)
+    store.on_mint = publish
     return store.watch(tokens_path)
 
 
