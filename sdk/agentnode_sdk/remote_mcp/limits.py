@@ -37,7 +37,8 @@ class Limits:
     list_burst: int = 15
     calls_per_minute_per_principal: int = 10  # tools/call per account
     calls_per_minute_per_token: int = 30      # tools/call per token
-    call_burst: int = 3
+    call_burst: int = 3                       # burst of the per-account tools/call bucket
+    call_burst_per_token: int = 3             # burst of the per-token tools/call bucket
     call_timeout_seconds: float = 125.0       # end-to-end per tools/call
     max_concurrent_calls: int = 8             # calls RUNNING at once in this process
     max_concurrent_calls_per_principal: int = 2   # calls in flight (queued or running) per account

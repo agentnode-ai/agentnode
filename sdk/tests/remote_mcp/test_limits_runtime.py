@@ -26,7 +26,8 @@ from agentnode_sdk.remote_mcp.tokens import TokenStore
 
 HOST = "mcp.agentnode.net"
 RESOURCE = "https://mcp.agentnode.net/mcp"
-FAST = dict(calls_per_minute_per_principal=1000, calls_per_minute_per_token=1000, call_burst=1000)
+FAST = dict(calls_per_minute_per_principal=1000, calls_per_minute_per_token=1000, call_burst=1000,
+            call_burst_per_token=1000)
 
 
 class BlockingAdapter:
@@ -193,7 +194,7 @@ def test_rate_limits_and_bursts():
 
 def test_per_token_rate_is_separate_from_per_account():
     app, adapter, tok = app_with(Limits(calls_per_minute_per_principal=1000, calls_per_minute_per_token=30,
-                                        call_burst=2))
+                                        call_burst=1000, call_burst_per_token=2))
     adapter.release.set()
     t = tok()
 
@@ -205,7 +206,7 @@ def test_per_token_rate_is_separate_from_per_account():
 
 def test_per_account_rate_counts_across_its_tokens():
     app, adapter, tok = app_with(Limits(calls_per_minute_per_principal=10, calls_per_minute_per_token=1000,
-                                        call_burst=2))
+                                        call_burst=2, call_burst_per_token=1000))
     adapter.release.set()
     t1, t2 = tok("acct"), tok("acct")
 

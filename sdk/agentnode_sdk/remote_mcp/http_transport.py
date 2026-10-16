@@ -160,7 +160,8 @@ class RemoteMCPApp:
         clock = clock or time.time
         self._now = clock
         self._rate = RateLimiter(self.limits.calls_per_minute_per_principal, clock, burst=self.limits.call_burst)
-        self._token_rate = RateLimiter(self.limits.calls_per_minute_per_token, clock, burst=self.limits.call_burst)
+        self._token_rate = RateLimiter(self.limits.calls_per_minute_per_token, clock,
+                                       burst=self.limits.call_burst_per_token)
         self._list_rate = RateLimiter(self.limits.list_per_minute_per_principal, clock, burst=self.limits.list_burst)
         self._inflight = PrincipalInFlight(self.limits.max_concurrent_calls_per_principal)
         self._gate = ConcurrencyGate(self.limits.max_concurrent_calls, self.limits.max_queued_calls)
