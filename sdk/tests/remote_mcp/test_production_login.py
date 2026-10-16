@@ -426,6 +426,27 @@ def test_authorize_encodes_state_and_preserves_query():
     assert code != "INJECTED" and len(code) >= 20           # server-generated, not injected
 
 
+def test_redirect_query_preserved_byte_faithful():
+    # the registered redirect_uri's query must survive BYTE-FOR-BYTE in Location (no parse_qsl+
+    # urlencode canonicalization of %20/+/%2B/%2F, no reorder, no dropped empties, no folded dups).
+    store = TokenStore(b"k" * 32)
+    raw = "a=%20&b=+&c=%2B&d=%2F&e=&f=1&f=2&z=keep"
+    redirect = "https://client.example/cb?" + raw
+    authz = AuthorizationServer(issuer=ISSUER, resource=RESOURCE, token_store=store,
+                                preregistered={"c": (redirect,)})
+    status, headers, _ = authz.authorize({
+        "client_id": "c", "redirect_uri": redirect, "response_type": "code",
+        "code_challenge": pkce_s256_challenge("v" * 64), "code_challenge_method": "S256",
+        "resource": RESOURCE, "state": "s pace+%2F"}, principal_id="a")
+    assert status == 302
+    q = urlsplit(dict(headers)["location"]).query
+    assert q.startswith(raw + "&")                  # original bytes preserved as an exact prefix
+    assert q.count("code=") == 1                     # exactly one server-generated code appended
+    pairs = parse_qsl(q, keep_blank_values=True)
+    assert [v for k, v in pairs if k == "state"] == ["s pace+%2F"]   # state round-trips exactly
+    assert [v for k, v in pairs if k == "f"] == ["1", "2"]           # duplicate ordinary kept
+
+
 def test_empty_state_round_trips_and_absent_state_omitted():
     store = TokenStore(b"k" * 32)
     authz = AuthorizationServer(issuer=ISSUER, resource=RESOURCE, token_store=store,

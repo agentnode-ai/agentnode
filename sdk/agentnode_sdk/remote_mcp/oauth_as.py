@@ -318,16 +318,20 @@ class AuthorizationServer:
             code_challenge=norm["code_challenge"], resource=norm["resource"],
             principal_id=principal_id, scopes=scopes, device_id=device_id,
             expires_at=self._clock() + self.code_ttl)
-        # Build the redirect with a real URL encoder: keep the registered redirect_uri's existing
-        # query in full, then append exactly one server-generated `code` and the UNCHANGED `state`
-        # (echoed only if the client sent one, including an empty one). No string concatenation,
-        # so a state containing &, =, +, %, #, spaces or Unicode round-trips byte-exactly.
+        # Keep the registered redirect_uri's query BYTE-FOR-BYTE (urlsplit does not decode it) and
+        # append ONLY the form-encoded `code` and the UNCHANGED `state` (echoed only if the client
+        # sent one, including an empty one). We do NOT re-encode the existing query through
+        # parse_qsl()+urlencode(), which would canonicalize %20/+/%2B/%2F, drop empties, reorder
+        # and fold duplicate ordinary params. A state with &,=,+,%,#,space or Unicode is itself
+        # form-encoded here, so it round-trips exactly; exactly one server-generated code is added.
         parts = urlsplit(norm["redirect_uri"])
-        query = parse_qsl(parts.query, keep_blank_values=True) + [("code", code)]
+        added = [("code", code)]
         if "state" in norm:
-            query.append(("state", norm["state"]))
+            added.append(("state", norm["state"]))
+        addition = urlencode(added)
+        new_query = (parts.query + "&" + addition) if parts.query else addition
         location = urlunsplit((parts.scheme, parts.netloc, parts.path,
-                               urlencode(query), ""))   # fragment stays empty (rejected earlier)
+                               new_query, ""))   # fragment stays empty (rejected earlier)
         return 302, [("location", location)], b""
 
     # token ---------------------------------------------------------------- #
