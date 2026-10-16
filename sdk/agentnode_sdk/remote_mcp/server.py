@@ -63,9 +63,12 @@ def _stand_login_resolver(stand: str):
 
 
 def _load_store(stand: str) -> TokenStore:
+    """The serving store, following the operator's hashed file so that `personal_tokens
+    revoke` (and mint) take effect at the resource server on the next request."""
     key = _server_key(stand)
     tokens_path = os.path.join(stand, TOKENS_FILE)
-    return TokenStore.load_hashed(tokens_path, key) if os.path.exists(tokens_path) else TokenStore(key)
+    store = TokenStore.load_hashed(tokens_path, key) if os.path.exists(tokens_path) else TokenStore(key)
+    return store.watch(tokens_path)
 
 
 def build_app(stand: str, *, resource: str, issuer: str, allowed_hosts: tuple[str, ...],

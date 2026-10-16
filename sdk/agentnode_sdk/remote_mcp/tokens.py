@@ -128,6 +128,9 @@ class TokenStore:
         self._by_id: dict[str, TokenRecord] = {}
         # live per-principal generation; a token is valid only if its account_generation matches
         self._account_generation: dict[str, int] = dict(account_generation or {})
+        # the hashed file an operator revokes/mints in, followed live by a serving store
+        self._watch_path: Optional[str] = None
+        self._watch_sig: Optional[tuple] = None
 
     # issuance ------------------------------------------------------------- #
     def _hash_secret(self, secret: str) -> str:
@@ -194,6 +197,7 @@ class TokenStore:
         for a valid token that merely lacks a required scope. The message is reason-only and
         never contains the presented secret.
         """
+        self._refresh()
         parts = (presented or "").split("_", 2)
         if len(parts) != 3 or parts[0] != TOKEN_PREFIX or not parts[1] or not parts[2]:
             raise TokenVerifyError("malformed_token", 401)
@@ -229,6 +233,53 @@ class TokenStore:
         with io.open(tmp, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=1, sort_keys=True)
         os.replace(tmp, path)
+
+    # live revocation: a serving store follows the operator's file -------- #
+    def watch(self, path: str) -> "TokenStore":
+        """Follow the hashed store file the operator CLI writes, so a revocation (or a newly
+        minted personal/service token) takes effect at the resource server on the NEXT
+        request -- not at the next restart. Called once by the serving process."""
+        self._watch_path = path
+        self._watch_sig = self._file_sig(path)
+        return self
+
+    @staticmethod
+    def _file_sig(path: str) -> Optional[tuple]:
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            return None
+        return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+    def _refresh(self) -> None:
+        """Merge the watched file into memory when it changed. The merge only ever tightens:
+        a revocation is adopted and never undone, a generation only rises, a record unknown in
+        memory is added; tokens that live only in memory (OAuth-issued) are kept. A file that
+        exists but cannot be read is a refusal, never a silent fall-back to stale state."""
+        if self._watch_path is None:
+            return
+        sig = self._file_sig(self._watch_path)
+        if sig == self._watch_sig:
+            return
+        if sig is not None:
+            try:
+                with io.open(self._watch_path, encoding="utf-8") as fh:
+                    payload = json.load(fh)
+                records = [dict(d, scopes=tuple(d.get("scopes", []))) for d in payload.get("records", [])]
+                generations = {str(k): int(v) for k, v in payload.get("account_generation", {}).items()}
+                parsed = [TokenRecord(**d) for d in records]
+            except (OSError, ValueError, TypeError, KeyError):
+                raise TokenVerifyError("token_store_unreadable", 503)
+            for principal, gen in generations.items():
+                self._account_generation[principal] = max(gen, self._account_generation.get(principal, 0))
+            for rec in parsed:
+                mine = self._by_id.get(rec.token_id)
+                if mine is None:
+                    self._by_id[rec.token_id] = rec
+                elif rec.revoked_at is not None and mine.revoked_at is None:
+                    mine.revoked_at = rec.revoked_at
+                    mine.revocation_reason = rec.revocation_reason
+        self._watch_sig = sig
 
     @classmethod
     def load_hashed(cls, path: str, server_key: bytes) -> "TokenStore":
