@@ -77,8 +77,10 @@ def call(app, token, *, mid=1):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://%s" % HOST) as c:
             return await c.post("/mcp", headers={
-                "content-type": "application/json", "mcp-protocol-version": "2026-07-28",
-                "authorization": "Bearer %s" % token},
+                "content-type": "application/json",
+                "accept": "application/json, text/event-stream",
+                "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call",
+                "mcp-name": "sequentialthinking", "authorization": "Bearer %s" % token},
                 content=json.dumps({"jsonrpc": "2.0", "id": mid, "method": "tools/call",
                                     "params": {"name": "sequentialthinking", "arguments": {}}}))
     loop = asyncio.new_event_loop()

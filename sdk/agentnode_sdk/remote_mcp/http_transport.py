@@ -142,9 +142,12 @@ class RemoteMCPApp:
         ctype = headers.get("content-type", "").split(";")[0].strip().lower()
         if ctype != "application/json":
             return await self._send(send, 415, {"error": "unsupported_media_type"})
+        # MCP Streamable HTTP requires the client to Accept BOTH content types the server may
+        # answer with; a request that does not is refused (not served a guessed type).
         accept = headers.get("accept", "")
-        if accept and "application/json" not in accept and "*/*" not in accept:
-            return await self._send(send, 406, {"error": "not_acceptable"})
+        if "application/json" not in accept or "text/event-stream" not in accept:
+            return await self._send(send, 406, {"error": "not_acceptable",
+                                    "error_description": "Accept must list application/json and text/event-stream"})
         # body with size cap
         body, too_big = await self._read_body(receive, self.limits.max_body_bytes)
         if too_big:
@@ -183,16 +186,21 @@ class RemoteMCPApp:
         if rpc_method == "notifications/initialized":
             return await self._raw(send, 202, b"")
 
-        # SEP-2243 header/body agreement for modern requests
-        if version == PRIMARY_VERSION:
+        # SEP-2243: for the modern (2026-07-28) era the per-request metadata headers are
+        # REQUIRED, not optional — a modern tools/list or tools/call MUST carry Mcp-Method (and
+        # tools/call MUST carry Mcp-Name), each agreeing with the body. Missing or mismatched is
+        # refused; it never proceeds. (initialize / notifications/initialized precede this.)
+        if version == PRIMARY_VERSION and rpc_method in ("tools/list", "tools/call"):
             hm = headers.get("mcp-method")
-            if hm is not None and hm != rpc_method:
-                return await self._rpc_error(send, mid, -32600, "Mcp-Method header/body mismatch")
+            if hm is None or hm != rpc_method:
+                return await self._rpc_error(send, mid, -32600,
+                                             "Mcp-Method header required and must equal the method")
             if rpc_method == "tools/call":
                 hn = headers.get("mcp-name")
                 bn = (msg.get("params") or {}).get("name")
-                if hn is not None and hn != bn:
-                    return await self._rpc_error(send, mid, -32600, "Mcp-Name header/body mismatch")
+                if hn is None or hn != bn:
+                    return await self._rpc_error(send, mid, -32600,
+                                                 "Mcp-Name header required and must equal params.name")
 
         if rpc_method == "tools/list":
             return await self._rpc_passthrough(send, msg)
@@ -226,14 +234,27 @@ class RemoteMCPApp:
         return principal
 
     def _negotiate_version(self, headers: dict, msg: dict):
-        declared = headers.get("mcp-protocol-version")
+        header_ver = headers.get("mcp-protocol-version")
+        # A version declared in the body (initialize params, or a `_meta.protocolVersion`) must,
+        # if a header is also present, AGREE with it — a header/body disagreement is refused, not
+        # silently resolved to one of them.
+        params = msg.get("params") or {}
+        body_ver = None
+        if msg.get("method") == "initialize":
+            body_ver = params.get("protocolVersion")
+        if body_ver is None:
+            meta = params.get("_meta") or {}
+            if isinstance(meta, dict):
+                body_ver = meta.get("protocolVersion")
+        if header_ver is not None and body_ver is not None and header_ver != body_ver:
+            return None, (400, [("content-type", "application/json")],
+                          json.dumps({"error": "invalid_request",
+                                      "error_description": "protocol version header/body disagree"}).encode())
+        declared = header_ver if header_ver is not None else body_ver
         if declared is None:
-            # modern per-request requires the header; initialize may carry it in params
-            if msg.get("method") == "initialize":
-                declared = (msg.get("params") or {}).get("protocolVersion")
-            if declared is None:
-                return None, (400, [("content-type", "application/json")],
-                              json.dumps({"error": "protocol_version_required"}).encode())
+            # the era is NEVER inferred from a missing version: it must be stated somewhere.
+            return None, (400, [("content-type", "application/json")],
+                          json.dumps({"error": "protocol_version_required"}).encode())
         if declared not in SUPPORTED_VERSIONS:
             err = {"jsonrpc": "2.0", "id": msg.get("id"),
                    "error": {"code": -32022, "message": "unsupported protocol version",

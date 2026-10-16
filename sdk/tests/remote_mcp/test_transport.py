@@ -93,12 +93,19 @@ def rpc(method, *, mid=1, params=None):
     return json.dumps(msg).encode()
 
 
-def mcp_headers(token=None, *, version="2026-07-28", extra=None):
-    h = {"content-type": "application/json", "accept": "application/json"}
+def mcp_headers(token=None, *, version="2026-07-28", method="tools/list",
+                name="sequentialthinking", extra=None):
+    # MCP Streamable HTTP: the client Accepts both content types; the modern era carries the
+    # SEP-2243 metadata headers (auto-added here unless a test overrides via `extra`).
+    h = {"content-type": "application/json", "accept": "application/json, text/event-stream"}
     if version:
         h["mcp-protocol-version"] = version
     if token:
         h["authorization"] = "Bearer %s" % token
+    if version == "2026-07-28" and method in ("tools/list", "tools/call"):
+        h["mcp-method"] = method
+        if method == "tools/call":
+            h["mcp-name"] = name
     if extra:
         h.update(extra)
     return h
@@ -188,7 +195,7 @@ def test_tools_list_authorized():
 
 def test_unapproved_tools_call_returns_approval_required():
     app, store, adapter, _ = make_app()
-    r = drive(app, "POST", "/mcp", headers=mcp_headers(mint(store)),
+    r = drive(app, "POST", "/mcp", headers=mcp_headers(mint(store), method="tools/call"),
               content=rpc("tools/call", params={"name": "sequentialthinking", "arguments": {}}))
     assert r.status_code == 200
     res = r.json()["result"]
@@ -409,6 +416,41 @@ def test_rate_limit_429():
     adapter_approved.approved = True
     last = None
     for _ in range(11):
-        last = drive(app, "POST", "/mcp", headers=mcp_headers(tok),
+        last = drive(app, "POST", "/mcp", headers=mcp_headers(tok, method="tools/call"),
                      content=rpc("tools/call", params={"name": "sequentialthinking", "arguments": {}}))
     assert last.status_code == 429
+
+
+# ---- R1 strictness: Accept both, required SEP-2243 headers, version header/body agree ----- #
+
+def test_accept_must_list_both_media_types():
+    app, store, *_ = make_app()
+    h = mcp_headers(mint(store))
+    h["accept"] = "application/json"               # missing text/event-stream
+    r = drive(app, "POST", "/mcp", headers=h, content=rpc("tools/list"))
+    assert r.status_code == 406
+
+
+def test_modern_tools_list_requires_mcp_method_header():
+    app, store, *_ = make_app()
+    h = mcp_headers(mint(store))
+    del h["mcp-method"]                            # omit the required modern header
+    r = drive(app, "POST", "/mcp", headers=h, content=rpc("tools/list"))
+    assert r.json()["error"]["code"] == -32600
+
+
+def test_modern_tools_call_requires_mcp_name_header():
+    app, store, *_ = make_app()
+    h = mcp_headers(mint(store), method="tools/call")
+    del h["mcp-name"]                              # omit the required name header
+    r = drive(app, "POST", "/mcp", headers=h,
+              content=rpc("tools/call", params={"name": "sequentialthinking", "arguments": {}}))
+    assert r.json()["error"]["code"] == -32600
+
+
+def test_protocol_version_header_body_disagreement_rejected():
+    app, store, *_ = make_app()
+    h = mcp_headers(mint(store), method="tools/call")   # header says 2026-07-28
+    r = drive(app, "POST", "/mcp", headers=h,
+              content=rpc("initialize", params={"protocolVersion": "2025-11-25"}))
+    assert r.status_code == 400 and "disagree" in r.text

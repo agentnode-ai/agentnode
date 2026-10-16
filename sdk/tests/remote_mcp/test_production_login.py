@@ -138,7 +138,10 @@ def test_browser_consent_code_pkce_token_and_call(tmp_path):
             assert r3.json()["scope"] == "mcp:use"
             # the token drives a real tools/call
             r4 = await c.post("/mcp", headers={
-                "content-type": "application/json", "mcp-protocol-version": "2026-07-28",
+                "content-type": "application/json",
+                "accept": "application/json, text/event-stream",
+                "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call",
+                "mcp-name": "sequentialthinking",
                 "authorization": "Bearer %s" % token},
                 content=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                                     "params": {"name": "sequentialthinking", "arguments": {}}}))
