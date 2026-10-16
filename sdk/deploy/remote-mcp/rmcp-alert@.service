@@ -1,0 +1,11 @@
+[Unit]
+Description=remote MCP origin: ALERT for failed %i
+
+[Service]
+Type=oneshot
+# Always visible: a journal entry at priority crit, and a persistent alert file the operator's
+# monitoring (or a mail/webhook hook dropped into /etc/agentnode-mcp/alert.d/) picks up.
+ExecStart=/bin/sh -c 'mkdir -p /var/lib/agentnode-mcp/alerts; \
+  printf "%%s %%s failed\n" "$(date -u +%%FT%%TZ)" "%i" >> /var/lib/agentnode-mcp/alerts/alerts.log; \
+  logger -p daemon.crit -t rmcp-alert "remote MCP: %i FAILED - see journalctl -u %i"; \
+  for h in /etc/agentnode-mcp/alert.d/*; do [ -x "$$h" ] && "$$h" "%i"; done; true'

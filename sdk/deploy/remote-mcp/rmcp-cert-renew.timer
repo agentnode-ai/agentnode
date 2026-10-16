@@ -1,0 +1,10 @@
+[Unit]
+Description=remote MCP origin: certificate renewal, twice daily (renews when < RENEW_DAYS left)
+
+[Timer]
+OnCalendar=*-*-* 03,15:17:00
+RandomizedDelaySec=45min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
