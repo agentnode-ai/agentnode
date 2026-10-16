@@ -88,6 +88,9 @@ def drive(app, method, path, *, headers=None, content=None):
 
 PV_META = "io.modelcontextprotocol/protocolVersion"
 CAPS_META = "io.modelcontextprotocol/clientCapabilities"
+#: mcp_types.jsonrpc.HEADER_MISMATCH in the official SDK (2.3.0) — the literal, so a wrong
+#: server constant cannot make these assertions agree with themselves.
+HEADER_MISMATCH = -32020
 
 
 def rpc(method, *, mid=1, params=None, modern="2026-07-28", meta=True):
@@ -243,7 +246,9 @@ def test_legacy_initialize_handshake():
     app, store, *_ = make_app()
     h = mcp_headers(mint(store), version="2025-11-25")
     r = drive(app, "POST", "/mcp", headers=h,
-              content=rpc("initialize", params={"protocolVersion": "2025-11-25"}, modern="2025-11-25"))
+              content=rpc("initialize", modern="2025-11-25", params={
+                  "protocolVersion": "2025-11-25", "capabilities": {},
+                  "clientInfo": {"name": "probe", "version": "0"}}))
     res = r.json()["result"]
     assert res["protocolVersion"] == "2025-11-25" and res["serverInfo"]["name"]
 
@@ -433,7 +438,7 @@ def test_mcp_method_header_mismatch():
     app, store, *_ = make_app()
     h = mcp_headers(mint(store), extra={"mcp-method": "tools/call"})
     r = drive(app, "POST", "/mcp", headers=h, content=rpc("tools/list"))
-    assert r.json()["error"]["code"] == -32600
+    assert r.status_code == 400 and r.json()["error"]["code"] == HEADER_MISMATCH
 
 
 def test_mcp_name_header_mismatch():
@@ -441,7 +446,7 @@ def test_mcp_name_header_mismatch():
     h = mcp_headers(mint(store), extra={"mcp-method": "tools/call", "mcp-name": "other"})
     r = drive(app, "POST", "/mcp", headers=h,
               content=rpc("tools/call", params={"name": "sequentialthinking", "arguments": {}}))
-    assert r.json()["error"]["code"] == -32600
+    assert r.status_code == 400 and r.json()["error"]["code"] == HEADER_MISMATCH
 
 
 def _authorize_with_client(app, client_id, verifier):
@@ -500,7 +505,7 @@ def test_modern_tools_list_requires_mcp_method_header():
     h = mcp_headers(mint(store))
     del h["mcp-method"]                            # omit the required modern header
     r = drive(app, "POST", "/mcp", headers=h, content=rpc("tools/list"))
-    assert r.json()["error"]["code"] == -32600
+    assert r.json()["error"]["code"] == HEADER_MISMATCH
 
 
 def test_modern_tools_call_requires_mcp_name_header():
@@ -509,7 +514,7 @@ def test_modern_tools_call_requires_mcp_name_header():
     del h["mcp-name"]                              # omit the required name header
     r = drive(app, "POST", "/mcp", headers=h,
               content=rpc("tools/call", params={"name": "sequentialthinking", "arguments": {}}))
-    assert r.json()["error"]["code"] == -32600
+    assert r.json()["error"]["code"] == HEADER_MISMATCH
 
 
 def test_protocol_version_header_meta_disagreement_rejected():
@@ -518,4 +523,166 @@ def test_protocol_version_header_meta_disagreement_rejected():
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list",
                        "params": {"_meta": {PV_META: "2025-11-25", CAPS_META: {}}}}).encode()
     r = drive(app, "POST", "/mcp", headers=h, content=body)
-    assert r.status_code == 400 and r.json()["error"]["code"] == -32600 and "disagree" in r.text
+    assert r.status_code == 400 and r.json()["error"]["code"] == HEADER_MISMATCH and "disagree" in r.text
+
+
+# ---- legacy wire flow: the one headerless request is initialize ----------------------- #
+
+def init_body(pv="2025-11-25", mid=1, **override):
+    params = {"protocolVersion": pv, "capabilities": {},
+              "clientInfo": {"name": "probe", "version": "0"}}
+    params.update(override)
+    return json.dumps({"jsonrpc": "2.0", "id": mid, "method": "initialize", "params": params}).encode()
+
+
+def test_legacy_wire_flow_headerless_initialize_then_header():
+    # exactly what the official SDK sends: initialize WITHOUT MCP-Protocol-Version, then every
+    # later request carrying the negotiated header.
+    app, store, adapter, _ = make_app()
+    tok = mint(store)
+    r = drive(app, "POST", "/mcp", headers=mcp_headers(tok, version=None), content=init_body())
+    assert r.status_code == 200, r.text
+    res = r.json()["result"]
+    assert res["protocolVersion"] == "2025-11-25" and res["serverInfo"]["name"]
+    assert "mcp-session-id" not in r.headers          # stateless legacy: no session minted
+    n = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode()
+    h = mcp_headers(tok, version="2025-11-25")
+    assert drive(app, "POST", "/mcp", headers=h, content=n).status_code == 202
+    r2 = drive(app, "POST", "/mcp", headers=h, content=rpc("tools/list", modern="2025-11-25"))
+    assert r2.status_code == 200 and r2.json()["result"]["tools"]
+    assert "_meta" not in r2.json()["result"] and "resultType" not in r2.json()["result"]
+    r3 = drive(app, "POST", "/mcp", headers=h, content=rpc(
+        "tools/call", modern="2025-11-25", params={"name": "sequentialthinking", "arguments": {}}))
+    assert r3.json()["result"]["structuredContent"]["status"] == "approval_required"
+
+
+def test_headerless_follow_up_legacy_calls_refused():
+    app, store, *_ = make_app()
+    tok = mint(store)
+    h = mcp_headers(tok, version=None)
+    for body in (rpc("tools/list", modern="2025-11-25"),
+                 json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode(),
+                 rpc("tools/call", modern="2025-11-25",
+                     params={"name": "sequentialthinking", "arguments": {}})):
+        r = drive(app, "POST", "/mcp", headers=h, content=body)
+        assert r.status_code == 400 and r.json()["error"] == "protocol_version_required"
+
+
+def test_headerless_initialize_offering_modern_selects_legacy_only():
+    # an initialize can only ever negotiate a LEGACY version; it never yields a modern handshake
+    app, store, *_ = make_app()
+    r = drive(app, "POST", "/mcp", headers=mcp_headers(mint(store), version=None),
+              content=init_body(pv="2026-07-28"))
+    assert r.json()["result"]["protocolVersion"] == "2025-11-25"
+
+
+def test_legacy_initialize_params_are_validated():
+    app, store, *_ = make_app()
+    tok = mint(store)
+    for bad in ({"protocolVersion": 20251125}, {"capabilities": []},
+                {"clientInfo": {"name": "x"}}, {"clientInfo": "probe"}):
+        r = drive(app, "POST", "/mcp", headers=mcp_headers(tok, version=None), content=init_body(**bad))
+        assert r.status_code == 400 and r.json()["error"]["code"] == -32602, bad
+
+
+def test_legacy_initialize_header_body_disagreement_rejected():
+    app, store, *_ = make_app()
+    h = mcp_headers(mint(store), version="2025-11-25")
+    r = drive(app, "POST", "/mcp", headers=h, content=init_body(pv="2025-06-18"))
+    assert r.json()["error"]["code"] == HEADER_MISMATCH
+
+
+def test_session_ids_never_mix_into_either_era():
+    app, store, *_ = make_app()
+    tok = mint(store)
+    legacy = mcp_headers(tok, version="2025-11-25", extra={"mcp-session-id": "s-1"})
+    r = drive(app, "POST", "/mcp", headers=legacy, content=rpc("tools/list", modern="2025-11-25"))
+    assert r.status_code == 404                       # we issued no session: unknown, not adopted
+    modern = mcp_headers(tok, extra={"mcp-session-id": "s-1"})
+    r = drive(app, "POST", "/mcp", headers=modern, content=rpc("tools/list"))
+    assert r.status_code == 400 and r.json()["error"]["code"] == -32600
+
+
+def test_modern_header_with_legacy_body_does_not_initialize():
+    # a modern-headed request is routed modern even for initialize: no legacy handshake via mixing
+    app, store, *_ = make_app()
+    h = mcp_headers(mint(store), extra={"mcp-method": "initialize"})
+    r = drive(app, "POST", "/mcp", headers=h, content=init_body())   # no modern _meta
+    assert "result" not in r.json()
+
+
+# ---- modern serverInfo stamp on EVERY result ------------------------------------------ #
+
+SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo"
+
+
+def test_every_modern_result_carries_server_info_stamp():
+    app, store, adapter, _ = make_app()
+    tok = mint(store)
+    seen = []
+    r = drive(app, "POST", "/mcp", headers=mcp_headers(tok, method="server/discover"),
+              content=discover_body())
+    seen.append(r.json()["result"])
+    seen.append(drive(app, "POST", "/mcp", headers=mcp_headers(tok), content=rpc("tools/list")).json()["result"])
+    call = rpc("tools/call", params={"name": "sequentialthinking", "arguments": {}})
+    seen.append(drive(app, "POST", "/mcp", headers=mcp_headers(tok, method="tools/call"), content=call).json()["result"])
+    assert seen[-1]["structuredContent"]["status"] == "approval_required"
+    adapter.approved = True
+    seen.append(drive(app, "POST", "/mcp", headers=mcp_headers(tok, method="tools/call"), content=call).json()["result"])
+    assert seen[-1]["isError"] is False
+    for res in seen:
+        assert res["_meta"][SERVER_INFO_KEY] == {"name": "agentnode-remote-mcp", "version": "1"}
+        assert res["resultType"] == "complete"
+    assert "serverInfo" not in seen[0]                # not the deprecated top-level DiscoverResult field
+
+
+def test_modern_errors_are_not_stamped():
+    # the SDK stamps results only; a JSON-RPC error stays a bare error
+    app, store, *_ = make_app()
+    h = mcp_headers(mint(store), extra={"mcp-method": "prompts/list"})
+    r = drive(app, "POST", "/mcp", headers=h, content=rpc("prompts/list"))
+    body = r.json()
+    assert r.status_code == 404 and "error" in body and "result" not in body and "_meta" not in body["error"]
+
+
+def test_stamp_merges_existing_meta_and_respects_handler_value():
+    from agentnode_sdk.remote_mcp.http_transport import RemoteMCPApp as A
+    own = {"x/other": 1}
+    out = A._stamp_modern({"jsonrpc": "2.0", "id": 1, "result": {"_meta": own}}, True)
+    assert out["result"]["_meta"] == {"x/other": 1, SERVER_INFO_KEY: {"name": "agentnode-remote-mcp", "version": "1"}}
+    assert own == {"x/other": 1}                      # the handler's object is not written into
+    mine = {SERVER_INFO_KEY: {"name": "handler", "version": "9"}}
+    out = A._stamp_modern({"jsonrpc": "2.0", "id": 1, "result": {"_meta": mine}}, True)
+    assert out["result"]["_meta"][SERVER_INFO_KEY]["name"] == "handler"
+    out = A._stamp_modern({"jsonrpc": "2.0", "id": 1, "result": {"_meta": {SERVER_INFO_KEY: None}}}, True)
+    assert out["result"]["_meta"][SERVER_INFO_KEY]["name"] == "agentnode-remote-mcp"
+    legacy = {"jsonrpc": "2.0", "id": 1, "result": {}}
+    assert A._stamp_modern(legacy, False) is legacy
+
+
+# ---- modern _meta envelope is TYPED, not merely present ------------------------------- #
+
+def test_invalid_client_capabilities_or_info_refused():
+    app, store, *_ = make_app()
+    tok = mint(store)
+    bad_metas = [
+        {PV_META: "2026-07-28", CAPS_META: []},
+        {PV_META: "2026-07-28", CAPS_META: "all"},
+        {PV_META: "2026-07-28", CAPS_META: {"roots": True}},
+        {PV_META: "2026-07-28", CAPS_META: {}, "io.modelcontextprotocol/clientInfo": "probe"},
+        {PV_META: "2026-07-28", CAPS_META: {}, "io.modelcontextprotocol/clientInfo": {"name": "x"}},
+        {PV_META: "2026-07-28", CAPS_META: {}, "io.modelcontextprotocol/clientInfo": {"name": 1, "version": "1"}},
+    ]
+    for meta in bad_metas:
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": meta}}).encode()
+        r = drive(app, "POST", "/mcp", headers=mcp_headers(tok), content=body)
+        assert r.status_code == 400 and r.json()["error"]["code"] == -32602, meta
+
+
+def test_valid_client_info_accepted_and_optional():
+    app, store, *_ = make_app()
+    tok = mint(store)
+    meta = {PV_META: "2026-07-28", CAPS_META: {"roots": {"listChanged": True}},
+            "io.modelcontextprotocol/clientInfo": {"name": "probe", "version": "1"}}
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": meta}}).encode()
+    assert drive(app, "POST", "/mcp", headers=mcp_headers(tok), content=body).status_code == 200
