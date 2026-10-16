@@ -54,43 +54,96 @@ class CIMDError(Exception):
     pass
 
 
-def _is_public_host(host: str) -> bool:
+def _reject_non_public(ip_text: str) -> None:
+    ip = ipaddress.ip_address(ip_text)
+    if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+            or ip.is_multicast or ip.is_unspecified):
+        raise CIMDError("client_id resolves to a non-public address: %s" % ip)
+
+
+def resolve_public_ips(host: str, port: int = 443, *,
+                       getaddrinfo: Callable = socket.getaddrinfo) -> list[str]:
+    """Resolve ``host`` EXACTLY ONCE and return its addresses, rejecting if ANY of them is a
+    private / loopback / link-local / reserved / multicast / unspecified address.
+
+    The fetcher then connects pinned to the returned address and never re-resolves, so a name
+    that answers public here cannot rebind to an internal address at connect time. Rejecting
+    the whole set when any member is non-public also defeats a mixed public+internal answer.
+    """
     try:
-        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
-    except OSError:
-        return False
-    for *_rest, sockaddr in infos:
-        ip = ipaddress.ip_address(sockaddr[0])
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-            return False
-    return True
+        infos = getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        raise CIMDError("client_id host does not resolve") from exc
+    ips: list[str] = []
+    for info in infos:
+        addr = info[4][0]
+        _reject_non_public(addr)
+        ips.append(addr)
+    if not ips:
+        raise CIMDError("client_id host did not resolve to any address")
+    return ips
+
+
+def _pinned_https_get(ip: str, port: int, hostname: str, path: str, timeout: float,
+                      max_bytes: int) -> tuple[int, str, bytes]:
+    """HTTPS GET to the already-validated ``ip`` with SNI + certificate validation against
+    ``hostname``. Pinning the socket to the pre-resolved IP is what closes the DNS-rebinding
+    window; redirects are never followed (any non-200 is rejected by the caller)."""
+    import http.client
+    import ssl
+
+    ctx = ssl.create_default_context()
+    raw = socket.create_connection((ip, port), timeout=timeout)
+    try:
+        conn = http.client.HTTPSConnection(hostname, port, timeout=timeout, context=ctx)
+        conn.sock = ctx.wrap_socket(raw, server_hostname=hostname)
+        conn.request("GET", path, headers={"Accept": "application/json", "Host": hostname,
+                                            "Connection": "close"})
+        resp = conn.getresponse()
+        data = resp.read(max_bytes + 1)
+        status, ctype = resp.status, resp.getheader("content-type", "")
+        conn.close()
+        return status, ctype, data
+    finally:
+        try:
+            raw.close()
+        except OSError:
+            pass
+
+
+#: injectable so SSRF / rebinding counter-checks drive the fetch without a real network
+Connector = Callable[[str, int, str, str, float, int], tuple[int, str, bytes]]
 
 
 def default_cimd_fetcher(client_id_url: str, *, max_bytes: int = 64 * 1024,
-                         timeout: float = 5.0) -> dict:
+                         timeout: float = 5.0,
+                         getaddrinfo: Callable = socket.getaddrinfo,
+                         connector: Optional[Connector] = None) -> dict:
     """Fetch and parse a Client-ID Metadata Document from an HTTPS URL, SSRF-safely.
 
-    Only https, only a public host, bounded size/time, no redirects followed. The AS still
-    validates the document's contents; this only gets the bytes safely.
+    HTTPS only; no embedded credentials; the host is resolved exactly once and rejected if any
+    resolved address is non-public; the connection is pinned to that address (no rebind); no
+    redirects are followed (non-200 rejected); response size, time and content-type are bounded.
+    The AS still validates the document contents (``client_id`` must equal its own URL); this
+    only gets the bytes safely.
     """
-    import urllib.request
-
     parts = urlsplit(client_id_url)
-    if parts.scheme != "https" or not parts.netloc:
+    if parts.scheme != "https" or not parts.hostname:
         raise CIMDError("client_id must be an https URL")
-    if not _is_public_host(parts.hostname or ""):
-        raise CIMDError("client_id host is not a public address")
-
-    class _NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *a, **k):  # noqa: D401, ANN002
-            raise CIMDError("client_id document must not redirect")
-
-    opener = urllib.request.build_opener(_NoRedirect)
-    req = urllib.request.Request(client_id_url, headers={"Accept": "application/json"})
-    with opener.open(req, timeout=timeout) as resp:  # noqa: S310 -- scheme checked above
-        if resp.status != 200:
-            raise CIMDError("client_id document HTTP %s" % resp.status)
-        data = resp.read(max_bytes + 1)
+    if parts.username or parts.password:
+        raise CIMDError("client_id must not embed credentials")
+    host = parts.hostname
+    port = parts.port or 443
+    ip = resolve_public_ips(host, port, getaddrinfo=getaddrinfo)[0]   # single resolution, pinned
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+    get = connector or _pinned_https_get
+    status, ctype, data = get(ip, port, host, path, timeout, max_bytes)
+    if status != 200:
+        raise CIMDError("client_id document HTTP %s (redirects not followed)" % status)
+    if ctype.split(";")[0].strip().lower() != "application/json":
+        raise CIMDError("client_id document content-type must be application/json")
     if len(data) > max_bytes:
         raise CIMDError("client_id document too large")
     try:

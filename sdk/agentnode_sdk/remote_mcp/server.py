@@ -62,13 +62,20 @@ def _stand_login_resolver(stand: str):
     return resolve
 
 
+def _load_store(stand: str) -> TokenStore:
+    key = _server_key(stand)
+    tokens_path = os.path.join(stand, TOKENS_FILE)
+    return TokenStore.load_hashed(tokens_path, key) if os.path.exists(tokens_path) else TokenStore(key)
+
+
 def build_app(stand: str, *, resource: str, issuer: str, allowed_hosts: tuple[str, ...],
               allowed_origins: tuple[str, ...] = (), preregistered=None,
               allow_x_access_token: bool = False, limits: Limits | None = None) -> RemoteMCPApp:
-    adapter = build_from_stand(stand)                      # the REAL frozen adapter
-    key = _server_key(stand)
-    tokens_path = os.path.join(stand, TOKENS_FILE)
-    store = TokenStore.load_hashed(tokens_path, key) if os.path.exists(tokens_path) else TokenStore(key)
+    """STAND builder (restricted VPN test stand): LOCAL podman worker + the disabled
+    ``X-AgentNode-Login`` pre-shared-secret shim. NOT for production — the shim is wired here
+    and ONLY here, so ``build_production_app`` (which never calls this) has no path to it."""
+    adapter = build_from_stand(stand)                      # the REAL frozen adapter, local worker
+    store = _load_store(stand)
     rc = ResourceConfig(resource=resource, authorization_server=issuer)
     authz = AuthorizationServer(issuer=issuer, resource=resource, token_store=store,
                                 preregistered=dict(preregistered or {}))
@@ -76,6 +83,88 @@ def build_app(stand: str, *, resource: str, issuer: str, allowed_hosts: tuple[st
                         allowed_hosts=allowed_hosts, allowed_origins=allowed_origins,
                         principal_resolver=_stand_login_resolver(stand),
                         limits=limits or Limits(), allow_x_access_token=allow_x_access_token)
+
+
+def _build_remote_worker(stand: str):
+    """Build the mutually-authenticated control→worker mTLS client from ``stand/worker.json``.
+
+    This is the ONLY difference between a production adapter and the frozen local one: execution
+    crosses the existing private channel (``worker.remote.from_address`` → ``TlsWorker`` over
+    ``tcps://<worker-ip>:8443``) instead of a local podman worker. ``separate-worker-host``
+    topology forbids loopback/DNS/wildcard addresses and requires the keyring+tombstones.
+    """
+    import json
+
+    from agentnode_sdk.worker import SEPARATE_WORKER_HOST, pairkeys
+    from agentnode_sdk.worker.remote import from_address
+    from agentnode_sdk.worker.tls import TlsSettings, own_instance
+
+    cfg = json.loads(io.open(os.path.join(stand, "worker.json"), encoding="utf-8").read())
+    t = cfg["tls"]
+    tls = TlsSettings(certificate=t["certificate"], key=t["key"], anchor=t["anchor"],
+                      deployment=cfg["deployment"], accept=frozenset(cfg["accept"]),
+                      revocation_list=t["revocation_list"], floor=t["floor"],
+                      identity_tombstones=t.get("identity_tombstones", ""),
+                      tombstones_required=True)
+    keyring = pairkeys.Keyring.read(cfg["keyring"])
+    return from_address(cfg["worker_address"], None, tls=tls,
+                        topology=SEPARATE_WORKER_HOST, keyring=keyring,
+                        own_instance=own_instance(tls))
+
+
+def _build_remote_adapter(stand: str):
+    """Mirror of the frozen ``build_from_stand`` wiring, but over the REMOTE worker. Every
+    security-critical piece (UsabilityClient, tree_pipeline, approval, audit, index) is reused
+    unchanged; only the ``Worker`` instance differs, which ``tree_execution`` treats as a
+    drop-in because it uses only the ``Worker`` ABC surface."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    from agentnode_sdk.capability.approval import ApprovalStore
+    from agentnode_sdk.capability.audit import AuditLedger
+    from agentnode_sdk.capability.index import LocalIndex
+    from agentnode_sdk.capability.usability import UsabilityClient
+
+    cap_id = io.open(os.path.join(stand, "capability_id.txt"), encoding="utf-8").read().strip()
+    op_pub = bytes.fromhex(io.open(os.path.join(stand, "operator_pub.hex"), encoding="utf-8").read().strip())
+    au_priv = Ed25519PrivateKey.from_private_bytes(
+        bytes.fromhex(io.open(os.path.join(stand, "audit_signer_priv.hex"), encoding="utf-8").read().strip()))
+    au_pub = au_priv.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    idx = LocalIndex(os.path.join(stand, "index"))
+    ledger = AuditLedger(os.path.join(stand, "audit.jsonl"), ledger_id="adapter-L1",
+                         signer_private=au_priv, signer_public_bytes=au_pub)
+    worker = _build_remote_worker(stand)
+    client = UsabilityClient(index=idx, worker=worker, audit_ledger=ledger,
+                             approval_store=ApprovalStore(consumed_dir=os.path.join(stand, "consumed")),
+                             operator_public_bytes=op_pub,
+                             worker_identity="mtls:" + str(getattr(worker, "address", "")),
+                             stand=stand)
+    return UsabilityMCPAdapter(client, cap_id, approvals_dir=os.path.join(stand, "approvals"))
+
+
+def build_production_app(stand: str, *, resource: str, issuer: str,
+                         allowed_hosts: tuple[str, ...], gateway_dir: str,
+                         console_url: str = "", allowed_origins: tuple[str, ...] = (),
+                         preregistered=None, limits: Limits | None = None,
+                         local_worker: bool = False) -> RemoteMCPApp:
+    """PRODUCTION builder: execution on the SEPARATE worker over mTLS, OAuth bound to the real
+    gateway accounts/devices/sessions/capabilities/revocations via :class:`GatewayLogin`.
+
+    The ``X-AgentNode-Login`` shim is NEVER constructed here; there is no ``principal_resolver``,
+    so that header is structurally dead. ``local_worker=True`` is a narrow escape hatch for a
+    single-host bring-up check and still never wires the shim.
+    """
+    from agentnode_sdk.remote_mcp.accounts_login import GatewayLogin
+
+    adapter = build_from_stand(stand) if local_worker else _build_remote_adapter(stand)
+    store = _load_store(stand)
+    rc = ResourceConfig(resource=resource, authorization_server=issuer)
+    authz = AuthorizationServer(issuer=issuer, resource=resource, token_store=store,
+                                preregistered=dict(preregistered or {}))
+    return RemoteMCPApp(adapter=adapter, token_store=store, authz=authz, resource=rc,
+                        allowed_hosts=allowed_hosts, allowed_origins=allowed_origins,
+                        login_provider=GatewayLogin(gateway_dir), console_url=console_url,
+                        limits=limits or Limits(), allow_x_access_token=False)
 
 
 def main(argv=None) -> int:

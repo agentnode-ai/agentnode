@@ -27,6 +27,12 @@ from agentnode_sdk.remote_mcp.oauth_as import AuthorizationServer
 from agentnode_sdk.remote_mcp.prm import ResourceConfig
 from agentnode_sdk.remote_mcp.tokens import Principal, TokenStore, TokenVerifyError
 
+def _h(value: str) -> str:
+    """Minimal HTML-attribute/text escaping for the consent page (no templating engine)."""
+    import html
+    return html.escape(str(value), quote=True)
+
+
 SUPPORTED_VERSIONS = ("2026-07-28", "2025-11-25")
 PRIMARY_VERSION = "2026-07-28"
 REQUIRED_SCOPE = "mcp:use"
@@ -39,9 +45,17 @@ class RemoteMCPApp:
                  authz: AuthorizationServer, resource: ResourceConfig,
                  allowed_hosts: tuple[str, ...], allowed_origins: tuple[str, ...] = (),
                  principal_resolver: Optional[PrincipalResolver] = None,
+                 login_provider: Optional[Any] = None,
+                 console_url: str = "",
                  limits: Optional[Limits] = None, allow_x_access_token: bool = False,
                  clock: Callable[[], float] = None):
         import time
+        # The stand pre-shared-secret resolver and the production browser-login provider are two
+        # ways of establishing the authorizing account, and never both: a build that offered both
+        # would leave the disabled test shim reachable in production, which is exactly what the
+        # production path must make structurally impossible.
+        if principal_resolver is not None and login_provider is not None:
+            raise ValueError("principal_resolver and login_provider are mutually exclusive")
         self.adapter = adapter
         self.tokens = token_store
         self.authz = authz
@@ -49,6 +63,8 @@ class RemoteMCPApp:
         self.allowed_hosts = tuple(h.lower() for h in allowed_hosts)
         self.allowed_origins = tuple(allowed_origins)
         self.principal_resolver = principal_resolver
+        self.login_provider = login_provider
+        self.console_url = console_url
         self.limits = limits or Limits()
         self.allow_x_access_token = allow_x_access_token
         clock = clock or time.time
@@ -75,6 +91,8 @@ class RemoteMCPApp:
             return await self._triple(send, self.authz.metadata())
         if path == "/authorize" and method == "GET":
             return await self._authorize(scope, headers, send)
+        if path == "/authorize" and method == "POST" and self.login_provider is not None:
+            return await self._authorize_post(scope, headers, receive, send)
         if path == "/token" and method == "POST":
             return await self._form_endpoint(receive, send, self.authz.token)
         if path == "/register" and method == "POST":
@@ -214,10 +232,68 @@ class RemoteMCPApp:
     # ---- AS endpoints ---------------------------------------------------- #
     async def _authorize(self, scope, headers, send) -> None:
         params = self._query(scope)
+        if self.login_provider is not None:
+            return await self._authorize_consent_page(scope, headers, params, send)
+        # Stand path: a pre-shared-secret resolver, used ONLY by build_stand_app.
         principal_id = self.principal_resolver(scope, headers) if self.principal_resolver else None
         if not principal_id:
             return await self._send(send, 401, {"error": "login_required"})
         return await self._triple(send, self.authz.authorize(params, principal_id=principal_id))
+
+    async def _authorize_consent_page(self, scope, headers, params, send) -> None:
+        """GET /authorize in production: render a consent page for the signed-in account.
+
+        The account comes from the gateway session cookie via the login provider; the page
+        POSTs the same OAuth parameters back with a CSRF confirmation to actually issue a code.
+        No code is ever issued on this GET.
+        """
+        subject = self.login_provider.subject(scope, headers)
+        if subject is None:
+            link = (" <a href=\"%s\">Sign in</a>" % _h(self.console_url)) if self.console_url else ""
+            return await self._html(send, 401,
+                                    "<h1>Sign in required</h1><p>Authenticate to AgentNode in "
+                                    "the console, then retry.%s</p>" % link)
+        if not subject.permitted:
+            return await self._html(send, 403,
+                                    "<h1>Not permitted</h1><p>This device may not run work "
+                                    "(no RUN capability), so it cannot be granted mcp:use.</p>")
+        return await self._html(send, 200, self._consent_html(params, subject))
+
+    async def _authorize_post(self, scope, headers, receive, send) -> None:
+        body, too_big = await self._read_body(receive, self.limits.max_body_bytes)
+        if too_big:
+            return await self._send(send, 413, {"error": "payload_too_large"})
+        form = self._parse_form(body)
+        subject = self.login_provider.confirmed_subject(scope, headers, form)
+        if subject is None:
+            return await self._html(send, 403, "<h1>Could not confirm</h1>"
+                                    "<p>Your session or confirmation was not valid.</p>")
+        if form.get("decision") != "allow" or not subject.permitted:
+            # Deny WITHOUT redirecting: an un-validated redirect_uri must never be a redirect
+            # target, and declining consent is not an error to hand back to the client.
+            return await self._html(send, 200, "<h1>Request declined</h1>"
+                                    "<p>No authorization was granted.</p>")
+        return await self._triple(send, self.authz.authorize(
+            form, principal_id=subject.principal_id, granted_scopes=subject.scopes))
+
+    def _consent_html(self, params: dict, subject) -> str:
+        fields = {k: params.get(k, "") for k in (
+            "client_id", "redirect_uri", "response_type", "code_challenge",
+            "code_challenge_method", "resource", "state", "scope")}
+        hidden = "".join('<input type="hidden" name="%s" value="%s">' % (k, _h(v))
+                         for k, v in fields.items())
+        return (
+            "<!doctype html><meta charset=utf-8><title>Authorize</title>"
+            "<h1>Authorize access</h1>"
+            "<p>Client <code>%s</code> is requesting <code>%s</code> on "
+            "<code>%s</code> for account <code>%s</code>.</p>"
+            "<form method=\"POST\" action=\"/authorize\">%s"
+            "<input type=\"hidden\" name=\"confirm\" value=\"%s\">"
+            "<button name=\"decision\" value=\"allow\">Allow</button> "
+            "<button name=\"decision\" value=\"deny\">Deny</button></form>" % (
+                _h(fields["client_id"]), _h(" ".join(subject.scopes) or "(none)"),
+                _h(fields["resource"]), _h(subject.principal_id), hidden,
+                _h(subject.consent_token)))
 
     async def _form_endpoint(self, receive, send, fn) -> None:
         body, too_big = await self._read_body(receive, self.limits.max_body_bytes)
@@ -260,6 +336,10 @@ class RemoteMCPApp:
 
     async def _send(self, send, status: int, obj: Any, extra: Optional[list] = None) -> None:
         return await self._raw(send, status, json.dumps(obj).encode(), extra)
+
+    async def _html(self, send, status: int, body_html: str) -> None:
+        return await self._raw(send, status, body_html.encode("utf-8"),
+                               [("content-type", "text/html; charset=utf-8")])
 
     async def _triple(self, send, triple) -> None:
         status, headers, body = triple
