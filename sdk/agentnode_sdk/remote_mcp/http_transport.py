@@ -66,6 +66,13 @@ CACHEABLE_METHODS = frozenset({"prompts/list", "resources/list", "resources/read
 #: the SDK reference default hint: immediately stale, never shared across authorization
 #: contexts — the tool list here is per account, so nothing may be served from a shared cache.
 CACHE_HINT = {"ttlMs": 0, "cacheScope": "private"}
+#: Live-authority refusals (R8): a token whose account/device standing is gone is REVOKED ->
+#: 401 invalid_token (the client must re-authorize); a standing device that merely lost RUN is
+#: under-privileged -> 403 insufficient_scope; state the gateway cannot read is neither, so it
+#: is refused as temporarily unavailable (503) rather than mislabelled.
+LIVE_REFUSAL_STATUS = {"token_not_device_bound": 401, "device_revoked": 401,
+                       "account_mismatch": 401, "account_suspended": 401,
+                       "run_withdrawn": 403, "authority_unverifiable": 503}
 #: ClientCapabilities members that, when present, must themselves be objects.
 _CAPABILITY_OBJECT_FIELDS = ("experimental", "sampling", "elicitation", "roots", "extensions", "tasks")
 
@@ -222,6 +229,11 @@ class RemoteMCPApp:
             principal = self._authenticate(headers)
         except TokenVerifyError as exc:
             status = exc.http_status
+            if status not in (401, 403):
+                # not a credential problem: no Bearer challenge that would send the client
+                # into a pointless re-authorization; still a refusal (fail-closed).
+                return await self._send(send, status, {"error": exc.reason},
+                                        extra=[("retry-after", "30")])
             challenge = self.resource.challenge(
                 error="invalid_token" if status == 401 else "insufficient_scope",
                 error_description=exc.reason)
@@ -390,7 +402,7 @@ class RemoteMCPApp:
         if self.live_authority is not None:
             reason = self.live_authority.authority_error(principal)
             if reason is not None:
-                raise TokenVerifyError(reason, 403)
+                raise TokenVerifyError(reason, LIVE_REFUSAL_STATUS.get(reason, 403))
         return principal
 
     @staticmethod

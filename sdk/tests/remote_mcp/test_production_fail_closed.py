@@ -143,25 +143,47 @@ def test_worker_artifact_files_must_exist(tmp_path):
 
 # ---- #2 / #3: already-issued tokens obey the live revocation state ------------------------ #
 
+def _challenge_error(r):
+    h = r.headers.get("www-authenticate", "")
+    return h.split('error="', 1)[1].split('"', 1)[0] if 'error="' in h else None
+
+
 def test_token_works_then_account_suspended_is_refused(tmp_path):
+    # R8: the account's standing is gone -> the token is effectively REVOKED -> 401 invalid_token
     app, store, acct, token = prod_style_app(str(tmp_path))
     assert call(app, token).json()["result"]["isError"] is False
     GatewayState(str(tmp_path), "test").accounts.suspend(acct, because="stopped")
-    assert call(app, token, mid=2).status_code == 403
+    r = call(app, token, mid=2)
+    assert r.status_code == 401 and _challenge_error(r) == "invalid_token"
+    assert r.json()["error"] == "account_suspended"
 
 
 def test_token_works_then_device_withdrawn_is_refused(tmp_path):
     app, store, acct, token = prod_style_app(str(tmp_path))
     assert call(app, token).json()["result"]["isError"] is False
     os.remove(os.path.join(str(tmp_path), "tokens.json"))   # device record gone
-    assert call(app, token, mid=2).status_code == 403
+    r = call(app, token, mid=2)
+    assert r.status_code == 401 and _challenge_error(r) == "invalid_token"
 
 
 def test_token_works_then_run_withdrawn_is_refused(tmp_path):
+    # a standing device that merely lost RUN is under-privileged -> 403 insufficient_scope
     app, store, acct, token = prod_style_app(str(tmp_path))
     assert call(app, token).json()["result"]["isError"] is False
     tokens_json(str(tmp_path), caps=("read",), account_id=acct)   # RUN taken away
-    assert call(app, token, mid=2).status_code == 403
+    r = call(app, token, mid=2)
+    assert r.status_code == 403 and _challenge_error(r) == "insufficient_scope"
+
+
+def test_unreadable_authority_is_refused_not_mislabelled(tmp_path):
+    # gateway state that cannot be read is fail-closed, but it is not a credential problem:
+    # 503, no Bearer challenge that would push the client into re-authorizing
+    app, store, acct, token = prod_style_app(str(tmp_path))
+    assert call(app, token).json()["result"]["isError"] is False
+    app.live_authority._svc = None                     # the live lookup now raises
+    r = call(app, token, mid=2)
+    assert r.status_code == 503 and "www-authenticate" not in r.headers
+    assert r.json()["error"] == "authority_unverifiable"
 
 
 def test_explicit_token_revocation_is_refused(tmp_path):
@@ -175,7 +197,8 @@ def test_unbound_token_is_refused_in_production(tmp_path):
     app, store, acct, token = prod_style_app(str(tmp_path))
     unbound = store.mint(principal_id=acct, audience=RESOURCE, scopes=("mcp:use",),
                          issuance_kind="oauth", ttl_seconds=600).plaintext  # no device binding
-    assert call(app, unbound).status_code == 403
+    r = call(app, unbound)
+    assert r.status_code == 401 and _challenge_error(r) == "invalid_token"
 
 
 # ---- #4: shim / mutual exclusion ---------------------------------------------------------- #
