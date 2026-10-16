@@ -160,6 +160,8 @@ class RemoteMCPApp:
         self._now = clock
         self._rate = RateLimiter(self.limits.calls_per_minute_per_principal, clock)
         self._gate = ConcurrencyGate(self.limits.max_concurrent_calls, self.limits.max_queued_calls)
+        # the run slots a queued tools/call waits for (one event loop serves the app)
+        self._run_slots = asyncio.Semaphore(self.limits.max_concurrent_calls)
         # short-lived, single-use, crypto-random continuation handles for the login bridge:
         # handle -> (normalized validated request, expires_at). /login carries only the handle.
         # Hard-capped and swept on insert so unauthenticated /authorize cannot grow it unbounded.
@@ -435,15 +437,33 @@ class RemoteMCPApp:
                                     extra=[("retry-after", "60")])
         if not self._gate.try_enter_queue():
             return await self._send(send, 503, {"error": "overloaded"})
-        self._gate.promote_to_active()
+        # wait (queued) for one of max_concurrent_calls run slots
         try:
-            loop = asyncio.get_event_loop()
-            fut = loop.run_in_executor(None, self.adapter.handle, msg)
-            resp = await asyncio.wait_for(fut, timeout=self.limits.call_timeout_seconds)
+            await self._run_slots.acquire()
+        except BaseException:
+            self._gate.leave_queue()
+            raise
+        self._gate.promote_to_active()
+        freed = []
+
+        def free_slot(_f=None):
+            # exactly once, and only when the worker call has REALLY finished: a timed-out
+            # call keeps running in its thread, so it keeps its slot until then.
+            if not freed:
+                freed.append(True)
+                self._gate.release()
+                self._run_slots.release()
+        loop = asyncio.get_event_loop()
+        fut = loop.run_in_executor(None, self.adapter.handle, msg)
+        try:
+            resp = await asyncio.wait_for(asyncio.shield(fut), timeout=self.limits.call_timeout_seconds)
         except asyncio.TimeoutError:
+            fut.add_done_callback(lambda f: loop.call_soon_threadsafe(free_slot))
             return await self._rpc_error(send, msg.get("id"), -32001, "call timed out")
-        finally:
-            self._gate.release()
+        except BaseException:
+            fut.add_done_callback(lambda f: loop.call_soon_threadsafe(free_slot))
+            raise
+        free_slot()
         return await self._raw(send, 200, json.dumps(
             self._stamp_modern(resp, modern, msg.get("method"))).encode())
 

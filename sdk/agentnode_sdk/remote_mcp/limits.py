@@ -47,8 +47,11 @@ class RateLimiter:
 
 
 class ConcurrencyGate:
-    """Bounded in-flight count + a bounded queue. ``acquire`` returns False (-> 503) when both
-    the active slots and the queue are full, so overload is refused rather than unbounded."""
+    """Bounded in-flight count + a bounded queue. ``try_enter_queue`` returns False (-> 503) when
+    both the active slots and the queue are full, so overload is refused rather than unbounded.
+    It only counts; the transport makes a queued call actually WAIT for one of the
+    ``max_concurrent`` run slots before it is promoted, and frees that slot only when the call
+    has really finished (not when its caller stopped waiting)."""
 
     def __init__(self, max_concurrent: int, max_queued: int):
         self._max_concurrent = max_concurrent
@@ -63,6 +66,11 @@ class ConcurrencyGate:
                 return False
             self._queued += 1
             return True
+
+    def leave_queue(self) -> None:
+        """A queued call that gave up (cancelled) without ever running."""
+        with self._lock:
+            self._queued -= 1
 
     def promote_to_active(self) -> None:
         with self._lock:
