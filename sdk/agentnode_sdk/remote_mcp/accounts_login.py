@@ -50,6 +50,7 @@ class Subject:
 
     principal_id: str
     scopes: tuple[str, ...]
+    device_id: str = ""
     display_name: str = ""
     consent_token: str = ""
     permitted: bool = True
@@ -83,6 +84,7 @@ class GatewayLogin:
             return None
         scopes = self._scopes_for(principal)
         return Subject(principal_id=principal.account_id, scopes=scopes,
+                       device_id=principal.client_id,
                        display_name=principal.device_name, consent_token=consent_token,
                        permitted=bool(scopes))
 
@@ -103,3 +105,34 @@ class GatewayLogin:
         presented = form.get("confirm") or _header(headers, CSRF_HEADER)
         who = dispatch.a_confirmed_session(self._svc, session_id, presented)
         return self._subject_from(who, presented)
+
+    # ---- the live, per-CALL authority re-check (fail-closed, /goal #2) ---- #
+    def authority_error(self, principal) -> Optional[str]:
+        """Re-derive the token's authority from the LIVE gateway on every MCP call.
+
+        ``principal`` is what the token verifier returned (already past hash/expiry/explicit-
+        revocation/generation/audience/scope). This closes the remaining gap: a token minted
+        while the account was active and the device held RUN must stop working the instant the
+        account is suspended, the device is withdrawn, or RUN is taken away -- none of which the
+        token store knows about. Any failure to establish current authority is a refusal, never
+        a pass (fail-closed). Returns a reason string to refuse on, or None to allow.
+        """
+        try:
+            device_id = str(principal.device_or_connection_id or "")
+            account_id = str(principal.principal_id or "")
+            if not device_id:
+                # A production token MUST be bound to a device; an unbound one cannot be
+                # re-checked, so it is refused rather than trusted.
+                return "token_not_device_bound"
+            who = dispatch.identify_client(self._svc, device_id)
+            if not who.authenticated:
+                return "device_revoked"          # device withdrawn / unknown
+            if who.account_id != account_id:
+                return "account_mismatch"         # device re-homed to another account
+            if not self._account_active(account_id):
+                return "account_suspended"
+            if contract.RUN not in (who.capabilities or ()):
+                return "run_withdrawn"            # permission taken away
+            return None
+        except Exception:  # noqa: BLE001 — unreadable gateway state is not "authorized"
+            return "authority_unverifiable"

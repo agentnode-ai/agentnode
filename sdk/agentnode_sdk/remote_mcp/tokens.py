@@ -95,12 +95,19 @@ class TokenVerifyError(Exception):
 
 @dataclass
 class Principal:
-    """The one normalized security context the verifier hands to MCP routing (R8)."""
+    """The one normalized security context the verifier hands to MCP routing (R8).
+
+    ``device_or_connection_id`` is the gateway device/client this token was bound to at mint.
+    The resource server re-checks that binding against the live gateway on EVERY call (account
+    still active, device still paired, still holds RUN), so a token outlives neither a device
+    withdrawal nor a permission change -- a check at ``/authorize`` alone would not do that.
+    """
     principal_id: str
     scopes: tuple[str, ...]
     audience: str
     token_id: str
     issuance_kind: str
+    device_or_connection_id: Optional[str] = None
 
     def has_scope(self, scope: str) -> bool:
         return scope in self.scopes
@@ -210,7 +217,8 @@ class TokenStore:
                 raise TokenVerifyError("insufficient_scope", 403)
         rec.last_used_at = _now()
         return Principal(principal_id=rec.principal_id, scopes=rec.scopes, audience=rec.audience,
-                         token_id=rec.token_id, issuance_kind=rec.issuance_kind)
+                         token_id=rec.token_id, issuance_kind=rec.issuance_kind,
+                         device_or_connection_id=rec.device_or_connection_id)
 
     # persistence (hashed-only) -------------------------------------------- #
     def dump_hashed(self, path: str) -> None:

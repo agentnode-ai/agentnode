@@ -99,14 +99,39 @@ def _build_remote_worker(stand: str):
     from agentnode_sdk.worker.remote import from_address
     from agentnode_sdk.worker.tls import TlsSettings, own_instance
 
-    cfg = json.loads(io.open(os.path.join(stand, "worker.json"), encoding="utf-8").read())
-    t = cfg["tls"]
+    worker_json = os.path.join(stand, "worker.json")
+    if not os.path.exists(worker_json):
+        raise RuntimeError(
+            "production remote worker config %s is missing; the production service has no local "
+            "worker fallback and will not start without the mutually-authenticated worker." % worker_json)
+    cfg = json.loads(io.open(worker_json, encoding="utf-8").read())
+    t = cfg.get("tls") or {}
+    # Every mandatory artifact must be present AND exist on disk; a missing one fails the start
+    # (fail-closed) rather than silently degrading to anything local.
+    required = {"worker_address": cfg.get("worker_address"), "deployment": cfg.get("deployment"),
+                "accept": cfg.get("accept"), "keyring": cfg.get("keyring"),
+                "tls.certificate": t.get("certificate"), "tls.key": t.get("key"),
+                "tls.anchor": t.get("anchor"), "tls.revocation_list": t.get("revocation_list"),
+                "tls.floor": t.get("floor"), "tls.identity_tombstones": t.get("identity_tombstones")}
+    missing = [k for k, v in required.items() if not v]
+    if missing:
+        raise RuntimeError("production worker config is missing mandatory artifacts: %s"
+                           % ", ".join(sorted(missing)))
+    file_artifacts = {"keyring": cfg["keyring"], "tls.certificate": t["certificate"],
+                      "tls.key": t["key"], "tls.anchor": t["anchor"],
+                      "tls.revocation_list": t["revocation_list"], "tls.floor": t["floor"],
+                      "tls.identity_tombstones": t["identity_tombstones"]}
+    absent = [k for k, p in file_artifacts.items() if not os.path.exists(p)]
+    if absent:
+        raise RuntimeError("production worker artifact files do not exist: %s"
+                           % ", ".join("%s=%s" % (k, file_artifacts[k]) for k in sorted(absent)))
     tls = TlsSettings(certificate=t["certificate"], key=t["key"], anchor=t["anchor"],
                       deployment=cfg["deployment"], accept=frozenset(cfg["accept"]),
                       revocation_list=t["revocation_list"], floor=t["floor"],
-                      identity_tombstones=t.get("identity_tombstones", ""),
+                      identity_tombstones=t["identity_tombstones"],
                       tombstones_required=True)
     keyring = pairkeys.Keyring.read(cfg["keyring"])
+    # SEPARATE_WORKER_HOST topology itself refuses a loopback/DNS/wildcard address.
     return from_address(cfg["worker_address"], None, tls=tls,
                         topology=SEPARATE_WORKER_HOST, keyring=keyring,
                         own_instance=own_instance(tls))
@@ -145,25 +170,27 @@ def _build_remote_adapter(stand: str):
 def build_production_app(stand: str, *, resource: str, issuer: str,
                          allowed_hosts: tuple[str, ...], gateway_dir: str,
                          console_url: str = "", allowed_origins: tuple[str, ...] = (),
-                         preregistered=None, limits: Limits | None = None,
-                         local_worker: bool = False) -> RemoteMCPApp:
-    """PRODUCTION builder: execution on the SEPARATE worker over mTLS, OAuth bound to the real
-    gateway accounts/devices/sessions/capabilities/revocations via :class:`GatewayLogin`.
-
-    The ``X-AgentNode-Login`` shim is NEVER constructed here; there is no ``principal_resolver``,
-    so that header is structurally dead. ``local_worker=True`` is a narrow escape hatch for a
-    single-host bring-up check and still never wires the shim.
+                         preregistered=None, limits: Limits | None = None) -> RemoteMCPApp:
+    """PRODUCTION builder — the ONLY production path. Execution ALWAYS crosses the separate,
+    mutually-authenticated worker over mTLS (``_build_remote_adapter``); there is NO parameter,
+    env var or config value that selects a local worker, and missing worker/mTLS/keyring/CRL/
+    floor/tombstones artifacts fail the start (``_build_remote_worker``). OAuth binds to the
+    real gateway accounts/devices/sessions/capabilities/revocations via :class:`GatewayLogin`,
+    which is ALSO the per-call live authority re-check (fail-closed). The ``X-AgentNode-Login``
+    shim is never constructed here (no ``principal_resolver``), so that header is structurally
+    dead. The only local path is the separate, test-marked :func:`build_app`.
     """
     from agentnode_sdk.remote_mcp.accounts_login import GatewayLogin
 
-    adapter = build_from_stand(stand) if local_worker else _build_remote_adapter(stand)
+    adapter = _build_remote_adapter(stand)
+    gl = GatewayLogin(gateway_dir)
     store = _load_store(stand)
     rc = ResourceConfig(resource=resource, authorization_server=issuer)
     authz = AuthorizationServer(issuer=issuer, resource=resource, token_store=store,
                                 preregistered=dict(preregistered or {}))
     return RemoteMCPApp(adapter=adapter, token_store=store, authz=authz, resource=rc,
                         allowed_hosts=allowed_hosts, allowed_origins=allowed_origins,
-                        login_provider=GatewayLogin(gateway_dir), console_url=console_url,
+                        login_provider=gl, live_authority=gl, console_url=console_url,
                         limits=limits or Limits(), allow_x_access_token=False)
 
 

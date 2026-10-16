@@ -41,7 +41,11 @@ def main(argv=None) -> int:
         sp.add_argument("--store", required=True)
         sp.add_argument("--key-file", required=True)
         if name == "mint":
-            sp.add_argument("--principal", required=True)
+            sp.add_argument("--principal", required=True,
+                            help="the AgentNode account id this token acts as (e.g. acct-…)")
+            sp.add_argument("--client-id", required=True,
+                            help="the gateway device id this token is bound to; in production "
+                                 "the device must stay paired and keep RUN or the token is refused")
             sp.add_argument("--audience", required=True)
             sp.add_argument("--scope", action="append", default=[])
             sp.add_argument("--ttl", type=int, required=True)
@@ -56,7 +60,8 @@ def main(argv=None) -> int:
         scopes = tuple(args.scope) or ("mcp:use",)
         issued = store.mint(principal_id=args.principal, audience=args.audience, scopes=scopes,
                             issuance_kind="service" if args.service else "personal",
-                            ttl_seconds=args.ttl, label=args.label)
+                            ttl_seconds=args.ttl, label=args.label,
+                            device_or_connection_id=args.client_id)
         store.dump_hashed(args.store)
         # the ONLY place the plaintext is ever shown; it is not logged
         sys.stdout.write("token_id: %s\n" % issued.record.token_id)

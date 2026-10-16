@@ -168,6 +168,7 @@ class _AuthCode:
     principal_id: str
     scopes: tuple[str, ...]
     expires_at: float
+    device_id: str = ""
     used: bool = False
 
 
@@ -231,7 +232,8 @@ class AuthorizationServer:
 
     # authorize ------------------------------------------------------------ #
     def authorize(self, params: dict[str, str], *, principal_id: str,
-                  granted_scopes: Optional[tuple[str, ...]] = None) -> tuple[int, list, bytes]:
+                  granted_scopes: Optional[tuple[str, ...]] = None,
+                  device_id: str = "") -> tuple[int, list, bytes]:
         """The user has authenticated to AgentNode out of band; ``principal_id`` is that
         identity and ``granted_scopes`` what they consented to. Returns a 302 redirect with the
         code, or a JSON error. (Never redirects to an unvalidated redirect_uri.)"""
@@ -259,7 +261,7 @@ class AuthorizationServer:
         self._codes[code] = _AuthCode(
             client_id=client.client_id, redirect_uri=params["redirect_uri"],
             code_challenge=params["code_challenge"], resource=params["resource"],
-            principal_id=principal_id, scopes=scopes,
+            principal_id=principal_id, scopes=scopes, device_id=device_id,
             expires_at=self._clock() + self.code_ttl)
         state = params.get("state", "")
         sep = "&" if "?" in params["redirect_uri"] else "?"
@@ -286,7 +288,8 @@ class AuthorizationServer:
         rec.used = True  # single-use code
         issued = self.tokens.mint(principal_id=rec.principal_id, audience=rec.resource,
                                   scopes=rec.scopes, issuance_kind="oauth",
-                                  ttl_seconds=self.token_ttl, label="oauth")
+                                  ttl_seconds=self.token_ttl, label="oauth",
+                                  device_or_connection_id=rec.device_id or None)
         return _json(200, {
             "access_token": issued.plaintext,
             "token_type": "Bearer",

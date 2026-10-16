@@ -46,6 +46,7 @@ class RemoteMCPApp:
                  allowed_hosts: tuple[str, ...], allowed_origins: tuple[str, ...] = (),
                  principal_resolver: Optional[PrincipalResolver] = None,
                  login_provider: Optional[Any] = None,
+                 live_authority: Optional[Any] = None,
                  console_url: str = "",
                  limits: Optional[Limits] = None, allow_x_access_token: bool = False,
                  clock: Callable[[], float] = None):
@@ -64,6 +65,7 @@ class RemoteMCPApp:
         self.allowed_origins = tuple(allowed_origins)
         self.principal_resolver = principal_resolver
         self.login_provider = login_provider
+        self.live_authority = live_authority
         self.console_url = console_url
         self.limits = limits or Limits()
         self.allow_x_access_token = allow_x_access_token
@@ -188,8 +190,16 @@ class RemoteMCPApp:
             bearer = xtok.strip()
         if not bearer:
             raise TokenVerifyError("no_credentials", 401)
-        return self.tokens.verify(bearer, expected_audience=self.resource.resource,
-                                  required_scopes=(REQUIRED_SCOPE,))
+        principal = self.tokens.verify(bearer, expected_audience=self.resource.resource,
+                                       required_scopes=(REQUIRED_SCOPE,))
+        # Fail-closed live re-check against the real gateway on EVERY call: the token is
+        # structurally valid, but account suspension, device withdrawal and RUN-withdrawal
+        # live in the gateway, not the token store, so they are re-derived here each time.
+        if self.live_authority is not None:
+            reason = self.live_authority.authority_error(principal)
+            if reason is not None:
+                raise TokenVerifyError(reason, 403)
+        return principal
 
     def _negotiate_version(self, headers: dict, msg: dict):
         declared = headers.get("mcp-protocol-version")
@@ -274,7 +284,8 @@ class RemoteMCPApp:
             return await self._html(send, 200, "<h1>Request declined</h1>"
                                     "<p>No authorization was granted.</p>")
         return await self._triple(send, self.authz.authorize(
-            form, principal_id=subject.principal_id, granted_scopes=subject.scopes))
+            form, principal_id=subject.principal_id, granted_scopes=subject.scopes,
+            device_id=subject.device_id))
 
     def _consent_html(self, params: dict, subject) -> str:
         fields = {k: params.get(k, "") for k in (

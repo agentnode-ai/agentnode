@@ -77,10 +77,11 @@ def make_login_app(root, **gw):
                                 preregistered={"test-client": (REDIRECT,)})
     adapter = FakeAdapter()
     adapter.approved = True
+    gl = GatewayLogin(root)
     app = RemoteMCPApp(adapter=adapter, token_store=store, authz=authz, resource=resource,
                        allowed_hosts=(HOST,), allowed_origins=(ORIGIN_OK,),
-                       login_provider=GatewayLogin(root), console_url="https://mcp.agentnode.net/console",
-                       limits=Limits())
+                       login_provider=gl, live_authority=gl,
+                       console_url="https://mcp.agentnode.net/console", limits=Limits())
     return app, store, acct, sid, csrf
 
 
