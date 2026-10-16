@@ -17,6 +17,7 @@ import asyncio
 import inspect
 import json
 import os
+import stat
 
 import pytest
 
@@ -49,8 +50,12 @@ class FakeAdapter:
 def tokens_json(root, caps=("run", "read"), account_id="acct-x", client_id="dev-1"):
     rec = {"client_id": client_id, "account_id": account_id, "client_name": "Laptop",
            "issued_at": 1.0, "capabilities": list(caps)}
-    with open(os.path.join(root, "tokens.json"), "w", encoding="utf-8") as fh:
-        json.dump({"hash-dev-1": rec}, fh)
+    # the product's own hardened writer: on POSIX the gateway refuses a device record that other
+    # accounts can read, so a plain open() fixture (0644) is refused there and passes only on Windows
+    GatewayState(root, "test")._write_private("tokens.json", json.dumps({"hash-dev-1": rec}))
+    if os.name == "posix":   # hold the fixture to exactly what the gateway requires
+        mode = stat.S_IMODE(os.stat(os.path.join(root, "tokens.json")).st_mode)
+        assert mode == 0o600, "tokens.json is %s, the gateway requires 0600" % oct(mode)
 
 
 def prod_style_app(root, *, caps=("run", "read")):

@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import re
+import stat
 from urllib.parse import parse_qs, parse_qsl, urlsplit
 
 import httpx
@@ -55,6 +56,14 @@ class FakeAdapter:
         return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "nf"}}
 
 
+def assert_private_file(root, name):
+    """Hold the fixture to what the gateway requires on POSIX: exactly 0600 (Windows has no such
+    mode, so there the check is the gateway's own successful read in the test itself)."""
+    if os.name == "posix":
+        mode = stat.S_IMODE(os.stat(os.path.join(root, name)).st_mode)
+        assert mode == 0o600, "%s is %s, the gateway requires 0600" % (name, oct(mode))
+
+
 def build_gateway(root, *, caps=("run", "read"), suspended=False):
     state = GatewayState(root, "test")
     acct = A.new_account_id()
@@ -63,8 +72,10 @@ def build_gateway(root, *, caps=("run", "read"), suspended=False):
         state.accounts.suspend(acct, because="testing")
     rec = {"client_id": "dev-1", "account_id": acct, "client_name": "Laptop",
            "issued_at": 1.0, "capabilities": list(caps)}
-    with open(os.path.join(root, "tokens.json"), "w", encoding="utf-8") as fh:
-        json.dump({"hash-dev-1": rec}, fh)
+    # the product's own hardened writer: on POSIX the gateway refuses a device record that other
+    # accounts can read, so a plain open() fixture (0644) is refused there and passes only on Windows
+    state._write_private("tokens.json", json.dumps({"hash-dev-1": rec}))
+    assert_private_file(root, "tokens.json")
     sid, csrf = Sessions(root).open("dev-1", label="browser")
     return acct, sid, csrf
 
