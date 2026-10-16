@@ -14,7 +14,7 @@ import asyncio
 import json
 import os
 import re
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, parse_qsl, urlsplit
 
 import httpx
 
@@ -69,18 +69,19 @@ def build_gateway(root, *, caps=("run", "read"), suspended=False):
     return acct, sid, csrf
 
 
-def make_login_app(root, **gw):
+def make_login_app(root, *, max_continuations=1024, **gw):
     acct, sid, csrf = build_gateway(root, **gw)
     store = TokenStore(b"k" * 32)
     resource = ResourceConfig(resource=RESOURCE, authorization_server=ISSUER)
     authz = AuthorizationServer(issuer=ISSUER, resource=RESOURCE, token_store=store,
-                                preregistered={"test-client": (REDIRECT,)})
+                                preregistered={"test-client": (REDIRECT,),
+                                               "q-client": ("https://client.example/cb?foo=bar",)})
     adapter = FakeAdapter()
     adapter.approved = True
     gl = GatewayLogin(root)
     app = RemoteMCPApp(adapter=adapter, token_store=store, authz=authz, resource=resource,
                        allowed_hosts=(HOST,), allowed_origins=(ORIGIN_OK,),
-                       login_provider=gl, live_authority=gl,
+                       login_provider=gl, live_authority=gl, max_continuations=max_continuations,
                        console_url="https://mcp.agentnode.net/console", limits=Limits())
     return app, store, acct, sid, csrf
 
@@ -398,5 +399,115 @@ def test_bad_csrf_cannot_confirm(tmp_path):
             r2 = await c.post("/authorize", data=dict(params, confirm="not-the-token",
                                                       decision="allow"), headers=cookie)
             assert r2.status_code == 403
+
+    run(go())
+
+
+# ---- OAuth redirect encoding + duplicate/fragment rejection + store cap ------------------- #
+
+def test_authorize_encodes_state_and_preserves_query():
+    store = TokenStore(b"k" * 32)
+    authz = AuthorizationServer(issuer=ISSUER, resource=RESOURCE, token_store=store,
+                                preregistered={"q": ("https://client.example/cb?foo=bar",)})
+    tricky = "a&code=INJECTED=+ %#ü z"   # &, =, +, space, %, #, unicode, line-sep
+    status, headers, _ = authz.authorize({
+        "client_id": "q", "redirect_uri": "https://client.example/cb?foo=bar",
+        "response_type": "code", "code_challenge": pkce_s256_challenge("v" * 64),
+        "code_challenge_method": "S256", "resource": RESOURCE, "state": tricky},
+        principal_id="acct-x")
+    assert status == 302
+    loc = dict(headers)["location"]
+    assert "#" not in loc                                   # no fragment introduced
+    q = parse_qsl(urlsplit(loc).query, keep_blank_values=True)
+    assert [k for k, _ in q].count("code") == 1             # exactly one server code
+    assert ("foo", "bar") in q                              # existing query preserved
+    assert [v for k, v in q if k == "state"] == [tricky]    # state round-trips byte-exactly
+    code = [v for k, v in q if k == "code"][0]
+    assert code != "INJECTED" and len(code) >= 20           # server-generated, not injected
+
+
+def test_empty_state_round_trips_and_absent_state_omitted():
+    store = TokenStore(b"k" * 32)
+    authz = AuthorizationServer(issuer=ISSUER, resource=RESOURCE, token_store=store,
+                                preregistered={"c": ("https://client.example/cb",)})
+    base = {"client_id": "c", "redirect_uri": "https://client.example/cb", "response_type": "code",
+            "code_challenge": pkce_s256_challenge("v" * 64), "code_challenge_method": "S256",
+            "resource": RESOURCE}
+    # present-but-empty state echoes state=
+    _, h1, _ = authz.authorize(dict(base, state=""), principal_id="a")
+    q1 = parse_qsl(urlsplit(dict(h1)["location"]).query, keep_blank_values=True)
+    assert ("state", "") in q1
+    # absent state is NOT fabricated
+    _, h2, _ = authz.authorize(dict(base), principal_id="a")
+    q2 = parse_qsl(urlsplit(dict(h2)["location"]).query, keep_blank_values=True)
+    assert "state" not in [k for k, _ in q2]
+
+
+def test_duplicate_security_param_rejected_before_login(tmp_path):
+    app, *_ = make_login_app(str(tmp_path))
+    base = dict(AUTHZ_PARAMS, code_challenge="x")
+
+    async def go():
+        async with client(app) as c:
+            for dupkey in ("client_id", "redirect_uri", "response_type", "resource", "state"):
+                pairs = list(base.items()) + [(dupkey, "second")]   # a repeated security param
+                r = await c.get("/authorize", params=pairs)
+                assert r.status_code == 400 and "duplicate" in r.text.lower(), dupkey
+                assert "/login" not in r.headers.get("location", "")
+
+    run(go())
+
+
+def test_fragment_redirect_uri_rejected_before_login(tmp_path):
+    app, *_ = make_login_app(str(tmp_path))
+
+    async def go():
+        async with client(app) as c:
+            r = await c.get("/authorize", params=dict(AUTHZ_PARAMS, code_challenge="x",
+                                                      redirect_uri=REDIRECT + "#frag"))
+            assert r.status_code == 400 and "fragment" in r.text.lower()
+            assert r.status_code != 302
+
+    run(go())
+
+
+def test_continuation_store_is_capped_and_sweeps(tmp_path):
+    app, *_ = make_login_app(str(tmp_path), max_continuations=3)
+
+    async def go():
+        async with client(app) as c:
+            locs = []
+            for _ in range(3):
+                r = await c.get("/authorize", params=dict(AUTHZ_PARAMS,
+                                                          code_challenge=pkce_s256_challenge("v" * 64)))
+                assert r.status_code == 302 and "resume=" in r.headers["location"]
+                locs.append(r.headers["location"])
+            assert len(app._continuations) == 3
+            # store full -> structured refusal with a retry hint, no eviction of valid handles
+            r4 = await c.get("/authorize", params=dict(AUTHZ_PARAMS,
+                                                       code_challenge=pkce_s256_challenge("v" * 64)))
+            assert r4.status_code == 503 and r4.headers.get("retry-after")
+            assert len(app._continuations) == 3                       # unchanged, none displaced
+            for loc in locs:                                          # earlier handles still valid
+                h = loc.split("resume=", 1)[1]
+                assert app._peek_continuation(h) is not None
+
+    run(go())
+
+
+def test_expired_continuations_swept_on_insert(tmp_path):
+    app, *_ = make_login_app(str(tmp_path), max_continuations=1000)
+
+    async def go():
+        async with client(app) as c:
+            for _ in range(5):
+                await c.get("/authorize", params=dict(AUTHZ_PARAMS,
+                                                      code_challenge=pkce_s256_challenge("v" * 64)))
+            # force all existing to be expired, then one more insert must sweep them away
+            for hnd in list(app._continuations):
+                app._continuations[hnd] = (app._continuations[hnd][0], 0.0)
+            await c.get("/authorize", params=dict(AUTHZ_PARAMS,
+                                                  code_challenge=pkce_s256_challenge("v" * 64)))
+            assert len(app._continuations) == 1   # expired ones swept, not accumulated
 
     run(go())

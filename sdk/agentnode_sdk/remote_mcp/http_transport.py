@@ -25,7 +25,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from agentnode_sdk.capability.usability_adapter import UsabilityMCPAdapter
 from agentnode_sdk.remote_mcp.limits import ConcurrencyGate, Limits, RateLimiter
-from agentnode_sdk.remote_mcp.oauth_as import AuthorizationServer
+from agentnode_sdk.remote_mcp.oauth_as import AuthorizationServer, parse_unique_params
 from agentnode_sdk.remote_mcp.prm import ResourceConfig
 from agentnode_sdk.remote_mcp.tokens import Principal, TokenStore, TokenVerifyError
 
@@ -63,7 +63,7 @@ class RemoteMCPApp:
                  principal_resolver: Optional[PrincipalResolver] = None,
                  login_provider: Optional[Any] = None,
                  live_authority: Optional[Any] = None,
-                 console_url: str = "",
+                 console_url: str = "", max_continuations: int = 1024,
                  limits: Optional[Limits] = None, allow_x_access_token: bool = False,
                  clock: Callable[[], float] = None):
         import time
@@ -91,7 +91,9 @@ class RemoteMCPApp:
         self._gate = ConcurrencyGate(self.limits.max_concurrent_calls, self.limits.max_queued_calls)
         # short-lived, single-use, crypto-random continuation handles for the login bridge:
         # handle -> (normalized validated request, expires_at). /login carries only the handle.
+        # Hard-capped and swept on insert so unauthenticated /authorize cannot grow it unbounded.
         self._continuations: dict[str, tuple[dict, float]] = {}
+        self.max_continuations = int(max_continuations)
 
     # ---- ASGI entrypoint ------------------------------------------------- #
     async def __call__(self, scope: dict, receive: Callable[[], Awaitable[dict]],
@@ -262,7 +264,19 @@ class RemoteMCPApp:
         return await self._raw(send, 200, json.dumps(resp).encode())
 
     # ---- continuation handles (login bridge) ----------------------------- #
-    def _mint_continuation(self, norm: dict) -> str:
+    def _sweep_continuations(self) -> None:
+        """Drop expired entries now (not only on later access), so the store tracks live pending
+        logins rather than growing with every unauthenticated /authorize."""
+        now = self._now()
+        for h in [h for h, (_n, exp) in self._continuations.items() if now >= exp]:
+            self._continuations.pop(h, None)
+
+    def _mint_continuation(self, norm: dict) -> Optional[str]:
+        """Return a new handle, or None when the store is full AFTER sweeping expired entries —
+        the caller then refuses with a retry hint and never evicts a still-valid foreign login."""
+        self._sweep_continuations()
+        if len(self._continuations) >= self.max_continuations:
+            return None
         handle = secrets.token_urlsafe(24)
         self._continuations[handle] = (norm, self._now() + CONTINUATION_TTL)
         return handle
@@ -290,7 +304,9 @@ class RemoteMCPApp:
     async def _authorize(self, scope, headers, send) -> None:
         if len(scope.get("query_string", b"")) > MAX_AUTHORIZE_QUERY:
             return await self._send(send, 414, {"error": "request_too_long"})
-        params = self._query(scope)
+        params, dup = parse_unique_params(scope.get("query_string", b"").decode("latin1"))
+        if dup is not None:   # a repeated security parameter is rejected, never folded
+            return await self._triple(send, dup)
         if self.login_provider is None:
             # Stand path: a pre-shared-secret resolver, used ONLY by build_stand_app.
             principal_id = self.principal_resolver(scope, headers) if self.principal_resolver else None
@@ -330,6 +346,12 @@ class RemoteMCPApp:
         # Valid but not signed in: stash the normalized request under a single-use handle and
         # bounce once same-origin (which also makes a SameSite=Strict cookie be resent).
         handle = self._mint_continuation(norm)
+        if handle is None:
+            # store full after sweeping expired entries — refuse WITHOUT evicting a valid login,
+            # with an actionable retry hint (never a silent displacement of someone else).
+            return await self._secure_page(
+                send, 503, "<h1>Too many sign-ins in progress</h1><p>Please retry in a few "
+                "minutes.</p>", retry_after=120)
         return await self._redirect(send, "/authorize?resume=" + handle)
 
     async def _consent(self, send, norm: dict, subject) -> None:
@@ -339,7 +361,9 @@ class RemoteMCPApp:
         body, too_big = await self._read_body(receive, self.limits.max_body_bytes)
         if too_big:
             return await self._send(send, 413, {"error": "payload_too_large"})
-        form = self._parse_form(body)
+        form, dup = parse_unique_params(body.decode("utf-8", "replace"))
+        if dup is not None:   # duplicate security parameters refused on the consent POST too
+            return await self._triple(send, dup)
         subject = self.login_provider.confirmed_subject(scope, headers, form)
         if subject is None:
             return await self._secure_page(send, 403, "<h1>Could not confirm</h1>"
@@ -356,8 +380,9 @@ class RemoteMCPApp:
     def _consent_html(self, norm: dict, subject) -> str:
         # Every value goes into an HTML ATTRIBUTE via html.escape(quote=True); there is NO inline
         # script on this page (CSP script-src 'none'), so no value reaches a script context.
-        hidden = "".join('<input type="hidden" name="%s" value="%s">' % (k, _h(norm.get(k, "")))
-                         for k in self.authz.REQUEST_FIELDS)
+        # only fields actually present round-trip (an absent state is never fabricated into "")
+        hidden = "".join('<input type="hidden" name="%s" value="%s">' % (k, _h(norm[k]))
+                         for k in self.authz.REQUEST_FIELDS if k in norm)
         return (
             "<!doctype html><meta charset=\"utf-8\"><title>Authorize</title>"
             "<h1>Authorize access</h1>"
@@ -421,7 +446,7 @@ class RemoteMCPApp:
         return await self._raw(send, 302, b"", [("location", location)])
 
     async def _secure_page(self, send, status: int, body_html: str,
-                           nonce: Optional[str] = None) -> None:
+                           nonce: Optional[str] = None, retry_after: Optional[int] = None) -> None:
         """Serve a login/consent page with restrictive headers (CSP incl. frame-ancestors/base-uri
         /form-action, no-referrer, nosniff, no-store, and X-Frame-Options for old agents)."""
         script_src = "'nonce-%s'" % nonce if nonce else "'none'"
@@ -432,6 +457,8 @@ class RemoteMCPApp:
                    ("content-security-policy", csp), ("x-frame-options", "DENY"),
                    ("referrer-policy", "no-referrer"), ("x-content-type-options", "nosniff"),
                    ("cache-control", "no-store")]
+        if retry_after is not None:
+            headers.append(("retry-after", str(retry_after)))
         return await self._raw(send, status, body_html.encode("utf-8"), headers)
 
     async def _login_page(self, scope, send) -> None:

@@ -29,11 +29,30 @@ import socket
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from agentnode_sdk.remote_mcp.tokens import TokenStore
 
 JSON = [("content-type", "application/json")]
+
+#: Authorization parameters that must appear AT MOST ONCE; a repeat is rejected rather than
+#: silently folded (``resource`` is single by this product's rule, not just by RFC 8707).
+SECURITY_PARAMS = ("client_id", "redirect_uri", "response_type", "code_challenge",
+                   "code_challenge_method", "state", "scope", "resource")
+
+
+def parse_unique_params(raw_query: str):
+    """Parse an authorization query/form preserving every occurrence, and REJECT a duplicate of
+    any security-relevant parameter instead of collapsing it (``dict(parse_qsl(...))`` keeps the
+    last silently). Returns ``(params_dict, None)`` or ``(None, error_triple)``. Blank values are
+    kept, so a present-but-empty ``state`` is distinguishable from an absent one."""
+    seen: dict[str, str] = {}
+    for k, v in parse_qsl(raw_query, keep_blank_values=True):
+        if k in seen and k in SECURITY_PARAMS:
+            return None, _json(400, {"error": "invalid_request",
+                                     "error_description": "duplicate parameter %s" % k})
+        seen[k] = v
+    return seen, None
 
 
 def _b64url_no_pad(raw: bytes) -> str:
@@ -259,6 +278,10 @@ class AuthorizationServer:
         if params["resource"] != self.resource:
             return None, _json(400, {"error": "invalid_target",
                                      "error_description": "resource mismatch"})
+        if urlsplit(params["redirect_uri"]).fragment or "#" in params["redirect_uri"]:
+            # a redirect_uri MUST NOT carry a fragment (rejected at validation and registration)
+            return None, _json(400, {"error": "invalid_request",
+                                     "error_description": "redirect_uri must not contain a fragment"})
         try:
             client = self._resolve_client(params["client_id"])
         except CIMDError as exc:
@@ -267,8 +290,14 @@ class AuthorizationServer:
             # per OAuth, an unregistered redirect_uri must NOT be redirected to
             return None, _json(400, {"error": "invalid_request",
                                      "error_description": "redirect_uri mismatch"})
-        norm = {k: str(params.get(k, "")) for k in self.REQUEST_FIELDS}
+        # required fields always; state/scope ONLY when actually sent (so a present-but-empty
+        # state round-trips and an absent one is not fabricated into "").
+        norm = {k: str(params[k]) for k in ("client_id", "redirect_uri", "response_type",
+                                            "code_challenge", "code_challenge_method", "resource")}
         norm["client_id"] = client.client_id
+        for opt in ("state", "scope"):
+            if opt in params:
+                norm[opt] = str(params[opt])
         return norm, None
 
     # authorize ------------------------------------------------------------ #
@@ -289,10 +318,16 @@ class AuthorizationServer:
             code_challenge=norm["code_challenge"], resource=norm["resource"],
             principal_id=principal_id, scopes=scopes, device_id=device_id,
             expires_at=self._clock() + self.code_ttl)
-        state = norm.get("state", "")
-        sep = "&" if "?" in norm["redirect_uri"] else "?"
-        location = "%s%scode=%s%s" % (norm["redirect_uri"], sep, code,
-                                      ("&state=%s" % state) if state else "")
+        # Build the redirect with a real URL encoder: keep the registered redirect_uri's existing
+        # query in full, then append exactly one server-generated `code` and the UNCHANGED `state`
+        # (echoed only if the client sent one, including an empty one). No string concatenation,
+        # so a state containing &, =, +, %, #, spaces or Unicode round-trips byte-exactly.
+        parts = urlsplit(norm["redirect_uri"])
+        query = parse_qsl(parts.query, keep_blank_values=True) + [("code", code)]
+        if "state" in norm:
+            query.append(("state", norm["state"]))
+        location = urlunsplit((parts.scheme, parts.netloc, parts.path,
+                               urlencode(query), ""))   # fragment stays empty (rejected earlier)
         return 302, [("location", location)], b""
 
     # token ---------------------------------------------------------------- #
@@ -334,6 +369,10 @@ class AuthorizationServer:
         if any(not str(u).startswith("https://") and not str(u).startswith("http://127.0.0.1")
                for u in redirects):
             return _json(400, {"error": "invalid_redirect_uri"})
+        if any("#" in str(u) or urlsplit(str(u)).fragment for u in redirects):
+            # a redirect_uri with a fragment is refused at REGISTRATION, not just at /authorize
+            return _json(400, {"error": "invalid_redirect_uri",
+                               "error_description": "redirect_uri must not contain a fragment"})
         client_id = "dcr-" + secrets.token_hex(8)
         self._dcr_clients[client_id] = tuple(redirects)
         return _json(201, {"client_id": client_id, "redirect_uris": list(redirects),
