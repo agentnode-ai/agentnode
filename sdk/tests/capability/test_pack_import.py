@@ -8,7 +8,6 @@ kept hosts. Criteria ids refer to ``registry-pack-import-r1`` (P1-P20).
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import hashlib
 import importlib
@@ -1191,42 +1190,48 @@ def test_cli_import_pack_registers_and_refuses_structurally(tmp_path, capsys):
 
 
 # =============================================================== P14 official MCP client over stdio
-def test_official_python_mcp_client_drives_the_generated_shim(tmp_path):
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
+_MCP_CLIENT_SCRIPT = r"""
+import asyncio, json, sys
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
+async def drive(tree):
+    params = StdioServerParameters(command=sys.executable, args=[tree + "/entry.py"], cwd=tree)
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            init = await session.initialize()
+            tools = await session.list_tools()
+            good = await session.call_tool("citation_extraction", {
+                "source": {"type": "book", "authors": ["Ada Lovelace"], "title": "Notes",
+                           "year": 1843},
+                "style": "apa"})
+            bad = await session.call_tool("citation_extraction", {"source": {"type": "nope"}})
+            return {"server": init.serverInfo.name, "protocol": init.protocolVersion,
+                    "tools": [t.name for t in tools.tools],
+                    "good": [good.isError, good.content[0].text],
+                    "bad": [bad.isError, bad.content[0].text]}
+
+print(json.dumps(asyncio.run(drive(sys.argv[1]))))
+"""
+
+
+def test_official_python_mcp_client_drives_the_generated_shim(tmp_path):
+    # In its own process: importing the mcp client here would load jsonschema into the test
+    # session, which other suites (test_guard_schema) assert never happens.
     imp = _import(STARTER / "citation-manager-pack")
     tree = tmp_path / "tree"
     tree_pack.safe_extract(imp.tar_bytes, tree)
-
-    async def drive():
-        params = StdioServerParameters(
-            command=sys.executable, args=[str(tree / "entry.py")], cwd=str(tree)
-        )
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                init = await session.initialize()
-                tools = await session.list_tools()
-                good = await session.call_tool(
-                    "citation_extraction",
-                    {
-                        "source": {
-                            "type": "book",
-                            "authors": ["Ada Lovelace"],
-                            "title": "Notes",
-                            "year": 1843,
-                        },
-                        "style": "apa",
-                    },
-                )
-                bad = await session.call_tool(
-                    "citation_extraction", {"source": {"type": "nope"}}
-                )
-                return init, tools, good, bad
-
-    init, tools, good, bad = asyncio.run(drive())
-    assert init.serverInfo.name == "agentnode-pack-shim"
-    assert [t.name for t in tools.tools] == ["citation_extraction"]
-    assert good.isError is False and "Lovelace" in good.content[0].text
-    assert bad.isError is True and bad.content[0].text.startswith("ValueError")
-    assert "Traceback" not in bad.content[0].text
+    done = subprocess.run(
+        [sys.executable, "-c", _MCP_CLIENT_SCRIPT, tree.as_posix()],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr[-2000:]
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    assert out["server"] == "agentnode-pack-shim"
+    assert out["tools"] == ["citation_extraction"]
+    assert out["good"][0] is False and "Lovelace" in out["good"][1]
+    assert out["bad"][0] is True and out["bad"][1].startswith("ValueError")
+    assert "Traceback" not in out["bad"][1]
+    assert "mcp" not in sys.modules and "jsonschema" not in sys.modules
