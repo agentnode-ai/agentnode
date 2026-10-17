@@ -216,7 +216,10 @@ _DYNAMIC_CODE_CALLS = ("exec", "eval", "compile")
 # * reflective attribute access (getattr & co.) needs a constant, harmless name and may not be
 #   passed on or aliased;
 # * writing files is refused (``open``, os/io file creation, file log handlers): a written file
-#   could be imported as code the scan never saw, and the pack declared filesystem none.
+#   could be imported as code the scan never saw, and the pack declared filesystem none;
+# * string annotations are refused (typing.get_type_hints, used by functools.singledispatch,
+#   eval()s them), except values inside ``Literal[...]``; and private stdlib internals
+#   (``warnings._setoption`` imports a module named by a string) are refused.
 # This is a source gate for dependency-free packs, not a proof that arbitrary Python is inert: the
 # sandbox (network none, no third-party import paths) remains the containment.
 _REFLECTIVE_NAMES = {
@@ -1178,6 +1181,67 @@ def _attribute_violation(attr: str) -> str | None:
     return None
 
 
+def _stdlib_names(tree: ast.Module) -> set[str]:
+    """Every name this module binds to a stdlib module or a stdlib module member."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in SANDBOX_STDLIB:
+                    names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            if node.module.split(".")[0] in SANDBOX_STDLIB:
+                names.update(alias.asname or alias.name for alias in node.names)
+    return names
+
+
+def _string_in_annotation(annotation: ast.AST | None) -> bool:
+    """True when an annotation carries a string the typing machinery would eval() later.
+
+    ``Literal["a", "b"]`` values are data, never evaluated, so strings directly inside a
+    ``Literal[...]`` subscript do not count.
+    """
+    if annotation is None:
+        return False
+    literal_values = set()
+    for node in ast.walk(annotation):
+        if isinstance(node, ast.Subscript):
+            head = node.value
+            name = (
+                head.id
+                if isinstance(head, ast.Name)
+                else head.attr
+                if isinstance(head, ast.Attribute)
+                else ""
+            )
+            if name == "Literal":
+                literal_values.update(id(n) for n in ast.walk(node.slice))
+    return any(
+        isinstance(n, ast.Constant)
+        and isinstance(n.value, str)
+        and id(n) not in literal_values
+        for n in ast.walk(annotation)
+    )
+
+
+def _annotations(node: ast.AST) -> list[ast.AST]:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        a = node.args
+        args = (
+            a.posonlyargs
+            + a.args
+            + a.kwonlyargs
+            + [x for x in (a.vararg, a.kwarg) if x is not None]
+        )
+        found = [arg.annotation for arg in args if arg.annotation is not None]
+        if not isinstance(node, ast.Lambda) and node.returns is not None:
+            found.append(node.returns)
+        return found
+    if isinstance(node, ast.AnnAssign):
+        return [node.annotation]
+    return []
+
+
 def _os_names(tree: ast.Module) -> set[str]:
     """Every name this module binds to the os module (``import os``, ``import os as o``)."""
     names = set()
@@ -1197,9 +1261,28 @@ def _reflection(
     v: _Violations,
     call_targets: set[int],
     os_names: set[str] = frozenset(),
+    stdlib_names: set[str] = frozenset(),
 ) -> None:
     """Close the routes around the syntactic scan (see ``_REFLECTIVE_NAMES``)."""
     line = getattr(node, "lineno", 0)
+    if any(_string_in_annotation(a) for a in _annotations(node)):
+        # functools.singledispatch & co. eval() string annotations through typing.get_type_hints
+        v.add(
+            "dependency.dynamic_import",
+            f"{rel}:{line}: a string annotation would be evaluated as code the scan never saw",
+        )
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in stdlib_names
+        and node.attr.startswith("_")
+        and not (node.attr.startswith("__") and node.attr.endswith("__"))
+    ):
+        # private stdlib internals (warnings._setoption imports a module named by a string)
+        v.add(
+            "dependency.dynamic_import",
+            f"{rel}:{line}: reaches private stdlib internal {node.value.id}.{node.attr}",
+        )
     if isinstance(node, ast.Name) and node.id == "open":
         v.add(
             "permission.filesystem",
@@ -1269,8 +1352,9 @@ def _scan_module(
     package = modname if is_pkg else modname.rpartition(".")[0]
     call_targets = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
     os_names = _os_names(tree)
+    stdlib_names = _stdlib_names(tree)
     for node in ast.walk(tree):
-        _reflection(node, rel, v, call_targets, os_names)
+        _reflection(node, rel, v, call_targets, os_names, stdlib_names)
         if isinstance(node, ast.Import):
             for alias in node.names:
                 _check_import_name(alias.name, top=top, own=own, where=rel, v=v)
@@ -1322,6 +1406,14 @@ def _scan_module(
                         v.add(
                             "permission.filesystem",
                             f"{rel}:{node.lineno}: imports {full!r}, which changes files",
+                        )
+                    elif alias.name.startswith("_") and not (
+                        alias.name.startswith("__") and alias.name.endswith("__")
+                    ):
+                        # ``from warnings import _setoption``: private stdlib internals
+                        v.add(
+                            "dependency.dynamic_import",
+                            f"{rel}:{node.lineno}: imports private stdlib internal {full!r}",
                         )
         elif isinstance(node, ast.Call):
             func = node.func

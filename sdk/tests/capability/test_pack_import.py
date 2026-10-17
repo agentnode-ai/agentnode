@@ -889,6 +889,53 @@ def test_module_hops_through_attributes_are_refused(tmp_path, source):
     ]
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            "import functools\n\n\n@functools.singledispatch\ndef f(x):\n    return x\n\n\n"
+            "@f.register\ndef _(x: \"__import__('os').system('id')\"):\n    return x\n"
+            + _RUN
+            + "f(pattern)\n",
+            id="singledispatch-string-annotation",
+        ),
+        pytest.param("x: 'evil()' = 1" + _RUN + "x\n", id="annassign-string"),
+        pytest.param(
+            "import typing"
+            + _RUN.replace("**kw)", "**kw) -> typing.List['evil']")
+            + "[]\n",
+            id="nested-string-return-annotation",
+        ),
+        pytest.param(
+            "import warnings" + _RUN + "warnings._setoption(pattern)\n",
+            id="warnings-setoption",
+        ),
+        pytest.param(
+            "from warnings import _setoption" + _RUN + "_setoption(pattern)\n",
+            id="from-warnings-import-private",
+        ),
+        pytest.param("import random as r" + _RUN + "r._inst\n", id="aliased-private"),
+    ],
+)
+def test_string_annotations_and_private_stdlib_internals_are_refused(tmp_path, source):
+    pack = _regex_copy(tmp_path)
+    _write_tool(pack, source)
+    assert "dependency.dynamic_import" in [
+        v["code"] for v in _refusal(_import, pack).violations
+    ]
+
+
+def test_literal_values_and_future_annotations_stay_importable(tmp_path):
+    pack = _regex_copy(tmp_path)
+    _write_tool(
+        pack,
+        "from __future__ import annotations\n\nimport typing\n\n\n"
+        "def run(pattern: str, style: typing.Literal['apa', 'mla'] = 'apa', **kw) -> dict:\n"
+        "    return {'p': pattern, 's': style}\n",
+    )
+    _import(pack)
+
+
 def test_ordinary_methods_named_like_file_calls_stay_importable(tmp_path):
     pack = _regex_copy(tmp_path)
     _write_tool(
