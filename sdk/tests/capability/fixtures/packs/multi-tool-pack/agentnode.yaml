@@ -1,0 +1,32 @@
+manifest_version: "0.2"
+package_id: "multi-tool-pack"
+package_type: "toolpack"
+name: "Multi Tool Pack"
+publisher: "agentnode-test"
+version: "1.0.0"
+summary: "A two-tool v0.2 test pack: word statistics and a stable text slug."
+description: "Test fixture for the pack importer: two tools with per-tool entrypoints."
+entrypoint: "multi_tool_pack.tool"
+
+capabilities:
+  tools:
+    - name: "word_stats"
+      capability_id: "text_analysis"
+      description: "Count words, characters and lines."
+      entrypoint: "multi_tool_pack.tool:word_stats"
+      input_schema:
+        type: "object"
+        properties:
+          text: {type: "string"}
+        required: ["text"]
+    - name: "slugify"
+      capability_id: "text_transform"
+      description: "Lower-case, ASCII-only, dash-separated slug."
+      entrypoint: "multi_tool_pack.slug:slugify"
+      input_schema:
+        type: "object"
+        properties:
+          text: {type: "string"}
+        required: ["text"]
+  resources: []
+  prompts: []
