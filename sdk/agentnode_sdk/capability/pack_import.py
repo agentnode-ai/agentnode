@@ -185,8 +185,133 @@ _DYNAMIC_IMPORT_MODULES = (
     "runpy",
     "pkgutil",
     "zipimport",
+    # reflection doors: the builtins namespace, live frames, and every object in the process
+    "builtins",
+    "inspect",
+    "gc",
+)
+#: Standard-library modules that turn data into running code. Refused for code_execution ``none``.
+_CODE_EXEC_MODULES = (
+    "pickle",
+    "_pickle",
+    "marshal",
+    "shelve",
+    "code",
+    "codeop",
+    "pdb",
+    "bdb",
 )
 _DYNAMIC_CODE_CALLS = ("exec", "eval", "compile")
+
+# --- reflection: the static scan must not be walkable around (review R0001 F-P5) ---------------
+# A syntactic scan sees ``exec(...)`` but not ``builtins.exec(...)``, ``getattr(x, "__import__")``
+# or ``().__class__.__base__.__subclasses__()``. So the routes TO those objects are closed instead:
+# the builtins namespace is unreachable (module above, names below), dunder attributes are refused
+# except a short list of ordinary ones, attribute names that reach frames, the module table, the
+# import machinery, computed code or new processes are refused in ANY attribute position, and
+# reflective attribute access (getattr & co.) needs a constant, harmless name. This is a source
+# gate for dependency-free packs, not a proof that arbitrary Python is inert: the sandbox
+# (network none, no third-party import paths) remains the containment.
+_REFLECTIVE_NAMES = {
+    "__builtins__",
+    "__loader__",
+    "__spec__",
+    "globals",
+    "locals",
+    "vars",
+    "breakpoint",
+    "attrgetter",
+    "methodcaller",
+}
+_REFLECTIVE_CALLS = {"getattr", "setattr", "delattr", "hasattr"}
+_SAFE_DUNDERS = {
+    "__name__",
+    "__doc__",
+    "__qualname__",
+    "__module__",
+    "__version__",
+    "__all__",
+    "__annotations__",
+    "__init__",
+    "__post_init__",
+    "__enter__",
+    "__exit__",
+    "__iter__",
+    "__next__",
+    "__len__",
+    "__str__",
+    "__repr__",
+    "__eq__",
+    "__ne__",
+    "__lt__",
+    "__le__",
+    "__gt__",
+    "__ge__",
+    "__hash__",
+    "__contains__",
+    "__getitem__",
+    "__setitem__",
+    "__call__",
+    "__bool__",
+}
+#: Attribute names that run code or start processes, wherever they appear.
+_CODE_EXEC_ATTRIBUTES = {
+    "exec",
+    "eval",
+    "system",
+    "popen",
+    "startfile",
+    "fork",
+    "forkpty",
+    "posix_spawn",
+    "posix_spawnp",
+    "execl",
+    "execle",
+    "execlp",
+    "execlpe",
+    "execv",
+    "execve",
+    "execvp",
+    "execvpe",
+    "spawnl",
+    "spawnle",
+    "spawnlp",
+    "spawnlpe",
+    "spawnv",
+    "spawnve",
+    "spawnvp",
+    "spawnvpe",
+    "CodeType",
+}
+#: Attribute names that reach frames, the module table or the import machinery.
+_REFLECTIVE_ATTRIBUTES = {
+    "_getframe",
+    "_current_frames",
+    "f_globals",
+    "f_builtins",
+    "f_locals",
+    "f_back",
+    "f_code",
+    "tb_frame",
+    "gi_frame",
+    "gi_code",
+    "cr_frame",
+    "cr_code",
+    "ag_frame",
+    "ag_code",
+    "co_code",
+    "modules",
+    "meta_path",
+    "path_hooks",
+    "path_importer_cache",
+    "settrace",
+    "setprofile",
+    "attrgetter",
+    "methodcaller",
+}
+#: Never reachable through getattr & co.: the loaders and the code runners are only allowed as a
+#: direct call with a constant argument, which the import scan then resolves.
+_NEVER_BY_REFLECTION = {"import_module", "__import__", "exec", "eval", "compile"}
 
 _LOCK_KEYS_ALLOWED = (
     set(lock_integrity.CANONICAL_FIELDS_V3)
@@ -881,6 +1006,56 @@ def _check_import_name(
         )
     elif _matches(name, _DYNAMIC_IMPORT_MODULES):
         v.add("dependency.dynamic_import", f"{where}: imports dynamic loader {name!r}")
+    elif _matches(name, _CODE_EXEC_MODULES):
+        v.add(
+            "permission.code_execution",
+            f"{where}: imports {name!r}, which turns data into running code",
+        )
+
+
+def _attribute_violation(attr: str) -> str | None:
+    """The refusal code for touching attribute *attr* anywhere, or None when it is ordinary."""
+    if attr in _CODE_EXEC_ATTRIBUTES:
+        return "permission.code_execution"
+    if attr in _REFLECTIVE_ATTRIBUTES:
+        return "dependency.dynamic_import"
+    if attr.startswith("__") and attr.endswith("__") and attr not in _SAFE_DUNDERS:
+        return "dependency.dynamic_import"
+    return None
+
+
+def _reflection(node: ast.AST, rel: str, v: _Violations) -> None:
+    """Close the routes around the syntactic scan (see ``_REFLECTIVE_NAMES``)."""
+    line = getattr(node, "lineno", 0)
+    if isinstance(node, ast.Name) and node.id in _REFLECTIVE_NAMES:
+        v.add(
+            "dependency.dynamic_import",
+            f"{rel}:{line}: uses reflective builtin {node.id!r}",
+        )
+    elif isinstance(node, ast.Attribute):
+        code = _attribute_violation(node.attr)
+        if code is not None:
+            v.add(code, f"{rel}:{line}: touches attribute {node.attr!r}")
+    elif (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in _REFLECTIVE_CALLS
+    ):
+        name = node.args[1] if len(node.args) > 1 else None
+        if (
+            not (isinstance(name, ast.Constant) and isinstance(name.value, str))
+            or node.keywords
+        ):
+            v.add(
+                "dependency.dynamic_import",
+                f"{rel}:{line}: {node.func.id}() with a computed attribute name",
+            )
+        else:
+            code = _attribute_violation(name.value)
+            if name.value in _NEVER_BY_REFLECTION:
+                code = "dependency.dynamic_import"
+            if code is not None:
+                v.add(code, f"{rel}:{line}: {node.func.id}() reaches {name.value!r}")
 
 
 def _scan_module(
@@ -896,6 +1071,7 @@ def _scan_module(
     package = modname if is_pkg else modname.rpartition(".")[0]
     call_targets = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
     for node in ast.walk(tree):
+        _reflection(node, rel, v)
         if isinstance(node, ast.Import):
             for alias in node.names:
                 _check_import_name(alias.name, top=top, own=own, where=rel, v=v)
@@ -921,9 +1097,24 @@ def _scan_module(
                     full = f"{node.module}.{alias.name}"
                     if _matches(
                         full,
-                        _NETWORK_MODULES + _PROCESS_MODULES + _DYNAMIC_IMPORT_MODULES,
+                        _NETWORK_MODULES
+                        + _PROCESS_MODULES
+                        + _DYNAMIC_IMPORT_MODULES
+                        + _CODE_EXEC_MODULES,
                     ):
                         _check_import_name(full, top=top, own=own, where=rel, v=v)
+                    elif _attribute_violation(alias.name) is not None:
+                        # ``from os import system`` / ``from sys import modules``
+                        v.add(
+                            _attribute_violation(alias.name),
+                            f"{rel}:{node.lineno}: imports {full!r}",
+                        )
+                    elif alias.name in _REFLECTIVE_NAMES:
+                        # ``from operator import attrgetter``
+                        v.add(
+                            "dependency.dynamic_import",
+                            f"{rel}:{node.lineno}: imports reflective {full!r}",
+                        )
         elif isinstance(node, ast.Call):
             func = node.func
             fname = (

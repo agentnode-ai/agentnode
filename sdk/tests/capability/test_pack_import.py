@@ -655,6 +655,109 @@ def test_unsafe_or_unresolvable_code_is_refused(tmp_path, source, code):
     assert code in [v["code"] for v in _refusal(_import, pack).violations]
 
 
+_RUN = "\n\n\ndef run(pattern, **kw):\n    return "
+
+
+@pytest.mark.parametrize(
+    "source,code",
+    [
+        pytest.param(
+            "import builtins" + _RUN + "builtins.exec(pattern)\n",
+            "permission.code_execution",
+            id="builtins-exec",
+        ),
+        pytest.param(
+            "import builtins" + _RUN + "getattr(builtins, '__import__')('socket')\n",
+            "dependency.dynamic_import",
+            id="getattr-builtins-import",
+        ),
+        pytest.param(
+            _RUN.lstrip("\n") + "().__class__.__base__.__subclasses__()\n",
+            "dependency.dynamic_import",
+            id="dunder-chain",
+        ),
+        pytest.param(
+            "import re" + _RUN + "getattr(re, pattern)\n",
+            "dependency.dynamic_import",
+            id="computed-getattr",
+        ),
+        pytest.param(
+            _RUN.lstrip("\n") + "globals()['__builtins__']\n",
+            "dependency.dynamic_import",
+            id="globals-builtins",
+        ),
+        pytest.param(
+            _RUN.lstrip("\n") + "__builtins__['exec'](pattern)\n",
+            "dependency.dynamic_import",
+            id="builtins-name",
+        ),
+        pytest.param(
+            "import sys" + _RUN + "sys.modules['builtins']\n",
+            "dependency.dynamic_import",
+            id="sys-modules",
+        ),
+        pytest.param(
+            "import sys" + _RUN + "sys._getframe().f_globals\n",
+            "dependency.dynamic_import",
+            id="frame-globals",
+        ),
+        pytest.param(
+            "import os" + _RUN + "os.system(pattern)\n",
+            "permission.code_execution",
+            id="os-system",
+        ),
+        pytest.param(
+            "from os import system" + _RUN + "system(pattern)\n",
+            "permission.code_execution",
+            id="from-os-import-system",
+        ),
+        pytest.param(
+            "import pickle" + _RUN + "pickle.loads(pattern)\n",
+            "permission.code_execution",
+            id="pickle",
+        ),
+        pytest.param(
+            "from operator import attrgetter" + _RUN + "attrgetter(pattern)(kw)\n",
+            "dependency.dynamic_import",
+            id="attrgetter",
+        ),
+        pytest.param(
+            "import importlib"
+            + _RUN
+            + "getattr(importlib, 'import_module')(pattern)\n",
+            "dependency.dynamic_import",
+            id="getattr-import-module",
+        ),
+        pytest.param(
+            "import inspect" + _RUN + "inspect.currentframe()\n",
+            "dependency.dynamic_import",
+            id="inspect",
+        ),
+        pytest.param(
+            "import types" + _RUN + "types.CodeType\n",
+            "permission.code_execution",
+            id="codetype",
+        ),
+    ],
+)
+def test_reflective_routes_around_the_scan_are_refused(tmp_path, source, code):
+    """Review R0001 F-P5: builtins.exec / getattr(builtins, "__import__") and their relatives."""
+    pack = _regex_copy(tmp_path)
+    _write_tool(pack, source)
+    assert code in [v["code"] for v in _refusal(_import, pack).violations]
+
+
+def test_ordinary_attributes_and_constant_getattr_stay_importable(tmp_path):
+    pack = _regex_copy(tmp_path)
+    _write_tool(
+        pack,
+        "import re\n\n\nclass Holder:\n    def __init__(self, x):\n        self.x = x\n\n\n"
+        "def run(pattern, **kw):\n    h = Holder(pattern)\n"
+        "    return {'n': __name__, 'x': getattr(h, 'x'), 'c': re.compile(pattern).pattern}\n",
+    )
+    _import(pack)
+
+
 def test_constant_stdlib_dynamic_import_is_allowed(tmp_path):
     pack = _regex_copy(tmp_path)
     _write_tool(
