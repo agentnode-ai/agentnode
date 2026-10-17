@@ -4,6 +4,7 @@ One self-contained front door a new user follows end to end (see
 ``sdk/agentnode_sdk/capability/USABILITY.md``):
 
     import-npm   vendor + import a REAL upstream npm MCP server, byte-unchanged, into a stand
+    import-pack  import ONE AgentNode registry pack (artifact + lock entry) as ONE capability
     list/search/describe   inspect provenance, version, signature/digest, model, permissions,
                            and the achievable guarantees computed from the configured worker
     config       emit a directly-usable generic MCP-client config (and Claude Code / Codex examples)
@@ -91,6 +92,34 @@ def _cmd_import_npm(args) -> int:
                       "tar_sha256": imp.tar_sha256, "tree_digest": imp.tree_digest,
                       "entry": imp.entry, "tools": [t["name"] for t in imp.manifest["tools"]]},
                      indent=2))
+    return 0
+
+
+def _cmd_import_pack(args) -> int:
+    from agentnode_sdk.capability.pack_import import PackRefused, import_pack
+    _ensure_stand(args.stand)
+    s = Path(args.stand)
+    lock = json.loads(Path(args.lockfile).read_text(encoding="utf-8"))
+    entry = (lock.get("packages") or {}).get(args.package) if isinstance(lock, dict) else None
+    op_priv = Ed25519PrivateKey.from_private_bytes(bytes.fromhex((s / "operator_priv.hex").read_text().strip()))
+    try:
+        imp = import_pack(Path(args.artifact).read_bytes(), entry, package_key=args.package,
+                          package_id=args.package, version=args.version, namespace=args.namespace,
+                          private_key=op_priv, public_key_bytes=_raw_pub(op_priv))
+    except PackRefused as exc:
+        print(json.dumps(exc.to_dict(), indent=2))
+        return 5
+    idx = LocalIndex(str(s / "index"))
+    stored = idx.put_blob(imp.tar_bytes)
+    assert stored == imp.tar_sha256, "blob sha mismatch"
+    resolved = idx.register(imp.manifest)
+    (s / "capability_id.txt").write_text(resolved.capability_id, encoding="utf-8")
+    print(json.dumps({"imported": resolved.capability_id, "version": resolved.capability_version,
+                      "tar_sha256": imp.tar_sha256, "tree_digest": imp.tree_digest,
+                      "source_content_digest": imp.tree_provenance["source_content_digest"],
+                      "artifact_sha256": imp.registry_provenance["artifact_sha256"],
+                      "upstream_signature_status": imp.registry_provenance["upstream_signature_status"],
+                      "tools": [t["name"] for t in imp.manifest["tools"]]}, indent=2))
     return 0
 
 
@@ -189,6 +218,17 @@ def main(argv: list[str] | None = None) -> int:
     ip.add_argument("--runtime", default="podman")
     ip.add_argument("--timeout", type=float, default=120.0)
     ip.set_defaults(fn=_cmd_import_npm)
+
+    kp = sub.add_parser("import-pack", help="import ONE AgentNode registry pack (artifact + lock entry) "
+                                            "as ONE capability; refuses anything it cannot run safely")
+    kp.add_argument("--stand", required=True)
+    kp.add_argument("--artifact", required=True, help="the registry artifact (.tar.gz) of the pack")
+    kp.add_argument("--lockfile", required=True, help="the agentnode.lock that holds the pack's entry")
+    kp.add_argument("--package", required=True, help="the package id (= the lock entry key)")
+    kp.add_argument("--version", required=True)
+    kp.add_argument("--namespace", required=True,
+                    help="YOUR importing-publisher namespace; the capability id is <namespace>/<package>")
+    kp.set_defaults(fn=_cmd_import_pack)
 
     lp = sub.add_parser("list"); lp.add_argument("--stand", required=True); lp.set_defaults(fn=_cmd_list)
     srp = sub.add_parser("search"); srp.add_argument("--stand", required=True); srp.add_argument("query"); srp.set_defaults(fn=_cmd_search)

@@ -1,0 +1,32 @@
+manifest_version: "0.1"
+package_id: "slow-pack"
+package_type: "toolpack"
+name: "Slow Pack"
+publisher: "agentnode-test"
+version: "1.0.0"
+summary: "A test pack whose one tool sleeps, to prove timeout cleanup on the worker."
+description: "Test fixture for the pack importer: sleeps for the requested seconds."
+runtime: "python"
+install_mode: "package"
+hosting_type: "agentnode_hosted"
+entrypoint: "slow_pack.tool"
+
+capabilities:
+  tools:
+    - name: "sleep_for"
+      capability_id: "testing"
+      description: "Sleep for a number of seconds, then return them."
+      input_schema:
+        type: "object"
+        properties:
+          seconds: {type: "number"}
+        required: ["seconds"]
+  resources: []
+  prompts: []
+
+permissions:
+  network: {level: "none"}
+  filesystem: {level: "none"}
+  code_execution: {level: "none"}
+  data_access: {level: "input_only"}
+  user_approval: {required: "never"}
