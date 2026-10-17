@@ -609,8 +609,8 @@ def test_undeclared_dynamic_dependency_is_refused(tmp_path):
     pack = _regex_copy(tmp_path)
     _write_tool(
         pack,
-        "import importlib\n\n\ndef run(pattern, **kw):\n"
-        "    mod = importlib.import_module(pattern)\n    return {'m': mod.__name__}\n",
+        "def run(pattern, **kw):\n"
+        "    mod = __import__(pattern)\n    return {'m': mod.__name__}\n",
     )
     assert _refusal(_import, pack).code == "dependency.dynamic_import"
 
@@ -762,10 +762,150 @@ def test_constant_stdlib_dynamic_import_is_allowed(tmp_path):
     pack = _regex_copy(tmp_path)
     _write_tool(
         pack,
-        "import importlib\n\n\ndef run(pattern, **kw):\n"
-        "    return {'n': importlib.import_module('json').dumps(pattern)}\n",
+        "def run(pattern, **kw):\n    return {'n': __import__('json').dumps(pattern)}\n",
     )
     _import(pack)
+
+
+@pytest.mark.parametrize(
+    "source,code",
+    [
+        pytest.param(
+            "import timeit" + _RUN + "timeit.timeit(pattern)\n",
+            "dependency.stdlib_not_admitted",
+            id="timeit",
+        ),
+        pytest.param(
+            "import logging.config" + _RUN + "logging.config.dictConfig({})\n",
+            "dependency.stdlib_not_admitted",
+            id="logging-config",
+        ),
+        pytest.param(
+            "import pydoc" + _RUN + "pydoc.locate(pattern)\n",
+            "dependency.stdlib_not_admitted",
+            id="pydoc-locate",
+        ),
+        pytest.param(
+            "import sqlite3" + _RUN + "sqlite3.connect(':memory:')\n",
+            "dependency.stdlib_not_admitted",
+            id="sqlite3",
+        ),
+        pytest.param(
+            "import doctest" + _RUN + "doctest.run_docstring_examples\n",
+            "dependency.stdlib_not_admitted",
+            id="doctest",
+        ),
+        pytest.param(
+            "from concurrent.futures import ProcessPoolExecutor"
+            + _RUN
+            + "ProcessPoolExecutor\n",
+            "permission.code_execution",
+            id="process-pool",
+        ),
+        pytest.param(
+            "import importlib" + _RUN + "importlib.import_module('json')\n",
+            "dependency.stdlib_not_admitted",
+            id="importlib-not-admitted",
+        ),
+        pytest.param(
+            "import typing" + _RUN + "typing.get_type_hints(run)\n",
+            "permission.code_execution",
+            id="get-type-hints",
+        ),
+        pytest.param(
+            "from string import Formatter"
+            + _RUN
+            + "Formatter().get_field(pattern, [], {})\n",
+            "dependency.dynamic_import",
+            id="string-formatter",
+        ),
+        pytest.param(
+            "import os" + _RUN + "(lambda f: f(os, pattern))(getattr)\n",
+            "dependency.dynamic_import",
+            id="getattr-passed-on",
+        ),
+        pytest.param(
+            "import os" + "\n\n\nfetch = getattr" + _RUN + "fetch(os, pattern)\n",
+            "dependency.dynamic_import",
+            id="getattr-aliased",
+        ),
+    ],
+)
+def test_stdlib_outside_the_admitted_list_and_string_driven_routes_are_refused(
+    tmp_path, source, code
+):
+    """The stdlib's own code runners and string-driven reflection (allow-list, not deny-list)."""
+    pack = _regex_copy(tmp_path)
+    _write_tool(pack, source)
+    assert code in [v["code"] for v in _refusal(_import, pack).violations]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            "import os"
+            + _RUN
+            + "open(os.path.join(os.path.dirname(__file__), 'b.py'), 'w')\n",
+            id="open-builtin",
+        ),
+        pytest.param("import io" + _RUN + "io.open(pattern, 'w')\n", id="io-open"),
+        pytest.param("import os" + _RUN + "os.open(pattern, 1)\n", id="os-open"),
+        pytest.param(
+            "import os as o" + _RUN + "o.remove(pattern)\n", id="os-alias-remove"
+        ),
+        pytest.param(
+            "from os import replace" + _RUN + "replace(pattern, 'x')\n",
+            id="from-os-replace",
+        ),
+        pytest.param("import os" + _RUN + "os.makedirs(pattern)\n", id="os-makedirs"),
+        pytest.param(
+            "import logging" + _RUN + "logging.FileHandler(pattern)\n",
+            id="log-file-handler",
+        ),
+    ],
+)
+def test_writing_files_is_refused_for_a_filesystem_none_pack(tmp_path, source):
+    """A file the pack wrote could be imported as code the scan never saw."""
+    pack = _regex_copy(tmp_path)
+    _write_tool(pack, source)
+    assert "permission.filesystem" in [
+        v["code"] for v in _refusal(_import, pack).violations
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("import os" + _RUN + "os.path.os.system\n", id="os-path-os"),
+        pytest.param("import random" + _RUN + "random._os\n", id="random-os"),
+    ],
+)
+def test_module_hops_through_attributes_are_refused(tmp_path, source):
+    pack = _regex_copy(tmp_path)
+    _write_tool(pack, source)
+    assert "dependency.dynamic_import" in [
+        v["code"] for v in _refusal(_import, pack).violations
+    ]
+
+
+def test_ordinary_methods_named_like_file_calls_stay_importable(tmp_path):
+    pack = _regex_copy(tmp_path)
+    _write_tool(
+        pack,
+        "import io\nimport os"
+        + _RUN
+        + "{'r': pattern.replace('a', 'b'), 'l': [1, 2].remove(1),"
+        " 'p': os.path.join('a', 'b'), 'e': os.environ.get('HOME'), 's': io.StringIO('x').read()}\n",
+    )
+    _import(pack)
+
+
+def test_the_admitted_stdlib_list_covers_the_positive_packs():
+    for name in POSITIVE:
+        _import(STARTER / name)
+    _import(FIXTURE_PACKS / "multi-tool-pack")
+    _import(FIXTURE_PACKS / "slow-pack")
 
 
 @pytest.mark.parametrize(

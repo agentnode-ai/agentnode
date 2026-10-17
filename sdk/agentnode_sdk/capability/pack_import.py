@@ -28,10 +28,10 @@ Every step refuses rather than repairs, and every refusal is a ``PackRefused`` w
    the lock records for MCP, remote endpoints, credentials or agents is present.
 6. **Dependencies and layout.** ``pyproject.toml`` declares no runtime or optional
    dependencies; the runtime package ``src/<module>/`` holds only ``.py`` files; every static
-   and constant dynamic import resolves to the sandbox Python's standard library or to the
-   pack itself; network and process modules are refused for a pack that declared neither;
-   non-constant dynamic imports, ``exec``/``eval``/``compile`` and compiled/native files are
-   refused.
+   and constant dynamic import resolves to an ADMITTED module of the sandbox Python's standard
+   library or to the pack itself; network and process modules are refused for a pack that
+   declared neither; non-constant dynamic imports, ``exec``/``eval``/``compile``, reflective
+   routes around the scan, file writes and compiled/native files are refused.
 7. **Entrypoints.** Each tool resolves -- by the installer's own semantics (``m.tool`` ->
    ``run``; ``m.tool:f`` -> ``f``) -- to one top-level ``def`` in a shipped module.
 
@@ -203,15 +203,22 @@ _CODE_EXEC_MODULES = (
 )
 _DYNAMIC_CODE_CALLS = ("exec", "eval", "compile")
 
-# --- reflection: the static scan must not be walkable around (review R0001 F-P5) ---------------
+# --- the static scan must not be walkable around (review R0001 F-P5) ---------------------------
 # A syntactic scan sees ``exec(...)`` but not ``builtins.exec(...)``, ``getattr(x, "__import__")``
 # or ``().__class__.__base__.__subclasses__()``. So the routes TO those objects are closed instead:
-# the builtins namespace is unreachable (module above, names below), dunder attributes are refused
-# except a short list of ordinary ones, attribute names that reach frames, the module table, the
-# import machinery, computed code or new processes are refused in ANY attribute position, and
-# reflective attribute access (getattr & co.) needs a constant, harmless name. This is a source
-# gate for dependency-free packs, not a proof that arbitrary Python is inert: the sandbox
-# (network none, no third-party import paths) remains the containment.
+# * only an ALLOW-list of stdlib modules may be imported (``_ADMITTED_STDLIB``) -- the stdlib's
+#   own code runners (timeit, doctest, cProfile, pydoc.locate, logging.config, ...) cannot be
+#   enumerated reliably, so they are simply not admitted;
+# * the builtins namespace is unreachable (``builtins``/``__builtins__``/globals/locals/vars);
+# * dunder attributes are refused except a short list of ordinary ones, and attribute names that
+#   reach frames, the module table, the import machinery, computed code, new processes or a
+#   re-exported module (``os.path.os``) are refused in ANY attribute or from-import position;
+# * reflective attribute access (getattr & co.) needs a constant, harmless name and may not be
+#   passed on or aliased;
+# * writing files is refused (``open``, os/io file creation, file log handlers): a written file
+#   could be imported as code the scan never saw, and the pack declared filesystem none.
+# This is a source gate for dependency-free packs, not a proof that arbitrary Python is inert: the
+# sandbox (network none, no third-party import paths) remains the containment.
 _REFLECTIVE_NAMES = {
     "__builtins__",
     "__loader__",
@@ -282,6 +289,12 @@ _CODE_EXEC_ATTRIBUTES = {
     "spawnvp",
     "spawnvpe",
     "CodeType",
+    "ProcessPoolExecutor",
+    # string annotations are evaluated with eval() by these
+    "get_type_hints",
+    "ForwardRef",
+    "_eval_type",
+    "_evaluate",
 }
 #: Attribute names that reach frames, the module table or the import machinery.
 _REFLECTIVE_ATTRIBUTES = {
@@ -308,6 +321,137 @@ _REFLECTIVE_ATTRIBUTES = {
     "setprofile",
     "attrgetter",
     "methodcaller",
+    # attribute traversal driven by a string ("0.__init__.__globals__")
+    "Formatter",
+    "get_field",
+    "breakpointhook",
+}
+#: Writing files. A pack declared filesystem ``none``, and a file it wrote could be imported as code
+#: the scan never saw -- so the ways to create or change files are refused. These names are
+#: unambiguous wherever they appear; ``open`` also as the builtin name.
+_FILESYSTEM_ATTRIBUTES = {
+    "open",
+    "fdopen",
+    "open_code",
+    "FileIO",
+    "unlink",
+    "rmdir",
+    "removedirs",
+    "makedirs",
+    "renames",
+    "chmod",
+    "lchmod",
+    "fchmod",
+    "chown",
+    "lchown",
+    "fchown",
+    "symlink",
+    "ftruncate",
+    "utime",
+    "mkfifo",
+    "mknod",
+    "chdir",
+    "fchdir",
+    "chroot",
+    "putenv",
+    "unsetenv",
+    "dup2",
+    "FileHandler",
+    "RotatingFileHandler",
+    "TimedRotatingFileHandler",
+    "WatchedFileHandler",
+    "tofile",
+}
+#: File-changing names that are ALSO ordinary methods elsewhere (list.remove, str.replace, ...):
+#: refused only on a name bound to the os module.
+_OS_ONLY_FILESYSTEM_ATTRIBUTES = {
+    "remove",
+    "rename",
+    "replace",
+    "mkdir",
+    "link",
+    "truncate",
+    "dup",
+    "write",
+}
+#: Re-exported module objects reached as attributes (``os.path.os``, ``random._os``): a hop to a
+#: module whose own rules this scan would no longer see. Refused in any attribute position.
+_MODULE_HOP_ATTRIBUTES = {
+    "os",
+    "_os",
+    "sys",
+    "_sys",
+    "io",
+    "_io",
+    "builtins",
+    "_builtins",
+    "posix",
+    "nt",
+}
+#: The standard-library modules a pack may import -- an ALLOW-list, because a deny-list of the
+#: stdlib's code runners (timeit, doctest, cProfile, logging.config, pydoc.locate, sqlite3
+#: extensions, distutils.spawn, ...) can never be shown complete. Pure computation, text, data
+#: formats, dates and math; ``os``/``sys`` only for their ordinary attributes (the attribute rules
+#: above refuse process creation, frames and the module table). A submodule is admitted only when it
+#: is named here. Anything else in the stdlib is refused as ``dependency.stdlib_not_admitted``.
+_ADMITTED_STDLIB = {
+    "__future__",
+    "abc",
+    "array",
+    "base64",
+    "binascii",
+    "bisect",
+    "calendar",
+    "cmath",
+    "collections",
+    "collections.abc",
+    "contextlib",
+    "copy",
+    "csv",
+    "dataclasses",
+    "datetime",
+    "decimal",
+    "difflib",
+    "enum",
+    "errno",
+    "fnmatch",
+    "fractions",
+    "functools",
+    "graphlib",
+    "hashlib",
+    "heapq",
+    "hmac",
+    "html",
+    "io",
+    "ipaddress",
+    "itertools",
+    "json",
+    "keyword",
+    "math",
+    "numbers",
+    "operator",
+    "os",
+    "os.path",
+    "pprint",
+    "random",
+    "re",
+    "reprlib",
+    "secrets",
+    "shlex",
+    "statistics",
+    "string",
+    "struct",
+    "sys",
+    "textwrap",
+    "time",
+    "types",
+    "typing",
+    "unicodedata",
+    "urllib",
+    "urllib.parse",
+    "warnings",
+    "zlib",
+    "zoneinfo",
 }
 #: Never reachable through getattr & co.: the loaders and the code runners are only allowed as a
 #: direct call with a constant argument, which the import scan then resolves.
@@ -1011,6 +1155,12 @@ def _check_import_name(
             "permission.code_execution",
             f"{where}: imports {name!r}, which turns data into running code",
         )
+    elif name not in _ADMITTED_STDLIB:
+        v.add(
+            "dependency.stdlib_not_admitted",
+            f"{where}: standard-library module {name!r} is not on the admitted list for "
+            f"dependency-free, network-free packs",
+        )
 
 
 def _attribute_violation(attr: str) -> str | None:
@@ -1021,16 +1171,64 @@ def _attribute_violation(attr: str) -> str | None:
         return "dependency.dynamic_import"
     if attr.startswith("__") and attr.endswith("__") and attr not in _SAFE_DUNDERS:
         return "dependency.dynamic_import"
+    if attr in _FILESYSTEM_ATTRIBUTES:
+        return "permission.filesystem"
+    if attr in _MODULE_HOP_ATTRIBUTES:
+        return "dependency.dynamic_import"
     return None
 
 
-def _reflection(node: ast.AST, rel: str, v: _Violations) -> None:
+def _os_names(tree: ast.Module) -> set[str]:
+    """Every name this module binds to the os module (``import os``, ``import os as o``)."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "os" or (
+                    alias.name.startswith("os.") and not alias.asname
+                ):
+                    names.add(alias.asname or "os")
+    return names
+
+
+def _reflection(
+    node: ast.AST,
+    rel: str,
+    v: _Violations,
+    call_targets: set[int],
+    os_names: set[str] = frozenset(),
+) -> None:
     """Close the routes around the syntactic scan (see ``_REFLECTIVE_NAMES``)."""
     line = getattr(node, "lineno", 0)
-    if isinstance(node, ast.Name) and node.id in _REFLECTIVE_NAMES:
+    if isinstance(node, ast.Name) and node.id == "open":
+        v.add(
+            "permission.filesystem",
+            f"{rel}:{line}: uses open() although the pack declared filesystem none",
+        )
+    elif (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in os_names
+        and node.attr in _OS_ONLY_FILESYSTEM_ATTRIBUTES
+    ):
+        v.add(
+            "permission.filesystem",
+            f"{rel}:{line}: os.{node.attr} changes files although the pack declared filesystem none",
+        )
+    elif isinstance(node, ast.Name) and node.id in _REFLECTIVE_NAMES:
         v.add(
             "dependency.dynamic_import",
             f"{rel}:{line}: uses reflective builtin {node.id!r}",
+        )
+    elif (
+        isinstance(node, ast.Name)
+        and node.id in _REFLECTIVE_CALLS
+        and id(node) not in call_targets
+    ):
+        # getattr passed on or aliased (f = getattr; map(getattr, ...)) escapes the constant-name rule
+        v.add(
+            "dependency.dynamic_import",
+            f"{rel}:{line}: passes {node.id!r} on instead of calling it with a constant name",
         )
     elif isinstance(node, ast.Attribute):
         code = _attribute_violation(node.attr)
@@ -1070,8 +1268,9 @@ def _scan_module(
     modname, is_pkg = _module_name(path, src)
     package = modname if is_pkg else modname.rpartition(".")[0]
     call_targets = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    os_names = _os_names(tree)
     for node in ast.walk(tree):
-        _reflection(node, rel, v)
+        _reflection(node, rel, v, call_targets, os_names)
         if isinstance(node, ast.Import):
             for alias in node.names:
                 _check_import_name(alias.name, top=top, own=own, where=rel, v=v)
@@ -1114,6 +1313,15 @@ def _scan_module(
                         v.add(
                             "dependency.dynamic_import",
                             f"{rel}:{node.lineno}: imports reflective {full!r}",
+                        )
+                    elif (
+                        node.module == "os"
+                        and alias.name in _OS_ONLY_FILESYSTEM_ATTRIBUTES
+                    ):
+                        # ``from os import remove``
+                        v.add(
+                            "permission.filesystem",
+                            f"{rel}:{node.lineno}: imports {full!r}, which changes files",
                         )
         elif isinstance(node, ast.Call):
             func = node.func
