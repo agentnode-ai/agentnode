@@ -139,15 +139,21 @@ class UsabilityClient:
                  "exact invocation_hash; then the same call succeeds once.",
         )
 
-    def submit(self, invocation: Invocation, approval_id: str) -> SubmitResult:
+    def submit(self, invocation: Invocation, approval_id: str, *, worker: Any = None,
+               worker_identity: Any = None, run_id: str | None = None) -> SubmitResult:
+        """`worker`, `worker_identity` and `run_id` override the client's own for one call: the
+        catalog dispatches to the worker of the target it resolved (target-router), audits the
+        identity that run's connection proved, and names the run by its stable dispatch id."""
         if self.approval_store is None or self.operator_public_bytes is None or self.audit_ledger is None:
             raise RuntimeError("this client is read-only (no worker/approval/audit configured)")
         return tree_pipeline.submit(invocation, approval_id=approval_id,
                                     approval_store=self.approval_store,
                                     operator_public_bytes=self.operator_public_bytes,
-                                    worker=self.worker, index=self.index,
+                                    worker=worker if worker is not None else self.worker, index=self.index,
                                     audit_ledger=self.audit_ledger,
-                                    worker_identity=self.worker_identity)
+                                    worker_identity=(worker_identity if worker_identity is not None
+                                                     else self.worker_identity),
+                                    run_id=run_id)
 
     def bound_result(self, invocation: Invocation, submit_result: SubmitResult) -> dict[str, Any]:
         """Result + manifest + job + signed audit, bound together (U9)."""

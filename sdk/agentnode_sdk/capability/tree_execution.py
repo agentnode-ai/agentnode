@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -101,7 +102,7 @@ def build_tree_run_program(tar_bytes: bytes, *, interpreter: str, entry: str,
 
 
 def _build_job(invocation: Invocation, tar_bytes: bytes, *, interpreter: str, entry: str,
-               expected_tree_digest: str, limits: Limits) -> Job:
+               expected_tree_digest: str, limits: Limits, run_id: str | None = None) -> Job:
     program = build_tree_run_program(
         tar_bytes, interpreter=interpreter, entry=entry,
         expected_tree_digest=expected_tree_digest,
@@ -110,9 +111,16 @@ def _build_job(invocation: Invocation, tar_bytes: bytes, *, interpreter: str, en
     )
     payload = base64.b64encode(program).decode("ascii")
     stdin = ch.on_stdin("", "", payload)
+    # A caller that names the run (the catalog's dispatch id, target-router R2) gets the SAME job
+    # every time it asks -- container name included, because the worker's journal recognises a
+    # repeated start by the job's digest. Without one, a fresh random run, as before.
+    if run_id:
+        container = "agentnode-cap-" + hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:12]
+    else:
+        run_id, container = "cap-" + uuid.uuid4().hex, "agentnode-cap-" + uuid.uuid4().hex[:12]
     return Job(
-        run_id="cap-" + uuid.uuid4().hex,
-        container_name="agentnode-cap-" + uuid.uuid4().hex[:12],
+        run_id=run_id,
+        container_name=container,
         command=tuple(ch.bootstrap(command_was_given=False)),
         artifact=program,
         stdin=stdin,
@@ -129,6 +137,7 @@ def execute_tree(
     *,
     effective_grant: dict[str, Any],
     limits: Limits | None = None,
+    run_id: str | None = None,
 ) -> ExecResult:
     """Run the real multi-file capability's tool call on *worker*. Refuse rather than run locally.
 
@@ -166,7 +175,7 @@ def execute_tree(
 
     lim = limits or Limits(memory_mb=1024, wall_clock_s=120, storage_mb=512)
     job = _build_job(invocation, tar_bytes, interpreter=pkg["interpreter"], entry=pkg["entry"],
-                     expected_tree_digest=pkg["tree_digest"], limits=lim)
+                     expected_tree_digest=pkg["tree_digest"], limits=lim, run_id=run_id)
     try:
         outcome = worker.run(job)
     except (WorkerUnreachable, NoRuntimeThere) as exc:

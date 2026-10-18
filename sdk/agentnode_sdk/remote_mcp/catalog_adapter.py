@@ -28,6 +28,8 @@ import base64
 import hashlib
 import hmac
 import json
+import os
+import time
 from typing import Any, Callable
 
 from agentnode_sdk.capability.approval import ApprovalError
@@ -35,6 +37,7 @@ from agentnode_sdk.capability.usability import UsabilityClient
 from agentnode_sdk.remote_mcp.catalog import (META_TOOLS, Catalog, Entry, RunNotAdmitted, Snapshot,
                                               canonical)
 from agentnode_sdk.remote_mcp.catalog_audit import CatalogLedger, digest_of
+from agentnode_sdk.remote_mcp.target_router import TARGET_META_KEY, TargetRefusal
 
 PAGE_SIZE = 50
 CURSOR_VERSION = 1
@@ -64,6 +67,16 @@ META_SCHEMAS = {
         "inputSchema": {"type": "object", "additionalProperties": False, "required": ["tool", "arguments"],
                         "properties": {"tool": {"type": "string"}, "arguments": {"type": "object"}}}},
 }
+#: With execution targets (target-router), `agentnode_run` also takes an optional target WISH. It is
+#: resolved and authorized by the server exactly like a direct call's `_meta` wish, never trusted.
+RUN_SCHEMA_WITH_TARGET = {
+    "description": ("Run one AgentNode tool active for your account. A human must approve each call. "
+                    "`target` optionally asks for one of your execution targets (see agentnode_describe)."),
+    "inputSchema": {"type": "object", "additionalProperties": False, "required": ["tool", "arguments"],
+                    "properties": {"tool": {"type": "string"}, "arguments": {"type": "object"},
+                                   "target": {"type": "string", "maxLength": 64}}}}
+CUSTOMER_LABEL = ("executed on a customer-controlled worker; isolation is observed by the control plane, "
+                  "not proven")
 
 
 class CatalogMCPAdapter:
@@ -72,7 +85,9 @@ class CatalogMCPAdapter:
 
     def __init__(self, *, catalog: Catalog, client: UsabilityClient, ledger: CatalogLedger,
                  approvals_dir: str, stand: str, cursor_key: bytes,
-                 barrier: Callable[[str], None] | None = None):
+                 barrier: Callable[[str], None] | None = None, router=None,
+                 authority: Callable[[Any], str | None] | None = None,
+                 kill_switch: Callable[[], str] | None = None, reconcile_wait: float = 10.0):
         self.catalog = catalog
         self.client = client
         self.ledger = ledger
@@ -80,6 +95,14 @@ class CatalogMCPAdapter:
         self.stand = stand
         self._cursor_key = cursor_key
         self._barrier = barrier or (lambda name: None)
+        #: Target-router: where a call runs. None keeps the single configured worker (the stand).
+        self.router = router
+        #: The live account/device re-check, run again at admission (T13). None: not available here.
+        self.authority = authority
+        #: The gateway kill switch: "" when taking work, else the operator's reason (T13).
+        self.kill_switch = kill_switch
+        self.reconcile_wait = reconcile_wait
+        self._indeterminate_dir = os.path.join(stand, "targets", "indeterminate")
 
     # ------------------------------------------------------------------ transport surface
     def handle(self, msg):  # pragma: no cover - the transport never calls it for this adapter
@@ -90,7 +113,7 @@ class CatalogMCPAdapter:
         params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
         return msg.get("method") == "tools/call" and params.get("name") in ("agentnode_search", "agentnode_describe")
 
-    def handle_for(self, principal, msg: dict, *, era: str = "modern") -> dict | None:
+    def handle_for(self, principal, msg: dict, *, era: str = "modern", grant=None) -> dict | None:
         mid = msg.get("id")
         method = msg.get("method")
         ctx = {"account": principal.principal_id, "token_id": principal.token_id, "era": era}
@@ -98,7 +121,7 @@ class CatalogMCPAdapter:
             return self._tools_list(ctx, mid, msg.get("params") if isinstance(msg.get("params"), dict) else {})
         if method == "tools/call":
             params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
-            return self._tools_call(ctx, mid, params)
+            return self._tools_call(ctx, mid, params, principal=principal, grant=grant)
         if mid is None:
             return None
         return _rpc_error(mid, -32601, f"method not found: {method}")
@@ -122,7 +145,8 @@ class CatalogMCPAdapter:
 
     def _tools_list(self, ctx, mid, params) -> dict:
         snap = self.catalog.load()
-        items: list[dict[str, Any]] = [{"name": n, **META_SCHEMAS[n]} for n in META_TOOLS]
+        schemas = dict(META_SCHEMAS, agentnode_run=RUN_SCHEMA_WITH_TARGET) if self.router else META_SCHEMAS
+        items: list[dict[str, Any]] = [{"name": n, **schemas[n]} for n in META_TOOLS]
         items += [self._tool_descriptor(e) for e in snap.active_entries(ctx["account"])]
         try:
             offset = self._read_cursor(params.get("cursor"), "tools/list", ctx["account"], snap.generation,
@@ -181,7 +205,7 @@ class CatalogMCPAdapter:
         return off
 
     # ------------------------------------------------------------------ calls
-    def _tools_call(self, ctx, mid, params) -> dict:
+    def _tools_call(self, ctx, mid, params, *, principal=None, grant=None) -> dict:
         name = params.get("name")
         arguments = params.get("arguments", {})
         meta = params.get("_meta")
@@ -189,20 +213,51 @@ class CatalogMCPAdapter:
             self.ledger.append("catalog_decision", request="tools/call", tool=_safe(name), decision="refused",
                                reason="routing_claim", **ctx)
             return _rpc_error(mid, -32602, "routing claims are not accepted")
+        meta_wish = meta.get(TARGET_META_KEY) if (self.router and isinstance(meta, dict)) else None
         if name == "agentnode_search":
             return self._search(ctx, mid, arguments)
         if name == "agentnode_describe":
             return self._describe(ctx, mid, arguments)
         if name == "agentnode_run":
-            if not isinstance(arguments, dict) or set(arguments) - {"tool", "arguments"} \
+            allowed = {"tool", "arguments", "target"} if self.router else {"tool", "arguments"}
+            if not isinstance(arguments, dict) or set(arguments) - allowed \
                     or not isinstance(arguments.get("tool"), str):
                 return self._tool_error(ctx, mid, "agentnode_run", "bad_arguments",
                                         "agentnode_run needs {tool: string, arguments: object}")
             target = arguments["tool"]
             if target in META_TOOLS:
                 return self._tool_error(ctx, mid, target, "meta_recursion", "meta-tools cannot be run")
-            return self._execute(ctx, mid, target, arguments.get("arguments", {}), route="meta")
-        return self._execute(ctx, mid, name, arguments, route="direct")
+            wish = arguments.get("target")
+            if wish is not None and meta_wish is not None and wish != meta_wish:
+                # two different wishes for one call: neither is chosen over the other
+                return self._tool_error(ctx, mid, target, "target_bad_wish", "refused: target_bad_wish")
+            return self._execute(ctx, mid, target, arguments.get("arguments", {}), route="meta",
+                                 principal=principal, wish=wish if wish is not None else meta_wish, grant=grant)
+        return self._execute(ctx, mid, name, arguments, route="direct", principal=principal, wish=meta_wish,
+                             grant=grant)
+
+    def plan(self, principal, msg: dict) -> tuple[str, int, int] | None:
+        """For the transport's scheduler: the (target id, concurrency, queue) this call would run on,
+        or None when it will be answered without running anything (unknown tool, refusal, discovery).
+        Advisory only: the call is resolved again, and judged again under the lock, when it runs."""
+        if self.router is None or msg.get("method") != "tools/call":
+            return None
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        name, args, meta = params.get("name"), params.get("arguments", {}), params.get("_meta")
+        wish = meta.get(TARGET_META_KEY) if isinstance(meta, dict) else None
+        if name == "agentnode_run" and isinstance(args, dict):
+            name, wish = args.get("tool"), args.get("target", wish)
+        if not isinstance(name, str) or name in META_TOOLS:
+            return None
+        try:
+            entry = self.catalog.load().resolve(principal.principal_id, name)
+            if entry is None:
+                return None
+            res = self.router.resolve(principal.principal_id, wish, entry)
+        except Exception:                                      # noqa: BLE001 - the call itself will say why
+            return None
+        lim = res.target.limits
+        return res.target_id, int(lim["concurrency"]), int(lim["queue"])
 
     def _projection(self, entry: Entry) -> dict[str, Any]:
         man = self.client.index.resolve(entry.capability_id, entry.version).manifest
@@ -256,16 +311,41 @@ class CatalogMCPAdapter:
                                     generation=snap.generation)
         self.ledger.append("catalog_decision", request="describe", tool=entry.tool, decision="described",
                            generation=snap.generation, binding=entry.to_dict(), **ctx)
-        return _tool_result(mid, self._projection(entry))
+        projection = self._projection(entry)
+        if self.router is not None:
+            projection["targets"] = self._target_projection(ctx["account"], entry)
+        return _tool_result(mid, projection)
 
-    def nonce_for(self, account: str, entry: Entry, arguments: dict) -> str:
-        return hashlib.sha256(_NONCE_DOMAIN + canonical({
-            "account": account, "tool": entry.tool, "capability_id": entry.capability_id,
-            "version": entry.version, "manifest_digest": entry.manifest_digest,
-            "artifact_digest": entry.artifact_digest, "tree_digest": entry.tree_digest,
-            "export": entry.export, "arguments": arguments})).hexdigest()
+    def _target_projection(self, account: str, entry: Entry) -> list[dict[str, Any]]:
+        """Codex D9: only the account's own view -- id, type, status, eligibility with reason codes,
+        assurance class and its expiry. Never an address, URI, instance, pair, raw property or count."""
+        from agentnode_sdk.remote_mcp import target_router as R
+        snap = self.router.register.load()
+        default_id, _ = snap.default_for(account)
+        out = []
+        for t in snap.visible_targets(account):
+            try:
+                R._eligible(t, entry, snap.now, self.router.acks.load(), self.router._list_number())
+                eligible, reasons = True, []
+            except TargetRefusal as refusal:
+                eligible, reasons = False, [refusal.code]
+            out.append({"target_id": t.target_id, "type": t.type, "status": t.effective_status(snap.now),
+                        "eligible": eligible, "reasons": reasons, "default": t.target_id == default_id,
+                        "assurance": t.assurance,
+                        "attestation_expires_at": (t.attestation or {}).get("expires_at")})
+        return out
 
-    def _execute(self, ctx, mid, name, arguments, *, route: str) -> dict:
+    def nonce_for(self, account: str, entry: Entry, arguments: dict, target: dict | None = None) -> str:
+        body = {"account": account, "tool": entry.tool, "capability_id": entry.capability_id,
+                "version": entry.version, "manifest_digest": entry.manifest_digest,
+                "artifact_digest": entry.artifact_digest, "tree_digest": entry.tree_digest,
+                "export": entry.export, "arguments": arguments}
+        if target is not None:
+            # target-router D2: the approval belongs to exactly one target binding as well
+            body["target"] = target
+        return hashlib.sha256(_NONCE_DOMAIN + canonical(body)).hexdigest()
+
+    def _execute(self, ctx, mid, name, arguments, *, route: str, principal=None, wish=None, grant=None) -> dict:
         """The ONE execution path for direct calls and ``agentnode_run``."""
         snap: Snapshot = self.catalog.load()
         entry = snap.resolve(ctx["account"], name) if isinstance(name, str) else None
@@ -283,7 +363,17 @@ class CatalogMCPAdapter:
             return self._tool_error(ctx, mid, entry.tool, "bad_arguments", "arguments must be finite JSON",
                                     route=route, generation=snap.generation)
         base.update(binding=entry.to_dict(), arguments=digest_of(arguments))
-        nonce = self.nonce_for(ctx["account"], entry, arguments)
+
+        # ---- WHERE (target-router): one resolver, a wish is only a wish, no fallback
+        resolution = None
+        if self.router is not None:
+            try:
+                resolution = self.router.resolve(ctx["account"], wish, entry)
+            except TargetRefusal as refusal:
+                return self._target_refused(mid, base, refusal)
+            base.update(self._target_fields(resolution))
+
+        nonce = self.nonce_for(ctx["account"], entry, arguments, resolution.binding if resolution else None)
         try:
             inv = self.client.prepare(entry.capability_id, entry.export, arguments, version=entry.version, nonce=nonce)
         except Exception as exc:  # noqa: BLE001
@@ -295,6 +385,11 @@ class CatalogMCPAdapter:
                                invocation_hash=inv.invocation_hash, **base)
             return _tool_error_result(mid, "refused: catalog_changed")
         base["invocation_hash"] = inv.invocation_hash
+        if resolution is not None and self._is_indeterminate(inv.invocation_hash):
+            # an earlier dispatch of this exact invocation has no settled outcome: nothing is sent
+            # again until it is reconciled (Codex D8 point 10)
+            self.ledger.append("catalog_decision", decision="refused", reason="dispatch_indeterminate", **base)
+            return _tool_error_result(mid, "refused: dispatch_indeterminate")
         store = self.client.approval_store
         store.load_dir(self.approvals_dir)
         approval_id = store.find_unconsumed_for(inv.invocation_hash)
@@ -303,36 +398,70 @@ class CatalogMCPAdapter:
             req["next_step"] = APPROVAL_COMMAND.format(stand=self.stand, invocation_hash=inv.invocation_hash,
                                                        audience=entry.capability_id)
             req["catalog_tool"] = entry.tool
+            if resolution is not None:
+                req["target"] = self._target_view(resolution)
             self.ledger.append("catalog_decision", decision="approval_required", **base)
             return {"jsonrpc": "2.0", "id": mid, "result": {
                 "isError": True,
                 "content": [{"type": "text", "text": f"approval required. Next step:\n  {req['next_step']}"}],
                 "structuredContent": req}}
+
+        worker = None
+        if resolution is not None:
+            # A fresh connection to the target BEFORE the approval can be consumed: an offline target,
+            # a wrong identity or unusable trust is refused here and the approval survives.
+            try:
+                self.router.preflight(resolution.target)
+            except TargetRefusal as refusal:
+                return self._target_refused(mid, base, refusal)
+            worker = self.router.worker(resolution.target)
+
         self._barrier("before_admission")
         try:
-            run_token, admitted_gen = self.catalog.admit(ctx["account"], entry)
+            run_token, admitted_gen = self.catalog.admit(
+                ctx["account"], entry,
+                also=(lambda: self._admission_checks(ctx, principal, entry, resolution)) if resolution else None)
         except RunNotAdmitted as exc:
             self.ledger.append("catalog_decision", decision="refused", reason=exc.code, **base)
             return _tool_error_result(mid, f"refused: {exc.code}")
+        dispatch_id = ("cap-" + hashlib.sha256((inv.invocation_hash + "|" + approval_id).encode("ascii")).hexdigest()[:32]
+                       if resolution is not None else None)
         try:
             # recorded BEFORE dispatch: an unrecordable admission never reaches the worker
-            self.ledger.append("catalog_decision", decision="admitted", admitted_generation=admitted_gen, **base)
+            timing = {}
+            if grant is not None:
+                timing = {"queued_at": round(grant.queued_at, 3), "granted_at": round(grant.granted_at, 3)}
+            self.ledger.append("catalog_decision", decision="admitted", admitted_generation=admitted_gen,
+                               dispatch_id=dispatch_id, intent_at=round(time.time(), 3), **timing, **base)
             self._barrier("after_admission")
             try:
-                res = self.client.submit(inv, approval_id)
+                if resolution is not None:
+                    expected = resolution.target.identity_uri
+
+                    def proved(run_id, _w=worker, _expected=expected):
+                        who = _w.who_ran(run_id)[1] if hasattr(_w, "who_ran") else ""
+                        return ("mtls:" + who) if who and who == _expected else ""
+                    res = self.client.submit(inv, approval_id, worker=worker, worker_identity=proved,
+                                             run_id=dispatch_id)
+                else:
+                    res = self.client.submit(inv, approval_id)
             except ApprovalError as exc:
                 self.ledger.record_terminal("catalog_terminal", key=inv.invocation_hash, decision="refused",
                                             reason="approval", detail=str(exc)[:200],
-                                            admitted_generation=admitted_gen, **base)
+                                            admitted_generation=admitted_gen, dispatch_id=dispatch_id, **base)
                 return _tool_error_result(mid, f"ApprovalError: {exc}")
             except Exception as exc:  # noqa: BLE001 -- a worker/execution failure, recorded and surfaced
+                if resolution is not None and _transport_lost(exc):
+                    return self._reconcile(mid, inv, worker, dispatch_id, admitted_gen, base, resolution)
                 self.ledger.record_terminal("catalog_terminal", key=inv.invocation_hash, decision="error",
-                                            reason=type(exc).__name__, admitted_generation=admitted_gen, **base)
+                                            reason=type(exc).__name__, admitted_generation=admitted_gen,
+                                            dispatch_id=dispatch_id, **base)
                 return _tool_error_result(mid, f"{type(exc).__name__}: {exc}")
             self.ledger.record_terminal(
                 "catalog_terminal", key=inv.invocation_hash, decision="ran", admitted_generation=admitted_gen,
                 capability_audit={"ledger_id": res.audit_entry.ledger_id, "seq": res.audit_entry.seq},
-                terminal_status="ok" if res.exec_result.ok else "error", **base)
+                terminal_status="ok" if res.exec_result.ok else "error", dispatch_id=dispatch_id,
+                finished_at=round(time.time(), 3), **base)
         finally:
             self.catalog.finish(run_token)
         call = res.exec_result.result.get("call") or {}
@@ -345,18 +474,130 @@ class CatalogMCPAdapter:
         if not text and not res.exec_result.ok:
             # a run that produced no tool result (timeout, crash): say why instead of an empty error
             text = str(res.exec_result.result.get("error") or "the run failed")
+        structured = {"call": call, "invocation_hash": inv.invocation_hash,
+                      "audit_seq": res.audit_entry.seq,
+                      "achieved_isolation": res.exec_result.achieved_isolation,
+                      "catalog": {"tool": entry.tool, "generation": admitted_gen}}
+        if resolution is not None:
+            structured["target"] = self._target_view(resolution)
+            structured["dispatch_id"] = dispatch_id
         return {"jsonrpc": "2.0", "id": mid, "result": {
             "isError": not res.exec_result.ok,
             "content": [{"type": "text", "text": text}],
-            "structuredContent": {"call": call, "invocation_hash": inv.invocation_hash,
-                                  "audit_seq": res.audit_entry.seq,
-                                  "achieved_isolation": res.exec_result.achieved_isolation,
-                                  "catalog": {"tool": entry.tool, "generation": admitted_gen}}}}
+            "structuredContent": structured}}
+
+    # ------------------------------------------------------------------ target helpers
+    @staticmethod
+    def _target_fields(resolution) -> dict[str, Any]:
+        t = resolution.target
+        return {"target_id": t.target_id, "target_type": t.type, "selection_reason": resolution.selection_reason,
+                "target_generation": t.facts_generation, "endpoint_digest": t.endpoint_digest,
+                "properties_digest": t.properties_digest, "requirements_digest": resolution.requirements_digest,
+                "assurance": t.assurance, "attestation_expires_at": (t.attestation or {}).get("expires_at"),
+                "worker_identity_uri": t.identity_uri}
+
+    @staticmethod
+    def _target_view(resolution) -> dict[str, Any]:
+        t = resolution.target
+        view = {"target_id": t.target_id, "type": t.type, "assurance": t.assurance,
+                "selection_reason": resolution.selection_reason}
+        if t.type == "customer":
+            view["note"] = CUSTOMER_LABEL
+        return view
+
+    def _target_refused(self, mid, base: dict, refusal: TargetRefusal) -> dict:
+        fields = dict(base)
+        if refusal.target_id:
+            fields["target_id"] = refusal.target_id
+        if refusal.selection_reason:
+            fields["selection_reason"] = refusal.selection_reason
+        self.ledger.append("catalog_decision", decision="refused", reason=refusal.code, **fields)
+        return {"jsonrpc": "2.0", "id": mid, "result": {
+            "isError": True, "content": [{"type": "text", "text": f"refused: {refusal.code}"}],
+            "structuredContent": {"status": "refused", "code": refusal.code}}}
+
+    def _admission_checks(self, ctx, principal, entry, resolution) -> None:
+        """Under the catalog lock, right before the dispatch intent (T13): the account's live
+        authority, the kill switch and the exact target binding. Unreadable state refuses."""
+        if self.authority is not None:
+            reason = self.authority(principal) if principal is not None else "authority_unverifiable"
+            if reason:
+                raise RunNotAdmitted("authority_changed")
+        if self.kill_switch is not None:
+            try:
+                stopped = self.kill_switch()
+            except Exception:                                  # noqa: BLE001 - unreadable is stopped
+                stopped = "unreadable"
+            if stopped:
+                raise RunNotAdmitted("kill_switch")
+        try:
+            self.router.recheck(ctx["account"], resolution, entry)
+        except TargetRefusal as refusal:
+            raise RunNotAdmitted(refusal.code) from refusal
+
+    def _is_indeterminate(self, invocation_hash: str) -> bool:
+        return os.path.exists(os.path.join(self._indeterminate_dir, invocation_hash + ".json"))
+
+    def _mark_indeterminate(self, invocation_hash: str, record: dict) -> None:
+        os.makedirs(self._indeterminate_dir, exist_ok=True)
+        path = os.path.join(self._indeterminate_dir, invocation_hash + ".json")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(record, fh, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+
+    def _reconcile(self, mid, inv, worker, dispatch_id, admitted_gen, base, resolution) -> dict:
+        """The connection carrying the run was lost: ask the SAME target what became of THIS dispatch
+        id. Never resent, never sent elsewhere. Exactly one terminal event either way."""
+        try:
+            known = worker.result(dispatch_id, wait=self.reconcile_wait)
+        except Exception as exc:                               # noqa: BLE001
+            known = None
+            detail = type(exc).__name__
+        else:
+            detail = ""
+        if known is not None and known.known and known.never_ran:
+            self.ledger.record_terminal("catalog_terminal", key=inv.invocation_hash, decision="not_started",
+                                        reason="transport_lost", reconciliation="never_ran",
+                                        admitted_generation=admitted_gen, dispatch_id=dispatch_id, **base)
+            return _tool_error_result(mid, "refused: not_started (the worker never ran it)")
+        if known is not None and known.known and known.outcome is not None:
+            outcome = known.outcome if isinstance(known.outcome, dict) else {}
+            from agentnode_sdk.capability.tree_execution import _parse_result
+            result = _parse_result(str(outcome.get("stdout") or ""))
+            self.ledger.record_terminal("catalog_terminal", key=inv.invocation_hash, decision="ran",
+                                        reason="transport_lost", reconciliation="outcome_recovered",
+                                        outcome_digest=digest_of(outcome), terminal_status="ok" if result.get("ok") else "error",
+                                        admitted_generation=admitted_gen, dispatch_id=dispatch_id, **base)
+            call = result.get("call") or {}
+            text = next((i.get("text", "") for i in (call.get("content") or []) if i.get("type") == "text"), "")
+            return {"jsonrpc": "2.0", "id": mid, "result": {
+                "isError": not result.get("ok"), "content": [{"type": "text", "text": text or str(result.get("error") or "")}],
+                "structuredContent": {"call": call, "invocation_hash": inv.invocation_hash, "reconciled": True,
+                                      "target": self._target_view(resolution), "dispatch_id": dispatch_id}}}
+        self._mark_indeterminate(inv.invocation_hash, {"dispatch_id": dispatch_id, "target_id": resolution.target_id,
+                                                       "at": round(time.time(), 3)})
+        self.ledger.record_terminal("catalog_terminal", key=inv.invocation_hash, decision="indeterminate",
+                                    reason="transport_lost", reconciliation=detail or "unknown",
+                                    admitted_generation=admitted_gen, dispatch_id=dispatch_id, **base)
+        return _tool_error_result(mid, "refused: dispatch_indeterminate (reconciliation required)")
 
     def _tool_error(self, ctx, mid, tool, reason, text, **extra) -> dict:
         self.ledger.append("catalog_decision", request="tools/call", tool=_safe(tool), decision="refused",
                            reason=reason, **extra, **ctx)
         return _tool_error_result(mid, text)
+
+
+def _transport_lost(exc: BaseException) -> bool:
+    """Did the run's connection fail (the outcome is then ambiguous), rather than the run itself?"""
+    from agentnode_sdk.worker import WorkerUnreachable
+    seen = exc
+    while seen is not None:
+        if isinstance(seen, WorkerUnreachable):
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return False
 
 
 def _safe(name: Any) -> str:

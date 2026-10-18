@@ -32,8 +32,9 @@ from typing import Any, Awaitable, Callable, Optional
 from agentnode_sdk.capability.usability_adapter import UsabilityMCPAdapter
 from agentnode_sdk.remote_mcp.catalog import CatalogUnavailable
 from agentnode_sdk.remote_mcp.catalog_audit import AuditUnavailable
-from agentnode_sdk.remote_mcp.limits import (ConcurrencyGate, Limits, PrincipalInFlight, RateLimiter,
-                                             json_limit_violation, retry_after)
+from agentnode_sdk.remote_mcp.limits import Limits, RateLimiter, json_limit_violation, retry_after
+from agentnode_sdk.remote_mcp.scheduler import Scheduler, SchedulerRefused
+from agentnode_sdk.remote_mcp.targets import TargetsUnavailable
 from agentnode_sdk.remote_mcp.oauth_as import AuthorizationServer, parse_unique_params
 from agentnode_sdk.remote_mcp.prm import ResourceConfig
 from agentnode_sdk.remote_mcp.tokens import Principal, TokenStore, TokenVerifyError
@@ -167,10 +168,13 @@ class RemoteMCPApp:
         self._token_rate = RateLimiter(self.limits.calls_per_minute_per_token, clock,
                                        burst=self.limits.call_burst_per_token)
         self._list_rate = RateLimiter(self.limits.list_per_minute_per_principal, clock, burst=self.limits.list_burst)
-        self._inflight = PrincipalInFlight(self.limits.max_concurrent_calls_per_principal)
-        self._gate = ConcurrencyGate(self.limits.max_concurrent_calls, self.limits.max_queued_calls)
-        # the run slots a queued tools/call waits for (one event loop serves the app)
-        self._run_slots = asyncio.Semaphore(self.limits.max_concurrent_calls)
+        # ONE scheduler for every tools/call (target-router T12): a global running slot, the
+        # call's target's slot and the account's in-flight slot are granted together, and nothing
+        # is held while waiting. An adapter without targets runs everything on one target.
+        self._scheduler = Scheduler(global_slots=self.limits.max_concurrent_calls,
+                                    global_queue=self.limits.max_queued_calls,
+                                    max_wait=self.limits.max_queue_wait_seconds,
+                                    per_account=self.limits.max_concurrent_calls_per_principal)
         # short-lived, single-use, crypto-random continuation handles for the login bridge:
         # handle -> (normalized validated request, expires_at). /login carries only the handle.
         # Hard-capped and swept on insert so unauthenticated /authorize cannot grow it unbounded.
@@ -468,14 +472,16 @@ class RemoteMCPApp:
         """An adapter that serves a per-account catalog receives the authenticated principal."""
         return bool(getattr(self.adapter, "account_aware", False))
 
-    def _dispatch(self, msg, principal: Principal, modern: bool):
+    def _dispatch(self, msg, principal: Principal, modern: bool, grant=None):
         if self._account_aware():
+            if grant is not None and hasattr(self.adapter, "plan"):
+                return self.adapter.handle_for(principal, msg, era="modern" if modern else "legacy", grant=grant)
             return self.adapter.handle_for(principal, msg, era="modern" if modern else "legacy")
         return self.adapter.handle(msg)
 
     async def _catalog_failure(self, send, mid, exc: BaseException) -> bool:
         """Answer a catalog/audit failure fail-closed. True when *exc* was one of them."""
-        if isinstance(exc, CatalogUnavailable):
+        if isinstance(exc, (CatalogUnavailable, TargetsUnavailable)):
             await self._send(send, 503, {"error": "catalog_unavailable"}, extra=[("retry-after", "30")])
             return True
         if isinstance(exc, AuditUnavailable):
@@ -498,43 +504,34 @@ class RemoteMCPApp:
         wait = self._token_rate.wait_for(principal.token_id)
         if wait:
             return await self._refuse_limit(send, msg, principal, "rate_limited", wait, era)
-        if not self._inflight.try_enter(who):          # 2 calls in flight per account
-            return await self._refuse_limit(send, msg, principal, "too_many_concurrent_calls",
-                                            self.limits.max_queue_wait_seconds, era)
-        if not self._gate.try_enter_queue():            # bounded queue behind the run slots
-            self._inflight.leave(who)
-            return await self._refuse_limit(send, msg, principal, "overloaded", self.limits.max_queue_wait_seconds, era)
-        # wait (queued, at most max_queue_wait_seconds) for one of max_concurrent_calls run slots
+        loop = asyncio.get_event_loop()
+        # WHICH TARGET the call would run on, for the scheduler (advisory: the adapter resolves
+        # it again and judges it again under its lock when it runs).
+        planned = None
+        if self._account_aware() and hasattr(self.adapter, "plan"):
+            try:
+                planned = await loop.run_in_executor(None, self.adapter.plan, principal, msg)
+            except (CatalogUnavailable, AuditUnavailable, TargetsUnavailable) as exc:
+                await self._catalog_failure(send, msg.get("id"), exc)
+                return
+        target_id, concurrency, queue = planned or ("_process", self.limits.max_concurrent_calls,
+                                                    max(1, self.limits.max_queued_calls))
         try:
-            await asyncio.wait_for(self._run_slots.acquire(), timeout=self.limits.max_queue_wait_seconds)
-        except asyncio.TimeoutError:
-            self._gate.leave_queue()
-            self._inflight.leave(who)
-            return await self._refuse_limit(send, msg, principal, "queue_wait_exceeded",
-                                            self.limits.max_queue_wait_seconds, era)
-        except BaseException:
-            self._gate.leave_queue()
-            self._inflight.leave(who)
-            raise
-        self._gate.promote_to_active()
-        freed = []
+            grant = await self._scheduler.acquire(who, target_id, concurrency=concurrency, queue=queue)
+        except SchedulerRefused as refused:
+            return await self._refuse_limit(send, msg, principal, refused.code, refused.retry_after, era)
 
         def free_slot(_f=None):
-            # exactly once, and only when the worker call has REALLY finished: a timed-out
-            # call keeps running in its thread, so it keeps its slots until then.
-            if not freed:
-                freed.append(True)
-                self._gate.release()
-                self._run_slots.release()
-                self._inflight.leave(who)
-        loop = asyncio.get_event_loop()
-        fut = loop.run_in_executor(None, self._dispatch, msg, principal, modern)
+            # exactly once (Grant.release is idempotent), and only when the worker call has
+            # REALLY finished: a timed-out call keeps running in its thread, so it keeps its slots.
+            grant.release()
+        fut = loop.run_in_executor(None, self._dispatch, msg, principal, modern, grant)
         try:
             resp = await asyncio.wait_for(asyncio.shield(fut), timeout=self.limits.call_timeout_seconds)
         except asyncio.TimeoutError:
             fut.add_done_callback(lambda f: loop.call_soon_threadsafe(free_slot))
             return await self._rpc_error(send, msg.get("id"), -32001, "call timed out")
-        except (CatalogUnavailable, AuditUnavailable) as exc:
+        except (CatalogUnavailable, AuditUnavailable, TargetsUnavailable) as exc:
             free_slot()
             await self._catalog_failure(send, msg.get("id"), exc)
             return
@@ -552,7 +549,7 @@ class RemoteMCPApp:
         loop = asyncio.get_event_loop()
         try:
             resp = await loop.run_in_executor(None, self._dispatch, msg, principal, modern)
-        except (CatalogUnavailable, AuditUnavailable) as exc:
+        except (CatalogUnavailable, AuditUnavailable, TargetsUnavailable) as exc:
             await self._catalog_failure(send, msg.get("id"), exc)
             return
         return await self._send_result(send, msg, resp, modern)

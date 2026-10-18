@@ -37,7 +37,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
@@ -101,6 +101,10 @@ def alias_for(capability_id: str, export: str) -> str:
     return norm
 
 
+OPERATOR_MANAGED_ASSURANCE = "operator_managed_measured"
+ASSURANCE_CLASSES = (OPERATOR_MANAGED_ASSURANCE, "hardware_attested", "customer_controlled_observed")
+
+
 @dataclass(frozen=True)
 class Entry:
     tool: str
@@ -111,12 +115,16 @@ class Entry:
     tree_digest: str
     export: str
     published_generation: int
+    #: Target-router R1: the assurance classes of execution target this entry may run on. Signed
+    #: with the entry; absent in a document from before means operator-managed only.
+    accepted_assurance: tuple = (OPERATOR_MANAGED_ASSURANCE,)
 
     def to_dict(self) -> dict[str, Any]:
         return {"capability_id": self.capability_id, "version": self.version,
                 "manifest_digest": self.manifest_digest, "artifact_digest": self.artifact_digest,
                 "tree_digest": self.tree_digest, "export": self.export,
-                "published_generation": self.published_generation}
+                "published_generation": self.published_generation,
+                "accepted_assurance": list(self.accepted_assurance)}
 
 
 @dataclass(frozen=True)
@@ -166,9 +174,14 @@ def _validate_document(doc: Any) -> list[str]:
         if not isinstance(tool, str) or not _TOOL_RE.match(tool) or tool.startswith(RESERVED_PREFIX):
             errors.append(f"invalid or reserved tool name {tool!r}")
             continue
-        if not isinstance(e, dict) or set(e) != entry_keys:
-            errors.append(f"entry {tool!r} must carry exactly {sorted(entry_keys)}")
+        if not isinstance(e, dict) or set(e) not in (entry_keys, entry_keys | {"accepted_assurance"}):
+            errors.append(f"entry {tool!r} must carry exactly {sorted(entry_keys)} (and accepted_assurance)")
             continue
+        if "accepted_assurance" in e:
+            aa = e["accepted_assurance"]
+            if not isinstance(aa, list) or not aa or aa != sorted(set(aa)) or not set(aa) <= set(ASSURANCE_CLASSES):
+                errors.append(f"entry {tool!r} has an invalid accepted_assurance list")
+                continue
         if not all(isinstance(e[k], str) and e[k] for k in entry_keys - {"published_generation"}):
             errors.append(f"entry {tool!r} has empty or non-string fields")
             continue
@@ -350,16 +363,21 @@ class Catalog:
             if gen < floor:
                 raise CatalogUnavailable(f"catalog generation {gen} is older than {floor} (rollback refused)")
             self._highest_seen = max(self._highest_seen, gen)
-        published = {t: Entry(tool=t, **e) for t, e in doc["published"].items()}
+        published = {t: Entry(tool=t, **dict(e, accepted_assurance=tuple(
+            e.get("accepted_assurance") or (OPERATOR_MANAGED_ASSURANCE,)))) for t, e in doc["published"].items()}
         accounts = {a: tuple(r["active"]) for a, r in doc["accounts"].items()}
         return Snapshot(generation=gen, published=published, accounts=accounts,
                         default_active=tuple(doc["default_active"]),
                         digest=hashlib.sha256(raw).hexdigest(), document=doc)
 
     # ------------------------------------------------------------------ run admission
-    def admit(self, account_id: str, expected: Entry) -> tuple[int, int]:
+    def admit(self, account_id: str, expected: Entry, also: Callable[[], None] | None = None) -> tuple[int, int]:
         """Linearisation point of a run: under the catalog lock, the exact entry must still be
-        active for the account. Returns (run_token, generation); raises :class:`RunNotAdmitted`."""
+        active for the account. Returns (run_token, generation); raises :class:`RunNotAdmitted`.
+
+        `also` runs under the SAME lock after the catalog check and may raise `RunNotAdmitted`: the
+        target, the account's authority and the kill switch are judged at the same instant as the
+        catalog (target-router T13), so no revocation of any of them can slip between."""
         with self.lock():
             snap = self.load()
             current = snap.resolve(account_id, expected.tool)
@@ -367,6 +385,8 @@ class Catalog:
                 raise RunNotAdmitted("revoked_while_queued")
             if current != expected:
                 raise RunNotAdmitted("catalog_changed")
+            if also is not None:
+                also()
             self._run_seq += 1
             token = self._run_seq
             self._running[token] = (account_id, expected.tool, snap.generation)
@@ -484,6 +504,9 @@ class Catalog:
                                      f"{tool!r} already names {existing['capability_id']}::{existing['export']}")
             doc["generation"] += 1
             doc["published"][tool] = dict(body, published_generation=doc["generation"])
+            if existing is not None and "accepted_assurance" in existing:
+                # a version move keeps the operator's assurance policy for this tool
+                doc["published"][tool]["accepted_assurance"] = list(existing["accepted_assurance"])
             return self._commit(doc, actor=actor, command=f"publish {tool} {capability_id}@{version}", old=old)
 
     def unpublish(self, tool: str, *, actor: str) -> Snapshot:
@@ -498,6 +521,20 @@ class Catalog:
                 rec["active"] = [n for n in rec["active"] if n != tool]
             doc["default_active"] = [n for n in doc["default_active"] if n != tool]
             return self._commit(doc, actor=actor, command=f"unpublish {tool}", old=old)
+
+    def set_assurance(self, tool: str, classes: Iterable[str], *, actor: str) -> Snapshot:
+        """Which assurance classes of execution target this published tool may run on (target-router
+        R1). Operator-only, signed with the entry, a new generation like every other change."""
+        names = sorted(set(classes))
+        if not names or not set(names) <= set(ASSURANCE_CLASSES):
+            raise CatalogRefused("assurance.invalid", f"classes must be a non-empty subset of {ASSURANCE_CLASSES}")
+        with self.lock():
+            doc, old = self._base()
+            if tool not in doc["published"]:
+                raise CatalogRefused("assurance.unknown_tool", f"{tool!r} is not published")
+            doc["generation"] += 1
+            doc["published"][tool]["accepted_assurance"] = names
+            return self._commit(doc, actor=actor, command=f"set-assurance {tool} {names}", old=old)
 
     def set_account(self, account_id: str, tools: Iterable[str] | None, *, actor: str) -> Snapshot:
         """Give an account an explicit list (possibly EMPTY), or None to return it to the default."""
