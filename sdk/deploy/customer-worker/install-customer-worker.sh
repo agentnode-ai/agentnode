@@ -61,7 +61,12 @@ chown -R "$USER_NAME:$USER_NAME" "$HOME_DIR"
 DEPLOYMENT="$("$PY" -c "import json,sys;print(json.load(open(sys.argv[1]))['deployment'])" "$BUNDLE/target.json")"
 GATEWAY="$("$PY" -c "import json,sys;print(json.load(open(sys.argv[1]))['accept_gateway'])" "$BUNDLE/target.json")"
 mkdir -p /etc/agentnode
+# The worker host runs release directories chosen by a symlink (as the managed worker does), not a
+# deploy-pinned install, so the worker has no runtime pin to check itself against. That is said out
+# loud here instead of the worker refusing to start; it is NOT a pin, and the release in use is the
+# one the operator put at SDK_DIR.
 cat > "/etc/agentnode/$UNIT.env" <<EOF
+AGENTNODE_ALLOW_UNPINNED=1
 PYTHONPATH=$SDK_DIR
 AGENTNODE_LISTEN=$LISTEN
 AGENTNODE_KEYRING=$HOME_DIR/tls/pair-keys.json
