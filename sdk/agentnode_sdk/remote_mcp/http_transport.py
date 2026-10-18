@@ -28,6 +28,8 @@ import secrets
 from typing import Any, Awaitable, Callable, Optional
 
 from agentnode_sdk.capability.usability_adapter import UsabilityMCPAdapter
+from agentnode_sdk.remote_mcp.catalog import CatalogUnavailable
+from agentnode_sdk.remote_mcp.catalog_audit import AuditUnavailable
 from agentnode_sdk.remote_mcp.limits import (ConcurrencyGate, Limits, PrincipalInFlight, RateLimiter,
                                              json_limit_violation, retry_after)
 from agentnode_sdk.remote_mcp.oauth_as import AuthorizationServer, parse_unique_params
@@ -263,7 +265,8 @@ class RemoteMCPApp:
             # discovery / list / lifecycle requests: their own per-account budget
             wait = self._list_rate.wait_for(principal.principal_id)
             if wait:
-                return await self._refuse_429(send, "rate_limited", wait)
+                era = "modern" if header_pv in MODERN_VERSIONS or rpc_method == "server/discover" else "legacy"
+                return await self._refuse_limit(send, msg, principal, "rate_limited", wait, era)
 
         # ERA ROUTING by the protocol-version header: a modern version, or a server/discover,
         # takes the stateless modern path; a legacy (handshake) version takes the initialize
@@ -332,7 +335,7 @@ class RemoteMCPApp:
                     "supportedVersions": list(MODERN_VERSIONS),
                     "capabilities": {"tools": {"listChanged": False}}}}, True, method)).encode())
         if method == "tools/list":
-            return await self._rpc_passthrough(send, msg, modern=True)
+            return await self._rpc_passthrough(send, msg, modern=True, principal=principal)
         if method == "tools/call":
             return await self._tools_call(send, msg, principal, modern=True)
         if mid is None:
@@ -379,7 +382,7 @@ class RemoteMCPApp:
         if method == "notifications/initialized":
             return await self._raw(send, 202, b"")
         if method == "tools/list":
-            return await self._rpc_passthrough(send, msg)
+            return await self._rpc_passthrough(send, msg, principal=principal)
         if method == "tools/call":
             return await self._tools_call(send, msg, principal)
         if mid is None:
@@ -447,26 +450,66 @@ class RemoteMCPApp:
     async def _refuse_429(self, send, error: str, seconds: float) -> None:
         return await self._send(send, 429, {"error": error}, extra=[("retry-after", retry_after(seconds))])
 
+    async def _refuse_limit(self, send, msg, principal: Principal, error: str, seconds: float, era: str) -> None:
+        """A limit refusal. A catalog adapter records it in its ledger FIRST; a refusal that cannot
+        be recorded is answered as an audit failure (-32603), like every other catalog decision."""
+        if self._account_aware():
+            loop = asyncio.get_event_loop()
+            try:
+                await loop.run_in_executor(None, self.adapter.record_limit_refusal, principal, msg, error, era)
+            except AuditUnavailable as exc:
+                await self._catalog_failure(send, msg.get("id"), exc)
+                return
+        return await self._refuse_429(send, error, seconds)
+
+    def _account_aware(self) -> bool:
+        """An adapter that serves a per-account catalog receives the authenticated principal."""
+        return bool(getattr(self.adapter, "account_aware", False))
+
+    def _dispatch(self, msg, principal: Principal, modern: bool):
+        if self._account_aware():
+            return self.adapter.handle_for(principal, msg, era="modern" if modern else "legacy")
+        return self.adapter.handle(msg)
+
+    async def _catalog_failure(self, send, mid, exc: BaseException) -> bool:
+        """Answer a catalog/audit failure fail-closed. True when *exc* was one of them."""
+        if isinstance(exc, CatalogUnavailable):
+            await self._send(send, 503, {"error": "catalog_unavailable"}, extra=[("retry-after", "30")])
+            return True
+        if isinstance(exc, AuditUnavailable):
+            await self._rpc_error(send, mid, -32603, "catalog audit unavailable")
+            return True
+        return False
+
     async def _tools_call(self, send, msg, principal: Principal, modern: bool = False) -> None:
         who = principal.principal_id
+        era = "modern" if modern else "legacy"
+        if self._account_aware() and self.adapter.is_discovery_call(msg):
+            # catalog search / describe: charged once to the list budget, no run slot
+            wait = self._list_rate.wait_for(who)
+            if wait:
+                return await self._refuse_limit(send, msg, principal, "rate_limited", wait, era)
+            return await self._rpc_passthrough(send, msg, modern=modern, principal=principal)
         wait = self._rate.wait_for(who)
         if wait:
-            return await self._refuse_429(send, "rate_limited", wait)
+            return await self._refuse_limit(send, msg, principal, "rate_limited", wait, era)
         wait = self._token_rate.wait_for(principal.token_id)
         if wait:
-            return await self._refuse_429(send, "rate_limited", wait)
+            return await self._refuse_limit(send, msg, principal, "rate_limited", wait, era)
         if not self._inflight.try_enter(who):          # 2 calls in flight per account
-            return await self._refuse_429(send, "too_many_concurrent_calls", self.limits.max_queue_wait_seconds)
+            return await self._refuse_limit(send, msg, principal, "too_many_concurrent_calls",
+                                            self.limits.max_queue_wait_seconds, era)
         if not self._gate.try_enter_queue():            # bounded queue behind the run slots
             self._inflight.leave(who)
-            return await self._refuse_429(send, "overloaded", self.limits.max_queue_wait_seconds)
+            return await self._refuse_limit(send, msg, principal, "overloaded", self.limits.max_queue_wait_seconds, era)
         # wait (queued, at most max_queue_wait_seconds) for one of max_concurrent_calls run slots
         try:
             await asyncio.wait_for(self._run_slots.acquire(), timeout=self.limits.max_queue_wait_seconds)
         except asyncio.TimeoutError:
             self._gate.leave_queue()
             self._inflight.leave(who)
-            return await self._refuse_429(send, "queue_wait_exceeded", self.limits.max_queue_wait_seconds)
+            return await self._refuse_limit(send, msg, principal, "queue_wait_exceeded",
+                                            self.limits.max_queue_wait_seconds, era)
         except BaseException:
             self._gate.leave_queue()
             self._inflight.leave(who)
@@ -483,20 +526,33 @@ class RemoteMCPApp:
                 self._run_slots.release()
                 self._inflight.leave(who)
         loop = asyncio.get_event_loop()
-        fut = loop.run_in_executor(None, self.adapter.handle, msg)
+        fut = loop.run_in_executor(None, self._dispatch, msg, principal, modern)
         try:
             resp = await asyncio.wait_for(asyncio.shield(fut), timeout=self.limits.call_timeout_seconds)
         except asyncio.TimeoutError:
             fut.add_done_callback(lambda f: loop.call_soon_threadsafe(free_slot))
             return await self._rpc_error(send, msg.get("id"), -32001, "call timed out")
+        except (CatalogUnavailable, AuditUnavailable) as exc:
+            free_slot()
+            await self._catalog_failure(send, msg.get("id"), exc)
+            return
         except BaseException:
             fut.add_done_callback(lambda f: loop.call_soon_threadsafe(free_slot))
             raise
         free_slot()
         return await self._send_result(send, msg, resp, modern)
 
-    async def _rpc_passthrough(self, send, msg, modern: bool = False) -> None:
-        resp = self.adapter.handle(msg)
+    async def _rpc_passthrough(self, send, msg, modern: bool = False, principal: Optional[Principal] = None) -> None:
+        if not self._account_aware():
+            resp = self.adapter.handle(msg)
+            return await self._send_result(send, msg, resp, modern)
+        # catalog reads verify a signed document and append to the ledger: off the event loop
+        loop = asyncio.get_event_loop()
+        try:
+            resp = await loop.run_in_executor(None, self._dispatch, msg, principal, modern)
+        except (CatalogUnavailable, AuditUnavailable) as exc:
+            await self._catalog_failure(send, msg.get("id"), exc)
+            return
         return await self._send_result(send, msg, resp, modern)
 
     async def _send_result(self, send, msg, resp, modern: bool) -> None:

@@ -24,7 +24,7 @@ import json
 import os
 import time
 
-from agentnode_sdk.capability.usability_adapter import UsabilityMCPAdapter, build_from_stand
+from agentnode_sdk.capability.usability_adapter import build_from_stand
 from agentnode_sdk.remote_mcp.http_transport import RemoteMCPApp
 from agentnode_sdk.remote_mcp.limits import Limits
 from agentnode_sdk.remote_mcp.oauth_as import AuthorizationServer
@@ -160,11 +160,14 @@ def _build_remote_worker(stand: str):
                         own_instance=own_instance(tls))
 
 
-def _build_remote_adapter(stand: str):
-    """Mirror of the frozen ``build_from_stand`` wiring, but over the REMOTE worker. Every
-    security-critical piece (UsabilityClient, tree_pipeline, approval, audit, index) is reused
-    unchanged; only the ``Worker`` instance differs, which ``tree_execution`` treats as a
-    drop-in because it uses only the ``Worker`` ABC surface."""
+def build_catalog_adapter(stand: str, worker):
+    """The per-account catalog adapter over *worker*, wired from a stand directory.
+
+    Every security-critical piece (UsabilityClient, tree_pipeline, approval, audit, index) is
+    reused unchanged; the catalog decides per account what may be listed and called, and no global
+    single-capability file is read. A missing or untrustworthy catalog does not stop the start
+    but refuses every catalog request (503) until it verifies again.
+    """
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -172,8 +175,10 @@ def _build_remote_adapter(stand: str):
     from agentnode_sdk.capability.audit import AuditLedger
     from agentnode_sdk.capability.index import LocalIndex
     from agentnode_sdk.capability.usability import UsabilityClient
+    from agentnode_sdk.remote_mcp.catalog import Catalog
+    from agentnode_sdk.remote_mcp.catalog_adapter import CatalogMCPAdapter, cursor_key_from
+    from agentnode_sdk.remote_mcp.catalog_audit import CatalogLedger
 
-    cap_id = io.open(os.path.join(stand, "capability_id.txt"), encoding="utf-8").read().strip()
     op_pub = bytes.fromhex(io.open(os.path.join(stand, "operator_pub.hex"), encoding="utf-8").read().strip())
     au_priv = Ed25519PrivateKey.from_private_bytes(
         bytes.fromhex(io.open(os.path.join(stand, "audit_signer_priv.hex"), encoding="utf-8").read().strip()))
@@ -181,21 +186,31 @@ def _build_remote_adapter(stand: str):
     idx = LocalIndex(os.path.join(stand, "index"))
     ledger = AuditLedger(os.path.join(stand, "audit.jsonl"), ledger_id="adapter-L1",
                          signer_private=au_priv, signer_public_bytes=au_pub)
-    worker = _build_remote_worker(stand)
     client = UsabilityClient(index=idx, worker=worker, audit_ledger=ledger,
                              approval_store=ApprovalStore(consumed_dir=os.path.join(stand, "consumed")),
                              operator_public_bytes=op_pub,
                              worker_identity="mtls:" + str(getattr(worker, "address", "")),
                              stand=stand)
-    return UsabilityMCPAdapter(client, cap_id, approvals_dir=os.path.join(stand, "approvals"))
+    catalog = Catalog(stand, op_pub, index=idx)
+    catalog_ledger = CatalogLedger(os.path.join(stand, "catalog-audit.jsonl"), signer_private=au_priv,
+                                   signer_public_bytes=au_pub)
+    return CatalogMCPAdapter(catalog=catalog, client=client, ledger=catalog_ledger,
+                             approvals_dir=os.path.join(stand, "approvals"), stand=stand,
+                             cursor_key=cursor_key_from(_server_key(stand)))
+
+
+def _build_catalog_adapter(stand: str):
+    """Production: the catalog adapter over the REMOTE mutually-authenticated worker, never local."""
+    return build_catalog_adapter(stand, _build_remote_worker(stand))
 
 
 def build_production_app(stand: str, *, resource: str, issuer: str,
                          allowed_hosts: tuple[str, ...], gateway_dir: str,
                          console_url: str = "", allowed_origins: tuple[str, ...] = (),
                          preregistered=None, limits: Limits | None = None) -> RemoteMCPApp:
-    """PRODUCTION builder — the ONLY production path. Execution ALWAYS crosses the separate,
-    mutually-authenticated worker over mTLS (``_build_remote_adapter``); there is NO parameter,
+    """PRODUCTION builder — the ONLY production path. It serves the per-account catalog
+    (``_build_catalog_adapter``) and execution ALWAYS crosses the separate,
+    mutually-authenticated worker over mTLS; there is NO parameter,
     env var or config value that selects a local worker, and missing worker/mTLS/keyring/CRL/
     floor/tombstones artifacts fail the start (``_build_remote_worker``). OAuth binds to the
     real gateway accounts/devices/sessions/capabilities/revocations via :class:`GatewayLogin`,
@@ -205,7 +220,7 @@ def build_production_app(stand: str, *, resource: str, issuer: str,
     """
     from agentnode_sdk.remote_mcp.accounts_login import GatewayLogin
 
-    adapter = _build_remote_adapter(stand)
+    adapter = _build_catalog_adapter(stand)
     gl = GatewayLogin(gateway_dir)
     store = _load_store(stand)
     rc = ResourceConfig(resource=resource, authorization_server=issuer)
