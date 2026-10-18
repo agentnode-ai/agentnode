@@ -230,9 +230,8 @@ class CatalogMCPAdapter:
             wish = arguments.get("target")
             if wish is not None and meta_wish is not None and wish != meta_wish:
                 # two different wishes for one call: neither is chosen over the other
-                out = self._tool_error(ctx, mid, target, "target_bad_wish", "refused: target_bad_wish")
-                out["result"]["structuredContent"] = {"status": "refused", "code": "target_bad_wish"}
-                return out
+                self._tool_error(ctx, mid, target, "target_bad_wish", "refused: target_bad_wish")
+                return _refusal_result(mid, "target_bad_wish")
             return self._execute(ctx, mid, target, arguments.get("arguments", {}), route="meta",
                                  principal=principal, wish=wish if wish is not None else meta_wish, grant=grant)
         return self._execute(ctx, mid, name, arguments, route="direct", principal=principal, wish=meta_wish,
@@ -391,7 +390,7 @@ class CatalogMCPAdapter:
             # an earlier dispatch of this exact invocation has no settled outcome: nothing is sent
             # again until it is reconciled (Codex D8 point 10)
             self.ledger.append("catalog_decision", decision="refused", reason="dispatch_indeterminate", **base)
-            return _tool_error_result(mid, "refused: dispatch_indeterminate")
+            return _refusal_result(mid, "dispatch_indeterminate")
         store = self.client.approval_store
         store.load_dir(self.approvals_dir)
         approval_id = store.find_unconsumed_for(inv.invocation_hash)
@@ -428,9 +427,7 @@ class CatalogMCPAdapter:
             waited = ({"queued_at": round(grant.queued_at, 3), "granted_at": round(grant.granted_at, 3)}
                       if grant is not None else {})
             self.ledger.append("catalog_decision", decision="refused", reason=exc.code, **waited, **base)
-            out = _tool_error_result(mid, f"refused: {exc.code}")
-            out["result"]["structuredContent"] = {"status": "refused", "code": exc.code}
-            return out
+            return _refusal_result(mid, exc.code)
         dispatch_id = ("cap-" + hashlib.sha256((inv.invocation_hash + "|" + approval_id).encode("ascii")).hexdigest()[:32]
                        if resolution is not None else None)
         try:
@@ -568,7 +565,7 @@ class CatalogMCPAdapter:
             self.ledger.record_terminal("catalog_terminal", key=inv.invocation_hash, decision="not_started",
                                         reason="transport_lost", reconciliation="never_ran",
                                         admitted_generation=admitted_gen, dispatch_id=dispatch_id, **base)
-            return _tool_error_result(mid, "refused: not_started (the worker never ran it)")
+            return _refusal_result(mid, "not_started", "refused: not_started (the worker never ran it)")
         if known is not None and known.known and known.outcome is not None:
             outcome = known.outcome if isinstance(known.outcome, dict) else {}
             from agentnode_sdk.capability.tree_execution import _parse_result
@@ -588,7 +585,7 @@ class CatalogMCPAdapter:
         self.ledger.record_terminal("catalog_terminal", key=inv.invocation_hash, decision="indeterminate",
                                     reason="transport_lost", reconciliation=detail or "unknown",
                                     admitted_generation=admitted_gen, dispatch_id=dispatch_id, **base)
-        return _tool_error_result(mid, "refused: dispatch_indeterminate (reconciliation required)")
+        return _refusal_result(mid, "dispatch_indeterminate", "refused: dispatch_indeterminate (reconciliation required)")
 
     def _tool_error(self, ctx, mid, tool, reason, text, **extra) -> dict:
         self.ledger.append("catalog_decision", request="tools/call", tool=_safe(tool), decision="refused",
@@ -619,6 +616,13 @@ def _tool_result(mid, structured: dict) -> dict:
     return {"jsonrpc": "2.0", "id": mid, "result": {
         "isError": False, "content": [{"type": "text", "text": json.dumps(structured, sort_keys=True)}],
         "structuredContent": structured}}
+
+
+def _refusal_result(mid, code: str, text: str = "") -> dict:
+    """A target-router refusal: the text a person reads and the stable code a client branches on."""
+    out = _tool_error_result(mid, text or f"refused: {code}")
+    out["result"]["structuredContent"] = {"status": "refused", "code": code}
+    return out
 
 
 def _tool_error_result(mid, text: str) -> dict:

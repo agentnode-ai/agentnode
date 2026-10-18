@@ -470,9 +470,11 @@ def test_ambiguous_dispatch_requires_reconciliation(st):
     w.result = lambda run_id, wait=10.0: (_ for _ in ()).throw(TimeoutError("no answer"))
     out2 = _call(st, ta, REGEX, args, wish="cust-a")["result"]
     assert "dispatch_indeterminate" in out2["content"][0]["text"]
+    assert out2["structuredContent"] == {"status": "refused", "code": "dispatch_indeterminate"}
     st.approve(h, CAP_REGEX)                                   # even a fresh approval does not resend
     out3 = _call(st, ta, REGEX, args, wish="cust-a")["result"]
     assert out3["content"][0]["text"] == "refused: dispatch_indeterminate" and w.starts == 2
+    assert out3["structuredContent"] == {"status": "refused", "code": "dispatch_indeterminate"}
 
 
 def test_catalog_terminal_exactly_once(st):
