@@ -69,6 +69,29 @@ def test_managed_default_and_explicit_customer_target_run_the_same_capability(st
     assert _sc(ran4)["target"]["target_id"] == "managed-w1"
 
 
+def test_operator_cli_sets_the_assurance_policy(tmp_path, capsys):
+    """`catalog_cli set-assurance` is the operator's only way to let a tool run on a customer target."""
+    from agentnode_sdk.remote_mcp import catalog_cli
+    s = TargetStand(tmp_path)
+    s.publish_starters(customer_ok=False)
+    alice, ta = s.account("alice")
+    s.customer("cust-a", alice)
+    refused = _call(s, ta, REGEX, REGEX_ARGS, wish="cust-a")
+    assert _sc(refused)["code"] == "target_unsuitable"
+    stand = str(s.stand)
+    assert catalog_cli.main(["--stand", stand, "set-assurance", "--tool", REGEX,
+                             "--classes", T.OPERATOR_MANAGED + "," + T.CUSTOMER_OBSERVED]) == 0
+    assert json.loads(capsys.readouterr().out)["published"][REGEX]["accepted_assurance"] == sorted(
+        [T.OPERATOR_MANAGED, T.CUSTOMER_OBSERVED])
+    _, ran = _approve_and_run(s, ta, wish="cust-a")
+    assert _sc(ran)["target"]["target_id"] == "cust-a"
+    assert catalog_cli.main(["--stand", stand, "set-assurance", "--tool", REGEX, "--classes", "self_reported"]) == 5
+    assert json.loads(capsys.readouterr().out)["code"] == "assurance.invalid"
+    assert catalog_cli.main(["--stand", stand, "set-assurance", "--tool", "no_such__tool",
+                             "--classes", T.OPERATOR_MANAGED]) == 5
+    assert json.loads(capsys.readouterr().out)["code"] == "assurance.unknown_tool"
+
+
 def test_target_binding_nonce_mutation(st):
     alice, ta = st.account("alice")
     st.customer("cust-a", alice)

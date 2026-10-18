@@ -97,10 +97,16 @@ register refuses every run with 503.
 * **Reachability.** The control plane dials the target over the private network; there is no
   public worker port. A worker behind NAT that connects out is a different protocol and not part
   of this.
-* **Customer workers** are installed with `sdk/deploy/customer-worker/install-customer-worker.sh`
-  (own account, rootless podman, own state, nft rule) and removed with
-  `remove-customer-worker.sh`. Several on one worker host are separate services, not separate
-  machines.
+* **Customer workers** are installed in two steps on the worker host, with the release that host
+  already runs:
+  1. `sdk/deploy/customer-worker/install-customer-worker.sh` sets up the worker's own account, rootless
+     podman, state, units and nft rule, and makes its key and request there.
+  2. `targets_cli enroll` issues the certificate on the control plane.
+  3. `activate-customer-worker.sh` installs the certificate, sets up the root-owned time floor and its
+     timer, and starts the worker.
+
+  They are removed with `remove-customer-worker.sh`. Several on one worker host are separate
+  services, not separate machines.
 
 ## How a renewal pass works
 

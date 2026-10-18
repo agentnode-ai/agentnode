@@ -15,7 +15,7 @@ MANAGED = {"user": "root-managed", "uid": 994, "identity_uri": "agentnode://d/wo
            "trust_dir": "/var/lib/agentnode-worker/wtls"}
 CUSTOMER = {"user": "agentnode-cw-c1", "uid": 993, "identity_uri": "agentnode://d/worker/c1", "unit": "agentnode-cw-c1",
             "listen": "10.0.0.2:8444", "state_dir": "/var/lib/agentnode-cw-c1", "tls_dir": "/var/lib/agentnode-cw-c1/tls",
-            "keyring": "/var/lib/agentnode-cw-c1/tls/pair-keys.json", "floor_dir": "/var/lib/agentnode-cw-c1/floor",
+            "keyring": "/var/lib/agentnode-cw-c1/tls/pair-keys.json", "floor_dir": "/var/lib/agentnode-cw-floor/c1",
             "journal_dir": "/var/lib/agentnode-cw-c1/journal", "runtime_dir": "/run/user/993",
             "trust_dir": "/var/lib/agentnode-cw-c1/tls"}
 

@@ -76,9 +76,10 @@ def test_expiry_is_monotonic(tmp_path):
     clock.t += 3600                                          # past expiry: expired, whatever is stored
     snap = reg.load()
     assert snap.target("cust-aaa").effective_status(snap.now) == T.EXPIRED
-    clock.t -= 7200                                          # the clock set back: still expired
+    # the clock set back to BEFORE the expiry (but after creation): only the pinned high-water keeps it expired
+    clock.t -= 3300
     snap = reg.load()
-    assert snap.now >= clock.t + 7200 - 1
+    assert snap.now >= clock.t + 3300 - 1
     assert snap.target("cust-aaa").effective_status(snap.now) == T.EXPIRED
     with pytest.raises(T.TargetsRefused):
         reg.set_status("cust-aaa", T.ENROLLED, actor="t")
@@ -132,6 +133,26 @@ def test_unsigned_target_register_refused(reg):
     foreign = T.Register(reg.stand, raw_pub(other))
     with pytest.raises(T.TargetsUnavailable):
         foreign.load()
+
+
+def test_forged_generation_with_history_and_head_refused(reg):
+    """Someone who can write the stand forges a NEXT generation: changed content, its history file and
+    the pinned head written to match, the trusted key id claimed. Only the signature tells it apart."""
+    gen = json.loads(reg.head_path.read_text())["generation"]
+    good = json.loads((reg.history / f"{gen}.json").read_text())
+    forged = {k: v for k, v in good.items() if k != "signature"}
+    forged["generation"] = gen + 1
+    forged["prev_digest"] = T.digest(good)
+    forged["account_defaults"] = {ALICE: forged["default_target"]}
+    forged["signature"] = {"key_id": good["signature"]["key_id"],
+                           "signature": Ed25519PrivateKey.generate().sign(T._signed_bytes(forged)).hex()}
+    raw = json.dumps(forged)
+    reg.path.write_text(raw)
+    (reg.history / f"{gen + 1}.json").write_text(raw)
+    reg.head_path.write_bytes(T.canonical({"generation": gen + 1, "digest": T.digest(forged)}))
+    reg._verified = None
+    with pytest.raises(T.TargetsUnavailable):
+        reg.load()
 
 
 @pytest.mark.parametrize("damage", ["corrupt", "truncated", "missing"])

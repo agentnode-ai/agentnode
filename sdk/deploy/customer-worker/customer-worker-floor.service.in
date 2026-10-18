@@ -1,0 +1,10 @@
+[Unit]
+# The customer worker's time floor, moved on by ROOT: the worker reads it and cannot write it.
+Description=AgentNode customer worker @UNIT@ time floor
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/agentnode/@UNIT@.env
+ExecStart=/opt/agentnode/venv/bin/python -m agentnode_sdk.cli pki floor advance --role worker \
+    --certificate @HOME@/tls/cert.pem --anchor @HOME@/tls/ca.pem \
+    --revocation-list @HOME@/tls/revoked.crl --floor-dir @FLOOR@

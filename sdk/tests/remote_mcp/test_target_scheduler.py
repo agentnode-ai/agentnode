@@ -32,6 +32,11 @@ def test_scheduler_acquires_resources_atomically():
         assert s.running() == 1 and s.running("A") == 1 and s.queued("A") == 1
         b1 = await s.acquire("acct-b", "B", concurrency=1, queue=4)  # B gets the free slot at once
         assert s.running() == 2 and s.running("B") == 1
+        # B finishes while A is still at its cap: the freed global slot must NOT go to A's waiter
+        b1.release()
+        await asyncio.sleep(0.01)
+        assert not waiting.done() and s.running("A") == 1 and s.running() == 1
+        b1 = await s.acquire("acct-b", "B", concurrency=1, queue=4)
         a1.release()
         a2 = await asyncio.wait_for(waiting, 1)
         assert s.running("A") == 1 and s.running() == 2 and s.queued() == 0
