@@ -342,6 +342,9 @@ class CatalogMCPAdapter:
                 if item.get("type") == "text":
                     text = item.get("text", "")
                     break
+        if not text and not res.exec_result.ok:
+            # a run that produced no tool result (timeout, crash): say why instead of an empty error
+            text = str(res.exec_result.result.get("error") or "the run failed")
         return {"jsonrpc": "2.0", "id": mid, "result": {
             "isError": not res.exec_result.ok,
             "content": [{"type": "text", "text": text}],

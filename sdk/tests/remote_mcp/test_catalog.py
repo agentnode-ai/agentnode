@@ -694,10 +694,30 @@ def test_worker_failure_gets_a_terminal_event(tmp_path):
     _, t = s.account("alice")
     s.approve(hash_of(call(s.app, t, REGEX, REGEX_ARGS)[1]), _cap("regex-builder-pack"))
     out = call(s.app, t, REGEX, REGEX_ARGS)[1]["result"]
-    assert out["isError"]
+    assert out["isError"] and "worker connection lost" in out["content"][0]["text"]   # says why, never empty
     term = [b for b in _bodies(s) if b.get("kind") == "catalog_terminal"]
     assert len(term) == 1 and term[0]["decision"] in ("error", "ran")
     assert s.catalog.running() == []                                  # the admission token is released
+
+
+class _SilentWorker(CountingWorker):
+    """Returns like a job killed at its deadline: no tool output at all."""
+
+    def run(self, job):
+        from agentnode_sdk.worker import Outcome
+        self.dispatched += 1
+        return Outcome(exit_code=137, stdout="", stderr="")
+
+
+def test_a_run_without_tool_output_says_why(tmp_path):
+    s = Stand(tmp_path, worker=_SilentWorker())
+    _publish_starters(s)
+    s.catalog.set_default([REGEX], actor="t")
+    _, t = s.account("alice")
+    s.approve(hash_of(call(s.app, t, REGEX, REGEX_ARGS)[1]), _cap("regex-builder-pack"))
+    out = call(s.app, t, REGEX, REGEX_ARGS)[1]["result"]
+    assert out["isError"] and out["content"][0]["text"].strip() != ""
+    assert s.worker.dispatched == 1
 
 
 def test_admitted_run_links_to_the_capability_ledger(st):
