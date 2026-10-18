@@ -551,6 +551,10 @@ class Bench:
         if method == "result":
             return self._result(str(params.get("run_id") or ""),
                                 acknowledge=bool(params.get("acknowledge")))
+        if method == "install_trust":
+            # NO LEASE: this carries no work, and taking one would fence the control plane that
+            # does. The content is believed only because the CA signed it (`trust_install`).
+            return self._install_trust(params)
         if method in ("stop", "gone", "measure", "measure_egress"):
             self._with_lease(params)
         if method == "stop":
@@ -574,6 +578,23 @@ class Bench:
             return self.worker.measure_egress(allowed=params.get("allowed"),
                                               denied=params.get("denied"))
         raise wire.ProtocolError(wire.UNKNOWN_METHOD, method)  # pragma: no cover - `check` first
+
+    #: The TLS door's settings, when there is one: where the trust lists live that
+    #: `install_trust` replaces. None behind a unix socket only, where there are none.
+    tls = None
+
+    def _install_trust(self, params: dict) -> dict:
+        from agentnode_sdk.worker import trust_install as _trust_install
+
+        if self.tls is None:
+            raise wire.ProtocolError(wire.BAD_PARAMS, "this worker has no TLS door and keeps no trust lists")
+        listed, tombs = params.get("revocation_list"), params.get("identity_tombstones")
+        if not isinstance(listed, str) or not isinstance(tombs, str):
+            raise wire.ProtocolError(wire.BAD_PARAMS, "install_trust takes two text documents")
+        try:
+            return _trust_install.install(self.tls, listed.encode("utf-8"), tombs.encode("utf-8"))
+        except _trust_install.TrustRefused as refused:
+            raise wire.ProtocolError(wire.BAD_PARAMS, "trust not installed: " + refused.reason) from refused
 
     def in_flight(self):
         """(run_id, container_name) for every run this worker has started and not finished.
@@ -1009,6 +1030,7 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         if gone:
             print("  removed what enrolment left behind: " + ", ".join(gone), flush=True)
         bench.label = own_instance(tls)
+        bench.tls = tls
         listener = TlsListener(bench, tls_address, tls, topology=topology)
         if keyring_path:
             from agentnode_sdk.worker import pairkeys as _pairkeys

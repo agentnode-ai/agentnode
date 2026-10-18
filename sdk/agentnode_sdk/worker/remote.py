@@ -335,6 +335,20 @@ class SocketWorker(Worker):
                          ran_for=(float(said["ran_for"])
                                   if said.get("ran_for") is not None else None))
 
+    def install_trust(self, revocation_list: bytes, identity_tombstones: bytes, *,
+                      wait: float = QUICK_SECONDS) -> dict:
+        """Hand the worker the deployment's current CA-signed revocation and tombstone lists.
+
+        The worker verifies both against its own anchor and refuses older, equivocal or shrinking
+        lists (`worker/trust_install.py`). Returns what it now has installed; raises
+        `WorkerUnreachable` when it did not install them, with the worker's reason."""
+        said = self._ask("install_trust", {"revocation_list": revocation_list.decode("utf-8"),
+                                           "identity_tombstones": identity_tombstones.decode("utf-8")},
+                         wait=wait)
+        if not isinstance(said, dict):                        # pragma: no cover - refused first
+            raise WorkerUnreachable("the worker gave no account of the lists it installed")
+        return said
+
     def acknowledge(self, run_id: str) -> None:
         """Best effort. The worker's retention window does not depend on this arriving."""
         try:

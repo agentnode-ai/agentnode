@@ -88,7 +88,11 @@ NONCE_MEMORY_SECONDS = FRESHNESS_SECONDS * 4
 FIELDS = ("protocol", "request_id", "nonce", "method", "issued_at", "deadline", "params")
 
 METHODS = ("describe", "take_lease", "renew_lease", "run", "result", "stop", "gone",
-           "measure", "measure_egress")
+           "measure", "measure_egress",
+           # Target-router R3: the control plane hands a worker fresher CA-signed trust lists.
+           # Additive: a worker from before answers `unknown-method`, which its caller reports as
+           # a worker whose trust cannot be refreshed rather than as anything else.
+           "install_trust")
 
 #: Every way this can go wrong, named. A caller gets one of these and never a sentence to parse.
 #: `EM3C-EVIDENCE-0002`: the difference between "the answer is no" and "there was no answer" is
