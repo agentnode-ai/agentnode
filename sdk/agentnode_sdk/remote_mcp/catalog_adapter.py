@@ -371,7 +371,7 @@ class CatalogMCPAdapter:
             try:
                 resolution = self.router.resolve(ctx["account"], wish, entry)
             except TargetRefusal as refusal:
-                return self._target_refused(mid, base, refusal)
+                return self._target_refused(mid, base, refusal, grant)
             base.update(self._target_fields(resolution))
 
         nonce = self.nonce_for(ctx["account"], entry, arguments, resolution.binding if resolution else None)
@@ -414,7 +414,7 @@ class CatalogMCPAdapter:
             try:
                 self.router.preflight(resolution.target)
             except TargetRefusal as refusal:
-                return self._target_refused(mid, base, refusal)
+                return self._target_refused(mid, base, refusal, grant)
             worker = self.router.worker(resolution.target)
 
         self._barrier("before_admission")
@@ -509,8 +509,10 @@ class CatalogMCPAdapter:
             view["note"] = CUSTOMER_LABEL
         return view
 
-    def _target_refused(self, mid, base: dict, refusal: TargetRefusal) -> dict:
+    def _target_refused(self, mid, base: dict, refusal: TargetRefusal, grant=None) -> dict:
         fields = dict(base)
+        if grant is not None:                                  # it waited in the queue, then was judged
+            fields.update(queued_at=round(grant.queued_at, 3), granted_at=round(grant.granted_at, 3))
         if refusal.target_id:
             fields["target_id"] = refusal.target_id
         if refusal.selection_reason:

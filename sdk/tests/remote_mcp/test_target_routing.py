@@ -433,6 +433,25 @@ def test_queued_target_revocation_refuses(tmp_path):
     test_queued_changes_refuse_before_dispatch(s, "target_revoked", "target_revoked_while_queued")
 
 
+def test_target_revoked_during_the_wait_is_refused_with_its_queue_times(st):
+    """Measured on the two-host stand: the queue is in FRONT of resolution, so a call that waited
+    while its target was revoked resolves after the grant and is refused there -- and the audit must
+    still show that it waited."""
+    from types import SimpleNamespace
+    alice, ta = st.account("alice")
+    st.customer("cust-a", alice)
+    st.approve(hash_of(_call(st, ta, REGEX, REGEX_ARGS, wish="cust-a")), CAP_REGEX)
+    st.register.set_status("cust-a", T.REVOKED, actor="t")              # revoked while it waited
+    grant = SimpleNamespace(queued_at=100.0, granted_at=103.5, target_id="cust-a")
+    msg = {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+           "params": {"name": REGEX, "arguments": REGEX_ARGS, "_meta": {TARGET_META_KEY: "cust-a"}}}
+    out = st.adapter.handle_for(SimpleNamespace(principal_id=alice, token_id="tok-x"), msg, grant=grant)
+    assert out["result"]["structuredContent"] == {"status": "refused", "code": "target_revoked"}
+    refused = [b for b in _bodies(st) if b.get("decision") == "refused"][-1]
+    assert (refused["queued_at"], refused["granted_at"], refused["target_id"]) == (100.0, 103.5, "cust-a")
+    assert st.w("cust-a").starts == 0 and not any((st.stand / "consumed").iterdir())
+
+
 def test_queued_kill_switch_refuses(tmp_path):
     s = TargetStand(tmp_path)
     s.publish_starters()
