@@ -420,6 +420,44 @@ def test_a_cancellation_after_the_dispatch_intent_keeps_the_run_and_its_slots(st
     assert [t["decision"] for t in terms] == ["ran"] and w.starts == 1
 
 
+# 34 -- the approval store fails, and the terminal audit cannot be written, on a customer target
+def test_an_approval_store_failure_starts_nothing_and_ends_once(st, monkeypatch):
+    alice, ta = st.account("alice")
+    st.customer("cust-a", alice)
+    st.approve(hash_of(_call(st, ta, REGEX, REGEX_ARGS, wish="cust-a")), CAP_REGEX)
+    store = st.adapter.client.approval_store
+
+    def broken(approval_id):
+        raise OSError("consumed/ is read-only")
+    monkeypatch.setattr(store, "_mark_consumed_durably", broken)
+    out = _call(st, ta, REGEX, REGEX_ARGS, wish="cust-a")
+    assert out["result"]["isError"] is True and st.w("cust-a").starts == 0
+    terms = [b for b in _bodies(st) if b.get("kind") == "catalog_terminal"]
+    assert len(terms) == 1 and terms[0]["decision"] == "error"
+
+
+def test_an_unwritable_terminal_is_kept_and_recorded_once(st, monkeypatch):
+    alice, ta = st.account("alice")
+    st.customer("cust-a", alice)
+    st.approve(hash_of(_call(st, ta, REGEX, REGEX_ARGS, wish="cust-a")), CAP_REGEX)
+    real = st.adapter.ledger._write_entry
+
+    def failing(body):
+        if body.get("kind") == "catalog_terminal":
+            raise OSError("disk full")
+        return real(body)
+    monkeypatch.setattr(st.adapter.ledger, "_write_entry", failing)
+    out = _call(st, ta, REGEX, REGEX_ARGS, wish="cust-a")
+    assert out["result"]["isError"] is False and st.w("cust-a").starts == 1    # the run happened
+    assert len(list(st.adapter.ledger.recovery.glob("*.json"))) == 1
+    monkeypatch.setattr(st.adapter.ledger, "_write_entry", real)
+    rpc(st.app, ta, "tools/list")                                  # the next append re-ingests it
+    terms = [b for b in _bodies(st) if b.get("kind") == "catalog_terminal"]
+    assert len(terms) == 1 and terms[0]["decision"] == "ran" and terms[0]["target_id"] == "cust-a"
+    # and a restart never settles that dispatch a second time
+    assert _restarted(st).settle_earlier_dispatches() == []
+
+
 # 41 -- a retry after a transport loss asking for another target
 def test_a_retry_after_a_loss_cannot_move_to_another_target(st):
     alice, ta = st.account("alice")
