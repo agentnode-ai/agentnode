@@ -484,9 +484,12 @@ def test_catalog_terminal_exactly_once(st):
     assert sorted(b["dispatch_id"] for b in admitted) == sorted(b["dispatch_id"] for b in terms)
 
 
-def test_worker_deduplicates_dispatch_id(tmp_path):
+def test_worker_deduplicates_dispatch_id(tmp_path, monkeypatch):
     """The REAL worker journal: the catalog's stable dispatch id builds the same job twice, so a
-    repeated start is recognised as THIS run and never started again."""
+    repeated start is recognised as THIS run and never started again -- also when the second build
+    happens later (found on the two-host stand: the gzip header carried the build second)."""
+    import time as _time
+
     from agentnode_sdk.capability import tree_execution as TE
     from agentnode_sdk.worker import Limits as WL
     from agentnode_sdk.worker.journal import DONE, Journal, digest_of_job
@@ -499,8 +502,12 @@ def test_worker_deduplicates_dispatch_id(tmp_path):
     tar = s.adapter.client.index.get_blob(pkg["sha256"])
     lim = WL(memory_mb=1024, wall_clock_s=120, storage_mb=512)
     jobs = [TE._build_job(inv, tar, interpreter=pkg["interpreter"], entry=pkg["entry"],
-                          expected_tree_digest=pkg["tree_digest"], limits=lim, run_id="cap-" + "d" * 32)
-            for _ in range(2)]
+                          expected_tree_digest=pkg["tree_digest"], limits=lim, run_id="cap-" + "d" * 32)]
+    later = _time.time() + 3600
+    monkeypatch.setattr(_time, "time", lambda: later)           # the second build, an hour later
+    jobs.append(TE._build_job(inv, tar, interpreter=pkg["interpreter"], entry=pkg["entry"],
+                              expected_tree_digest=pkg["tree_digest"], limits=lim, run_id="cap-" + "d" * 32))
+    monkeypatch.undo()
     assert jobs[0].run_id == jobs[1].run_id and jobs[0].container_name == jobs[1].container_name
     assert digest_of_job(jobs[0]) == digest_of_job(jobs[1])
     j = Journal(str(tmp_path / "journal"))

@@ -71,7 +71,9 @@ def build_tree_run_program(tar_bytes: bytes, *, interpreter: str, entry: str,
         + "\n\n# --- embedded tree_pack ---\n"
         + _module_source_without_main(tree_pack.__file__)
     )
-    gz = gzip.compress(tar_bytes, 9)
+    # mtime=0: the same tree makes the same program at any time, so a named run is the same job when it
+    # is built again (target-router R2; the gzip header would otherwise carry the current second)
+    gz = gzip.compress(tar_bytes, 9, mtime=0)
     tail = (
         "\n\n# --- per-run capability driver (model 2, in-sandbox, multi-file tree) ---\n"
         "import base64 as _b64, gzip as _gz, tempfile as _tmp, os as _os, sys as _sys, json as _json\n"
