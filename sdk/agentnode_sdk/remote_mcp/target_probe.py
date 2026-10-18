@@ -40,7 +40,9 @@ JOB_STORAGE_MB = 512
 WALL_PROBE_S = 8
 BOUNDS = ("observations of the tested destinations, limits and configuration at the measured time only; "
           "not proof of hardware, kernel, runtime or isolation backend, nor of network isolation for "
-          "destinations that were not tested")
+          "destinations that were not tested; the egress positive control proves the canary listens on "
+          "the control plane, and that the worker host's own network could reach it is a separate "
+          "operator measurement")
 
 
 class Canary:

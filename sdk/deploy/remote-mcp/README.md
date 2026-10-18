@@ -83,7 +83,9 @@ register refuses every run with 503.
   - `operator_managed_measured` covers the operator's own worker, valid 7 days.
   - `customer_controlled_observed` covers a customer's host, valid 24 hours: behaviour the control
     plane observed, not proof of a kernel, runtime, isolation backend or of network isolation
-    beyond the tested destinations.
+    beyond the tested destinations. The canary's positive control runs on the control plane, so
+    the operator separately checks that the worker host's network can reach the canary address;
+    otherwise "not seen" means nothing.
   - A catalog entry runs only on the assurance classes it accepts (`catalog_cli set-assurance`).
 * **Lifecycle.** The states are `invite → enroll → probe → active ↔ suspended`, and finally
   `revoke` or expiry. Every operation is journaled before its first side effect and resumable
