@@ -5,7 +5,9 @@ security check is explicit and self-contained rather than relying on framework d
 enforces, in order: exact Host allowlist, Origin / DNS-rebinding, HTTP method, content-type /
 Accept, body-size, then bearer authentication through the ONE shared verifier, then protocol
 version negotiation, rate / concurrency / runtime limits; and ONLY for ``tools/list`` /
-``tools/call`` it delegates to the UNCHANGED :class:`UsabilityMCPAdapter.handle`, so the
+``tools/call`` it delegates to the adapter: in production the per-account catalog adapter
+(``account_aware``, given the authenticated principal through ``handle_for``), in the local
+stand the UNCHANGED :class:`UsabilityMCPAdapter.handle`. Either way the
 ``prepare -> approve -> submit`` contract stays byte-frozen. A transport token never
 substitutes the operator-signed single-use human approval: an authenticated ``tools/call``
 with no deposited approval flows the adapter's ``approval_required`` straight back. There is

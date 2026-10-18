@@ -1,8 +1,10 @@
 """Assemble the remote MCP ASGI app from a persisted stand, bound to loopback (R11, R17).
 
-Reuses ``usability_adapter.build_from_stand`` to get the REAL UsabilityMCPAdapter (real index,
-operator-key-less approval store, real worker, signed audit) and places the thin transport +
-OAuth AS in front of it. TLS and public Host/Origin enforcement are nginx's at deploy; this
+Production (:func:`build_production_app`) serves the per-account capability catalog
+(:func:`build_catalog_adapter`) over the remote mTLS worker. The local/test stand
+(:func:`build_app`) reuses ``usability_adapter.build_from_stand`` to get the REAL
+UsabilityMCPAdapter (real index, operator-key-less approval store, real worker, signed audit).
+Both place the thin transport + OAuth AS in front of the adapter. TLS and public Host/Origin enforcement are nginx's at deploy; this
 app binds to 127.0.0.1 / a unix socket and additionally enforces Host/Origin itself.
 
 Stand-only login shim: on the restricted VPN test stand there is no browser login UI, so
