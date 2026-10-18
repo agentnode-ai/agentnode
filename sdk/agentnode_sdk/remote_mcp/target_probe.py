@@ -180,9 +180,14 @@ def probe(target: T.Target, worker, canary: Canary, *, now: float | None = None)
     wall = _said(out)
     results["wall_clock"] = {"killed": wall is None, "elapsed_s": round(elapsed, 2),
                              "within_bound": elapsed < WALL_PROBE_S * 4}
-    identity = worker.who_ran(prefix + "-egress")[1] if hasattr(worker, "who_ran") else ""
+    # EVERY probe run must have been carried by the target's own proved identity, not only the first:
+    # an observation stitched together from runs on different workers observes nothing
+    runs = [prefix + s for s in ("-egress", "-memory-control", "-wall-control", "-memory", "-wall")]
+    proved = {r: (worker.who_ran(r)[1] if hasattr(worker, "who_ran") else "") for r in runs}
+    identity = proved[prefix + "-egress"]
     results["identity"] = {"proved_uri": identity, "expected_uri": target.identity_uri,
-                           "matches": identity == target.identity_uri}
+                           "every_run_proved": sorted(set(proved.values())),
+                           "matches": all(v == target.identity_uri for v in proved.values())}
     try:
         platform = {"runtime_version": str(worker.runtime_version()), "image_digest": str(worker.image_digest())}
     except Exception:                                          # noqa: BLE001 - reported facts are optional

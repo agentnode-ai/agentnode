@@ -299,6 +299,9 @@ def build_production_app(stand: str, *, resource: str, issuer: str,
 
     gl = GatewayLogin(gateway_dir)
     adapter = _build_catalog_adapter(stand, gateway_dir, authority=gl.authority_error)
+    # before the first request: settle what an earlier process admitted but never ended. If the
+    # register cannot be read now, the settlement stays pending and runs before the next target run.
+    adapter.settle_earlier_dispatches()
     store = _load_store(stand)
     rc = ResourceConfig(resource=resource, authorization_server=issuer)
     authz = AuthorizationServer(issuer=issuer, resource=resource, token_store=store,

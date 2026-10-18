@@ -19,6 +19,7 @@ URI, endpoint, properties, assurance and the generation those facts last changed
 """
 from __future__ import annotations
 
+import ssl
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -170,7 +171,12 @@ class TargetRouter:
     def preflight(self, target: T.Target, *, budget: float = 5.0) -> None:
         """A fresh connection to the target: handshake and identity, nothing sent. Classifies a
         failure into offline / identity mismatch / trust unavailable -- never one for another."""
-        worker = self.worker(target)
+        try:
+            worker = self.worker(target)
+        except Exception as exc:                               # noqa: BLE001 - this side's material for it
+            # building the connection reads THIS side's trust material for the target (pair key,
+            # anchor, list, floor): unreadable or unusable is trust unavailable, never "offline"
+            raise TargetRefusal("target_trust_unavailable", target_id=target.target_id) from exc
         try:
             worker.confirm_reachable(budget)
         except Exception as exc:                               # noqa: BLE001 - classified below
@@ -188,6 +194,10 @@ def classify(exc: BaseException) -> str:
         check = getattr(seen, "check", None)
         if isinstance(check, str):
             return "target_identity_mismatch" if check in IDENTITY_CHECKS else "target_trust_unavailable"
+        if isinstance(seen, ssl.SSLCertVerificationError):
+            # a peer answered with a certificate that does not chain to this deployment's anchor:
+            # somebody is there, and it is not the target -- never "offline"
+            return "target_identity_mismatch"
         if type(seen).__name__ in ("TrustRefused", "ListUnusable", "FloorUnusable", "KeyringRefused"):
             return "target_trust_unavailable"
         if "no-common-protocol" in str(seen) or "no tested wire version" in str(seen):

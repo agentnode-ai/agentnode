@@ -29,6 +29,7 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import time
 from typing import Any, Callable
 
@@ -38,6 +39,7 @@ from agentnode_sdk.remote_mcp.catalog import (META_TOOLS, Catalog, Entry, RunNot
                                               canonical)
 from agentnode_sdk.remote_mcp.catalog_audit import CatalogLedger, digest_of
 from agentnode_sdk.remote_mcp.target_router import TARGET_META_KEY, TargetRefusal
+from agentnode_sdk.remote_mcp.targets import TargetsUnavailable
 
 PAGE_SIZE = 50
 CURSOR_VERSION = 1
@@ -103,6 +105,10 @@ class CatalogMCPAdapter:
         self.kill_switch = kill_switch
         self.reconcile_wait = reconcile_wait
         self._indeterminate_dir = os.path.join(stand, "targets", "indeterminate")
+        # what THIS process admitted is in flight, not abandoned: only earlier admissions are settled
+        self._started_at = time.time()
+        self._settlement_pending = router is not None
+        self._settlement_lock = threading.Lock()
 
     # ------------------------------------------------------------------ transport surface
     def handle(self, msg):  # pragma: no cover - the transport never calls it for this adapter
@@ -368,6 +374,8 @@ class CatalogMCPAdapter:
         # ---- WHERE (target-router): one resolver, a wish is only a wish, no fallback
         resolution = None
         if self.router is not None:
+            if self._settlement_pending:
+                self.settle_earlier_dispatches()               # still unreadable: resolve() refuses (503)
             try:
                 resolution = self.router.resolve(ctx["account"], wish, entry)
             except TargetRefusal as refusal:
@@ -393,7 +401,7 @@ class CatalogMCPAdapter:
             return _refusal_result(mid, "dispatch_indeterminate")
         store = self.client.approval_store
         store.load_dir(self.approvals_dir)
-        approval_id = store.find_unconsumed_for(inv.invocation_hash)
+        approval_id = _unspent_approval(store, inv.invocation_hash)
         if approval_id is None:
             req = self.client.approval_required(inv).to_dict()
             req["next_step"] = APPROVAL_COMMAND.format(stand=self.stand, invocation_hash=inv.invocation_hash,
@@ -589,10 +597,95 @@ class CatalogMCPAdapter:
                                     admitted_generation=admitted_gen, dispatch_id=dispatch_id, **base)
         return _refusal_result(mid, "dispatch_indeterminate", "refused: dispatch_indeterminate (reconciliation required)")
 
+    def settle_earlier_dispatches(self) -> list[dict[str, Any]] | None:
+        """Run `recover_after_restart` once per process; if the register cannot be read yet, stay
+        pending (every target run is refused meanwhile) and try again before the next target run."""
+        if not self._settlement_pending:
+            return []
+        with self._settlement_lock:
+            if not self._settlement_pending:
+                return []
+            try:
+                settled = self.recover_after_restart()
+            except TargetsUnavailable:
+                return None
+            self._settlement_pending = False
+            return settled
+
+    def recover_after_restart(self) -> list[dict[str, Any]]:
+        """After a control-plane restart (target-router R2, Codex D8 "recovery from a crash between
+        steps is by dispatch_id"): every dispatch that an EARLIER process admitted and never ended is
+        settled from ITS target's journal by its dispatch id -- never resent, never sent elsewhere.
+
+        * the worker never ran it: `not_started`; its approval is spent here if the crash came before
+          the approval was, so the same dispatch id can never be admitted (and terminated) twice;
+        * the worker has its outcome: `ran`, reconciliation `outcome_recovered`;
+        * anything else (no answer, still running, unknown): `indeterminate`, and the invocation is
+          blocked until `targets_cli reconcile-dispatch` settles it.
+        A dispatch admitted by THIS process (intent after its start) is in flight and is not touched."""
+        if self.router is None:
+            return []
+        rows = [e["body"] for e in self.ledger._entries()]
+        if self.ledger.recovery.is_dir():                      # terminals waiting to be re-ingested count
+            rows += [json.loads(p.read_text(encoding="utf-8")) for p in sorted(self.ledger.recovery.glob("*.json"))]
+        ended = {b.get("dispatch_id") for b in rows if b.get("kind") == "catalog_terminal" and b.get("dispatch_id")}
+        open_ = [b for b in rows if b.get("decision") == "admitted" and b.get("dispatch_id")
+                 and b["dispatch_id"] not in ended and float(b.get("intent_at") or 0) < self._started_at]
+        settled = []
+        store = self.client.approval_store
+        store.load_dir(self.approvals_dir)
+        snap = self.router.register.load()
+        for b in open_:
+            d, h = b["dispatch_id"], b["invocation_hash"]
+            base = {k: b[k] for k in b if k not in ("kind", "recorded_at", "decision", "admitted_generation",
+                                                    "dispatch_id", "intent_at", "queued_at", "granted_at",
+                                                    "recovered")}
+            target = snap.target(b.get("target_id", ""))
+            known, detail = None, "target_unknown"
+            if target is not None:
+                try:
+                    known, detail = self.router.worker(target).result(d, wait=self.reconcile_wait), ""
+                except Exception as exc:                       # noqa: BLE001 - not answered: indeterminate
+                    detail = type(exc).__name__
+            common = dict(reason="control_restart", admitted_generation=b.get("admitted_generation"),
+                          dispatch_id=d, **base)
+            if known is not None and known.known and known.never_ran:
+                for aid in [a for a, ap in store._issued.items() if ap.invocation_hash == h]:
+                    if "cap-" + hashlib.sha256((h + "|" + aid).encode("ascii")).hexdigest()[:32] == d \
+                            and not store._already_consumed_durably(aid):
+                        store._mark_consumed_durably(aid)     # this dispatch id is never admitted again
+                self.ledger.record_terminal("catalog_terminal", key=h, decision="not_started",
+                                            reconciliation="never_ran", **common)
+                settled.append({"dispatch_id": d, "decision": "not_started"})
+            elif known is not None and known.known and known.outcome is not None:
+                outcome = known.outcome if isinstance(known.outcome, dict) else {}
+                self.ledger.record_terminal("catalog_terminal", key=h, decision="ran",
+                                            reconciliation="outcome_recovered", outcome_digest=digest_of(outcome),
+                                            **common)
+                settled.append({"dispatch_id": d, "decision": "ran"})
+            else:
+                self._mark_indeterminate(h, {"dispatch_id": d, "target_id": b.get("target_id"),
+                                             "at": round(time.time(), 3)})
+                self.ledger.record_terminal("catalog_terminal", key=h, decision="indeterminate",
+                                            reconciliation=detail or "unknown", **common)
+                settled.append({"dispatch_id": d, "decision": "indeterminate"})
+        return settled
+
     def _tool_error(self, ctx, mid, tool, reason, text, **extra) -> dict:
         self.ledger.append("catalog_decision", request="tools/call", tool=_safe(tool), decision="refused",
                            reason=reason, **extra, **ctx)
         return _tool_error_result(mid, text)
+
+
+def _unspent_approval(store, invocation_hash: str) -> str | None:
+    """An approval for this invocation that is not spent -- on DISK as well: one spent before this
+    process started is not offered again (a replay after a restart would otherwise be admitted under
+    the dispatch id of the run that spent it, and give that dispatch a second terminal)."""
+    while True:
+        aid = store.find_unconsumed_for(invocation_hash)
+        if aid is None or not store._already_consumed_durably(aid):
+            return aid
+        store._consumed.add(aid)
 
 
 def _transport_lost(exc: BaseException) -> bool:

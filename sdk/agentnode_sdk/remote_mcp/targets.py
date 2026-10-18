@@ -296,6 +296,7 @@ def validate_document(doc: Any) -> list[str]:
         uris.add(uri)
     used_ids, used_uris = doc["used_target_ids"], doc["used_identity_uris"]
     if not isinstance(used_ids, list) or not isinstance(used_uris, list) \
+            or not all(isinstance(x, str) for x in used_ids + used_uris) \
             or used_ids != sorted(set(used_ids)) or used_uris != sorted(set(used_uris)):
         errs.append("used sets must be sorted lists without duplicates")
     else:
@@ -305,7 +306,7 @@ def validate_document(doc: Any) -> list[str]:
             errs.append("an identity URI is missing from the permanent URI set")
     d = doc["default_target"]
     managed = [t for t, e in targets.items() if isinstance(e, dict) and e.get("type") == MANAGED]
-    if d not in targets or targets[d].get("type") != MANAGED:
+    if not isinstance(d, str) or d not in targets or targets[d].get("type") != MANAGED:
         errs.append("default_target must name exactly one managed target")
     if not managed:
         errs.append("the register needs a managed target")
@@ -316,7 +317,7 @@ def validate_document(doc: Any) -> list[str]:
         for acct, tid in defaults.items():
             if not A.well_formed(acct):
                 errs.append(f"invalid account {acct!r}")
-            t = targets.get(tid)
+            t = targets.get(tid) if isinstance(tid, str) else None
             if t is None or not (t.get("type") == MANAGED or t.get("owner_account") == acct):
                 errs.append(f"account {acct!r} defaults to a target it may not see")
     s = doc["signature"]

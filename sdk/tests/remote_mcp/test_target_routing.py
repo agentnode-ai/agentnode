@@ -239,7 +239,7 @@ def test_inactive_and_revoked_targets_refuse(st, status, code):
     st.customer("cust-a", alice)
     st.register.set_status("cust-a", status, actor="t")
     out = _call(st, ta, REGEX, REGEX_ARGS, wish="cust-a")
-    assert _sc(out)["code"] == (code if status != T.REVOKED else "target_unknown") or _sc(out)["code"] == code
+    assert _sc(out) == {"status": "refused", "code": code}                 # exactly this code, nothing else
     assert st.w("cust-a").starts == 0 and st.w("managed-w1").starts == 0
 
 

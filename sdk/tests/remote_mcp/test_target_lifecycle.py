@@ -207,6 +207,60 @@ def test_a_worker_without_limits_is_never_activated(env):
     assert "memory" in failed.value.detail and "wall_clock" in failed.value.detail
 
 
+def test_a_probe_stitched_from_another_worker_is_not_an_observation(env):
+    """Mandatory negative 23 (fabricated probe response): every probe run must have been carried by
+    the target's own proved identity -- one honest run does not vouch for the others."""
+    tid = _provision(env)
+    w = env["workers"][tid]
+    w.who_ran = lambda run_id: ("mtls", w.uri if run_id.endswith("-egress") else "agentnode://alpha/worker/other", "")
+    with pytest.raises(OperationFailed) as failed:
+        env["ops"].probe(tid)
+    assert "identity" in failed.value.detail
+    assert env["reg"].load().target(tid).status != T.ACTIVE
+
+
+def test_a_worker_that_fabricates_killed_for_everything_is_never_activated(env):
+    """Mandatory negative 23: answering "killed" to every limit job is not a limit -- the within-limit
+    controls must run to the end, or nothing about the limit was observed."""
+    tid = _provision(env)
+    w = env["workers"][tid]
+    real = w.run
+
+    def always_killed(job):
+        prog = job.artifact.decode("utf-8")
+        if "bytearray" in prog or "_t.sleep" in prog:
+            w.ran.append(job.run_id)
+            return Outcome(exit_code=137, stdout="", stderr="killed")
+        return real(job)
+    w.run = always_killed
+    with pytest.raises(OperationFailed) as failed:
+        env["ops"].probe(tid)
+    assert "memory" in failed.value.detail and "wall_clock" in failed.value.detail
+
+
+def test_a_reused_invitation_enrols_nothing(env):
+    """Mandatory negative 5 (reused invitation): the enrolment secret is single-use. The SAME request
+    again only re-delivers the certificate already committed (a delivery that was lost); the secret
+    with ANY OTHER key -- somebody else using the invitation -- is refused and issues nothing."""
+    from agentnode_sdk.pki.issuer import IssuanceRefused
+    op = env["ops"].invite(ALICE, address="tcps://10.0.0.2:8444")
+    tid = op["target_id"]
+    secret = (env["tmp"] / "bundles" / tid / "enrolment-secret").read_text()
+    req = _worker_side(env, tid)
+    env["ops"].enroll(tid, req)
+    cert = (env["tmp"] / "bundles" / tid / "cert.pem").read_bytes()
+    env["ops"].enroll(tid, req)                                  # the same key: the same certificate
+    assert (env["tmp"] / "bundles" / tid / "cert.pem").read_bytes() == cert
+    other = env["tmp"] / "somebody-else"
+    other.mkdir()
+    with pytest.raises((IssuanceRefused, OperationFailed)) as refused:
+        env["ops"].enroll(tid, make_request(other, secret))
+    assert "already been used" in str(refused.value)
+    assert (env["tmp"] / "bundles" / tid / "cert.pem").read_bytes() == cert
+    serials = [c["serial"] for c in env["world"].issuer.inventory()["entries"]["worker/" + env["reg"].load().target(tid).worker["instance"]]["certificates"]]
+    assert len(serials) == 1                                     # one identity, one certificate
+
+
 def test_canary_positive_control_is_real():
     c = P.Canary("127.0.0.1")
     try:
