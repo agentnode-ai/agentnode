@@ -372,6 +372,54 @@ def test_a_conflicting_payload_under_a_dispatch_id_is_refused_by_the_journal(tmp
     assert "different work" in str(refused.value)
 
 
+# 31 -- the client goes away AFTER the dispatch intent: the run is not abandoned half-way
+def test_a_cancellation_after_the_dispatch_intent_keeps_the_run_and_its_slots(st):
+    import asyncio
+
+    import httpx
+
+    from .catalog_fixtures import HOST, META
+    alice, ta = st.account("alice")
+    st.customer("cust-a", alice)
+    st.approve(hash_of(_call(st, ta, REGEX, REGEX_ARGS, wish="cust-a")), CAP_REGEX)
+    w = st.w("cust-a")
+    w.gate = threading.Event()                                     # the job blocks inside the worker
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": REGEX, "arguments": REGEX_ARGS, "_meta": {**META, TARGET_META_KEY: "cust-a"}}}
+    headers = {"content-type": "application/json", "accept": "application/json, text/event-stream",
+               "authorization": "Bearer %s" % ta, "mcp-protocol-version": "2026-07-28",
+               "mcp-method": "tools/call", "mcp-name": REGEX}
+    seen = {}
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=st.app), base_url="http://%s" % HOST) as c:
+            req = asyncio.ensure_future(c.post("/mcp", headers=headers, content=json.dumps(body)))
+            while not w.started.is_set():
+                await asyncio.sleep(0.02)
+            seen["running_while_started"] = st.app._scheduler.running("cust-a")
+            req.cancel()                                           # the client is gone
+            try:
+                await req
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - whatever the client side raises
+                pass
+            await asyncio.sleep(0.2)
+            seen["running_after_cancel"] = st.app._scheduler.running("cust-a")   # still held: it runs
+            w.gate.set()
+            for _ in range(200):
+                if st.app._scheduler.running("cust-a") == 0:
+                    break
+                await asyncio.sleep(0.05)
+            seen["running_after_end"] = st.app._scheduler.running("cust-a")
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(go())
+    finally:
+        loop.close()
+    assert seen == {"running_while_started": 1, "running_after_cancel": 1, "running_after_end": 0}
+    terms = [b for b in _bodies(st) if b.get("kind") == "catalog_terminal"]
+    assert [t["decision"] for t in terms] == ["ran"] and w.starts == 1
+
+
 # 41 -- a retry after a transport loss asking for another target
 def test_a_retry_after_a_loss_cannot_move_to_another_target(st):
     alice, ta = st.account("alice")
