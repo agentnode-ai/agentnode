@@ -32,7 +32,7 @@ def attestation(t_type: str, w: dict, *, now: float | None = None, seconds: floa
             "expires_at": now - 1 + seconds, "identity_uri": w["identity_uri"],
             "endpoint_digest": T.endpoint_digest(w),
             "properties": properties or {"network_none_observed": True, "memory_ceiling_mb": 1024,
-                                         "wall_clock_s": 120, "storage_mb": 512},
+                                         "wall_clock_enforced": True, "storage_mb": 512},
             "results": {"egress": "no connection observed", "memory": "killed", "wall_clock": "killed"},
             "challenge_nonces": ["n-%d" % int(now)]}
     body["record_digest"] = T.digest({k: body[k] for k in sorted(body)})

@@ -241,7 +241,7 @@ def test_self_report_never_authorizes(st):
     t = st.register.load().target("cust-a")
     from .target_fixtures import attestation
     bad = attestation(T.CUSTOMER, t.worker, properties={"network_none_observed": False, "memory_ceiling_mb": 1024,
-                                                        "wall_clock_s": 120, "storage_mb": 512})
+                                                        "wall_clock_enforced": True, "storage_mb": 512})
     st.register.set_attestation("cust-a", bad, actor="t")
     st.ack("cust-a")
     # the worker's own describe still says it can isolate -- and that decides nothing

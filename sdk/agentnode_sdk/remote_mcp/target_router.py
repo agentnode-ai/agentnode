@@ -92,10 +92,12 @@ def _eligible(target: T.Target, entry, now: float, acks: dict, list_number: int 
     failed = []
     if req["network"] == "none" and props.get("network_none_observed") is not True:
         failed.append("network")
-    for key, prop in (("memory_mb", "memory_ceiling_mb"), ("wall_clock_s", "wall_clock_s"), ("storage_mb", "storage_mb")):
+    for key, prop in (("memory_mb", "memory_ceiling_mb"), ("storage_mb", "storage_mb")):
         have = props.get(prop)
-        if not isinstance(have, (int, float)) or have < req[key]:
+        if not isinstance(have, (int, float)) or isinstance(have, bool) or have < req[key]:
             failed.append(key)
+    if props.get("wall_clock_enforced") is not True:      # observed to cut a job off, not a claimed duration
+        failed.append("wall_clock_s")
     if failed:
         raise TargetRefusal("target_unsuitable", ",".join(failed))
     if not T.trust_current(acks.get(target.target_id), now=now, deployment_list_number=list_number):

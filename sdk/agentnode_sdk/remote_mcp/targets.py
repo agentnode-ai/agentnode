@@ -367,6 +367,15 @@ def _signed_bytes(doc: dict[str, Any], domain: bytes = _DOMAIN) -> bytes:
 BINDING_FIELDS = ("worker", "endpoint_digest", "attestation", "status")
 
 
+def _binding_view(entry: dict, key: str):
+    """What of `entry[key]` binds approvals. The pair-key slot does not: a key rotation under the
+    same identity URI needs no new approval (Codex D2 amendment 3), unlike a new URI or endpoint."""
+    value = entry.get(key)
+    if key == "worker" and isinstance(value, dict):
+        return {k: v for k, v in value.items() if k != "key_slot"}
+    return value
+
+
 # ---------------------------------------------------------------------- the register
 
 class Register:
@@ -546,7 +555,7 @@ class Register:
                 before = old["targets"].get(tid)
                 if before is None:
                     e["facts_generation"] = doc["generation"]
-                elif any(e.get(k) != before.get(k) for k in BINDING_FIELDS):
+                elif any(_binding_view(e, k) != _binding_view(before, k) for k in BINDING_FIELDS):
                     e["facts_generation"] = doc["generation"]
             doc["used_target_ids"] = sorted(set(old["used_target_ids"]) | set(doc["targets"]))
             doc["used_identity_uris"] = sorted(set(old["used_identity_uris"])
