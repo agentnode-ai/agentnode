@@ -201,8 +201,8 @@ class CatalogMCPAdapter:
             target = arguments["tool"]
             if target in META_TOOLS:
                 return self._tool_error(ctx, mid, target, "meta_recursion", "meta-tools cannot be run")
-            return self._execute(ctx, mid, target, arguments.get("arguments", {}), via="meta")
-        return self._execute(ctx, mid, name, arguments, via="direct")
+            return self._execute(ctx, mid, target, arguments.get("arguments", {}), route="meta")
+        return self._execute(ctx, mid, name, arguments, route="direct")
 
     def _projection(self, entry: Entry) -> dict[str, Any]:
         man = self.client.index.resolve(entry.capability_id, entry.version).manifest
@@ -265,23 +265,23 @@ class CatalogMCPAdapter:
             "artifact_digest": entry.artifact_digest, "tree_digest": entry.tree_digest,
             "export": entry.export, "arguments": arguments})).hexdigest()
 
-    def _execute(self, ctx, mid, name, arguments, *, via: str) -> dict:
+    def _execute(self, ctx, mid, name, arguments, *, route: str) -> dict:
         """The ONE execution path for direct calls and ``agentnode_run``."""
         snap: Snapshot = self.catalog.load()
         entry = snap.resolve(ctx["account"], name) if isinstance(name, str) else None
-        base = {"request": "tools/call", "via": via, "tool": _safe(name), "generation": snap.generation, **ctx}
+        base = {"request": "tools/call", "route": route, "tool": _safe(name), "generation": snap.generation, **ctx}
         if entry is None:
             # unknown, unpublished and inactive names look identical (no catalog probing)
             self.ledger.append("catalog_decision", decision="refused", reason="unknown_tool", **base)
             return _rpc_error(mid, -32602, "unknown tool")
         if not isinstance(arguments, dict):
             return self._tool_error(ctx, mid, entry.tool, "bad_arguments", "arguments must be an object",
-                                    via=via, generation=snap.generation)
+                                    route=route, generation=snap.generation)
         try:
             canonical(arguments)                     # NaN / Infinity / non-JSON refused
         except (TypeError, ValueError):
             return self._tool_error(ctx, mid, entry.tool, "bad_arguments", "arguments must be finite JSON",
-                                    via=via, generation=snap.generation)
+                                    route=route, generation=snap.generation)
         base.update(binding=entry.to_dict(), arguments=digest_of(arguments))
         nonce = self.nonce_for(ctx["account"], entry, arguments)
         try:
