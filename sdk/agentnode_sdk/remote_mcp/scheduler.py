@@ -106,19 +106,30 @@ class Scheduler:
         if target_id not in self._order:
             self._order.append(target_id)
         self._accounts[account] = self._accounts.get(account, 0) + 1     # a queued call is in flight
+        # The wait bound is OUR timer, and the waiter awaits its own future directly -- not
+        # wait_for(shield(...)): on Python 3.10/3.11, wait_for can return the result of a future that
+        # completed while its caller was being cancelled, and a grant handed to a caller that is gone
+        # holds its slots for good (found in CI). Awaited directly, a cancellation always arrives
+        # here as CancelledError, and a grant that had arrived is given back.
+        expired: list[bool] = []
+
+        def expire() -> None:
+            if not fut.done():
+                expired.append(True)
+                self._withdraw(waiter)                                    # cancels the future
+        timer = asyncio.get_running_loop().call_later(self.max_wait, expire)
         try:
-            await asyncio.wait_for(asyncio.shield(fut), timeout=self.max_wait)
-        except asyncio.TimeoutError:
-            if fut.done() and not fut.cancelled():
-                return fut.result()                                       # granted at the last moment
-            self._withdraw(waiter)
-            raise SchedulerRefused("queue_wait_exceeded", self.max_wait) from None
+            await fut
         except BaseException:
             if fut.done() and not fut.cancelled():
                 fut.result().release()                                    # granted, then cancelled: give back
             else:
                 self._withdraw(waiter)
+            if expired:
+                raise SchedulerRefused("queue_wait_exceeded", self.max_wait) from None
             raise
+        finally:
+            timer.cancel()
         return fut.result()
 
     # ------------------------------------------------------------ internals (event loop only)
