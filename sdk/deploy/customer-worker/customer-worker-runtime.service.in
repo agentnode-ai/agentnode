@@ -1,0 +1,18 @@
+[Unit]
+Description=AgentNode customer worker @UNIT@ rootless runtime namespace
+After=network-online.target
+Before=@UNIT@.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=@USER@
+Group=@USER@
+EnvironmentFile=/etc/agentnode/@UNIT@.env
+WorkingDirectory=@HOME@
+NoNewPrivileges=no
+ExecStart=/bin/sh -c '/usr/bin/podman system migrate || true'
+ExecStart=/bin/sh -c 'IMG=$$(/opt/agentnode/venv/bin/python3 -c "from agentnode_sdk.sandbox.container_backend import _BASE_IMAGE; print(_BASE_IMAGE)") && (/usr/bin/podman image exists "$$IMG" || /usr/bin/podman pull --quiet "$$IMG") && /usr/bin/podman run --rm --network none --user 1000:1000 "$$IMG" /bin/true || true'
+
+[Install]
+WantedBy=multi-user.target

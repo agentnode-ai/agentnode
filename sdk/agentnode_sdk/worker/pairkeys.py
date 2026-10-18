@@ -251,6 +251,13 @@ class Keyring:
                                            generation=was.generation, current=was.current)
         return Keyring(fresh, source=self.source)
 
+    def remove(self, *, gateway: str, worker: str) -> "Keyring":
+        """Forget a pair entirely (target-router: a revoked customer target). Returns a new
+        Keyring; removing a pair that is not there is not an error -- the result is the same."""
+        fresh = dict(self._pairs)
+        fresh.pop((str(gateway), str(worker)), None)
+        return Keyring(fresh, source=self.source)
+
     def add(self, *, gateway: str, worker: str, key: bytes) -> "Keyring":
         if len(key) < MIN_KEY_BYTES:
             raise KeyringRefused(TOO_SHORT, "a key is at least %d bytes" % MIN_KEY_BYTES,

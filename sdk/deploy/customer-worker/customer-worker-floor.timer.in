@@ -1,0 +1,10 @@
+[Unit]
+Description=AgentNode customer worker @UNIT@ time floor, every two minutes
+
+[Timer]
+OnActiveSec=2min
+OnUnitActiveSec=2min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

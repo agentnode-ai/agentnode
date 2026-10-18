@@ -1,0 +1,52 @@
+[Unit]
+# ONE customer worker (target-router). Its own unprivileged account and rootless podman; every
+# other worker's state on this host is inaccessible to it. Two services on one host -- not two hosts.
+Description=AgentNode customer worker @UNIT@ (rootless, own identity)
+After=network-online.target @UNIT@-runtime.service @UNIT@-floor.service
+Wants=network-online.target @UNIT@-runtime.service
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+EnvironmentFile=/etc/agentnode/@UNIT@.env
+WorkingDirectory=@HOME@
+ExecStartPre=/opt/agentnode/venv/bin/python -m agentnode_sdk.cli worker preflight \
+    --topology separate-worker-host --listen ${AGENTNODE_LISTEN} --keyring ${AGENTNODE_KEYRING} \
+    --journal ${AGENTNODE_JOURNAL} --tls-dir ${AGENTNODE_TLS_DIR} --trust ${AGENTNODE_TRUST} \
+    --deployment ${AGENTNODE_DEPLOYMENT} --accept-gateway ${AGENTNODE_GATEWAY_INSTANCE} \
+    --revocation-list ${AGENTNODE_REVOCATION_LIST} --tombstones ${AGENTNODE_TOMBSTONES} \
+    --floor ${AGENTNODE_FLOOR}
+ExecStart=/opt/agentnode/venv/bin/python -m agentnode_sdk.cli worker serve \
+    --topology separate-worker-host --listen ${AGENTNODE_LISTEN} --keyring ${AGENTNODE_KEYRING} \
+    --journal ${AGENTNODE_JOURNAL} --tls-dir ${AGENTNODE_TLS_DIR} --trust ${AGENTNODE_TRUST} \
+    --deployment ${AGENTNODE_DEPLOYMENT} --accept-gateway ${AGENTNODE_GATEWAY_INSTANCE} \
+    --revocation-list ${AGENTNODE_REVOCATION_LIST} --tombstones ${AGENTNODE_TOMBSTONES} \
+    --floor ${AGENTNODE_FLOOR}
+Restart=always
+RestartSec=10
+NoNewPrivileges=no
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=no
+ProtectClock=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+ProtectHome=no
+InaccessiblePaths=-/home
+InaccessiblePaths=-/root
+# THE OTHER WORKERS: their state, keys, journal and trust view are not this service's to read
+InaccessiblePaths=-/var/lib/agentnode-worker
+InaccessiblePaths=-/opt/agentnode/scripts
+ReadWritePaths=@HOME@
+ReadWritePaths=/run/user/@UID@
+
+[Install]
+WantedBy=multi-user.target

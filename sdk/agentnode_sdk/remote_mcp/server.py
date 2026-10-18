@@ -162,7 +162,68 @@ def _build_remote_worker(stand: str):
                         own_instance=own_instance(tls))
 
 
-def build_catalog_adapter(stand: str, worker):
+def _worker_base(stand: str):
+    """(worker.json, the control side's own TlsSettings) -- what every target's connection shares:
+    this control plane's certificate, anchor, revocation list, floor and tombstones."""
+    import json
+
+    from agentnode_sdk.worker.tls import TlsSettings
+
+    cfg = json.loads(io.open(os.path.join(stand, "worker.json"), encoding="utf-8").read())
+    t = cfg["tls"]
+    tls = TlsSettings(certificate=t["certificate"], key=t["key"], anchor=t["anchor"],
+                      deployment=cfg["deployment"], accept=frozenset(cfg["accept"]),
+                      revocation_list=t["revocation_list"], floor=t["floor"],
+                      identity_tombstones=t["identity_tombstones"], tombstones_required=True)
+    return cfg, tls
+
+
+def target_worker_factory(stand: str):
+    """The mTLS worker of ONE register target: its address, and its proved identity as the ONLY
+    instance accepted at that address (a different URI there is refused at the handshake)."""
+    import dataclasses
+
+    from agentnode_sdk.worker import SEPARATE_WORKER_HOST, pairkeys
+    from agentnode_sdk.worker.remote import from_address
+    from agentnode_sdk.worker.tls import own_instance
+
+    def build(target):
+        cfg, tls = _worker_base(stand)
+        w = target.worker
+        if w["pair"]["gateway"] != own_instance(tls):
+            raise RuntimeError("target %s is paired with another gateway instance" % target.target_id)
+        settings = dataclasses.replace(tls, deployment=w["deployment"], accept=frozenset({w["instance"]}))
+        return from_address(w["address"], None, tls=settings, topology=SEPARATE_WORKER_HOST,
+                            keyring=pairkeys.Keyring.read(cfg["keyring"]), own_instance=own_instance(tls))
+    return build
+
+
+def deployment_list_number(stand: str):
+    """The number of the revocation list this control plane itself judges by (None: unreadable)."""
+    from agentnode_sdk.pki import revocation
+
+    def number():
+        _cfg, tls = _worker_base(stand)
+        try:
+            return revocation.number_of(open(tls.revocation_list, "rb").read())
+        except OSError:
+            return None
+    return number
+
+
+def build_target_router(stand: str, worker_for=None, list_number=None):
+    """The execution-target router of a stand (target-router). The register is verified on every
+    use; a missing or untrustworthy register refuses every run (503) -- never a fallback."""
+    from agentnode_sdk.remote_mcp.target_router import TargetRouter
+    from agentnode_sdk.remote_mcp.targets import Register, TrustAcks
+
+    op_pub = bytes.fromhex(io.open(os.path.join(stand, "operator_pub.hex"), encoding="utf-8").read().strip())
+    return TargetRouter(register=Register(stand, op_pub), acks=TrustAcks(stand, op_pub),
+                        worker_for=worker_for or target_worker_factory(stand),
+                        deployment_list_number=list_number or deployment_list_number(stand))
+
+
+def build_catalog_adapter(stand: str, worker, *, router=None, authority=None, kill_switch=None):
     """The per-account catalog adapter over *worker*, wired from a stand directory.
 
     Every security-critical piece (UsabilityClient, tree_pipeline, approval, audit, index) is
@@ -198,12 +259,26 @@ def build_catalog_adapter(stand: str, worker):
                                    signer_public_bytes=au_pub)
     return CatalogMCPAdapter(catalog=catalog, client=client, ledger=catalog_ledger,
                              approvals_dir=os.path.join(stand, "approvals"), stand=stand,
-                             cursor_key=cursor_key_from(_server_key(stand)))
+                             cursor_key=cursor_key_from(_server_key(stand)),
+                             router=router, authority=authority, kill_switch=kill_switch)
 
 
-def _build_catalog_adapter(stand: str):
-    """Production: the catalog adapter over the REMOTE mutually-authenticated worker, never local."""
-    return build_catalog_adapter(stand, _build_remote_worker(stand))
+def _build_catalog_adapter(stand: str, gateway_dir: str | None = None, authority=None):
+    """Production: the catalog adapter over REMOTE mutually-authenticated workers, never local.
+
+    The configured worker is still built first, so a missing worker/mTLS/keyring/CRL/floor/
+    tombstones artifact fails the start. Every run then goes to the register target it resolves
+    to (target-router); the gateway kill switch and the live account authority are judged again
+    at admission."""
+    worker = _build_remote_worker(stand)
+    kill_switch = None
+    if gateway_dir:
+        from agentnode_sdk.gateway import allowance
+
+        def kill_switch():
+            return allowance.why_it_is_stopped(gateway_dir)
+    return build_catalog_adapter(stand, worker, router=build_target_router(stand),
+                                 authority=authority, kill_switch=kill_switch)
 
 
 def build_production_app(stand: str, *, resource: str, issuer: str,
@@ -222,8 +297,11 @@ def build_production_app(stand: str, *, resource: str, issuer: str,
     """
     from agentnode_sdk.remote_mcp.accounts_login import GatewayLogin
 
-    adapter = _build_catalog_adapter(stand)
     gl = GatewayLogin(gateway_dir)
+    adapter = _build_catalog_adapter(stand, gateway_dir, authority=gl.authority_error)
+    # before the first request: settle what an earlier process admitted but never ended. If the
+    # register cannot be read now, the settlement stays pending and runs before the next target run.
+    adapter.settle_earlier_dispatches()
     store = _load_store(stand)
     rc = ResourceConfig(resource=resource, authorization_server=issuer)
     authz = AuthorizationServer(issuer=issuer, resource=resource, token_store=store,

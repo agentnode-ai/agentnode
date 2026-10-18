@@ -5,6 +5,7 @@
   python -m agentnode_sdk.remote_mcp.catalog_cli --stand S unpublish --tool NAME
   python -m agentnode_sdk.remote_mcp.catalog_cli --stand S set-default --tools A,B
   python -m agentnode_sdk.remote_mcp.catalog_cli --stand S set-account --account ACCT (--tools A,B | --empty | --clear)
+  python -m agentnode_sdk.remote_mcp.catalog_cli --stand S set-assurance --tool NAME --classes C1[,C2]
   python -m agentnode_sdk.remote_mcp.catalog_cli --stand S rollback --to-generation N
   python -m agentnode_sdk.remote_mcp.catalog_cli --stand S show
   python -m agentnode_sdk.remote_mcp.catalog_cli --stand S heads
@@ -78,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--tools")
     g.add_argument("--empty", action="store_true")
     g.add_argument("--clear", action="store_true")
+    sp = sub.add_parser("set-assurance")
+    sp.add_argument("--tool", required=True)
+    sp.add_argument("--classes", required=True)
     rp = sub.add_parser("rollback")
     rp.add_argument("--to-generation", type=int, required=True)
     sub.add_parser("show")
@@ -98,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "set-account":
             tools = None if args.clear else ([] if args.empty else _tools(args.tools))
             snap = catalog.set_account(args.account, tools, actor=args.actor)
+        elif args.cmd == "set-assurance":
+            snap = catalog.set_assurance(args.tool, _tools(args.classes), actor=args.actor)
         elif args.cmd == "rollback":
             snap = catalog.rollback(args.to_generation, actor=args.actor)
         elif args.cmd == "heads":

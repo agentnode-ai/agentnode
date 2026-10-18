@@ -52,6 +52,64 @@ set-default, set-account, rollback, show, heads). No MCP tool can change it.
 * Approvals are bound to the account, the exact catalog entry and the arguments; approve with the
   command a call returns (it names `--audience <capability id>`).
 
+## Execution targets (managed and customer workers)
+
+Where an authorized call runs is a second signed document, `stand/targets/targets.json`
+(`remote_mcp/targets.py`). It is hash-linked history with a pinned head, changed only through
+`python -m agentnode_sdk.remote_mcp.targets_cli --stand <stand> …`. A missing or untrustworthy
+register refuses every run with 503.
+
+* **Visibility and choice.** Every account sees the managed target(s) and only its OWN customer
+  targets. A call runs on its wish if it names one of those: `_meta["net.agentnode/target"]`, or
+  the `target` argument of `agentnode_run`. Otherwise it runs on the account's default, otherwise
+  on the managed default. Unknown and foreign targets answer the same `target_unknown`.
+  `agentnode_describe` shows the account's own targets with eligibility, never an address or
+  identity.
+* **No fallback.** An offline, full, suspended, expired, revoked or unsuitable target is a
+  structured refusal. Nothing is ever retargeted, to managed or anywhere else.
+* **Binding.** The approval binds the target: its id, the worker identity URI, the endpoint,
+  the requirements, the properties, the assurance class and the generation those facts last
+  changed in. A different target needs a new approval. At admission the account's live
+  authority, the gateway kill switch and the exact target binding are judged again under the
+  catalog's lock. A refusal there does not consume the approval.
+* **Exactly once.** A run's id is derived from the invocation hash and the approval. The worker's
+  journal recognises a repeated start. A lost connection is reconciled from that journal on the
+  same target. An outcome that cannot be established is `indeterminate`, and blocks the same
+  invocation until `targets_cli reconcile-dispatch` settles it.
+* **Assurance, stated honestly.** A target is eligible only with an operator-signed observation
+  record from the control plane's own probes: an egress canary with a positive control, memory
+  and wall-clock limits with within-limit controls, and the proved identity. The worker's own
+  `describe` decides nothing.
+  - `operator_managed_measured` covers the operator's own worker, valid 7 days.
+  - `customer_controlled_observed` covers a customer's host, valid 24 hours: behaviour the control
+    plane observed, not proof of a kernel, runtime, isolation backend or of network isolation
+    beyond the tested destinations. The canary's positive control runs on the control plane, so
+    the operator separately checks that the worker host's network can reach the canary address;
+    otherwise "not seen" means nothing.
+  - A catalog entry runs only on the assurance classes it accepts (`catalog_cli set-assurance`).
+* **Lifecycle.** The states are `invite → enroll → probe → active ↔ suspended`, and finally
+  `revoke` or expiry. Every operation is journaled before its first side effect and resumable
+  (`resume-ops`). A revoked or expired target is never reactivated: its identity is withdrawn
+  for good in the issuer, and a replacement takes a new instance name.
+* **Trust distribution.** `rmcp-trust-refresh.timer` runs every 6 h. It publishes the revocation
+  and tombstone lists when they are due, pushes them to every live target over the worker
+  channel (`install_trust`), records each acknowledgement, retires pair-key overlaps after 24 h,
+  and fails into `rmcp-alert@` when a list is within 48 h of expiry or a target lags. A target
+  that has not acknowledged the current lists does not run.
+* **Reachability.** The control plane dials the target over the private network; there is no
+  public worker port. A worker behind NAT that connects out is a different protocol and not part
+  of this.
+* **Customer workers** are installed in two steps on the worker host, with the release that host
+  already runs:
+  1. `sdk/deploy/customer-worker/install-customer-worker.sh` sets up the worker's own account, rootless
+     podman, state, units and nft rule, and makes its key and request there.
+  2. `targets_cli enroll` issues the certificate on the control plane.
+  3. `activate-customer-worker.sh` installs the certificate, sets up the root-owned time floor and its
+     timer, and starts the worker.
+
+  They are removed with `remove-customer-worker.sh`. Several on one worker host are separate
+  services, not separate machines.
+
 ## How a renewal pass works
 
 1. `lego run --renew-days 30` obtains the certificate (first run) or renews it when due. The

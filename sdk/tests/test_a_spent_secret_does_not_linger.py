@@ -884,13 +884,15 @@ class TestItAlsoClearsWhatOlderCodeLeftBehind:
         assert (waiting / "secret").is_file(), \
             "an unrelated entry's LIVE secret was deleted by someone else's issuance"
 
-    def test_and_an_entry_given_a_fresh_secret_after_recovery_is_not_touched(self, stand):
-        """The dangerous case, through the real recovery API rather than a hand-edited field.
-
-        After `recover_entry` the entry has a consumption on record AND a new live secret. A
-        sweep keyed on "has consumed anything" alone would delete it; the guard also requires
-        `secret_sha256` to be empty, and recovery sets it.
+    def test_a_recovered_entry_keeps_no_secret_and_cannot_be_enrolled_again(self, stand):
+        """Through the real recovery API. Since Q-TGT-0001 R6, `recover_entry` withdraws the
+        identity for good and hands out NO new secret (before, it did, and this test guarded that
+        secret against the sweep). The entry holds no secret, an unrelated enrolment changes
+        nothing about that, and the recovered name can never be enrolled or added again. The
+        sweep's guard on `secret_sha256` is still covered by the shared-directory test below.
         """
+        from agentnode_sdk.pki.issuer import IssuanceRefused
+
         iss, folder = stand
         recovered = folder.parent / "w7"
         recovered.mkdir()
@@ -898,14 +900,15 @@ class TestItAlsoClearsWhatOlderCodeLeftBehind:
         body = _a_request(recovered)
         iss.enroll(body["csr"].encode("ascii"), body["secret"])
         iss.recover_entry("worker", "w7", secret_at=recovered / "secret")
-        assert (recovered / "secret").is_file(), "recovery did not write a new secret"
-        fresh = (recovered / "secret").read_text(encoding="ascii").strip()
+        assert iss.inventory()["entries"]["worker/w7"]["claimed"] is True     # no live secret
 
         mine = _a_request(folder)
         iss.enroll(mine["csr"].encode("ascii"), mine["secret"])
 
-        assert (recovered / "secret").is_file(), "a freshly recovered live secret was swept away"
-        assert (recovered / "secret").read_text(encoding="ascii").strip() == fresh
+        assert iss.inventory()["entries"]["worker/w7"]["claimed"] is True     # no live secret
+        with pytest.raises(IssuanceRefused):
+            iss.add("worker", "w7", secret_at=recovered / "secret2",
+                    deliver_to=recovered / "cert.pem")
 
     def test_a_directory_shared_with_a_live_entry_is_left_alone(self, stand):
         """The worst thing the sweep could do, and it could do it until this test existed.
