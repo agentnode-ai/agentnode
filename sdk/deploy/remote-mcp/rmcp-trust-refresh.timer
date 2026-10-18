@@ -1,0 +1,11 @@
+[Unit]
+Description=AgentNode remote MCP: trust distribution, four times a day
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
