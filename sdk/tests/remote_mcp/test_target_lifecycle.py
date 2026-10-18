@@ -170,6 +170,16 @@ def test_partial_provisioning_never_active(env, crash_at):
         env["ops"].probe(tid)
     assert env["reg"].load().target(tid).status == T.ACTIVE
     assert not env["ops"].open_operations()
+    if crash_at == "observe":
+        # and material missing at activation is refused, never activated around
+        tid2 = _provision(env)
+        ring = pairkeys.Keyring.read(env["keyring"])
+        inst = env["reg"].load().target(tid2).worker["instance"]
+        ring.remove(gateway="g1", worker=inst).write(env["keyring"])
+        with pytest.raises(OperationFailed) as refused:
+            env["ops"].probe(tid2)
+        assert refused.value.code == "activate.pair_key_missing"
+        assert env["reg"].load().target(tid2).status != T.ACTIVE
 
 
 def test_probe_claim_is_bounded(env):

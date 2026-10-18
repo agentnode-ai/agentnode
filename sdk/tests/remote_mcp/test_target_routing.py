@@ -288,6 +288,9 @@ def test_expired_trust_refuses_all_dispatch(st):
 def test_endpoint_change_requires_approval(st):
     alice, ta = st.account("alice")
     st.customer("cust-a", alice)
+    target = st.register.load().target("cust-a")
+    # the endpoint itself is bound -- not only through the facts generation that a move also bumps
+    assert target.binding("r")["endpoint_digest"] == target.endpoint_digest
     h1 = hash_of(_call(st, ta, REGEX, REGEX_ARGS, wish="cust-a"))
     st.approve(h1, CAP_REGEX)
     from .target_fixtures import attestation
