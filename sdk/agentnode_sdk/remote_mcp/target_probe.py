@@ -186,7 +186,11 @@ def probe(target: T.Target, worker, canary: Canary, *, now: float | None = None)
     except Exception:                                          # noqa: BLE001 - reported facts are optional
         platform = {}
     controls = results["controls"]
-    properties = {"network_none_observed": (not seen) and reported.get("ipv4") != "connected",
+    # A job reporting that it GOT OUT is evidence against "network none" on any path; a job
+    # reporting that it did not is no evidence at all, so only the canary can support the claim.
+    escaped = (reported.get("ipv4") == "connected" or reported.get("ipv6") == "connected"
+               or reported.get("dns") == "resolved")
+    properties = {"network_none_observed": (not seen) and not escaped,
                   "memory_ceiling_mb": (JOB_MEMORY_MB if results["memory"]["killed"]
                                         and controls["memory_within_limit_ran"] else 0),
                   "wall_clock_enforced": bool(results["wall_clock"]["killed"] and results["wall_clock"]["within_bound"]

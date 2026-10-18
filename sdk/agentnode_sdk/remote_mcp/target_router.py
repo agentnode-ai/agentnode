@@ -188,7 +188,7 @@ def classify(exc: BaseException) -> str:
         check = getattr(seen, "check", None)
         if isinstance(check, str):
             return "target_identity_mismatch" if check in IDENTITY_CHECKS else "target_trust_unavailable"
-        if type(seen).__name__ in ("TrustRefused", "ListUnusable", "FloorUnusable"):
+        if type(seen).__name__ in ("TrustRefused", "ListUnusable", "FloorUnusable", "KeyringRefused"):
             return "target_trust_unavailable"
         if "no-common-protocol" in str(seen) or "no tested wire version" in str(seen):
             return "target_protocol_mismatch"

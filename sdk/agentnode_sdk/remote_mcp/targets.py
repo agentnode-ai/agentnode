@@ -484,6 +484,9 @@ class Register:
                 raise TargetsUnavailable("register equivocation: same generation, different content")
             self._verify_chain(doc)
             now = self.now()
+            future = [t for t, e in doc["targets"].items() if float(e["created_at"]) > now + 300]
+            if future:
+                raise TargetsUnavailable("target(s) created in the future: %s" % ", ".join(sorted(future)))
             return RegisterSnapshot(
                 generation=doc["generation"], digest=digest(doc),
                 targets={t: Target.from_doc(e) for t, e in doc["targets"].items()},
