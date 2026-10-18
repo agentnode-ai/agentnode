@@ -10,6 +10,7 @@ Run as root:
     agentnode pki show
     agentnode pki revoke  --serial <hex>
     agentnode pki recover --role worker|gateway --instance <name> --account <user> --tls-dir <dir>
+                          (withdraws the identity for good; a replacement takes a new name)
     agentnode pki publish
     agentnode pki tick    [--floor-dir /var/lib/agentnode-floor]      (the root run, on a timer)
     agentnode pki floor init    [--floor-dir ...] [--tolerance S] [--max-age S] [--after-loss]
@@ -157,22 +158,19 @@ def cmd_revoke(args) -> int:
 def cmd_recover(args) -> int:
     from agentnode_sdk.pki.issuer import Indeterminate, IssuanceRefused
 
-    uid, gid = _account(str(args.account))
-    folder = Path(args.tls_dir)
     try:
-        done = _issuer(args).recover_entry(str(args.role), str(args.instance),
-                                           secret_at=folder / "secret", owner_uid=uid,
-                                           owner_gid=gid)
+        done = _issuer(args).recover_entry(str(args.role), str(args.instance))
     except (IssuanceRefused, Indeterminate) as refused:
         print(f"  Not recovered: {refused}")
         return 1
     print(f"  {done['entry']}: renewal locked, {len(done['revoked'])} certificate(s) revoked,")
-    print(f"  and a fresh single-use secret is in {folder / 'secret'} for {args.account}.")
+    print(f"  and {done['withdrawn']} is withdrawn for good.")
     if not done["effective"]:
         print("  The list could NOT be published durably: the revocations are NOT in effect yet.")
         return 3
-    print("  The list is published and durable. That account now makes a FRESH key:")
-    print(f"    rm {folder}/key.pem && agentnode pki request --tls-dir {folder}")
+    print("  The list is published and durable. A replacement takes a NEW instance name:")
+    print(f"    agentnode pki add --role {args.role} --instance <new-name> --account {args.account} "
+          f"--tls-dir {args.tls_dir}")
     return 0
 
 

@@ -61,8 +61,12 @@ are ever usable, and the second only for a bounded time -- enforced through the 
 check, not merely noted here.
 
 Recovery from a compromised key (`recover_entry`, decision 5.6) locks the entry against renewal,
-revokes every serial it ever had, publishes the list and hands out a fresh enrollment secret, in
-one call under the same lock and the same commit.
+revokes every serial it ever had and publishes the list, in one call under the same lock and the
+same commit. It no longer hands out a fresh secret for the SAME name (target-router decision
+Q-TGT-0001 D5/R6): a withdrawn identity is withdrawn for good, and a replacement takes a NEW
+instance name. The inventory keeps every identity it ever withdrew in `ever_withdrawn`; no later
+`add`, `enroll`, `renew` or recovery can bring one back, and the published tombstones always carry
+the whole set.
 
 `tick` is the root run (decision 5.0, 5.3, 5.7): resolve what a crash left of the list and the
 floors, end overlaps, reconcile the list with the inventory, and only then -- and only if no
@@ -188,6 +192,9 @@ class Issuer:
         return json.loads(self.files.read(self.ca_dir / INVENTORY).decode("utf-8"))
 
     def _commit(self, inventory: dict, label: str) -> None:
+        # Every commit remembers every identity that is withdrawn NOW, so a later change to the
+        # entry (a new certificate, a cleared lock) can never take one back out of the set.
+        self._remember_withdrawals(inventory)
         data = (json.dumps(inventory, indent=1, sort_keys=True) + "\n").encode("utf-8")
         try:
             _files.durable_replace(self.files, self.ca_dir / INVENTORY, data,
@@ -285,6 +292,9 @@ class Issuer:
             ident = _identity.identity_of(inventory["deployment"], role, instance)
             name = role + "/" + instance
             entry = inventory["entries"].get(name)
+            if ident.uri() in self._ever_withdrawn(inventory):
+                raise IssuanceRefused(
+                    "%s was withdrawn for good; a replacement takes a new instance name" % name)
             if entry is not None and entry.get("certificates"):
                 raise IssuanceRefused(
                     "entry %s already has a certificate; a new key for it is a renewal, or a "
@@ -480,6 +490,9 @@ class Issuer:
             name, entry = matches[0]
             if float(entry.get("secret_expires") or 0) < _now():
                 raise self._refused("this enrollment secret has expired", name, public_key)
+            if str(entry.get("uri")) in self._ever_withdrawn(inventory):
+                raise self._refused("this identity was withdrawn for good; a replacement takes a "
+                                    "new instance name", name, public_key)
 
             ca_key, ca_cert = self._ca()
             certificate = self._build(inventory, entry, public_key, ca_key, ca_cert)
@@ -545,6 +558,8 @@ class Issuer:
             if entry.get("renewal_locked"):
                 raise self._refused("this entry is locked against renewal until root re-enrolls "
                                     "it with a fresh key", name, public_key)
+            if str(entry.get("uri")) in self._ever_withdrawn(inventory):
+                raise self._refused("this identity was withdrawn for good", name, public_key)
             # Only the CURRENT key renews. The overlapping one is on its way out; letting it
             # renew would let whoever still holds an old key keep an identity going.
             if record["status"] != CURRENT:
@@ -664,7 +679,23 @@ class Issuer:
 
         An entry that was created and never claimed is NOT withdrawn: nothing was ever issued
         for it, so there is nothing to take away.
+
+        And every identity ever withdrawn before (`ever_withdrawn`), whatever its entry looks
+        like now: a withdrawal is never undone by a later change to the entry.
         """
+        # Through the class, not `self`: callers judge an inventory without an issuer at hand.
+        return Issuer._computed_withdrawals(inventory) | Issuer._ever_withdrawn(inventory)
+
+    @staticmethod
+    def _ever_withdrawn(inventory: dict) -> set:
+        return {str(u) for u in (inventory.get("ever_withdrawn") or [])}
+
+    def _remember_withdrawals(self, inventory: dict) -> None:
+        inventory["ever_withdrawn"] = sorted(self._ever_withdrawn(inventory)
+                                             | self._computed_withdrawals(inventory))
+
+    @staticmethod
+    def _computed_withdrawals(inventory: dict) -> set:
         out = set()
         for entry in (inventory.get("entries") or {}).values():
             if not isinstance(entry, dict) or not entry.get("uri"):
@@ -721,13 +752,16 @@ class Issuer:
             effective = self._publish_list(inventory, ca_key, ca_cert)
             return {"serial": serial, "entry": name, "effective": effective}
 
-    def recover_entry(self, role: str, instance: str, *, secret_at, owner_uid=None,
+    def recover_entry(self, role: str, instance: str, *, secret_at=None, owner_uid=None,
                       owner_gid=None) -> dict:
-        """Decision 5.6: the entry's key is compromised. In ONE call, under the issuer lock and
-        with one commit: lock the entry against renewal, revoke every serial it ever had, hand it
-        a fresh single-use secret -- then publish the list. The secret goes to `secret_at` for a
-        fresh key. A renewal racing this either landed before (and is revoked here, because every
-        recorded serial is) or comes after (and is refused, whatever key it shows)."""
+        """Decision 5.6, as amended by Q-TGT-0001 R6: the entry's key is compromised. In ONE call,
+        under the issuer lock and with one commit: lock the entry against renewal, revoke every
+        serial it ever had, withdraw its identity FOR GOOD, take away any secret it still had --
+        then publish the list. No fresh secret is handed out for the same name any more: a
+        replacement is a NEW entry with a new instance name. A renewal racing this either landed
+        before (and is revoked here, because every recorded serial is) or comes after (and is
+        refused, whatever key it shows). `secret_at`, `owner_uid` and `owner_gid` are accepted
+        for compatibility and unused."""
         with self._lock():
             self._begin()
             inventory = self._inventory()
@@ -745,21 +779,13 @@ class Issuer:
                 if record["status"] in (CURRENT, OVERLAPPING):
                     record["status"] = REVOKED
             entry["renewal_locked"] = True
-            secret = _enrolment.mint_a_secret()
-            entry["secret_sha256"] = _sha256(secret.encode("ascii"))
-            entry["secret_expires"] = round(now + SECRET_HOURS * 3600, 3)
-            self._commit(inventory, "recover")
+            entry["secret_sha256"] = ""
+            entry["secret_expires"] = 0
+            self._commit(inventory, "recover")            # remembers the withdrawal for good
             ca_key, ca_cert = self._ca()
             effective = self._publish_list(inventory, ca_key, ca_cert)
-            secret_path = Path(secret_at)
-            if self.files.exists(secret_path):
-                self.files.remove(secret_path)
-            _files.durable_replace(self.files, secret_path, secret.encode("ascii"), mode=0o400,
-                                   label="recover-secret")
-            if owner_uid is not None and hasattr(os, "chown"):
-                os.chown(secret_path, int(owner_uid), int(owner_gid if owner_gid is not None
-                                                          else -1))
-            return {"entry": name, "revoked": revoked, "effective": effective}
+            return {"entry": name, "revoked": revoked, "effective": effective,
+                    "withdrawn": str(entry.get("uri"))}
 
     def publish(self) -> dict:
         """Sign and publish a fresh list now, from the inventory. For root, after a clock was
@@ -1004,7 +1030,7 @@ class Issuer:
             raw = self._inventory()
         now = _now()
         shown = {"deployment": raw["deployment"], "list_number": raw.get("list_number", 0),
-                 "entries": {}}
+                 "ever_withdrawn": sorted(self._withdrawn_identities(raw)), "entries": {}}
         for name, entry in raw["entries"].items():
             certificates = []
             for c in entry["certificates"]:

@@ -365,8 +365,9 @@ def _renewal(folder: Path) -> tuple:
 
 class TestRecoveryFromACompromisedKey:
 
-    def test_recovery_locks_revokes_every_serial_publishes_and_hands_out_a_fresh_secret(
-            self, world):
+    def test_recovery_locks_revokes_every_serial_publishes_and_withdraws_for_good(self, world):
+        # Q-TGT-0001 R6 amends decision 5.6: recovery no longer hands out a secret for the SAME
+        # name. The identity is withdrawn for good; a replacement is a new entry, a new name.
         worker = world.service("worker", "w1")
         world.issuer.renew(*_renewal(worker))                 # now: one overlapping, one current
         serials = [c["serial"] for c in world.issuer.inventory()["entries"]["worker/w1"]
@@ -375,21 +376,20 @@ class TestRecoveryFromACompromisedKey:
         done = world.issuer.recover_entry("worker", "w1", secret_at=worker / "secret.fresh")
         assert done["effective"] is True
         assert sorted(done["revoked"]) == sorted(serials)
-        view = world.issuer.inventory()["entries"]["worker/w1"]
+        inventory = world.issuer.inventory()
+        view = inventory["entries"]["worker/w1"]
         assert view["renewal_locked"] is True
         assert all(c["revocation_reason"] == COMPROMISE for c in view["certificates"])
+        assert view["uri"] in inventory["ever_withdrawn"]
         published = rl.load(world.revocation_list, world._ca()[1], time.time())
         assert set(serials) <= published.serials
-        assert (worker / "secret.fresh").exists()
-        # The stolen key cannot renew its way back in.
+        assert not (worker / "secret.fresh").exists()
+        # The stolen key cannot renew its way back in, and the name cannot be added again.
         with pytest.raises(IssuanceRefused):
             world.issuer.renew(*_renewal(worker))
-        # A fresh key, with the fresh secret, is enrolled -- and that lifts the lock.
-        (worker / "key.pem").unlink()
-        (worker / "key.next.pem").unlink()
-        body = json.loads(make_request(worker, (worker / "secret.fresh").read_text()).read_text())
-        world.issuer.enroll(body["csr"].encode(), body["secret"])
-        assert world.issuer.inventory()["entries"]["worker/w1"]["renewal_locked"] is False
+        with pytest.raises(IssuanceRefused):
+            world.issuer.add("worker", "w1", secret_at=worker / "secret.again",
+                             deliver_to=worker / "cert.pem")
 
     def test_a_renewal_that_lands_before_the_recovery_is_revoked_by_it(self, world):
         worker = world.service("worker", "w1")
