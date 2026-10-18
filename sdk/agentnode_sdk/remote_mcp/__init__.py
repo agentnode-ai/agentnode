@@ -10,6 +10,10 @@ discovery surface. A transport token NEVER substitutes the operator-signed, sing
 call-bound human approval: an authenticated ``tools/call`` with no deposited approval still
 returns ``approval_required`` exactly as the stdio adapter does.
 
+In production the transport fronts the per-account capability catalog (``catalog``,
+``catalog_adapter``, ``catalog_audit``, operator door ``catalog_cli``) instead of a single
+capability; it reuses the same ``UsabilityClient.prepare -> submit`` path.
+
 Decisions: ``remote-mcp-service/review/Q-RMCP-0001-decision.answer.md`` and
 ``Q-RMCP-0002-compat-extension.answer.md``. Frozen profile:
 ``remote-mcp-service/frozen/remote-mcp-profile.json``

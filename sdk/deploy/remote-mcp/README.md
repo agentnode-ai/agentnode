@@ -25,6 +25,33 @@ credential nor a gateway session cookie (429 + `Retry-After`). The app enforces 
 with a 5 s maximum wait, 125 s per call. The service runs as ONE process, so its caps are the
 deployment caps; a second process needs the shared lease/semaphore first.
 
+## The per-account catalog
+
+What each account can list and call is one signed document, `stand/catalog/catalog.json`
+(`agentnode_sdk/remote_mcp/catalog.py`), changed only by the operator through
+`python -m agentnode_sdk.remote_mcp.catalog_cli --stand <stand> …` (init, publish, unpublish,
+set-default, set-account, rollback, show, heads). No MCP tool can change it.
+
+* Publishing pins the exact imported bytes (capability id, version, manifest, artifact and tree
+  digests, export) of a capability signed by the stand operator key; network or secret
+  capabilities are refused. The public tool name is `<capability-name>__<export>`; the
+  `agentnode_` prefix is reserved for `agentnode_search`, `agentnode_describe` and `agentnode_run`.
+* An account sees its explicit list if it has one (an explicit empty list stays empty), else the
+  default list. All tools share the account, token and process limits above; search and describe
+  count against the list budget, every run (direct or `agentnode_run`) against the call budget.
+* Every change writes a new, higher generation (rollback too: it copies old contents into a new
+  generation). `listChanged` is false and list results are private with a zero TTL: a client
+  sees a change on its **next request**; a cursor from an older generation is refused.
+* Revocation takes effect at once for list, search and new or queued calls; a call admitted to
+  the worker before the revocation committed finishes and is audited.
+* A catalog that is missing, unreadable, unsigned, edited or older than one already seen is
+  refused with 503; there is no stale fallback. Every catalog decision and operator change is
+  recorded in the signed, hash-chained `stand/catalog-audit.jsonl` (digests, never raw
+  arguments or queries). Like every hash chain without an external head, it detects edits and
+  reordering but not truncation of its tail; `catalog_cli heads` prints the heads to record.
+* Approvals are bound to the account, the exact catalog entry and the arguments; approve with the
+  command a call returns (it names `--audience <capability id>`).
+
 ## How a renewal pass works
 
 1. `lego run --renew-days 30` obtains the certificate (first run) or renews it when due. The

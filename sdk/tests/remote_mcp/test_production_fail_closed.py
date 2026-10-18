@@ -103,11 +103,16 @@ def test_build_production_app_has_no_local_worker_param():
     assert "local_worker" not in inspect.signature(build_production_app).parameters
 
 
-def test_server_module_resolves_remote_adapter_symbols():
-    # _build_remote_adapter references these at runtime; a missing import only shows up when a
-    # real stand is built, so pin the names here (regression: NameError UsabilityMCPAdapter).
+def test_server_module_resolves_production_adapter_symbols():
+    # the production path builds the per-account CATALOG adapter over the remote worker; the stand
+    # builder keeps the single-capability adapter. Neither production builder reads a global
+    # capability_id.txt any more.
     from agentnode_sdk.remote_mcp import server as S
-    assert hasattr(S, "UsabilityMCPAdapter") and hasattr(S, "build_from_stand")
+    assert hasattr(S, "build_from_stand") and hasattr(S, "_build_catalog_adapter")
+    assert not hasattr(S, "_build_remote_adapter")
+    for fn in (S.build_catalog_adapter, S._build_catalog_adapter, S.build_production_app):
+        assert "capability_id.txt" not in inspect.getsource(fn)
+    assert "_build_remote_worker(stand)" in inspect.getsource(S._build_catalog_adapter)
 
 
 def test_production_entrypoint_has_no_local_fallback():
