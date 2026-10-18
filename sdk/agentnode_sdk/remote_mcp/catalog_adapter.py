@@ -230,7 +230,9 @@ class CatalogMCPAdapter:
             wish = arguments.get("target")
             if wish is not None and meta_wish is not None and wish != meta_wish:
                 # two different wishes for one call: neither is chosen over the other
-                return self._tool_error(ctx, mid, target, "target_bad_wish", "refused: target_bad_wish")
+                out = self._tool_error(ctx, mid, target, "target_bad_wish", "refused: target_bad_wish")
+                out["result"]["structuredContent"] = {"status": "refused", "code": "target_bad_wish"}
+                return out
             return self._execute(ctx, mid, target, arguments.get("arguments", {}), route="meta",
                                  principal=principal, wish=wish if wish is not None else meta_wish, grant=grant)
         return self._execute(ctx, mid, name, arguments, route="direct", principal=principal, wish=meta_wish,
@@ -423,7 +425,9 @@ class CatalogMCPAdapter:
                 also=(lambda: self._admission_checks(ctx, principal, entry, resolution)) if resolution else None)
         except RunNotAdmitted as exc:
             self.ledger.append("catalog_decision", decision="refused", reason=exc.code, **base)
-            return _tool_error_result(mid, f"refused: {exc.code}")
+            out = _tool_error_result(mid, f"refused: {exc.code}")
+            out["result"]["structuredContent"] = {"status": "refused", "code": exc.code}
+            return out
         dispatch_id = ("cap-" + hashlib.sha256((inv.invocation_hash + "|" + approval_id).encode("ascii")).hexdigest()[:32]
                        if resolution is not None else None)
         try:

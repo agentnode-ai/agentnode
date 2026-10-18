@@ -156,6 +156,7 @@ def test_conflicting_meta_and_argument_wishes_are_refused(st):
                                          "arguments": {"tool": REGEX, "arguments": REGEX_ARGS, "target": "cust-a"},
                                          "_meta": {TARGET_META_KEY: "managed-w1"}})[1]
     assert out["result"]["isError"] and "target_bad_wish" in out["result"]["content"][0]["text"]
+    assert _sc(out) == {"status": "refused", "code": "target_bad_wish"}        # the same shape as every target refusal
 
 
 # ---------------------------------------------------------------- no fallback
@@ -409,6 +410,7 @@ def test_queued_changes_refuse_before_dispatch(st, change, code):
     st.adapter._barrier = at
     out = _call(st, ta, REGEX, REGEX_ARGS, wish="cust-a")
     assert out["result"]["content"][0]["text"] == "refused: " + code
+    assert _sc(out) == {"status": "refused", "code": code}                # structured, like every refusal
     assert st.w("cust-a").starts == 0 and st.w("managed-w1").starts == 0
     assert not any((st.stand / "consumed").iterdir())          # the approval survives a refusal
 
