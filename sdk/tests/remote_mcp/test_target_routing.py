@@ -411,6 +411,8 @@ def test_queued_changes_refuse_before_dispatch(st, change, code):
     out = _call(st, ta, REGEX, REGEX_ARGS, wish="cust-a")
     assert out["result"]["content"][0]["text"] == "refused: " + code
     assert _sc(out) == {"status": "refused", "code": code}                # structured, like every refusal
+    refused = [b for b in _bodies(st) if b.get("decision") == "refused"][-1]
+    assert refused["reason"] == code and refused["granted_at"] >= refused["queued_at"]   # it waited, then was judged
     assert st.w("cust-a").starts == 0 and st.w("managed-w1").starts == 0
     assert not any((st.stand / "consumed").iterdir())          # the approval survives a refusal
 

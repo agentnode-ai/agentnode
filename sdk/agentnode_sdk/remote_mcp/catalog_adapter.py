@@ -424,7 +424,10 @@ class CatalogMCPAdapter:
                 ctx["account"], entry,
                 also=(lambda: self._admission_checks(ctx, principal, entry, resolution)) if resolution else None)
         except RunNotAdmitted as exc:
-            self.ledger.append("catalog_decision", decision="refused", reason=exc.code, **base)
+            # with the queue times, so the audit shows a call that WAITED and was then judged again
+            waited = ({"queued_at": round(grant.queued_at, 3), "granted_at": round(grant.granted_at, 3)}
+                      if grant is not None else {})
+            self.ledger.append("catalog_decision", decision="refused", reason=exc.code, **waited, **base)
             out = _tool_error_result(mid, f"refused: {exc.code}")
             out["result"]["structuredContent"] = {"status": "refused", "code": exc.code}
             return out
