@@ -76,7 +76,8 @@ def wish_of(value: Any) -> str | None:
     return value
 
 
-def _eligible(target: T.Target, entry, now: float, acks: dict, deployment: dict | None) -> None:
+def _eligible(target: T.Target, entry, now: float, acks: dict, deployment: dict | None,
+              previous: dict | None = None) -> None:
     status = target.effective_status(now)
     if status == T.REVOKED:
         raise TargetRefusal("target_revoked")
@@ -101,7 +102,7 @@ def _eligible(target: T.Target, entry, now: float, acks: dict, deployment: dict 
         failed.append("wall_clock_s")
     if failed:
         raise TargetRefusal("target_unsuitable", ",".join(failed))
-    if not T.trust_current(acks.get(target.target_id), now=now, deployment=deployment):
+    if not T.trust_current(acks.get(target.target_id), now=now, deployment=deployment, previous=previous):
         raise TargetRefusal("target_trust_unavailable")
 
 
@@ -129,7 +130,8 @@ class TargetRouter:
             if target is None:                                 # a default that is not visible: never widened
                 raise TargetRefusal("target_unknown", reason=reason)
         try:
-            _eligible(target, entry, snap.now, self.acks.load(), self._deployment_trust())
+            _eligible(target, entry, snap.now, self.acks.load(), self._deployment_trust(),
+                      self.acks.transition(now=snap.now))
         except TargetRefusal as refusal:
             refusal.target_id, refusal.selection_reason = target.target_id, reason
             raise
@@ -151,7 +153,7 @@ class TargetRouter:
         if status == T.SUSPENDED:
             raise TargetRefusal("target_suspended_while_queued", target_id=t.target_id)
         try:
-            _eligible(t, entry, snap.now, self.acks.load(), self._deployment_trust())
+            _eligible(t, entry, snap.now, self.acks.load(), self._deployment_trust(), self.acks.transition(now=snap.now))
         except TargetRefusal as refusal:
             code ="target_properties_stale" if refusal.code == "target_properties_stale" else refusal.code
             raise TargetRefusal(code, target_id=t.target_id) from refusal

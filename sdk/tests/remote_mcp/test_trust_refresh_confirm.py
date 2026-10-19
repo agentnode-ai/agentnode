@@ -6,10 +6,12 @@ Real issuer, register, acknowledgements and worker-side install (the lifecycle s
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from agentnode_sdk.gateway.filelock import ProcessLock
 from agentnode_sdk.pki import revocation as rl
@@ -216,3 +218,98 @@ def test_the_router_refuses_a_legacy_ack(env):
     assert T.trust_current(ack, now=time.time(), deployment=pair) is True
     legacy = {k: v for k, v in ack.items() if not k.endswith("sha256")}
     assert T.trust_current(legacy, now=time.time(), deployment=pair) is False
+
+
+# ---------------------------------------------------------------------- a scheduled refresh in flight
+def _current(env):
+    trust = env["world"].root / "trust"
+    return TI.facts_of((trust / "revoked.crl").read_bytes(), (trust / "revoked-identities.json").read_bytes())
+
+
+def _admitted(env, tid="managed-w1"):
+    now = time.time()
+    return T.trust_current(env["acks"].load().get(tid), now=now, deployment=_current(env),
+                           previous=env["acks"].transition(now=now))
+
+
+def test_a_scheduled_refresh_never_refuses_a_target_mid_flight(env):
+    """Between the publication and the target's acknowledgement the target holds exactly the pair the
+    control plane judged by a moment before; it stays admissible for that one refresh (owner: refresh
+    under traffic without a failed call). The worker is slowed so the window is certainly observed."""
+    assert env["ops"].refresh_trust()["lagging"] == []        # the target holds the current pair first
+    assert _admitted(env)
+    w = env["workers"]["managed-w1"]
+    real = w.install_trust
+
+    def slow(crl, tombs):
+        time.sleep(0.5)
+        return real(crl, tombs)
+    w.install_trust = slow
+    stop, seen = threading.Event(), {"checks": 0, "refused": 0, "in_transition": 0}
+
+    def watch():
+        while not stop.is_set():
+            try:
+                ok = _admitted(env)
+            except OSError:                                   # Windows: a file read while it is renamed over
+                continue
+            seen["checks"] += 1
+            seen["refused"] += 0 if ok else 1
+            seen["in_transition"] += 1 if env["acks"].transition(now=time.time()) else 0
+    t = threading.Thread(target=watch)
+    t.start()
+    try:
+        for _ in range(3):
+            assert env["ops"].refresh_trust(force=True)["lagging"] == []
+    finally:
+        stop.set()
+        t.join(10)
+    assert seen["refused"] == 0 and seen["in_transition"] > 0, seen
+    assert env["acks"].transition(now=time.time()) is None and not env["acks"].transition_path.exists()
+    assert T.trust_current(env["acks"].load()["managed-w1"], now=time.time(), deployment=_current(env))
+
+
+def test_a_failed_push_ends_the_transition_and_refuses(env):
+    w = env["workers"]["managed-w1"]
+    w.install_trust = lambda crl, tombs: (_ for _ in ()).throw(OSError("worker gone"))
+    report = env["ops"].refresh_trust(force=True)
+    assert report["lagging"] == ["managed-w1"]
+    assert not env["acks"].transition_path.exists() and _admitted(env) is False
+
+
+def test_revocation_propagation_does_not_open_a_transition(env, monkeypatch):
+    begun = []
+    monkeypatch.setattr(env["acks"], "begin_transition", lambda previous, now: begun.append(1))
+    env["ops"].refresh_trust(push_only=True)
+    env["ops"].refresh_trust()                                 # not due: nothing published either
+    assert begun == []
+
+
+def test_the_transition_record_is_bounded_and_signed(env, tmp_path):
+    prev = _current(env)
+    acks = env["acks"]
+    acks.begin_transition(prev, now=time.time())
+    assert acks.transition(now=time.time()) == prev
+    assert acks.transition(now=time.time() + T.TRANSITION_MAX_SECONDS + 1) is None      # stale
+    assert acks.transition(now=time.time() - 5) is None                                 # from the future
+    doc = json.loads(acks.transition_path.read_text())
+    doc["previous"]["revocation_list_number"] += 1
+    acks.transition_path.write_text(json.dumps(doc))
+    assert acks.transition(now=time.time()) is None                                     # not what was signed
+    other = T.TrustAcks(acks.path.parent.parent, Ed25519PrivateKey.generate().public_key().public_bytes_raw())
+    acks.begin_transition(prev, now=time.time())
+    assert other.transition(now=time.time()) is None                                    # another operator key
+    with pytest.raises(T.TargetsRefused):
+        acks.begin_transition({"revocation_list_number": 1}, now=time.time())
+    acks.end_transition()
+    assert acks.transition(now=time.time()) is None
+
+
+def test_only_the_exact_previous_pair_is_admitted():
+    now, dep, prev = time.time(), _facts(6), _facts(5)
+    assert T.trust_current(dict(prev), now=now, deployment=dep, previous=prev) is True
+    assert T.trust_current(dict(prev, revocation_list_sha256="d" * 64), now=now, deployment=dep, previous=prev) is False
+    assert T.trust_current(dict(_facts(4)), now=now, deployment=dep, previous=prev) is False
+    assert T.trust_current(dict(prev), now=now, deployment=dep, previous=None) is False
+    expired = _facts(5, until=now - 1)
+    assert T.trust_current(dict(expired), now=now, deployment=dep, previous=expired) is False

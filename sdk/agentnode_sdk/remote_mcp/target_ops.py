@@ -442,6 +442,12 @@ class Operations:
             raise OperationFailed("trust_refresh.busy", str(exc)) from exc
 
     def _refresh_locked(self, *, force: bool, push_only: bool) -> dict:
+        try:
+            return self._refresh_steps(force=force, push_only=push_only)
+        finally:
+            self.acks.end_transition()                        # the previous pair is admissible no longer
+
+    def _refresh_steps(self, *, force: bool, push_only: bool) -> dict:
         report: dict[str, Any] = {"published": None, "pushed": {}, "lagging": [], "alerts": []}
         if not push_only:
             current = _read(self.issuer.trust_dir / _revocation.LIST_NAME)
@@ -453,6 +459,9 @@ class Operations:
             except Exception:                                  # noqa: BLE001 - an unreadable list is republished
                 age = None
             if force or age is None or age >= _revocation.REFRESH_AFTER_SECONDS:
+                previous = self._pair()[2]
+                if previous is not None:                      # targets holding it run on until they hold the next
+                    self.acks.begin_transition(previous, now=self.clock())
                 done = self.issuer.publish()
                 report["published"] = done.get("number") if done.get("published") else "failed"
             report["retired_overlaps"] = self.retire_overdue_overlaps()

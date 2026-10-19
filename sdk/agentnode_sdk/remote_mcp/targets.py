@@ -50,6 +50,10 @@ SCHEMA = "agentnode.mcp-targets.v1"
 _DOMAIN = b"agentnode.mcp-targets.v1/document\n"
 ACKS_SCHEMA = "agentnode.mcp-target-trust-acks.v1"
 _ACKS_DOMAIN = b"agentnode.mcp-target-trust-acks.v1/document\n"
+TRANSITION_SCHEMA = "agentnode.mcp-target-trust-transition.v1"
+_TRANSITION_DOMAIN = b"agentnode.mcp-target-trust-transition.v1/document\n"
+#: The longest a scheduled refresh keeps the pair it replaced admissible: its own lock timeout.
+TRANSITION_MAX_SECONDS = 600.0
 GENESIS = "0" * 64
 
 MANAGED, CUSTOMER = "managed", "customer"
@@ -691,13 +695,57 @@ class TrustAcks:
                                 "signature": self._private.sign(_signed_bytes(doc, _ACKS_DOMAIN)).hex()}
             _write_durably(self.path, canonical(doc) + b"\n")
 
+    # -------------------------------------------------------------- a scheduled refresh in flight
+    # Between a scheduled refresh publishing the deployment's next pair and a target acknowledging it,
+    # the target still holds -- exactly -- the pair the control plane judged by a moment before. That
+    # pair stays admissible for the duration of that one refresh: the refresh records it here (signed)
+    # before it publishes and removes it when every push was answered; a record older than the refresh
+    # lock's timeout is ignored. A revocation does not use this: its propagation stays strict.
+    def begin_transition(self, previous: dict, *, now: float) -> None:
+        if self._private is None:
+            raise TargetsRefused("acks.read_only", "recording needs the operator private key")
+        if _trust_install.differences(previous, previous):
+            raise TargetsRefused("acks.incomplete", "the previous pair is not complete")
+        doc = {"schema": TRANSITION_SCHEMA, "previous": {k: previous[k] for k in _trust_install.FACT_FIELDS},
+               "since": float(now)}
+        doc["signature"] = {"key_id": self.key_id,
+                            "signature": self._private.sign(_signed_bytes(doc, _TRANSITION_DOMAIN)).hex()}
+        _write_durably(self.transition_path, canonical(doc) + b"\n")
 
-def trust_current(ack: dict | None, *, now: float, deployment: dict | None) -> bool:
+    def end_transition(self) -> None:
+        self.transition_path.unlink(missing_ok=True)
+
+    def transition(self, *, now: float) -> dict | None:
+        """The previous pair of a refresh in flight, or None (none, stale, unreadable or unsigned)."""
+        try:
+            doc = json.loads(self.transition_path.read_bytes().decode("utf-8"))
+            if set(doc) != {"schema", "previous", "since", "signature"} or doc["schema"] != TRANSITION_SCHEMA:
+                return None
+            if doc["signature"]["key_id"] != self.key_id:
+                return None
+            self._public.verify(bytes.fromhex(doc["signature"]["signature"]), _signed_bytes(doc, _TRANSITION_DOMAIN))
+            if not (0.0 <= float(now) - float(doc["since"]) <= TRANSITION_MAX_SECONDS):
+                return None
+            previous = doc["previous"]
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, InvalidSignature):
+            return None
+        return previous if isinstance(previous, dict) and not _trust_install.differences(previous, previous) else None
+
+    @property
+    def transition_path(self) -> Path:
+        return self.path.with_name("trust-transition.json")
+
+
+def trust_current(ack: dict | None, *, now: float, deployment: dict | None, previous: dict | None = None) -> bool:
     """A target may run only while its worker holds EXACTLY the pair the control plane itself judges
     by -- number, both digests and every validity time equal (trust-refresh C12) -- and that pair is
     unexpired. A missing deployment pair, a legacy or partial acknowledgement, or any difference
-    refuses; there is no number-only fallback."""
-    if not ack or not deployment or _trust_install.differences(ack, deployment):
+    refuses; there is no number-only fallback. `previous` is the exact pair a scheduled refresh in
+    flight replaced (`TrustAcks.transition`): a target that holds exactly THAT pair keeps running
+    until the same refresh brings it the new one."""
+    if not ack or not deployment:
+        return False
+    if _trust_install.differences(ack, deployment) and (previous is None or _trust_install.differences(ack, previous)):
         return False
     if float(ack["revocation_list_next_update"]) <= now or float(ack["tombstones_not_after"]) <= now:
         return False
@@ -707,5 +755,6 @@ def trust_current(ack: dict | None, *, now: float, deployment: dict | None) -> b
 __all__ = ["ACTIVE", "ASSURANCE_CLASSES", "ATTESTATION_MAX_SECONDS", "CUSTOMER", "CUSTOMER_OBSERVED",
            "ENROLLED", "EXPIRED", "HARDWARE_ATTESTED", "INVITED", "MANAGED", "OPERATOR_MANAGED", "PROBING",
            "PROVISIONING_FAILED", "REVOKED", "Register", "RegisterSnapshot", "SUSPENDED", "TERMINAL", "Target",
-           "TargetsRefused", "TargetsUnavailable", "TrustAcks", "check_successor", "digest", "endpoint_digest",
+           "TRANSITION_MAX_SECONDS", "TargetsRefused", "TargetsUnavailable", "TrustAcks", "check_successor", "digest",
+           "endpoint_digest",
            "trust_current", "validate_document"]
