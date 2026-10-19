@@ -300,10 +300,66 @@ def test_revocation_propagation_does_not_open_a_transition(env, monkeypatch):
     assert begun == []
 
 
+class _RefreshHeld:
+    """Another 'process' (a thread with its own lock handle) holding the refresh lock, as a refresh in flight does."""
+
+    def __init__(self, env):
+        self.path = env["ops"].stand / "targets" / O.REFRESH_LOCK_NAME
+        self.held, self.release = threading.Event(), threading.Event()
+
+    def __enter__(self):
+        def hold():
+            with ProcessLock(self.path, timeout=5):
+                self.held.set()
+                self.release.wait(10)
+        self.t = threading.Thread(target=hold)
+        self.t.start()
+        assert self.held.wait(5)
+        return self
+
+    def __exit__(self, *exc):
+        self.release.set()
+        self.t.join(10)
+
+
+def test_an_orphaned_transition_is_void(env):
+    """F-001: a refresh that died after recording the previous pair holds no lock any more -- its record,
+    however fresh and well signed, admits nothing."""
+    prev = _current(env)
+    acks = env["acks"]
+    acks.begin_transition(prev, now=time.time())                 # ... and then the refresh was killed
+    assert acks.refresh_in_flight() is False
+    assert acks.transition(now=time.time()) is None
+    with _RefreshHeld(env):
+        assert acks.refresh_in_flight() is True and acks.transition(now=time.time()) == prev
+    assert acks.transition(now=time.time()) is None
+
+
+def test_a_revocation_propagation_never_runs_beside_an_orphan(env):
+    """F-002: an orphan left by a dead refresh is removed before the next run under the lock does anything,
+    so a revocation's propagation (push_only, holding the lock) is judged strictly throughout."""
+    assert env["ops"].refresh_trust()["lagging"] == []
+    old_ack = env["acks"].load()["managed-w1"]
+    env["acks"].begin_transition(_current(env), now=time.time())   # the orphan
+    env["world"].issuer.publish()                                  # a revocation publishes the next pair
+    w = env["workers"]["managed-w1"]
+    real, seen = w.install_trust, []
+
+    def during_propagation(crl, tombs):
+        now = time.time()
+        seen.append((env["acks"].transition(now=now),
+                     T.trust_current(old_ack, now=now, deployment=_current(env), previous=env["acks"].transition(now=now))))
+        return real(crl, tombs)
+    w.install_trust = during_propagation
+    env["ops"].refresh_trust(push_only=True)
+    assert seen == [(None, False)] and not env["acks"].transition_path.exists()
+
+
 def test_the_transition_record_is_bounded_and_signed(env, tmp_path):
     prev = _current(env)
     acks = env["acks"]
     acks.begin_transition(prev, now=time.time())
+    held = _RefreshHeld(env).__enter__()
     assert acks.transition(now=time.time()) == prev
     assert acks.transition(now=time.time() + T.TRANSITION_MAX_SECONDS + 1) is None      # stale
     assert acks.transition(now=time.time() - 5) is None                                 # from the future
@@ -318,6 +374,7 @@ def test_the_transition_record_is_bounded_and_signed(env, tmp_path):
         acks.begin_transition({"revocation_list_number": 1}, now=time.time())
     acks.end_transition()
     assert acks.transition(now=time.time()) is None
+    held.__exit__(None, None, None)
 
 
 def test_only_the_exact_previous_pair_is_admitted():

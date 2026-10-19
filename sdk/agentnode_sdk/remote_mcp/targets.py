@@ -54,6 +54,8 @@ TRANSITION_SCHEMA = "agentnode.mcp-target-trust-transition.v1"
 _TRANSITION_DOMAIN = b"agentnode.mcp-target-trust-transition.v1/document\n"
 #: The longest a scheduled refresh keeps the pair it replaced admissible: its own lock timeout.
 TRANSITION_MAX_SECONDS = 600.0
+#: One trust refresh at a time: `stand/targets/.trust-refresh.lock`. A transition is honoured only while held.
+REFRESH_LOCK_NAME = ".trust-refresh.lock"
 GENESIS = "0" * 64
 
 MANAGED, CUSTOMER = "managed", "customer"
@@ -699,8 +701,10 @@ class TrustAcks:
     # Between a scheduled refresh publishing the deployment's next pair and a target acknowledging it,
     # the target still holds -- exactly -- the pair the control plane judged by a moment before. That
     # pair stays admissible for the duration of that one refresh: the refresh records it here (signed)
-    # before it publishes and removes it when every push was answered; a record older than the refresh
-    # lock's timeout is ignored. A revocation does not use this: its propagation stays strict.
+    # before it publishes and removes it when every push was answered. It is honoured only while a
+    # refresh HOLDS the refresh lock (a refresh that died released it, so its record is void at once),
+    # never when older than the lock's timeout, and every refresh run removes any record before it
+    # starts -- so a revocation's propagation, which runs under the same lock, never runs beside one.
     def begin_transition(self, previous: dict, *, now: float) -> None:
         if self._private is None:
             raise TargetsRefused("acks.read_only", "recording needs the operator private key")
@@ -715,8 +719,23 @@ class TrustAcks:
     def end_transition(self) -> None:
         self.transition_path.unlink(missing_ok=True)
 
+    def refresh_in_flight(self) -> bool:
+        """Is a trust refresh holding its lock right now? (A process that died released it.) The probe
+        takes the lock for an instant when it is free; a refresh starting meanwhile waits a poll."""
+        from agentnode_sdk.gateway.filelock import LockUnavailable, ProcessLock
+        try:
+            with ProcessLock(self.path.with_name(REFRESH_LOCK_NAME), timeout=0):
+                return False
+        except LockUnavailable:
+            return True
+        except OSError:
+            return False                                      # cannot tell: no transition is honoured
+
     def transition(self, *, now: float) -> dict | None:
-        """The previous pair of a refresh in flight, or None (none, stale, unreadable or unsigned)."""
+        """The previous pair of a refresh that is IN FLIGHT -- its lock held -- or None (none, no refresh
+        holding the lock, stale, unreadable or unsigned). A record a dead refresh left behind is void."""
+        if not self.transition_path.exists():
+            return None
         try:
             doc = json.loads(self.transition_path.read_bytes().decode("utf-8"))
             if set(doc) != {"schema", "previous", "since", "signature"} or doc["schema"] != TRANSITION_SCHEMA:
@@ -729,7 +748,9 @@ class TrustAcks:
             previous = doc["previous"]
         except (OSError, ValueError, KeyError, TypeError, AttributeError, InvalidSignature):
             return None
-        return previous if isinstance(previous, dict) and not _trust_install.differences(previous, previous) else None
+        if not isinstance(previous, dict) or _trust_install.differences(previous, previous):
+            return None
+        return previous if self.refresh_in_flight() else None
 
     @property
     def transition_path(self) -> Path:

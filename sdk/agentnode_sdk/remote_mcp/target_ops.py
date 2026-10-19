@@ -39,7 +39,7 @@ from agentnode_sdk.worker import trust_install as _trust_install
 PAIR_OVERLAP_SECONDS = 24 * 3600
 #: One trust refresh at a time (trust-refresh C6): `stand/targets/.trust-refresh.lock`, and how long a
 #: second run waits for the first before it fails as `trust_refresh.busy`.
-REFRESH_LOCK_NAME = ".trust-refresh.lock"
+REFRESH_LOCK_NAME = T.REFRESH_LOCK_NAME
 REFRESH_LOCK_SECONDS = 600.0
 #: Warn when the deployment's revocation list has less than this left.
 ALERT_BEFORE_SECONDS = 48 * 3600
@@ -442,6 +442,10 @@ class Operations:
             raise OperationFailed("trust_refresh.busy", str(exc)) from exc
 
     def _refresh_locked(self, *, force: bool, push_only: bool) -> dict:
+        # A record a refresh that died left behind is already void (its lock was released with it);
+        # it is removed before anything else, so no later run -- a revocation's propagation above
+        # all -- ever runs while one exists.
+        self.acks.end_transition()
         try:
             return self._refresh_steps(force=force, push_only=push_only)
         finally:
