@@ -39,7 +39,7 @@ from agentnode_sdk.worker import trust_install as _trust_install
 PAIR_OVERLAP_SECONDS = 24 * 3600
 #: One trust refresh at a time (trust-refresh C6): `stand/targets/.trust-refresh.lock`, and how long a
 #: second run waits for the first before it fails as `trust_refresh.busy`.
-REFRESH_LOCK_NAME = T.REFRESH_LOCK_NAME
+REFRESH_LOCK_NAME = ".trust-refresh.lock"
 REFRESH_LOCK_SECONDS = 600.0
 #: Warn when the deployment's revocation list has less than this left.
 ALERT_BEFORE_SECONDS = 48 * 3600
@@ -442,16 +442,6 @@ class Operations:
             raise OperationFailed("trust_refresh.busy", str(exc)) from exc
 
     def _refresh_locked(self, *, force: bool, push_only: bool) -> dict:
-        # A record a refresh that died left behind is already void (its lock was released with it);
-        # it is removed before anything else, so no later run -- a revocation's propagation above
-        # all -- ever runs while one exists.
-        self.acks.end_transition()
-        try:
-            return self._refresh_steps(force=force, push_only=push_only)
-        finally:
-            self.acks.end_transition()                        # the previous pair is admissible no longer
-
-    def _refresh_steps(self, *, force: bool, push_only: bool) -> dict:
         report: dict[str, Any] = {"published": None, "pushed": {}, "lagging": [], "alerts": []}
         if not push_only:
             current = _read(self.issuer.trust_dir / _revocation.LIST_NAME)
@@ -463,9 +453,9 @@ class Operations:
             except Exception:                                  # noqa: BLE001 - an unreadable list is republished
                 age = None
             if force or age is None or age >= _revocation.REFRESH_AFTER_SECONDS:
-                previous = self._pair()[2]
-                if previous is not None:                      # targets holding it run on until they hold the next
-                    self.acks.begin_transition(previous, now=self.clock())
+                crl_now, tombs_now, facts_now = self._pair()
+                if facts_now is not None:                     # targets holding it run on while its content is current
+                    T.save_previous_pair(self.stand, crl_now, tombs_now)
                 done = self.issuer.publish()
                 report["published"] = done.get("number") if done.get("published") else "failed"
             report["retired_overlaps"] = self.retire_overdue_overlaps()

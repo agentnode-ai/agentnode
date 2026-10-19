@@ -50,12 +50,8 @@ SCHEMA = "agentnode.mcp-targets.v1"
 _DOMAIN = b"agentnode.mcp-targets.v1/document\n"
 ACKS_SCHEMA = "agentnode.mcp-target-trust-acks.v1"
 _ACKS_DOMAIN = b"agentnode.mcp-target-trust-acks.v1/document\n"
-TRANSITION_SCHEMA = "agentnode.mcp-target-trust-transition.v1"
-_TRANSITION_DOMAIN = b"agentnode.mcp-target-trust-transition.v1/document\n"
-#: The longest a scheduled refresh keeps the pair it replaced admissible: its own lock timeout.
-TRANSITION_MAX_SECONDS = 600.0
-#: One trust refresh at a time: `stand/targets/.trust-refresh.lock`. A transition is honoured only while held.
-REFRESH_LOCK_NAME = ".trust-refresh.lock"
+#: Where a scheduled refresh keeps the pair it is about to replace (`stand/targets/trust-previous/`).
+PREVIOUS_DIR = "trust-previous"
 GENESIS = "0" * 64
 
 MANAGED, CUSTOMER = "managed", "customer"
@@ -697,77 +693,44 @@ class TrustAcks:
                                 "signature": self._private.sign(_signed_bytes(doc, _ACKS_DOMAIN)).hex()}
             _write_durably(self.path, canonical(doc) + b"\n")
 
-    # -------------------------------------------------------------- a scheduled refresh in flight
-    # Between a scheduled refresh publishing the deployment's next pair and a target acknowledging it,
-    # the target still holds -- exactly -- the pair the control plane judged by a moment before. That
-    # pair stays admissible for the duration of that one refresh: the refresh records it here (signed)
-    # before it publishes and removes it when every push was answered. It is honoured only while a
-    # refresh HOLDS the refresh lock (a refresh that died released it, so its record is void at once),
-    # never when older than the lock's timeout, and every refresh run removes any record before it
-    # starts -- so a revocation's propagation, which runs under the same lock, never runs beside one.
-    def begin_transition(self, previous: dict, *, now: float) -> None:
-        if self._private is None:
-            raise TargetsRefused("acks.read_only", "recording needs the operator private key")
-        if _trust_install.differences(previous, previous):
-            raise TargetsRefused("acks.incomplete", "the previous pair is not complete")
-        doc = {"schema": TRANSITION_SCHEMA, "previous": {k: previous[k] for k in _trust_install.FACT_FIELDS},
-               "since": float(now)}
-        doc["signature"] = {"key_id": self.key_id,
-                            "signature": self._private.sign(_signed_bytes(doc, _TRANSITION_DOMAIN)).hex()}
-        _write_durably(self.transition_path, canonical(doc) + b"\n")
 
-    def end_transition(self) -> None:
-        self.transition_path.unlink(missing_ok=True)
+# ---------------------------------------------------------------------- the pair before the last publication
+# A scheduled refresh re-signs the deployment's lists; between its publication and a target's acknowledgement
+# the target holds -- exactly -- the pair the control plane judged by a moment before. The refresh keeps that
+# pair's BYTES here (CA-signed, so self-authenticating) right before it publishes. It may stand in for the
+# current pair only while its CONTENT -- the revoked serials, the withdrawn identities, the deployment -- is
+# identical to the current pair's: any revocation published since makes the two differ and admission strict.
+# No time, lock or run is involved, so nothing can be left behind that grants more than that equality.
 
-    def refresh_in_flight(self) -> bool:
-        """Is a trust refresh holding its lock right now? (A process that died released it.) The probe
-        takes the lock for an instant when it is free; a refresh starting meanwhile waits a poll."""
-        from agentnode_sdk.gateway.filelock import LockUnavailable, ProcessLock
-        try:
-            with ProcessLock(self.path.with_name(REFRESH_LOCK_NAME), timeout=0):
-                return False
-        except LockUnavailable:
-            return True
-        except OSError:
-            return False                                      # cannot tell: no transition is honoured
+def save_previous_pair(stand, revocation_list: bytes, identity_tombstones: bytes) -> None:
+    d = Path(stand) / "targets" / PREVIOUS_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    _write_durably(d / "revoked-identities.json", identity_tombstones)
+    _write_durably(d / "revoked.crl", revocation_list)
 
-    def transition(self, *, now: float) -> dict | None:
-        """The previous pair of a refresh that is IN FLIGHT -- its lock held -- or None (none, no refresh
-        holding the lock, stale, unreadable or unsigned). A record a dead refresh left behind is void."""
-        if not self.transition_path.exists():
-            return None
-        try:
-            doc = json.loads(self.transition_path.read_bytes().decode("utf-8"))
-            if set(doc) != {"schema", "previous", "since", "signature"} or doc["schema"] != TRANSITION_SCHEMA:
-                return None
-            if doc["signature"]["key_id"] != self.key_id:
-                return None
-            self._public.verify(bytes.fromhex(doc["signature"]["signature"]), _signed_bytes(doc, _TRANSITION_DOMAIN))
-            if not (0.0 <= float(now) - float(doc["since"]) <= TRANSITION_MAX_SECONDS):
-                return None
-            previous = doc["previous"]
-        except (OSError, ValueError, KeyError, TypeError, AttributeError, InvalidSignature):
-            return None
-        if not isinstance(previous, dict) or _trust_install.differences(previous, previous):
-            return None
-        return previous if self.refresh_in_flight() else None
 
-    @property
-    def transition_path(self) -> Path:
-        return self.path.with_name("trust-transition.json")
+def previous_pair(stand) -> tuple[bytes, bytes] | None:
+    d = Path(stand) / "targets" / PREVIOUS_DIR
+    try:
+        return (d / "revoked.crl").read_bytes(), (d / "revoked-identities.json").read_bytes()
+    except OSError:
+        return None
 
 
 def trust_current(ack: dict | None, *, now: float, deployment: dict | None, previous: dict | None = None) -> bool:
     """A target may run only while its worker holds EXACTLY the pair the control plane itself judges
     by -- number, both digests and every validity time equal (trust-refresh C12) -- and that pair is
     unexpired. A missing deployment pair, a legacy or partial acknowledgement, or any difference
-    refuses; there is no number-only fallback. `previous` is the exact pair a scheduled refresh in
-    flight replaced (`TrustAcks.transition`): a target that holds exactly THAT pair keeps running
-    until the same refresh brings it the new one."""
+    refuses; there is no number-only fallback. `previous` is the CA-verified pair saved before the
+    last scheduled publication: a target holding EXACTLY that pair runs on only while its revocation
+    content is identical to the current pair's (`content_sha256`) and it is unexpired."""
     if not ack or not deployment:
         return False
-    if _trust_install.differences(ack, deployment) and (previous is None or _trust_install.differences(ack, previous)):
-        return False
+    if _trust_install.differences(ack, deployment):
+        if previous is None or _trust_install.differences(ack, previous):
+            return False
+        if not deployment.get("content_sha256") or previous.get("content_sha256") != deployment["content_sha256"]:
+            return False
     if float(ack["revocation_list_next_update"]) <= now or float(ack["tombstones_not_after"]) <= now:
         return False
     return True
@@ -776,6 +739,5 @@ def trust_current(ack: dict | None, *, now: float, deployment: dict | None, prev
 __all__ = ["ACTIVE", "ASSURANCE_CLASSES", "ATTESTATION_MAX_SECONDS", "CUSTOMER", "CUSTOMER_OBSERVED",
            "ENROLLED", "EXPIRED", "HARDWARE_ATTESTED", "INVITED", "MANAGED", "OPERATOR_MANAGED", "PROBING",
            "PROVISIONING_FAILED", "REVOKED", "Register", "RegisterSnapshot", "SUSPENDED", "TERMINAL", "Target",
-           "TRANSITION_MAX_SECONDS", "TargetsRefused", "TargetsUnavailable", "TrustAcks", "check_successor", "digest",
-           "endpoint_digest",
-           "trust_current", "validate_document"]
+           "PREVIOUS_DIR", "TargetsRefused", "TargetsUnavailable", "TrustAcks", "check_successor", "digest",
+           "endpoint_digest", "previous_pair", "save_previous_pair", "trust_current", "validate_document"]

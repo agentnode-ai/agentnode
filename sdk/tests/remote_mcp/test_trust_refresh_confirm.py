@@ -6,12 +6,10 @@ Real issuer, register, acknowledgements and worker-side install (the lifecycle s
 from __future__ import annotations
 
 import hashlib
-import json
 import threading
 import time
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from agentnode_sdk.gateway.filelock import ProcessLock
 from agentnode_sdk.pki import revocation as rl
@@ -245,143 +243,121 @@ def test_the_router_refuses_a_legacy_ack(env):
     assert T.trust_current(legacy, now=time.time(), deployment=pair) is False
 
 
-# ---------------------------------------------------------------------- a scheduled refresh in flight
+# ---------------------------------------------------------------------- the pair before the last publication
 def _current(env):
     trust = env["world"].root / "trust"
     return TI.facts_of((trust / "revoked.crl").read_bytes(), (trust / "revoked-identities.json").read_bytes())
 
 
+def _previous(env):
+    """What server.previous_trust believes: the saved pair, verified against the deployment's anchor."""
+    pair = T.previous_pair(env["reg"].stand)
+    if pair is None:
+        return None
+    rl.read(pair[0], env["world"]._ca()[1], time.time())
+    return TI.facts_of(*pair)
+
+
 def _admitted(env, tid="managed-w1"):
-    now = time.time()
-    return T.trust_current(env["acks"].load().get(tid), now=now, deployment=_current(env),
-                           previous=env["acks"].transition(now=now))
+    return T.trust_current(env["acks"].load().get(tid), now=time.time(), deployment=_current(env),
+                           previous=_previous(env))
+
+
+def _a_serial(env):
+    inv = env["world"].issuer.inventory()["entries"]
+    return next(c["serial"] for e in inv.values() for c in e.get("certificates", []) if c.get("status") == "current")
 
 
 def test_a_scheduled_refresh_never_refuses_a_target_mid_flight(env):
     """Between the publication and the target's acknowledgement the target holds exactly the pair the
-    control plane judged by a moment before; it stays admissible for that one refresh (owner: refresh
-    under traffic without a failed call). The admission is judged INSIDE the window -- after the
+    control plane judged by a moment before, with the same revocation content: it stays admissible
+    (owner: refresh under traffic without a failed call). Judged INSIDE the window -- after the
     publication, while the worker is being offered the new pair -- and before and after it."""
     assert env["ops"].refresh_trust()["lagging"] == []        # the target holds the current pair first
     assert _admitted(env)
     w = env["workers"]["managed-w1"]
     real = w.install_trust
-    seen = {"checks": 0, "refused": 0, "in_transition": 0, "new_pair_published": 0}
+    seen = {"checks": 0, "refused": 0, "on_previous": 0, "new_pair_published": 0}
 
     def in_the_window(crl, tombs):
         before = env["acks"].load()["managed-w1"]
         seen["new_pair_published"] += 1 if TI.differences(before, _current(env)) else 0
+        seen["on_previous"] += 0 if TI.differences(before, _previous(env)) else 1
         seen["checks"] += 1
         seen["refused"] += 0 if _admitted(env) else 1
-        seen["in_transition"] += 1 if env["acks"].transition(now=time.time()) else 0
         return real(crl, tombs)
     w.install_trust = in_the_window
     for _ in range(3):
         assert env["ops"].refresh_trust(force=True)["lagging"] == []
         assert _admitted(env)
-    assert seen == {"checks": 3, "refused": 0, "in_transition": 3, "new_pair_published": 3}, seen
-    assert env["acks"].transition(now=time.time()) is None and not env["acks"].transition_path.exists()
+    assert seen == {"checks": 3, "refused": 0, "on_previous": 3, "new_pair_published": 3}, seen
     assert T.trust_current(env["acks"].load()["managed-w1"], now=time.time(), deployment=_current(env))
 
 
-def test_a_failed_push_ends_the_transition_and_refuses(env):
+def test_a_revocation_makes_the_previous_pair_inadmissible(env):
+    """R0002 F-005/F-006: whatever was saved, a pair that does not refuse what the current pair refuses
+    admits nothing -- a revocation published at any moment is strict at once."""
     w = env["workers"]["managed-w1"]
-    w.install_trust = lambda crl, tombs: (_ for _ in ()).throw(OSError("worker gone"))
-    report = env["ops"].refresh_trust(force=True)
-    assert report["lagging"] == ["managed-w1"]
-    assert not env["acks"].transition_path.exists() and _admitted(env) is False
-
-
-def test_revocation_propagation_does_not_open_a_transition(env, monkeypatch):
-    begun = []
-    monkeypatch.setattr(env["acks"], "begin_transition", lambda previous, now: begun.append(1))
-    env["ops"].refresh_trust(push_only=True)
-    env["ops"].refresh_trust()                                 # not due: nothing published either
-    assert begun == []
-
-
-class _RefreshHeld:
-    """Another 'process' (a thread with its own lock handle) holding the refresh lock, as a refresh in flight does."""
-
-    def __init__(self, env):
-        self.path = env["ops"].stand / "targets" / O.REFRESH_LOCK_NAME
-        self.held, self.release = threading.Event(), threading.Event()
-
-    def __enter__(self):
-        def hold():
-            with ProcessLock(self.path, timeout=5):
-                self.held.set()
-                self.release.wait(10)
-        self.t = threading.Thread(target=hold)
-        self.t.start()
-        assert self.held.wait(5)
-        return self
-
-    def __exit__(self, *exc):
-        self.release.set()
-        self.t.join(10)
-
-
-def test_an_orphaned_transition_is_void(env):
-    """F-001: a refresh that died after recording the previous pair holds no lock any more -- its record,
-    however fresh and well signed, admits nothing."""
-    prev = _current(env)
-    acks = env["acks"]
-    acks.begin_transition(prev, now=time.time())                 # ... and then the refresh was killed
-    assert acks.refresh_in_flight() is False
-    assert acks.transition(now=time.time()) is None
-    with _RefreshHeld(env):
-        assert acks.refresh_in_flight() is True and acks.transition(now=time.time()) == prev
-    assert acks.transition(now=time.time()) is None
-
-
-def test_a_revocation_propagation_never_runs_beside_an_orphan(env):
-    """F-002: an orphan left by a dead refresh is removed before the next run under the lock does anything,
-    so a revocation's propagation (push_only, holding the lock) is judged strictly throughout."""
     assert env["ops"].refresh_trust()["lagging"] == []
-    old_ack = env["acks"].load()["managed-w1"]
-    env["acks"].begin_transition(_current(env), now=time.time())   # the orphan
-    env["world"].issuer.publish()                                  # a revocation publishes the next pair
+    real = w.install_trust
+    w.install_trust = lambda crl, tombs: (_ for _ in ()).throw(OSError("worker unreachable"))
+    report = env["ops"].refresh_trust(force=True)              # P0 saved, P1 published, the worker keeps P0
+    assert report["lagging"] == ["managed-w1"] and any("managed-w1" in a for a in report["alerts"])
+    assert _admitted(env) is True                              # P0 refuses exactly what P1 refuses
+    env["world"].issuer.revoke(_a_serial(env))                 # a revocation publishes P2: new content
+    assert _previous(env)["content_sha256"] != _current(env)["content_sha256"]
+    assert _admitted(env) is False                             # ... and P0 admits nothing any more
+    w.install_trust = real
+    assert env["ops"].refresh_trust()["lagging"] == [] and _admitted(env) is True
+
+
+def test_only_one_publication_behind_is_admitted(env):
+    """The saved pair is the one replaced by the LAST scheduled publication; a target two behind runs nowhere."""
     w = env["workers"]["managed-w1"]
-    real, seen = w.install_trust, []
-
-    def during_propagation(crl, tombs):
-        now = time.time()
-        seen.append((env["acks"].transition(now=now),
-                     T.trust_current(old_ack, now=now, deployment=_current(env), previous=env["acks"].transition(now=now))))
-        return real(crl, tombs)
-    w.install_trust = during_propagation
-    env["ops"].refresh_trust(push_only=True)
-    assert seen == [(None, False)] and not env["acks"].transition_path.exists()
+    assert env["ops"].refresh_trust()["lagging"] == []
+    w.install_trust = lambda crl, tombs: (_ for _ in ()).throw(OSError("worker unreachable"))
+    env["ops"].refresh_trust(force=True)
+    assert _admitted(env) is True                              # one behind, same content
+    env["ops"].refresh_trust(force=True)
+    assert _admitted(env) is False                             # two behind
 
 
-def test_the_transition_record_is_bounded_and_signed(env, tmp_path):
-    prev = _current(env)
-    acks = env["acks"]
-    acks.begin_transition(prev, now=time.time())
-    held = _RefreshHeld(env).__enter__()
-    assert acks.transition(now=time.time()) == prev
-    assert acks.transition(now=time.time() + T.TRANSITION_MAX_SECONDS + 1) is None      # stale
-    assert acks.transition(now=time.time() - 5) is None                                 # from the future
-    doc = json.loads(acks.transition_path.read_text())
-    doc["previous"]["revocation_list_number"] += 1
-    acks.transition_path.write_text(json.dumps(doc))
-    assert acks.transition(now=time.time()) is None                                     # not what was signed
-    other = T.TrustAcks(acks.path.parent.parent, Ed25519PrivateKey.generate().public_key().public_bytes_raw())
-    acks.begin_transition(prev, now=time.time())
-    assert other.transition(now=time.time()) is None                                    # another operator key
-    with pytest.raises(T.TargetsRefused):
-        acks.begin_transition({"revocation_list_number": 1}, now=time.time())
-    acks.end_transition()
-    assert acks.transition(now=time.time()) is None
-    held.__exit__(None, None, None)
+def test_a_saved_pair_the_anchor_does_not_verify_admits_nothing(env, monkeypatch, tmp_path):
+    """server.previous_trust believes the saved pair only if the control plane's own anchor verifies both
+    documents; a forged, tampered or expired one is None."""
+    import dataclasses
+    from agentnode_sdk.pki import tombstones as tomb
+    from agentnode_sdk.remote_mcp import server
+    gw = env["world"].service("gateway", "g1")              # the identity the World's gateway floor is for
+    tls = dataclasses.replace(env["world"].settings(gw, {"w1"}, role="gateway"),
+                              identity_tombstones=str(env["world"].root / "trust" / tomb.LIST_NAME), tombstones_required=True)
+    monkeypatch.setattr(server, "_worker_base", lambda stand: ({}, tls))
+    stand = str(env["reg"].stand)
+    trust = env["world"].root / "trust"
+    crl, tombs = (trust / "revoked.crl").read_bytes(), (trust / "revoked-identities.json").read_bytes()
+    T.save_previous_pair(stand, crl, tombs)
+    assert server.previous_trust(stand)() == TI.facts_of(crl, tombs)
+    key, cert, _ = env["world"].foreign_ca()
+    T.save_previous_pair(stand, rl.build(key, cert, {}, number=99, now=time.time()), tombs)
+    assert server.previous_trust(stand)() is None              # not signed by the deployment's CA
+    tampered = bytearray(tombs)
+    tampered[len(tampered) // 2] ^= 1
+    T.save_previous_pair(stand, crl, bytes(tampered))
+    assert server.previous_trust(stand)() is None
+    k, c = env["world"]._ca()
+    T.save_previous_pair(stand, rl.build(k, c, {}, number=98, now=time.time() - 8 * 86400), tombs)
+    assert server.previous_trust(stand)() is None              # expired
 
 
-def test_only_the_exact_previous_pair_is_admitted():
-    now, dep, prev = time.time(), _facts(6), _facts(5)
+def test_only_the_exact_previous_pair_with_equal_content_is_admitted():
+    now = time.time()
+    dep, prev = dict(_facts(6), content_sha256="e" * 64), dict(_facts(5), content_sha256="e" * 64)
     assert T.trust_current(dict(prev), now=now, deployment=dep, previous=prev) is True
     assert T.trust_current(dict(prev, revocation_list_sha256="d" * 64), now=now, deployment=dep, previous=prev) is False
     assert T.trust_current(dict(_facts(4)), now=now, deployment=dep, previous=prev) is False
     assert T.trust_current(dict(prev), now=now, deployment=dep, previous=None) is False
-    expired = _facts(5, until=now - 1)
+    assert T.trust_current(dict(prev), now=now, deployment=dep, previous=dict(prev, content_sha256="f" * 64)) is False
+    assert T.trust_current(dict(prev), now=now, deployment={k: v for k, v in dep.items() if k != "content_sha256"},
+                           previous=prev) is False
+    expired = dict(_facts(5, until=now - 1), content_sha256="e" * 64)
     assert T.trust_current(dict(expired), now=now, deployment=dep, previous=expired) is False

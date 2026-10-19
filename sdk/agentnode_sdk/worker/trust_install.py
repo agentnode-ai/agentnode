@@ -54,9 +54,13 @@ def facts_of(revocation_list: bytes, identity_tombstones: bytes) -> dict:
     try:
         from cryptography import x509
 
-        next_update = _revocation._stamp(x509.load_pem_x509_crl(revocation_list), "next_update")
+        crl = x509.load_pem_x509_crl(revocation_list)
+        next_update = _revocation._stamp(crl, "next_update")
+        serials = sorted(_revocation.serial_text(r.serial_number) for r in crl)
         body = json.loads(identity_tombstones.decode("utf-8"))["body"]
         published_at, not_after = float(body["published_at"]), float(body["not_after"])
+        content = {"deployment": str(body["deployment"]), "revoked_serials": serials,
+                   "withdrawn_identities": sorted(str(u) for u in body.get("uris") or ())}
     except Exception as exc:                                  # noqa: BLE001 - one answer: does not parse
         raise ValueError("the trust pair does not parse (%s)" % type(exc).__name__) from exc
     return {"revocation_list_number": int(number),
@@ -64,7 +68,10 @@ def facts_of(revocation_list: bytes, identity_tombstones: bytes) -> dict:
             "revocation_list_next_update": float(next_update),
             "tombstones_sha256": hashlib.sha256(identity_tombstones).hexdigest(),
             "tombstones_published_at": published_at,
-            "tombstones_not_after": not_after}
+            "tombstones_not_after": not_after,
+            # WHAT the pair refuses, without when it was signed: two pairs with equal content refuse the
+            # same certificates and identities. Not an acknowledgement field.
+            "content_sha256": hashlib.sha256(json.dumps(content, sort_keys=True).encode("utf-8")).hexdigest()}
 
 
 def differences(ack: dict | None, expected: dict | None) -> list[str]:

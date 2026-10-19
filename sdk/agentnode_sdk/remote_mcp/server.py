@@ -213,7 +213,32 @@ def deployment_trust(stand: str):
     return facts
 
 
-def build_target_router(stand: str, worker_for=None, deployment=None):
+def previous_trust(stand: str):
+    """The pair a scheduled refresh saved right before its last publication (`targets.save_previous_pair`),
+    with its facts and content digest -- only if this control plane's own anchor verifies BOTH documents
+    at its effective time; None otherwise (absent, unreadable, unsigned, expired)."""
+    from agentnode_sdk.pki import revocation, tombstones
+    from agentnode_sdk.remote_mcp import targets
+    from agentnode_sdk.worker import trust_install
+
+    def facts():
+        pair = targets.previous_pair(stand)
+        if pair is None:
+            return None
+        crl, tombs = pair
+        try:
+            _cfg, tls = _worker_base(stand)
+            view = tls.trust("gateway")
+            effective = view.effective_time()
+            revocation.read(crl, view.anchor(), effective)
+            tombstones.read(tombs, deployment=tls.deployment, verifier=view._verify_with_anchor).usable_at(effective)
+            return trust_install.facts_of(crl, tombs)
+        except Exception:                                     # noqa: BLE001 - not believed: never admits
+            return None
+    return facts
+
+
+def build_target_router(stand: str, worker_for=None, deployment=None, previous=None):
     """The execution-target router of a stand (target-router). The register is verified on every
     use; a missing or untrustworthy register refuses every run (503) -- never a fallback."""
     from agentnode_sdk.remote_mcp.target_router import TargetRouter
@@ -222,7 +247,8 @@ def build_target_router(stand: str, worker_for=None, deployment=None):
     op_pub = bytes.fromhex(io.open(os.path.join(stand, "operator_pub.hex"), encoding="utf-8").read().strip())
     return TargetRouter(register=Register(stand, op_pub), acks=TrustAcks(stand, op_pub),
                         worker_for=worker_for or target_worker_factory(stand),
-                        deployment_trust=deployment or deployment_trust(stand))
+                        deployment_trust=deployment or deployment_trust(stand),
+                        previous_trust=previous or previous_trust(stand))
 
 
 def build_catalog_adapter(stand: str, worker, *, router=None, authority=None, kill_switch=None):

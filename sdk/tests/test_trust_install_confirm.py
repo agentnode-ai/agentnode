@@ -60,7 +60,7 @@ def test_the_answer_names_every_fact_of_the_installed_pair(world, worker):
     world.issuer.publish()
     crl, tombs = _issued(world)
     done = install(worker, crl, tombs)
-    assert set(done) == set(FACT_FIELDS) | {"installed"} and done["installed"] is True
+    assert set(done) == set(FACT_FIELDS) | {"installed", "content_sha256"} and done["installed"] is True
     assert done["revocation_list_sha256"] == hashlib.sha256(crl).hexdigest()
     assert done["tombstones_sha256"] == hashlib.sha256(tombs).hexdigest()
     assert done["revocation_list_number"] == rl.number_of(crl)

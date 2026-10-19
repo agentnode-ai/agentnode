@@ -108,11 +108,13 @@ def _eligible(target: T.Target, entry, now: float, acks: dict, deployment: dict 
 
 class TargetRouter:
     def __init__(self, *, register: T.Register, acks: T.TrustAcks, worker_for: Callable[[T.Target], Any],
-                 deployment_trust: Callable[[], dict | None]):
+                 deployment_trust: Callable[[], dict | None], previous_trust: Callable[[], dict | None] | None = None):
         self.register = register
         self.acks = acks
         self._worker_for = worker_for
         self._deployment_trust = deployment_trust
+        #: the CA-verified pair saved before the last scheduled publication (`targets.trust_current`)
+        self._previous_trust = previous_trust or (lambda: None)
         self._workers: dict[tuple, Any] = {}
         self._mutex = threading.Lock()
 
@@ -130,8 +132,7 @@ class TargetRouter:
             if target is None:                                 # a default that is not visible: never widened
                 raise TargetRefusal("target_unknown", reason=reason)
         try:
-            _eligible(target, entry, snap.now, self.acks.load(), self._deployment_trust(),
-                      self.acks.transition(now=snap.now))
+            _eligible(target, entry, snap.now, self.acks.load(), self._deployment_trust(), self._previous_trust())
         except TargetRefusal as refusal:
             refusal.target_id, refusal.selection_reason = target.target_id, reason
             raise
@@ -153,7 +154,7 @@ class TargetRouter:
         if status == T.SUSPENDED:
             raise TargetRefusal("target_suspended_while_queued", target_id=t.target_id)
         try:
-            _eligible(t, entry, snap.now, self.acks.load(), self._deployment_trust(), self.acks.transition(now=snap.now))
+            _eligible(t, entry, snap.now, self.acks.load(), self._deployment_trust(), self._previous_trust())
         except TargetRefusal as refusal:
             code ="target_properties_stale" if refusal.code == "target_properties_stale" else refusal.code
             raise TargetRefusal(code, target_id=t.target_id) from refusal
