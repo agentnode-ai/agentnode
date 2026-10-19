@@ -29,12 +29,18 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agentnode_sdk.pki import revocation as _revocation
+from agentnode_sdk.pki import tombstones as _tombstones
 from agentnode_sdk.remote_mcp import target_probe as P
 from agentnode_sdk.remote_mcp import targets as T
 from agentnode_sdk.worker import pairkeys
+from agentnode_sdk.worker import trust_install as _trust_install
 
 #: The longest a rotated pair key's predecessor is still accepted (Codex D5: bounded overlap).
 PAIR_OVERLAP_SECONDS = 24 * 3600
+#: One trust refresh at a time (trust-refresh C6): `stand/targets/.trust-refresh.lock`, and how long a
+#: second run waits for the first before it fails as `trust_refresh.busy`.
+REFRESH_LOCK_NAME = ".trust-refresh.lock"
+REFRESH_LOCK_SECONDS = 600.0
 #: Warn when the deployment's revocation list has less than this left.
 ALERT_BEFORE_SECONDS = 48 * 3600
 INVITE_DAYS = 7
@@ -52,7 +58,7 @@ class Operations:
     def __init__(self, *, stand, register: T.Register, acks: T.TrustAcks, issuer, keyring_path,
                  gateway_instance: str, deployment: str, bundles_dir, worker_for: Callable[[T.Target], Any],
                  canary_host: str = "127.0.0.1", ledger=None, clock: Callable[[], float] = time.time,
-                 crash_after: Callable[[str], None] | None = None):
+                 crash_after: Callable[[str], None] | None = None, refresh_lock_timeout: float = REFRESH_LOCK_SECONDS):
         self.stand = Path(stand)
         self.ops_dir = self.stand / "targets" / "ops"
         self.register = register
@@ -67,6 +73,7 @@ class Operations:
         self.ledger = ledger
         self.clock = clock
         self._crash_after = crash_after or (lambda step: None)
+        self.refresh_lock_timeout = refresh_lock_timeout
 
     # ------------------------------------------------------------ the operation journal
     def _write(self, op: dict) -> None:
@@ -274,8 +281,7 @@ class Operations:
             raise OperationFailed("activate.identity_withdrawn")
         if not t.attestation_valid(now) or P.passed(t.attestation or {}):
             raise OperationFailed("activate.no_valid_observation")
-        if not T.trust_current(self.acks.load().get(t.target_id), now=now,
-                               deployment_list_number=self._list_number()):
+        if not T.trust_current(self.acks.load().get(t.target_id), now=now, deployment=self._pair()[2]):
             raise OperationFailed("activate.trust_not_acknowledged")
 
     # ------------------------------------------------------------ rotation (bounded overlap)
@@ -391,20 +397,51 @@ class Operations:
         return out
 
     # ------------------------------------------------------------ trust distribution
-    def _list_number(self) -> int | None:
-        return _revocation.number_of(_read(self.issuer.trust_dir / _revocation.LIST_NAME))
-
-    def _push_trust(self, t: T.Target) -> dict:
+    def _pair(self) -> tuple[bytes, bytes, dict | None]:
+        """The deployment's CRL and tombstone bytes, read ONCE, and their exact facts (None: unparsable)."""
         crl = _read(self.issuer.trust_dir / _revocation.LIST_NAME)
-        tombs = _read(self.issuer.trust_dir / "revoked-identities.json")
+        tombs = _read(self.issuer.trust_dir / _tombstones.LIST_NAME)
+        try:
+            facts = _trust_install.facts_of(crl, tombs)
+        except ValueError:
+            facts = None
+        return crl, tombs, facts
+
+    def _push_trust(self, t: T.Target, pair: tuple[bytes, bytes, dict | None] | None = None) -> dict:
+        """Offer the pair, and record the worker's answer only when it is EXACTLY the pair offered:
+        number, both digests and every validity time (trust-refresh C11). Anything else raises."""
+        crl, tombs, facts = pair or self._pair()
+        if facts is None:
+            raise OperationFailed("trust.deployment_pair_unreadable")
         ack = self.worker_for(t).install_trust(crl, tombs)
-        ack = dict(ack, acked_at=round(self.clock(), 3))
+        wrong = _trust_install.differences(ack if isinstance(ack, dict) else None, facts)
+        if wrong:
+            raise OperationFailed("trust.ack_mismatch", ",".join(wrong))
+        ack = dict({k: ack[k] for k in _trust_install.FACT_FIELDS}, acked_at=round(self.clock(), 3))
         self.acks.record(t.target_id, ack)
         return ack
 
+    def _refresh_lock(self):
+        from agentnode_sdk.gateway.filelock import ProcessLock
+        self.ops_dir.parent.mkdir(parents=True, exist_ok=True)
+        return ProcessLock(self.ops_dir.parent / REFRESH_LOCK_NAME, timeout=self.refresh_lock_timeout)
+
     def refresh_trust(self, *, force: bool = False, push_only: bool = False) -> dict:
         """The timer's run: publish a fresh list when due, push it to every live target, record what
-        each acknowledged, retire overdue pair overlaps, and name every problem (alerting)."""
+        each acknowledged, retire overdue pair overlaps, and name every problem (alerting).
+
+        One run at a time across processes (the timer and an operator's `--force` alike): the whole
+        run holds the refresh lock, and "due" is judged only once the lock is held, so a run that
+        waited sees the list the other one published and does not publish again. A lock that cannot
+        be had in time is `trust_refresh.busy` -- a failure, never a skip."""
+        from agentnode_sdk.gateway.filelock import LockUnavailable
+        try:
+            with self._refresh_lock():
+                return self._refresh_locked(force=force, push_only=push_only)
+        except LockUnavailable as exc:
+            raise OperationFailed("trust_refresh.busy", str(exc)) from exc
+
+    def _refresh_locked(self, *, force: bool, push_only: bool) -> dict:
         report: dict[str, Any] = {"published": None, "pushed": {}, "lagging": [], "alerts": []}
         if not push_only:
             current = _read(self.issuer.trust_dir / _revocation.LIST_NAME)
@@ -419,16 +456,21 @@ class Operations:
                 done = self.issuer.publish()
                 report["published"] = done.get("number") if done.get("published") else "failed"
             report["retired_overlaps"] = self.retire_overdue_overlaps()
-        number = self._list_number()
+        pair = self._pair()                                   # ONE stable pair for every target
+        facts = pair[2]
+        report["pair"] = None if facts is None else {
+            "number": facts["revocation_list_number"], "sha256": facts["revocation_list_sha256"][:16],
+            "tombstones_sha256": facts["tombstones_sha256"][:16]}
         snap = self.register.load()
         for t in snap.targets.values():
             if t.effective_status(snap.now) not in LIVE:
                 continue
             try:
-                ack = self._push_trust(t)
+                ack = self._push_trust(t, pair)
                 report["pushed"][t.target_id] = ack["revocation_list_number"]
-                if number is not None and int(ack["revocation_list_number"]) < number:
-                    report["lagging"].append(t.target_id)
+            except OperationFailed as exc:
+                report["pushed"][t.target_id] = "failed: " + exc.code + (" " + exc.detail if exc.detail else "")
+                report["lagging"].append(t.target_id)
             except Exception as exc:                           # noqa: BLE001 - every failure is named
                 report["pushed"][t.target_id] = "failed: " + type(exc).__name__
                 report["lagging"].append(t.target_id)
@@ -479,4 +521,5 @@ def deadline_alerts(trust_dir, *, now: float, lagging: list[str]) -> list[str]:
     return alerts
 
 
-__all__ = ["ALERT_BEFORE_SECONDS", "OperationFailed", "Operations", "PAIR_OVERLAP_SECONDS", "deadline_alerts"]
+__all__ = ["ALERT_BEFORE_SECONDS", "OperationFailed", "Operations", "PAIR_OVERLAP_SECONDS", "REFRESH_LOCK_NAME",
+           "REFRESH_LOCK_SECONDS", "deadline_alerts"]

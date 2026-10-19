@@ -198,20 +198,22 @@ def target_worker_factory(stand: str):
     return build
 
 
-def deployment_list_number(stand: str):
-    """The number of the revocation list this control plane itself judges by (None: unreadable)."""
-    from agentnode_sdk.pki import revocation
+def deployment_trust(stand: str):
+    """The exact trust pair this control plane itself judges by (`trust_install.FACT_FIELDS`), read
+    now; None when either file is unreadable or does not parse -- and None admits no target."""
+    from agentnode_sdk.worker import trust_install
 
-    def number():
+    def facts():
         _cfg, tls = _worker_base(stand)
         try:
-            return revocation.number_of(open(tls.revocation_list, "rb").read())
-        except OSError:
+            with open(tls.revocation_list, "rb") as crl, open(tls.identity_tombstones, "rb") as tombs:
+                return trust_install.facts_of(crl.read(), tombs.read())
+        except (OSError, ValueError):
             return None
-    return number
+    return facts
 
 
-def build_target_router(stand: str, worker_for=None, list_number=None):
+def build_target_router(stand: str, worker_for=None, deployment=None):
     """The execution-target router of a stand (target-router). The register is verified on every
     use; a missing or untrustworthy register refuses every run (503) -- never a fallback."""
     from agentnode_sdk.remote_mcp.target_router import TargetRouter
@@ -220,7 +222,7 @@ def build_target_router(stand: str, worker_for=None, list_number=None):
     op_pub = bytes.fromhex(io.open(os.path.join(stand, "operator_pub.hex"), encoding="utf-8").read().strip())
     return TargetRouter(register=Register(stand, op_pub), acks=TrustAcks(stand, op_pub),
                         worker_for=worker_for or target_worker_factory(stand),
-                        deployment_list_number=list_number or deployment_list_number(stand))
+                        deployment_trust=deployment or deployment_trust(stand))
 
 
 def build_catalog_adapter(stand: str, worker, *, router=None, authority=None, kill_switch=None):

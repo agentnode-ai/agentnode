@@ -44,6 +44,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from agentnode_sdk.gateway import accounts as A
 from agentnode_sdk.remote_mcp.catalog import CatalogLock, _write_durably, canonical
 from agentnode_sdk.signing_key import compute_key_id
+from agentnode_sdk.worker import trust_install as _trust_install
 
 SCHEMA = "agentnode.mcp-targets.v1"
 _DOMAIN = b"agentnode.mcp-targets.v1/document\n"
@@ -383,8 +384,11 @@ class Register:
     """The target register of one stand. Reads verify everything; writes need the operator key."""
 
     def __init__(self, stand, operator_public_bytes: bytes, *, operator_private: Ed25519PrivateKey | None = None,
-                 on_change: Callable[[dict], None] | None = None, clock: Callable[[], float] = time.time):
+                 on_change: Callable[[dict], None] | None = None, clock: Callable[[], float] = time.time,
+                 pin_clock: bool = True):
         self.stand = Path(stand)
+        #: False for a pure reader (the trust watchdog): it reads the pinned clock but never writes it.
+        self.pin_clock = pin_clock
         self.dir = self.stand / "targets"
         self.path = self.dir / "targets.json"
         self.history = self.dir / "history"
@@ -409,7 +413,7 @@ class Register:
         except (OSError, ValueError, KeyError, TypeError):
             pinned = 0.0
         effective = max(wall, pinned)
-        if effective - max(pinned, self._clock_pinned_at) >= CLOCK_PIN_EVERY_SECONDS:
+        if self.pin_clock and effective - max(pinned, self._clock_pinned_at) >= CLOCK_PIN_EVERY_SECONDS:
             try:
                 _write_durably(self.clock_path, canonical({"high_water": effective}))
                 self._clock_pinned_at = effective
@@ -676,24 +680,26 @@ class TrustAcks:
     def record(self, target_id: str, ack: dict) -> None:
         if self._private is None:
             raise TargetsRefused("acks.read_only", "recording needs the operator private key")
+        missing = [k for k in _trust_install.FACT_FIELDS + ("acked_at",) if k not in ack]
+        if missing:
+            raise TargetsRefused("acks.incomplete", ",".join(missing))
         with CatalogLock(self.lock_path):
             acks = self.load()
-            acks[target_id] = {k: ack[k] for k in ("revocation_list_number", "revocation_list_next_update",
-                                                   "tombstones_published_at", "tombstones_not_after", "acked_at")}
+            acks[target_id] = {k: ack[k] for k in _trust_install.FACT_FIELDS + ("acked_at",)}
             doc = {"schema": ACKS_SCHEMA, "acks": acks}
             doc["signature"] = {"key_id": self.key_id,
                                 "signature": self._private.sign(_signed_bytes(doc, _ACKS_DOMAIN)).hex()}
             _write_durably(self.path, canonical(doc) + b"\n")
 
 
-def trust_current(ack: dict | None, *, now: float, deployment_list_number: int | None) -> bool:
-    """A target may run only while its worker holds lists that are unexpired AND at least as new as
-    the list the control plane itself judges by (so a revocation reaches it before it runs again)."""
-    if not ack:
+def trust_current(ack: dict | None, *, now: float, deployment: dict | None) -> bool:
+    """A target may run only while its worker holds EXACTLY the pair the control plane itself judges
+    by -- number, both digests and every validity time equal (trust-refresh C12) -- and that pair is
+    unexpired. A missing deployment pair, a legacy or partial acknowledgement, or any difference
+    refuses; there is no number-only fallback."""
+    if not ack or not deployment or _trust_install.differences(ack, deployment):
         return False
-    if float(ack.get("revocation_list_next_update", 0)) <= now or float(ack.get("tombstones_not_after", 0)) <= now:
-        return False
-    if deployment_list_number is not None and int(ack.get("revocation_list_number", -1)) < deployment_list_number:
+    if float(ack["revocation_list_next_update"]) <= now or float(ack["tombstones_not_after"]) <= now:
         return False
     return True
 

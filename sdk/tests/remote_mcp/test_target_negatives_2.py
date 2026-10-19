@@ -512,7 +512,7 @@ def tls(tmp_path):
     reg, _ = make_register(tmp_path / "stand")
     acks = T.TrustAcks(reg.stand, reg._public.public_bytes_raw(), operator_private=reg._private)
     where: dict[str, str] = {}
-    router = TargetRouter(register=reg, acks=acks, deployment_list_number=lambda: 1,
+    router = TargetRouter(register=reg, acks=acks, deployment_trust=lambda: None,
                           worker_for=lambda t: TlsWorker(where[t.target_id], KEY,
                                                          world.settings(gateway, {t.worker["instance"]})))
     target = reg.load().target("managed-w1")                      # expects agentnode://alpha?/worker/w1

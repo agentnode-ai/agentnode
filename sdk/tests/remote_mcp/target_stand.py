@@ -119,8 +119,9 @@ class TargetStand(Stand):
         self.workers: dict[str, TargetWorker] = {}
         self.authority_says: dict[str, str] = {}     # account -> refusal reason
         self.stopped = ""
+        self.trust_until = time.time() + 7 * 86400
         self.router = TargetRouter(register=self.register, acks=self.acks, worker_for=self._worker_for,
-                                   deployment_list_number=lambda: self.list_number)
+                                   deployment_trust=self.deployment)
         self.ack("managed-w1")
         self.adapter = build_catalog_adapter(str(self.stand), self.worker, router=self.router,
                                              authority=lambda p: self.authority_says.get(p.principal_id),
@@ -136,11 +137,20 @@ class TargetStand(Stand):
     def w(self, target_id) -> TargetWorker:
         return self._worker_for(self.register.load().target(target_id))
 
+    def deployment(self):
+        """The exact pair this control plane judges by: list number `list_number`, fixed digests."""
+        return {"revocation_list_number": self.list_number, "revocation_list_sha256": "%064x" % self.list_number,
+                "revocation_list_next_update": self.trust_until, "tombstones_sha256": "%064x" % (1000 + self.list_number),
+                "tombstones_published_at": self.trust_until - 7 * 86400, "tombstones_not_after": self.trust_until}
+
     def ack(self, target_id, *, number=None, next_update=None):
-        self.acks.record(target_id, {"revocation_list_number": self.list_number if number is None else number,
-                                     "revocation_list_next_update": next_update or time.time() + 86400,
-                                     "tombstones_published_at": time.time(),
-                                     "tombstones_not_after": time.time() + 86400, "acked_at": time.time()})
+        """An acknowledgement of exactly the current pair, or of another list number / nextUpdate."""
+        facts = dict(self.deployment())
+        if number is not None:
+            facts.update(revocation_list_number=number, revocation_list_sha256="%064x" % number)
+        if next_update is not None:
+            facts["revocation_list_next_update"] = next_update
+        self.acks.record(target_id, dict(facts, acked_at=time.time()))
 
     def customer(self, target_id, owner, instance="c1", *, port=8444):
         """invited -> ... -> active customer target owned by `owner`, attested and acknowledged."""

@@ -332,7 +332,7 @@ class CatalogMCPAdapter:
         out = []
         for t in snap.visible_targets(account):
             try:
-                R._eligible(t, entry, snap.now, self.router.acks.load(), self.router._list_number())
+                R._eligible(t, entry, snap.now, self.router.acks.load(), self.router._deployment_trust())
                 eligible, reasons = True, []
             except TargetRefusal as refusal:
                 eligible, reasons = False, [refusal.code]
