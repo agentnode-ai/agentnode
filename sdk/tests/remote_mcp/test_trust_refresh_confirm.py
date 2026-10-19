@@ -66,6 +66,31 @@ def test_concurrent_refreshes_publish_once(env, monkeypatch):
     assert all(r["lagging"] == [] for r in reports)
 
 
+def test_a_timer_run_behind_a_forced_one_does_not_publish_again(env, monkeypatch):
+    """N6: the operator's `--force` holds the lock and publishes; the timer's run, started while the forced
+    one is publishing on a DUE list, waits, re-judges on the fresh list and publishes nothing."""
+    monkeypatch.setattr(rl, "REFRESH_AFTER_SECONDS", 3.0)
+    time.sleep(3.2)                                          # due for the timer as well
+    issuer = env["world"].issuer
+    real, published, inside = issuer.publish, [], threading.Event()
+
+    def slow_publish():
+        inside.set()
+        done = real()
+        published.append(done.get("number"))
+        time.sleep(0.6)
+        return done
+    monkeypatch.setattr(issuer, "publish", slow_publish)
+    reports = {}
+    forced = threading.Thread(target=lambda: reports.__setitem__("force", env["ops"].refresh_trust(force=True)))
+    forced.start()
+    assert inside.wait(10)                                    # the forced run holds the lock, mid-publication
+    reports["timer"] = _twin_ops(env).refresh_trust()
+    forced.join(30)
+    assert len(published) == 1 and reports["force"]["published"] == published[0]
+    assert reports["timer"]["published"] is None and reports["timer"]["lagging"] == []
+
+
 def test_a_lock_that_cannot_be_had_is_a_named_failure(env):
     """C6 / CC14: never a successful skip."""
     held, release = threading.Event(), threading.Event()

@@ -143,6 +143,25 @@ class _FailBetween(F.Files):
             raise OSError("disk went away")
 
 
+class _FailFirst(F.Files):
+    """An I/O failure before either file was replaced: the tombstones' stage is written, not renamed."""
+
+    def point(self, name):
+        if name == "trust-tombstones:written":
+            raise OSError("disk went away")
+
+
+def test_a_failure_before_either_write_changes_nothing_and_is_repaired(world, worker):
+    before = _held(worker)
+    world.issuer.publish()
+    crl, tombs = _issued(world)
+    with pytest.raises(OSError):
+        install(worker, crl, tombs, files=_FailFirst())
+    assert _held(worker) == before                            # both files byte-identical
+    assert install(worker, crl, tombs)["installed"] is True and _held(worker) == (crl, tombs)
+    assert not list(Path(worker.revocation_list).parent.glob(".*.tmp"))
+
+
 def test_a_failure_between_the_two_writes_is_stricter_unacknowledged_and_repaired(world, worker):
     old_crl, old_tombs = _held(worker)
     withdrawn = "agentnode://%s/worker/w9" % world.deployment
