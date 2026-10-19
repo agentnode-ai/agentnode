@@ -86,16 +86,19 @@ def _next_update(s):
     return rl.read(s.pair()[0], s.world._ca()[1], time.time()).next_update
 
 
+H48 = 48 * 3600                                               # the owner's number, not the module's
+
+
 def test_list_margin_boundary(s):
     nu = _next_update(s)
-    assert "list_expires_within_48h" not in _codes(s.check(now=nu - W.MARGIN_SECONDS))
-    assert "list_expires_within_48h" in _codes(s.check(now=nu - W.MARGIN_SECONDS + 1))
+    assert "list_expires_within_48h" not in _codes(s.check(now=nu - H48))
+    assert "list_expires_within_48h" in _codes(s.check(now=nu - H48 + 1))
 
 
 def test_tombstone_margin_boundary(s):
     na = s.facts()["tombstones_not_after"]
-    assert "tombstones_expire_within_48h" not in _codes(s.check(now=na - W.MARGIN_SECONDS))
-    assert "tombstones_expire_within_48h" in _codes(s.check(now=na - W.MARGIN_SECONDS + 1))
+    assert "tombstones_expire_within_48h" not in _codes(s.check(now=na - H48))
+    assert "tombstones_expire_within_48h" in _codes(s.check(now=na - H48 + 1))
 
 
 def test_margin_is_measured_from_the_effective_time(s, monkeypatch):
@@ -104,7 +107,7 @@ def test_margin_is_measured_from_the_effective_time(s, monkeypatch):
 
     class View:
         def effective_time(self):
-            return nu - W.MARGIN_SECONDS + 10
+            return nu - H48 + 10
 
         def anchor(self):
             return s.world._ca()[1]
@@ -126,9 +129,9 @@ def test_missing_ack_is_red(s):
 
 
 def test_stale_ack_is_red(s):
-    s.ack("managed-w1", acked_at=time.time() - W.ACK_MAX_AGE_SECONDS - 5)
+    s.ack("managed-w1", acked_at=time.time() - 13 * 3600 - 5)
     assert _codes(s.check()) == {"ack_stale"}
-    s.ack("managed-w1", acked_at=time.time() - W.ACK_MAX_AGE_SECONDS + 60)
+    s.ack("managed-w1", acked_at=time.time() - 13 * 3600 + 60)
     assert s.check()["state"] == "green"
 
 
@@ -237,6 +240,8 @@ def _tree(*roots):
 
 def test_the_watchdog_changes_nothing_but_its_state(s):
     """Read-only: register (pinned clock included), acks, trust lists, issuer and floors untouched."""
+    clock = Path(s.stand) / "targets" / "clock.json"            # an old pin: a writing reader WOULD re-pin it
+    clock.write_text(json.dumps({"high_water": time.time() - 3600}))
     before = _tree(s.stand, s.world.root)
     s.check()
     s.check(now=time.time() + 3 * 86400, next_usec=None)
