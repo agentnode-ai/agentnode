@@ -235,36 +235,26 @@ def _admitted(env, tid="managed-w1"):
 def test_a_scheduled_refresh_never_refuses_a_target_mid_flight(env):
     """Between the publication and the target's acknowledgement the target holds exactly the pair the
     control plane judged by a moment before; it stays admissible for that one refresh (owner: refresh
-    under traffic without a failed call). The worker is slowed so the window is certainly observed."""
+    under traffic without a failed call). The admission is judged INSIDE the window -- after the
+    publication, while the worker is being offered the new pair -- and before and after it."""
     assert env["ops"].refresh_trust()["lagging"] == []        # the target holds the current pair first
     assert _admitted(env)
     w = env["workers"]["managed-w1"]
     real = w.install_trust
+    seen = {"checks": 0, "refused": 0, "in_transition": 0, "new_pair_published": 0}
 
-    def slow(crl, tombs):
-        time.sleep(0.5)
+    def in_the_window(crl, tombs):
+        before = env["acks"].load()["managed-w1"]
+        seen["new_pair_published"] += 1 if TI.differences(before, _current(env)) else 0
+        seen["checks"] += 1
+        seen["refused"] += 0 if _admitted(env) else 1
+        seen["in_transition"] += 1 if env["acks"].transition(now=time.time()) else 0
         return real(crl, tombs)
-    w.install_trust = slow
-    stop, seen = threading.Event(), {"checks": 0, "refused": 0, "in_transition": 0}
-
-    def watch():
-        while not stop.is_set():
-            try:
-                ok = _admitted(env)
-            except OSError:                                   # Windows: a file read while it is renamed over
-                continue
-            seen["checks"] += 1
-            seen["refused"] += 0 if ok else 1
-            seen["in_transition"] += 1 if env["acks"].transition(now=time.time()) else 0
-    t = threading.Thread(target=watch)
-    t.start()
-    try:
-        for _ in range(3):
-            assert env["ops"].refresh_trust(force=True)["lagging"] == []
-    finally:
-        stop.set()
-        t.join(10)
-    assert seen["refused"] == 0 and seen["in_transition"] > 0, seen
+    w.install_trust = in_the_window
+    for _ in range(3):
+        assert env["ops"].refresh_trust(force=True)["lagging"] == []
+        assert _admitted(env)
+    assert seen == {"checks": 3, "refused": 0, "in_transition": 3, "new_pair_published": 3}, seen
     assert env["acks"].transition(now=time.time()) is None and not env["acks"].transition_path.exists()
     assert T.trust_current(env["acks"].load()["managed-w1"], now=time.time(), deployment=_current(env))
 
