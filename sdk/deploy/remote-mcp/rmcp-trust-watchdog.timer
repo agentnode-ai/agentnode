@@ -1,0 +1,10 @@
+[Unit]
+Description=AgentNode remote MCP: trust watchdog, hourly at minute 20 UTC
+
+[Timer]
+OnCalendar=*-*-* *:20:00 UTC
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
