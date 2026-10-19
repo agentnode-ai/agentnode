@@ -128,10 +128,16 @@ def main(argv=None) -> int:
         if args.cmd == "init-register":
             spec = _managed_spec(cfg, tls, args.managed_id, args.concurrency, args.queue)
             provisional = T.Target.from_doc(T.Register._new_entry(dict(spec, created_at=0.0), generation=1))
+            from agentnode_sdk.worker import trust_install
             worker = ops.worker_for(provisional)
-            crl = (Path(ops.issuer.trust_dir) / "revoked.crl").read_bytes()
-            tombs = (Path(ops.issuer.trust_dir) / "revoked-identities.json").read_bytes()
+            crl, tombs, facts = ops._pair()
+            if facts is None:
+                raise OperationFailed("init.deployment_pair_unreadable")
             ack = worker.install_trust(crl, tombs)
+            wrong = trust_install.differences(ack, facts)
+            if wrong:
+                raise OperationFailed("init.ack_mismatch", ",".join(wrong))
+            ack = {k: ack[k] for k in trust_install.FACT_FIELDS}
             canary = P.Canary(args.canary_host)
             try:
                 record = P.probe(provisional, worker, canary)

@@ -44,11 +44,14 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from agentnode_sdk.gateway import accounts as A
 from agentnode_sdk.remote_mcp.catalog import CatalogLock, _write_durably, canonical
 from agentnode_sdk.signing_key import compute_key_id
+from agentnode_sdk.worker import trust_install as _trust_install
 
 SCHEMA = "agentnode.mcp-targets.v1"
 _DOMAIN = b"agentnode.mcp-targets.v1/document\n"
 ACKS_SCHEMA = "agentnode.mcp-target-trust-acks.v1"
 _ACKS_DOMAIN = b"agentnode.mcp-target-trust-acks.v1/document\n"
+#: Where a scheduled refresh keeps the pair it is about to replace (`stand/targets/trust-previous/`).
+PREVIOUS_DIR = "trust-previous"
 GENESIS = "0" * 64
 
 MANAGED, CUSTOMER = "managed", "customer"
@@ -383,8 +386,11 @@ class Register:
     """The target register of one stand. Reads verify everything; writes need the operator key."""
 
     def __init__(self, stand, operator_public_bytes: bytes, *, operator_private: Ed25519PrivateKey | None = None,
-                 on_change: Callable[[dict], None] | None = None, clock: Callable[[], float] = time.time):
+                 on_change: Callable[[dict], None] | None = None, clock: Callable[[], float] = time.time,
+                 pin_clock: bool = True):
         self.stand = Path(stand)
+        #: False for a pure reader (the trust watchdog): it reads the pinned clock but never writes it.
+        self.pin_clock = pin_clock
         self.dir = self.stand / "targets"
         self.path = self.dir / "targets.json"
         self.history = self.dir / "history"
@@ -409,7 +415,7 @@ class Register:
         except (OSError, ValueError, KeyError, TypeError):
             pinned = 0.0
         effective = max(wall, pinned)
-        if effective - max(pinned, self._clock_pinned_at) >= CLOCK_PIN_EVERY_SECONDS:
+        if self.pin_clock and effective - max(pinned, self._clock_pinned_at) >= CLOCK_PIN_EVERY_SECONDS:
             try:
                 _write_durably(self.clock_path, canonical({"high_water": effective}))
                 self._clock_pinned_at = effective
@@ -676,24 +682,56 @@ class TrustAcks:
     def record(self, target_id: str, ack: dict) -> None:
         if self._private is None:
             raise TargetsRefused("acks.read_only", "recording needs the operator private key")
+        missing = [k for k in _trust_install.FACT_FIELDS + ("acked_at",) if k not in ack]
+        if missing:
+            raise TargetsRefused("acks.incomplete", ",".join(missing))
         with CatalogLock(self.lock_path):
             acks = self.load()
-            acks[target_id] = {k: ack[k] for k in ("revocation_list_number", "revocation_list_next_update",
-                                                   "tombstones_published_at", "tombstones_not_after", "acked_at")}
+            acks[target_id] = {k: ack[k] for k in _trust_install.FACT_FIELDS + ("acked_at",)}
             doc = {"schema": ACKS_SCHEMA, "acks": acks}
             doc["signature"] = {"key_id": self.key_id,
                                 "signature": self._private.sign(_signed_bytes(doc, _ACKS_DOMAIN)).hex()}
             _write_durably(self.path, canonical(doc) + b"\n")
 
 
-def trust_current(ack: dict | None, *, now: float, deployment_list_number: int | None) -> bool:
-    """A target may run only while its worker holds lists that are unexpired AND at least as new as
-    the list the control plane itself judges by (so a revocation reaches it before it runs again)."""
-    if not ack:
+# ---------------------------------------------------------------------- the pair before the last publication
+# A scheduled refresh re-signs the deployment's lists; between its publication and a target's acknowledgement
+# the target holds -- exactly -- the pair the control plane judged by a moment before. The refresh keeps that
+# pair's BYTES here (CA-signed, so self-authenticating) right before it publishes. It may stand in for the
+# current pair only while its CONTENT -- the revoked serials, the withdrawn identities, the deployment -- is
+# identical to the current pair's: any revocation published since makes the two differ and admission strict.
+# No time, lock or run is involved, so nothing can be left behind that grants more than that equality.
+
+def save_previous_pair(stand, revocation_list: bytes, identity_tombstones: bytes) -> None:
+    d = Path(stand) / "targets" / PREVIOUS_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    _write_durably(d / "revoked-identities.json", identity_tombstones)
+    _write_durably(d / "revoked.crl", revocation_list)
+
+
+def previous_pair(stand) -> tuple[bytes, bytes] | None:
+    d = Path(stand) / "targets" / PREVIOUS_DIR
+    try:
+        return (d / "revoked.crl").read_bytes(), (d / "revoked-identities.json").read_bytes()
+    except OSError:
+        return None
+
+
+def trust_current(ack: dict | None, *, now: float, deployment: dict | None, previous: dict | None = None) -> bool:
+    """A target may run only while its worker holds EXACTLY the pair the control plane itself judges
+    by -- number, both digests and every validity time equal (trust-refresh C12) -- and that pair is
+    unexpired. A missing deployment pair, a legacy or partial acknowledgement, or any difference
+    refuses; there is no number-only fallback. `previous` is the CA-verified pair saved before the
+    last scheduled publication: a target holding EXACTLY that pair runs on only while its revocation
+    content is identical to the current pair's (`content_sha256`) and it is unexpired."""
+    if not ack or not deployment:
         return False
-    if float(ack.get("revocation_list_next_update", 0)) <= now or float(ack.get("tombstones_not_after", 0)) <= now:
-        return False
-    if deployment_list_number is not None and int(ack.get("revocation_list_number", -1)) < deployment_list_number:
+    if _trust_install.differences(ack, deployment):
+        if previous is None or _trust_install.differences(ack, previous):
+            return False
+        if not deployment.get("content_sha256") or previous.get("content_sha256") != deployment["content_sha256"]:
+            return False
+    if float(ack["revocation_list_next_update"]) <= now or float(ack["tombstones_not_after"]) <= now:
         return False
     return True
 
@@ -701,5 +739,5 @@ def trust_current(ack: dict | None, *, now: float, deployment_list_number: int |
 __all__ = ["ACTIVE", "ASSURANCE_CLASSES", "ATTESTATION_MAX_SECONDS", "CUSTOMER", "CUSTOMER_OBSERVED",
            "ENROLLED", "EXPIRED", "HARDWARE_ATTESTED", "INVITED", "MANAGED", "OPERATOR_MANAGED", "PROBING",
            "PROVISIONING_FAILED", "REVOKED", "Register", "RegisterSnapshot", "SUSPENDED", "TERMINAL", "Target",
-           "TargetsRefused", "TargetsUnavailable", "TrustAcks", "check_successor", "digest", "endpoint_digest",
-           "trust_current", "validate_document"]
+           "PREVIOUS_DIR", "TargetsRefused", "TargetsUnavailable", "TrustAcks", "check_successor", "digest",
+           "endpoint_digest", "previous_pair", "save_previous_pair", "trust_current", "validate_document"]

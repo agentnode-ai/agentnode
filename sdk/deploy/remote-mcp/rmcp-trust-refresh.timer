@@ -1,11 +1,15 @@
 [Unit]
-Description=AgentNode remote MCP: trust distribution, four times a day
+# A WALL-CLOCK schedule only (DEFECT-LIVE-001): a monotonic trigger (OnBootSec/OnUnitActiveSec)
+# counts from a boot or a service activation, and after a reinstall on a long-running host with a
+# surviving stamp there was neither -- the timer stayed "active" with no next elapse at all. A
+# calendar elapse always exists; Persistent=true runs a missed one right after boot or install.
+Description=AgentNode remote MCP: trust distribution, four times a day (00/06/12/18 UTC)
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=6h
-RandomizedDelaySec=5min
+OnCalendar=*-*-* 00/6:00:00 UTC
 Persistent=true
+RandomizedDelaySec=5min
+AccuracySec=1min
 
 [Install]
 WantedBy=timers.target

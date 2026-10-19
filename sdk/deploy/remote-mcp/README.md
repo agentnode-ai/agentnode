@@ -91,11 +91,31 @@ register refuses every run with 503.
   `revoke` or expiry. Every operation is journaled before its first side effect and resumable
   (`resume-ops`). A revoked or expired target is never reactivated: its identity is withdrawn
   for good in the issuer, and a replacement takes a new instance name.
-* **Trust distribution.** `rmcp-trust-refresh.timer` runs every 6 h. It publishes the revocation
-  and tombstone lists when they are due, pushes them to every live target over the worker
-  channel (`install_trust`), records each acknowledgement, retires pair-key overlaps after 24 h,
-  and fails into `rmcp-alert@` when a list is within 48 h of expiry or a target lags. A target
-  that has not acknowledged the current lists does not run.
+* **Trust distribution.** `rmcp-trust-refresh.timer` runs at 00, 06, 12 and 18 UTC
+  (`OnCalendar`, `Persistent=true`: a missed run is made up right after boot or install; there is
+  no monotonic trigger, which is what left the first version with no next run after a reinstall,
+  DEFECT-LIVE-001). One run at a time (`stand/targets/.trust-refresh.lock`; a run that cannot get
+  it fails as `trust_refresh.busy`). It publishes the revocation and tombstone lists when they are
+  due, offers ONE pair to every live target over the worker channel (`install_trust`), and records
+  an acknowledgement only when the worker's answer -- computed from the files it read back after
+  installing them -- is exactly that pair: list number, both SHA-256 digests, `nextUpdate`, and the
+  tombstones' `published_at`/`not_after`. It retires pair-key overlaps after 24 h and fails into
+  `rmcp-alert@` when a list is within 48 h of expiry or a target lags. A target runs only while its
+  acknowledgement is exactly the control plane's own current pair.
+* **Trust watchdog.** `rmcp-trust-watchdog.timer` (hourly at :20 UTC) runs
+  `trust_watchdog check`, which shares no unit dependency with the refresh: both lists valid and
+  signed at the effective time with ≥ 48 h left, every live target's exact acknowledgement at most
+  13 h old, and `rmcp-trust-refresh.timer` loaded, enabled, active with a finite next run within
+  6 h 10 min. Red = the unit fails (→ `rmcp-alert@`, again every hour while red) and
+  `/var/lib/agentnode-mcp/alerts/trust-watchdog.json` says why. The daily `rmcp-cert-check`
+  watches the watchdog's own timer through the drop-in `rmcp-cert-check.service.d/trust-watchdog.conf`.
+* **Installing and removing the timers.** Only with `trust-timers.sh` (control host, root):
+  `install <release-dir>` validates the units, installs them and the drop-in, enables and restarts
+  both timers and FAILS unless both have a finite next run within their bound; `check` repeats that
+  judgement; `remove` (before a rollback to a release without them, using the release that
+  installed them: `TRF_SDK=<release>/sdk <release>/sdk/deploy/remote-mcp/trust-timers.sh remove`)
+  deletes units, drop-in, both stamp files and the watchdog state and proves them gone. Never
+  `systemctl start` the refresh to make a dead timer look alive.
 * **Reachability.** The control plane dials the target over the private network; there is no
   public worker port. A worker behind NAT that connects out is a different protocol and not part
   of this.

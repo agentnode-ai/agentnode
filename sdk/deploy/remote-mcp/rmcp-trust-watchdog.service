@@ -1,0 +1,17 @@
+[Unit]
+# The independent second pair of eyes on trust distribution (trust-refresh C4/C13/C14): the lists'
+# validity and 48-hour margin, every live target's exact acknowledgement, and a FINITE next run of
+# rmcp-trust-refresh.timer. Deliberately no ordering or dependency on any rmcp-trust-refresh unit:
+# it must run, and fail into rmcp-alert@, exactly when the refresh does not.
+Description=AgentNode remote MCP: trust watchdog (independent of the trust refresh)
+Wants=network-online.target
+After=network-online.target
+OnFailure=rmcp-alert@%n.service
+
+[Service]
+Type=oneshot
+Environment=PYTHONPATH=/opt/agentnode/sdk
+ExecStart=/opt/agentnode/venv/bin/python -m agentnode_sdk.remote_mcp.trust_watchdog check --stand /var/lib/agentnode-mcp/stand
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes

@@ -76,7 +76,8 @@ def wish_of(value: Any) -> str | None:
     return value
 
 
-def _eligible(target: T.Target, entry, now: float, acks: dict, list_number: int | None) -> None:
+def _eligible(target: T.Target, entry, now: float, acks: dict, deployment: dict | None,
+              previous: dict | None = None) -> None:
     status = target.effective_status(now)
     if status == T.REVOKED:
         raise TargetRefusal("target_revoked")
@@ -101,17 +102,19 @@ def _eligible(target: T.Target, entry, now: float, acks: dict, list_number: int 
         failed.append("wall_clock_s")
     if failed:
         raise TargetRefusal("target_unsuitable", ",".join(failed))
-    if not T.trust_current(acks.get(target.target_id), now=now, deployment_list_number=list_number):
+    if not T.trust_current(acks.get(target.target_id), now=now, deployment=deployment, previous=previous):
         raise TargetRefusal("target_trust_unavailable")
 
 
 class TargetRouter:
     def __init__(self, *, register: T.Register, acks: T.TrustAcks, worker_for: Callable[[T.Target], Any],
-                 deployment_list_number: Callable[[], int | None]):
+                 deployment_trust: Callable[[], dict | None], previous_trust: Callable[[], dict | None] | None = None):
         self.register = register
         self.acks = acks
         self._worker_for = worker_for
-        self._list_number = deployment_list_number
+        self._deployment_trust = deployment_trust
+        #: the CA-verified pair saved before the last scheduled publication (`targets.trust_current`)
+        self._previous_trust = previous_trust or (lambda: None)
         self._workers: dict[tuple, Any] = {}
         self._mutex = threading.Lock()
 
@@ -129,7 +132,7 @@ class TargetRouter:
             if target is None:                                 # a default that is not visible: never widened
                 raise TargetRefusal("target_unknown", reason=reason)
         try:
-            _eligible(target, entry, snap.now, self.acks.load(), self._list_number())
+            _eligible(target, entry, snap.now, self.acks.load(), self._deployment_trust(), self._previous_trust())
         except TargetRefusal as refusal:
             refusal.target_id, refusal.selection_reason = target.target_id, reason
             raise
@@ -151,9 +154,9 @@ class TargetRouter:
         if status == T.SUSPENDED:
             raise TargetRefusal("target_suspended_while_queued", target_id=t.target_id)
         try:
-            _eligible(t, entry, snap.now, self.acks.load(), self._list_number())
+            _eligible(t, entry, snap.now, self.acks.load(), self._deployment_trust(), self._previous_trust())
         except TargetRefusal as refusal:
-            code = "target_properties_stale" if refusal.code == "target_properties_stale" else refusal.code
+            code ="target_properties_stale" if refusal.code == "target_properties_stale" else refusal.code
             raise TargetRefusal(code, target_id=t.target_id) from refusal
         if t.binding(resolution.requirements_digest) != resolution.binding:
             raise TargetRefusal("target_changed", target_id=t.target_id)
