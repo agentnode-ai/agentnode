@@ -87,6 +87,16 @@ WORKER_KEYS = ("address", "deployment", "instance", "identity_uri", "topology", 
 ENTRY_KEYS = ("target_id", "type", "owner_account", "created_at", "status", "expires_at", "worker",
               "endpoint_digest", "limits", "attestation", "facts_generation")
 IMMUTABLE = ("target_id", "type", "owner_account", "created_at")
+#: What of an observation record binds an approval (attest-renewal D2). A renewal that changes only the
+#: measurement time, the expiry, the raw results, the nonces and with them the record digest is EQUIVALENT:
+#: it keeps the binding, the facts generation and every outstanding approval. Any other change is not.
+ATTESTATION_BINDING_KEYS = ("assurance", "suite", "identity_uri", "endpoint_digest", "properties")
+
+
+def attestation_binding_view(record: dict | None) -> dict | None:
+    if not record:
+        return None
+    return {k: record.get(k) for k in ATTESTATION_BINDING_KEYS}
 
 
 class TargetsUnavailable(Exception):
@@ -155,10 +165,11 @@ class Target:
 
     @property
     def properties_digest(self) -> str:
+        """The assurance and the measured properties -- not the record that measured them, so an
+        equivalent renewal keeps it (attest-renewal D2); the suite is bound by facts_generation."""
         if not self.attestation:
             return ""
-        return digest({"assurance": self.assurance, "properties": self.properties,
-                       "record_digest": self.attestation.get("record_digest", "")})
+        return digest({"assurance": self.assurance, "properties": self.properties})
 
     def binding(self, requirements_digest: str) -> dict[str, Any]:
         """The canonical target binding that goes into the invocation nonce (Codex D2)."""
@@ -377,6 +388,8 @@ def _binding_view(entry: dict, key: str):
     value = entry.get(key)
     if key == "worker" and isinstance(value, dict):
         return {k: v for k, v in value.items() if k != "key_slot"}
+    if key == "attestation":
+        return attestation_binding_view(value)
     return value
 
 
@@ -616,6 +629,46 @@ class Register:
             return "attestation %s %s" % (target_id, (record or {}).get("record_digest", "none")[:16])
         return self.change(m, actor=actor)
 
+    def renew_attestation(self, target_id: str, record: dict, start: dict, *, actor: str) -> RegisterSnapshot:
+        """Publish a renewal's record -- compare-and-change under the catalog lock (attest-renewal D3).
+
+        `start` is what the renewal journaled before it observed: the target's status, identity URI,
+        endpoint digest and record digest. If any of them is different now, another change won the
+        race (a revocation, a suspension, an endpoint edit, another renewal) and nothing is written:
+        `renew.superseded`. Status is never touched here."""
+        def m(doc, now):
+            e = doc["targets"].get(target_id)
+            current = {"status": e["status"] if e else None,
+                       "identity_uri": (e or {}).get("worker", {}).get("identity_uri"),
+                       "endpoint_digest": (e or {}).get("endpoint_digest"),
+                       "record_digest": ((e or {}).get("attestation") or {}).get("record_digest")}
+            effective = EXPIRED if (e and e["status"] not in TERMINAL and e["expires_at"] is not None
+                                    and now >= e["expires_at"]) else current["status"]
+            wanted = {k: start.get(k) for k in current}
+            if e is None or current != wanted or effective != ACTIVE:
+                raise TargetsRefused("renew.superseded", "%s changed since the renewal began" % target_id)
+            if record.get("identity_uri") != current["identity_uri"] \
+                    or record.get("endpoint_digest") != current["endpoint_digest"]:
+                raise TargetsRefused("renew.superseded", "the record is for another identity or endpoint")
+            e["attestation"] = copy.deepcopy(record)
+            return "attestation-renew %s %s" % (target_id, record.get("record_digest", "")[:16])
+        return self.change(m, actor=actor)
+
+    def block(self, target_id: str, *, actor: str, why: str) -> RegisterSnapshot:
+        """Suspend a target on POSITIVE, target-specific evidence (attest-renewal D4) -- the managed
+        default included: a conclusively unsafe default is refused for every run, and no other target is
+        ever chosen in its place. Only an operator's full probe brings it back."""
+        def m(doc, now):
+            e = doc["targets"].get(target_id)
+            if e is None or e["status"] in TERMINAL:
+                raise TargetsRefused("target.unknown_or_terminal", target_id)
+            if e["status"] != SUSPENDED:
+                if SUSPENDED not in TRANSITIONS.get(e["status"], ()):
+                    raise TargetsRefused("target.transition", "%s -> suspended is not allowed" % e["status"])
+                e["status"] = SUSPENDED
+            return "block %s %s" % (target_id, why[:120])
+        return self.change(m, actor=actor)
+
     def set_account_default(self, account: str, target_id: str | None, *, actor: str) -> RegisterSnapshot:
         if not A.well_formed(account):
             raise TargetsRefused("account.invalid", account)
@@ -736,7 +789,8 @@ def trust_current(ack: dict | None, *, now: float, deployment: dict | None, prev
     return True
 
 
-__all__ = ["ACTIVE", "ASSURANCE_CLASSES", "ATTESTATION_MAX_SECONDS", "CUSTOMER", "CUSTOMER_OBSERVED",
+__all__ = ["ACTIVE", "ASSURANCE_CLASSES", "ATTESTATION_BINDING_KEYS", "ATTESTATION_MAX_SECONDS",
+           "attestation_binding_view", "CUSTOMER", "CUSTOMER_OBSERVED",
            "ENROLLED", "EXPIRED", "HARDWARE_ATTESTED", "INVITED", "MANAGED", "OPERATOR_MANAGED", "PROBING",
            "PROVISIONING_FAILED", "REVOKED", "Register", "RegisterSnapshot", "SUSPENDED", "TERMINAL", "Target",
            "PREVIOUS_DIR", "TargetsRefused", "TargetsUnavailable", "TrustAcks", "check_successor", "digest",

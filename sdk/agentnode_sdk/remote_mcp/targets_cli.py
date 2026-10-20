@@ -45,8 +45,25 @@ def _pub(k) -> bytes:
     return k.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
 
 
-def build(stand: str, canary_host: str):
+def _kill_switch(stand: str, gateway_dir: str | None):
+    """The gateway kill switch the serving process judges at admission (`allowance.why_it_is_stopped`).
+    No gateway directory found: nothing can tell whether work is stopped -- answered as stopped."""
+    gw = gateway_dir or os.path.join(os.path.dirname(os.path.abspath(stand)), "gwdir")
+
+    def stopped() -> str:
+        if not os.path.isdir(gw):
+            return "gateway directory not found"
+        from agentnode_sdk.gateway import allowance
+        try:
+            return allowance.why_it_is_stopped(gw) or ""
+        except Exception as exc:                               # noqa: BLE001 - unreadable is stopped
+            return "unreadable: " + type(exc).__name__
+    return stopped
+
+
+def build(stand: str, canary_host: str, *, gateway_dir: str | None = None, probe_slot_socket: str | None = None):
     from agentnode_sdk.pki.issuer import Issuer
+    from agentnode_sdk.remote_mcp import probe_slot
     from agentnode_sdk.remote_mcp.catalog_audit import CatalogLedger
     from agentnode_sdk.remote_mcp.server import _worker_base, target_worker_factory
     from agentnode_sdk.worker.tls import own_instance
@@ -63,7 +80,9 @@ def build(stand: str, canary_host: str):
     ops = Operations(stand=stand, register=register, acks=acks, issuer=issuer, keyring_path=cfg["keyring"],
                      gateway_instance=own_instance(tls), deployment=cfg["deployment"],
                      bundles_dir=os.path.join(stand, "targets", "bundles"),
-                     worker_for=target_worker_factory(stand), canary_host=canary_host, ledger=ledger)
+                     worker_for=target_worker_factory(stand), canary_host=canary_host, ledger=ledger,
+                     slot=lambda tid: probe_slot.acquire(tid, path=probe_slot_socket or probe_slot.PROBE_SLOT_SOCKET),
+                     kill_switch=_kill_switch(stand, gateway_dir))
     return ops, cfg, tls
 
 
@@ -94,7 +113,15 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="agentnode-mcp-targets")
     p.add_argument("--stand", required=True)
     p.add_argument("--canary-host", default="127.0.0.1")
+    p.add_argument("--gateway-dir", default=None, help="the gateway state dir whose kill switch stops probes too "
+                                                       "(default: <stand>/../gwdir)")
+    p.add_argument("--probe-slot-socket", default=None, help="the serving process's probe-slot socket path")
     sub = p.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("attest-renew")
+    s.add_argument("--target")
+    s.add_argument("--force", action="store_true", help="renew --target although it is not due")
+    sub.add_parser("attest-bootstrap")
+    sub.add_parser("attest-status")
     s = sub.add_parser("init-register")
     s.add_argument("--managed-id", required=True)
     s.add_argument("--concurrency", type=int, default=8)
@@ -122,9 +149,23 @@ def main(argv=None) -> int:
     s = sub.add_parser("reconcile-dispatch")
     s.add_argument("--invocation-hash", required=True)
     args = p.parse_args(argv)
-    ops, cfg, tls = build(args.stand, args.canary_host)
+    if args.cmd == "attest-renew" and args.force and not args.target:
+        p.error("--force renews one named --target")
+    ops, cfg, tls = build(args.stand, args.canary_host, gateway_dir=args.gateway_dir,
+                          probe_slot_socket=args.probe_slot_socket)
     out: object
     try:
+        if args.cmd == "attest-renew":
+            report = ops.attest_renew(target_id=args.target, force=args.force)
+            print(json.dumps(report, indent=1, default=str, sort_keys=True))
+            return {"ok": 0, "degraded": 3, "blocked": 4}[report["status"]]
+        if args.cmd == "attest-bootstrap":
+            doc = ops.bootstrap_state()
+            print(json.dumps({"bootstrapped": sorted(doc["targets"])}, indent=1))
+            return 0
+        if args.cmd == "attest-status":
+            print(json.dumps(ops.attest_status(), indent=1, default=str, sort_keys=True))
+            return 0
         if args.cmd == "init-register":
             spec = _managed_spec(cfg, tls, args.managed_id, args.concurrency, args.queue)
             provisional = T.Target.from_doc(T.Register._new_entry(dict(spec, created_at=0.0), generation=1))
@@ -161,7 +202,12 @@ def main(argv=None) -> int:
             out = {"op": ops.enroll(args.target, args.request)["op_id"]}
         elif args.cmd == "probe":
             op = ops.probe(args.target)
-            out = {"op": op["op_id"], "status": ops.register.load().target(args.target).status}
+            out = {"op": op["op_id"], "kind": op["kind"], "state": op["state"],
+                   "result": op["params"].get("result", ""),
+                   "status": ops.register.load().target(args.target).status}
+            if op["kind"] == "renew" and out["result"] in ("degraded", "blocked"):
+                print(json.dumps(out, indent=1, default=str))
+                return 3 if out["result"] == "degraded" else 4
         elif args.cmd == "rotate":
             out = {"op": ops.rotate(args.target)["op_id"]}
         elif args.cmd == "retire-overlaps":

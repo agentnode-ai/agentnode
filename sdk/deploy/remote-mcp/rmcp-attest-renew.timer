@@ -1,0 +1,15 @@
+[Unit]
+# A WALL-CLOCK schedule only (attest-renewal D5, as DEFECT-LIVE-001 taught): no monotonic trigger, so a
+# reinstall on a long-running host with a surviving stamp still has a next elapse. Persistent=true runs a
+# missed elapse once right after boot or install. Between the trust refresh (00/06/12/18) and away from
+# the watchdog (:20).
+Description=AgentNode remote MCP: attestation renewal, four times a day (03:30/09:30/15:30/21:30 UTC)
+
+[Timer]
+OnCalendar=*-*-* 03/6:30:00 UTC
+Persistent=true
+RandomizedDelaySec=5min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

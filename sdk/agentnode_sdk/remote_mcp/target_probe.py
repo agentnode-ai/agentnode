@@ -214,6 +214,55 @@ def probe(target: T.Target, worker, canary: Canary, *, now: float | None = None)
     return body
 
 
+ESTABLISHED, LOST, INCONCLUSIVE = "established", "lost", "inconclusive"
+#: Handshake refusals in which a peer AUTHENTICATED by this deployment's anchor named another identity:
+#: positive evidence of a wrong peer. Every other refusal (no certificate, an untrusted chain, validity,
+#: revocation-list or floor trouble on this side) cannot tell a wrong peer from broken control-side trust.
+WRONG_IDENTITY_CHECKS = frozenset({"instance", "deployment", "role"})
+
+
+def judge(record: dict) -> tuple[str, list[str]]:
+    """A renewal's verdict on a complete record (attest-renewal D4): (established | lost | inconclusive,
+    reasons). LOST needs positive evidence: a proved wrong URI, the canary seeing the nonce, the job
+    reporting a way out, or a limit that was demonstrably not enforced while its within-limit control ran
+    to the end. A control that did not complete, a missing egress report or an unproved run says nothing
+    about the target: inconclusive, never lost."""
+    r = record.get("results") or {}
+    lost, unsure = [], []
+    ident = r.get("identity") or {}
+    proved = list(ident.get("every_run_proved") or [])
+    expected = ident.get("expected_uri")
+    if any(p and p != expected for p in proved):
+        lost.append("identity")
+    elif not proved or any(not p for p in proved):
+        unsure.append("identity_unproved")
+    egress = r.get("egress") or {}
+    said = egress.get("job_reported") or {}
+    if egress.get("canary_saw_nonce") or said.get("ipv4") == "connected" or said.get("ipv6") == "connected" \
+            or said.get("dns") == "resolved":
+        lost.append("network")
+    elif not said:
+        unsure.append("egress_report_missing")
+    controls = r.get("controls") or {}
+    mem, wall = r.get("memory") or {}, r.get("wall_clock") or {}
+    if not controls.get("memory_within_limit_ran"):
+        unsure.append("memory_control")
+    elif not mem.get("killed"):
+        lost.append("memory")
+    if not controls.get("wall_within_limit_ran"):
+        unsure.append("wall_control")
+    elif not (wall.get("killed") and wall.get("within_bound")):
+        lost.append("wall_clock")
+    if lost:
+        return LOST, lost
+    if unsure:
+        return INCONCLUSIVE, unsure
+    failed = passed(record)
+    if failed:                                                 # cannot happen when the above hold; never assumed
+        return INCONCLUSIVE, ["requirements:" + ",".join(failed)]
+    return ESTABLISHED, []
+
+
 def passed(record: dict) -> list[str]:
     """Which requirement classes the record does NOT establish (empty list = activation possible)."""
     p, r = record.get("properties") or {}, record.get("results") or {}
@@ -229,4 +278,5 @@ def passed(record: dict) -> list[str]:
     return failed
 
 
-__all__ = ["BOUNDS", "Canary", "SUITE", "passed", "probe"]
+__all__ = ["BOUNDS", "Canary", "ESTABLISHED", "INCONCLUSIVE", "LOST", "SUITE", "WRONG_IDENTITY_CHECKS", "judge",
+           "passed", "probe"]

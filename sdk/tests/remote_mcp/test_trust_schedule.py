@@ -91,9 +91,9 @@ def test_the_utc_pin_is_required():
                                  "PartOf=rmcp-trust-refresh.timer", "Requisite=rmcp-trust-refresh.service"])
 def test_the_watchdog_never_depends_on_the_refresh(dep):
     text = SHIPPED[TT.WATCHDOG_SERVICE].replace("After=network-online.target", "After=network-online.target\n" + dep)
-    assert any("depends on the refresh" in p for p in TT.unit_problems(TT.WATCHDOG_SERVICE, text))
+    assert any("depends on what it watches" in p for p in TT.unit_problems(TT.WATCHDOG_SERVICE, text))
     ttext = "[Unit]\n" + dep + "\n" + SHIPPED[TT.WATCHDOG_TIMER]
-    assert any("depends on the refresh" in p for p in TT.unit_problems(TT.WATCHDOG_TIMER, ttext))
+    assert any("depends on what it watches" in p for p in TT.unit_problems(TT.WATCHDOG_TIMER, ttext))
 
 
 def test_the_watchdog_alerts_on_failure_and_runs_the_check():
@@ -246,6 +246,8 @@ class FakeSystemd:
 
     def __call__(self, argv):
         self.calls.append(list(argv))
+        if argv[0] == "env":                                  # targets_cli attest-bootstrap
+            return 0, "bootstrapped"
         verb = argv[1]
         if verb in ("daemon-reload", "reset-failed"):
             return 0, ""
@@ -304,9 +306,10 @@ def test_install_then_check_green(tmp_path, release):
     assert set(_installed(root)) >= {TT.DROPIN_DIR + "/" + TT.DROPIN, *TT.UNITS}
     for name in TT.UNITS:                                     # byte-exact from the release, 0644
         assert (root / "etc/systemd/system" / name).read_bytes() == (release / TT.SOURCE / name).read_bytes()
-    verbs = [c[1] for c in fake.calls]
+    assert fake.calls[0][0] == "env" and fake.calls[0][-1] == "attest-bootstrap"   # state before any timer
+    verbs = [c[1] for c in fake.calls[1:]]
     assert verbs[:3] == ["daemon-reload", "enable", "restart"]
-    assert ["systemctl", "restart", TT.REFRESH_TIMER, TT.WATCHDOG_TIMER] in fake.calls
+    assert ["systemctl", "restart", TT.REFRESH_TIMER, TT.WATCHDOG_TIMER, TT.RENEW_TIMER] in fake.calls
 
 
 def test_install_hard_fails_on_an_active_timer_without_next(tmp_path, release):
@@ -315,7 +318,7 @@ def test_install_hard_fails_on_an_active_timer_without_next(tmp_path, release):
     fake = FakeSystemd(root, mode="defect")
     done = TT.install(release, root=root, run=fake, now=lambda: fake.now)
     assert done["installed"] is False and done["stage"] == "verify"
-    assert sum(p.startswith("timer_next_not_finite") for p in done["problems"]) == 2
+    assert sum(p.startswith("timer_next_not_finite") for p in done["problems"]) == 3
 
 
 def test_install_hard_fails_on_a_next_beyond_the_bound(tmp_path, release):
@@ -367,11 +370,11 @@ def test_remove_leaves_no_residue(tmp_path, release):
     TT._state(root).write_text("{}")
     other = root / "etc/systemd/system" / TT.DROPIN_DIR / "someone-else.conf"
     other.write_text("[Service]\n")
-    done = TT.remove(root=root, run=fake)
+    done = TT.remove(root=root, run=fake, preflight=False)
     assert done == {"removed": True, "left": []}
     assert _installed(root) == [TT.DROPIN_DIR + "/someone-else.conf"]   # only what is not ours stays
     assert not any(s.exists() for s in TT._stamps(root)) and not TT._state(root).exists()
-    assert ["systemctl", "disable", "--now", TT.REFRESH_TIMER, TT.WATCHDOG_TIMER] in fake.calls
+    assert ["systemctl", "disable", "--now", TT.REFRESH_TIMER, TT.WATCHDOG_TIMER, TT.RENEW_TIMER] in fake.calls
 
 
 @pytest.mark.parametrize("left_behind", ["stamp-refresh", "stamp-watchdog", "state", "wants-link"])
@@ -397,16 +400,16 @@ def test_remove_reports_what_it_could_not_remove(tmp_path, release, monkeypatch,
             fake.calls.append(list(argv))
             return 0, ""
         return real_call(argv)
-    done = TT.remove(root=root, run=no_disable)
+    done = TT.remove(root=root, run=no_disable, preflight=False)
     assert done["removed"] is False and any(str(keep) in item or keep.name in item for item in done["left"])
 
 
 def test_cli_exit_codes(release, monkeypatch, capsys):
-    monkeypatch.setattr(TT, "install", lambda rel: {"installed": False, "stage": "verify",
+    monkeypatch.setattr(TT, "install", lambda rel, **kw: {"installed": False, "stage": "verify",
                                                      "problems": ["timer_next_not_finite x"]})
     assert TT.main(["install", str(release)]) == 1
     assert "TRUST_TIMERS_INSTALL_FAILED" in capsys.readouterr().out
-    monkeypatch.setattr(TT, "remove", lambda: {"removed": False, "left": ["stamp"]})
+    monkeypatch.setattr(TT, "remove", lambda **kw: {"removed": False, "left": ["stamp"]})
     assert TT.main(["remove"]) == 1
     monkeypatch.setattr(TT, "check", lambda: ["timer_next_not_finite rmcp-trust-refresh.timer"])
     assert TT.main(["check"]) == 1

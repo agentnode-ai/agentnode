@@ -13,7 +13,13 @@ unit dependency with the refresh, and checks the RESULT, not the refresh:
   (b) every live target in the register: an operator-signed acknowledgement EXACTLY equal to the
       deployment's pair (number, both digests, every validity time), at most 13 hours old;
   (c) the refresh timer: loaded, enabled, active, and a FINITE next elapse in the future within one
-      period of the schedule -- `active` with no next elapse is the defect itself, and red.
+      period of the schedule -- `active` with no next elapse is the defect itself, and red;
+  (d) the attestations (attest-renewal D8): every active target's record valid with more than its class
+      warning left (48 h managed, 6 h customer) at the effective, pinned time; the default target active;
+      the renewal timer finite within 6 h 10 min; the renewal state present, its last run at most
+      6 h 40 min old, no target degraded or blocked, and the record digest it last published equal to the
+      register's; no renew/probe operation open for 30 minutes (lock holders read from /proc/locks,
+      never by taking a lock).
 
 It is read-only: the operator PUBLIC key only, no private key, no issuer lock, no worker connection,
 no publication, no write to the register (its pinned clock included), acknowledgements, floors or
@@ -43,6 +49,11 @@ from typing import Any, Callable
 
 REFRESH_TIMER = "rmcp-trust-refresh.timer"
 WATCHDOG_TIMER = "rmcp-trust-watchdog.timer"
+#: The attestation renewal (attest-renewal): its timer, how far its next run may lie, how old its last
+#: finished run may be (one period + its timeout + slack).
+RENEW_TIMER = "rmcp-attest-renew.timer"
+RENEW_BOUND_SECONDS = 6 * 3600 + 600
+RENEW_RUN_MAX_AGE_SECONDS = 6 * 3600 + 2400
 #: Red below this much validity left on either list.
 MARGIN_SECONDS = 48 * 3600
 #: Red when a live target's acknowledgement is older: two refresh periods and an hour.
@@ -200,6 +211,124 @@ def trust_problems(stand, *, now: float, view=None, tls=None) -> tuple[list[str]
     return problems, facts
 
 
+# ---------------------------------------------------------------------- attestations (attest-renewal D8)
+def held_flock_inodes() -> set | None:
+    """(device, inode) of every file an flock is held on, from /proc/locks -- READ, never a lock attempt,
+    so inspecting cannot take, release or delay a probe's lock. None where the kernel cannot say."""
+    try:
+        lines = Path("/proc/locks").read_text().splitlines()
+    except OSError:
+        return None
+    out = set()
+    for line in lines:
+        parts = line.split()
+        if "FLOCK" not in parts:
+            continue
+        for p in parts:
+            bits = p.split(":")
+            if len(bits) == 3 and all(bits):
+                try:
+                    out.add((os.makedev(int(bits[0], 16), int(bits[1], 16)), int(bits[2])))
+                except ValueError:
+                    pass
+    return out
+
+
+def _lock_held(path: Path, held: set | None) -> str:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "no lock file"
+    if held is None:
+        return "lock state unknown"
+    return "lock held" if (st.st_dev, st.st_ino) in held else "lock not held"
+
+
+def attestation_problems(stand, *, now: float, run: Runner = _run, state_path=None) -> tuple[list[str], dict]:
+    """Every active target's record valid with more than its class warning left (effective, pinned time);
+    the default target active; the renewal timer finite; the renewal state present, recent and agreeing
+    with the register; no target degraded or blocked; no renew/probe operation open for 30 minutes."""
+    from agentnode_sdk.remote_mcp import targets as T
+    from agentnode_sdk.remote_mcp import target_ops as O
+
+    problems: list[str] = []
+    facts: dict[str, Any] = {}
+    tstate = timer_state(RENEW_TIMER, run=run)
+    problems += timer_problems(tstate, now=now, bound_seconds=RENEW_BOUND_SECONDS)
+    nxt = next_elapse(tstate)
+    facts["renew_next"] = _iso(nxt) if nxt else None
+    op_pub = bytes.fromhex(io.open(os.path.join(str(stand), "operator_pub.hex"), encoding="utf-8").read().strip())
+    try:
+        snap = T.Register(stand, op_pub, pin_clock=False).load()
+    except T.TargetsUnavailable as exc:
+        return problems + ["register_unavailable (%s)" % exc], facts
+    eff = max(now, snap.now)                                   # the later of clock and pinned high-water
+    default = snap.target(snap.default_target)
+    if default is None or default.effective_status(eff) != T.ACTIVE:
+        problems.append("default_target_not_active %s (%s)" % (snap.default_target,
+                                                              default.effective_status(eff) if default else "missing"))
+    active = [t for t in snap.targets.values() if t.effective_status(eff) == T.ACTIVE]
+    facts["attestations"] = {}
+    for t in sorted(active, key=lambda t: t.target_id):
+        a = t.attestation or {}
+        pol = O.RENEW_POLICY.get(t.assurance)
+        if not a or not t.attestation_valid(eff):
+            problems.append("attestation_invalid %s" % t.target_id)
+            continue
+        left = float(a["expires_at"]) - eff
+        facts["attestations"][t.target_id] = {"expires_at": _iso(float(a["expires_at"])), "hours_left": round(left / 3600, 1),
+                                              "record": a["record_digest"][:16]}
+        if pol is None or left <= pol["warn"]:
+            problems.append("attestation_reserve_low %s (%.1f h left, warning at %d h)"
+                            % (t.target_id, left / 3600, (pol or {"warn": 0})["warn"] // 3600))
+    path = Path(state_path) if state_path is not None else O.renew_state_path(stand)
+    try:
+        state = O.load_renew_state(path)
+    except ValueError as exc:
+        state = None
+        problems.append("renew_state_unreadable (%s)" % exc)
+    else:
+        if state is None:
+            problems.append("renew_state_missing")
+    if state is not None:
+        entries = state["targets"]
+        for t in active:
+            e = entries.get(t.target_id)
+            if not e:
+                problems.append("renew_state_missing %s" % t.target_id)
+            elif e.get("published_record_digest") != (t.attestation or {}).get("record_digest"):
+                problems.append("register_inconsistent %s (renewal published %s, register holds %s)"
+                                % (t.target_id, str(e.get("published_record_digest"))[:16],
+                                   (t.attestation or {}).get("record_digest", "")[:16]))
+        for tid, e in sorted(entries.items()):
+            t = snap.target(tid)
+            if t is None or t.effective_status(eff) in T.TERMINAL:
+                continue
+            if e.get("result") in ("degraded", "blocked", "busy"):
+                problems.append("renew_%s %s (%s)" % (e["result"], tid, str(e.get("reason", ""))[:120]))
+        last = state.get("last_run") or {}
+        since = float(last.get("finished_at") or state.get("bootstrapped_at") or 0)
+        if now - since > RENEW_RUN_MAX_AGE_SECONDS:
+            problems.append("renew_run_overdue (last %s)" % (_iso(since) if since else "never"))
+        facts["renew_last_run"] = {"finished_at": _iso(since) if since else None, "status": last.get("status")}
+    ops_dir = Path(stand) / "targets" / "ops"
+    held = held_flock_inodes()
+    for f in sorted(ops_dir.glob("op-*.json")) if ops_dir.is_dir() else []:
+        try:
+            op = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            problems.append("operation_unreadable %s" % f.name)
+            continue
+        if op.get("state") != "open" or op.get("kind") not in ("renew", "probe"):
+            continue
+        age = now - float(op.get("created_at") or 0)
+        if age > O.HUNG_AFTER_SECONDS:
+            lock = Path(str(ops_dir.parent / (O.PROBE_LOCK_PREFIX + str(op.get("target_id")))) + ".lock")
+            problems.append("probe_hung %s %s %s (%d s open, %s)" % (op.get("op_id"), op.get("kind"),
+                                                                    op.get("target_id"), int(age), _lock_held(lock, held)))
+    return problems, facts
+
+
 # ---------------------------------------------------------------------- state
 def write_state(path, doc: dict) -> None:
     """Atomically: a temporary file in the same directory, fsync, rename, directory fsync; 0644."""
@@ -223,7 +352,7 @@ def write_state(path, doc: dict) -> None:
 
 
 def check(stand, *, now: float | None = None, timer: str = REFRESH_TIMER, state_file=STATE_FILE,
-          run: Runner = _run, tls=None, view=None) -> dict:
+          run: Runner = _run, tls=None, view=None, renew_state_file=None) -> dict:
     """One watchdog run. Returns the report that was written; `report["state"]` is green or red."""
     now = time.time() if now is None else float(now)
     try:
@@ -234,6 +363,12 @@ def check(stand, *, now: float | None = None, timer: str = REFRESH_TIMER, state_
     problems += timer_problems(tstate, now=now, bound_seconds=REFRESH_BOUND_SECONDS)
     nxt = next_elapse(tstate)
     facts["refresh_next"] = _iso(nxt) if nxt else None
+    try:
+        more, afacts = attestation_problems(stand, now=now, run=run, state_path=renew_state_file)
+    except Exception as exc:                                  # noqa: BLE001 - an unknown failure is red
+        more, afacts = ["attestation_watchdog_error (%s)" % type(exc).__name__], {}
+    problems += more
+    facts.update(afacts)
     report = {"state": "red" if problems else "green", "checked_at": _iso(now), "problems": problems,
               "facts": facts}
     try:
@@ -274,8 +409,9 @@ def main(argv=None) -> int:
     return 1 if problems else 0
 
 
-__all__ = ["ACK_MAX_AGE_SECONDS", "MARGIN_SECONDS", "REFRESH_BOUND_SECONDS", "REFRESH_TIMER", "STATE_FILE",
-           "WATCHDOG_BOUND_SECONDS", "WATCHDOG_TIMER", "check", "main", "next_elapse", "timer_problems",
+__all__ = ["ACK_MAX_AGE_SECONDS", "MARGIN_SECONDS", "REFRESH_BOUND_SECONDS", "REFRESH_TIMER", "RENEW_BOUND_SECONDS",
+           "RENEW_RUN_MAX_AGE_SECONDS", "RENEW_TIMER", "STATE_FILE", "WATCHDOG_BOUND_SECONDS", "WATCHDOG_TIMER",
+           "attestation_problems", "check", "held_flock_inodes", "main", "next_elapse", "timer_problems",
            "timer_state", "trust_problems", "write_state"]
 
 

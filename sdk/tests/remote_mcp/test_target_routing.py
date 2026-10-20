@@ -338,9 +338,11 @@ def test_target_change_between_prepare_and_submit_is_refused(st):
     t = st.register.load().target("cust-a")
     from .target_fixtures import attestation
 
+    changed = dict(t.properties, memory_ceiling_mb=2048)     # a different measured property: NOT equivalent
+
     def at(name):
         if name == "before_admission":
-            st.register.set_attestation("cust-a", attestation(T.CUSTOMER, t.worker), actor="t")
+            st.register.set_attestation("cust-a", attestation(T.CUSTOMER, t.worker, properties=changed), actor="t")
     st.adapter._barrier = at
     out = _call(st, ta, REGEX, REGEX_ARGS, wish="cust-a")
     assert out["result"]["content"][0]["text"] == "refused: target_changed"

@@ -1,0 +1,17 @@
+[Unit]
+# Renew every active execution target's observation record before it runs short (attest-renewal):
+# due at <= 78 h 10 min left (managed; 72 h reserve) / <= 18 h 10 min (customer), earliest expiry
+# first, at most four probes a run, one at a time, each inside a run slot of rmcp-control's own
+# scheduler. The old record stays in force while the new one is measured; it is replaced only by an
+# equivalent or still-sufficient measurement, atomically. A target with positive evidence against it
+# (wrong identity, withdrawn, a property demonstrably lost) is suspended. Anything inconclusive keeps
+# the old record, and this unit FAILS (-> rmcp-alert@) for it, as for a block.
+Description=AgentNode remote MCP: attestation renewal of execution targets
+After=network-online.target rmcp-control.service
+OnFailure=rmcp-alert@%n.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30min
+Environment=PYTHONPATH=/opt/agentnode/sdk
+ExecStart=/opt/agentnode/venv/bin/python -m agentnode_sdk.remote_mcp.targets_cli --stand /var/lib/agentnode-mcp/stand --canary-host 10.0.0.4 --gateway-dir /var/lib/agentnode-mcp/gwdir attest-renew

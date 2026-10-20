@@ -251,6 +251,38 @@ def build_target_router(stand: str, worker_for=None, deployment=None, previous=N
                         previous_trust=previous or previous_trust(stand))
 
 
+def attach_probe_slots(app, router, path: str | None = None, **kw):
+    """The probe-slot service (attest-renewal D6) on `app`'s lifespan: renewal probes take their run
+    slot from THIS process's scheduler. If it cannot start (unsafe directory, a live listener on the
+    path), calls are still served and every renewal finds no slot -- inconclusive, alerted."""
+    import sys
+
+    from agentnode_sdk.remote_mcp import probe_slot
+    from agentnode_sdk.remote_mcp import targets as T
+
+    def limits_of(target_id):
+        try:
+            snap = router.register.load()
+        except Exception:                                      # noqa: BLE001 - unreadable: no slot
+            return None
+        t = snap.target(target_id)
+        if t is None or t.effective_status(snap.now) in T.TERMINAL:
+            return None
+        return int(t.limits["concurrency"]), int(t.limits["queue"])
+
+    server = probe_slot.ProbeSlotServer(app.scheduler, limits_of, path or probe_slot.PROBE_SLOT_SOCKET, **kw)
+
+    async def start():
+        try:
+            await server.start()
+        except (probe_slot.SlotServiceRefused, OSError) as exc:
+            print("PROBE_SLOT_UNAVAILABLE %s: %s" % (type(exc).__name__, exc), file=sys.stderr, flush=True)
+
+    app.lifespan_hooks.append((start, server.stop))
+    app.probe_slots = server
+    return server
+
+
 def build_catalog_adapter(stand: str, worker, *, router=None, authority=None, kill_switch=None):
     """The per-account catalog adapter over *worker*, wired from a stand directory.
 
@@ -312,7 +344,8 @@ def _build_catalog_adapter(stand: str, gateway_dir: str | None = None, authority
 def build_production_app(stand: str, *, resource: str, issuer: str,
                          allowed_hosts: tuple[str, ...], gateway_dir: str,
                          console_url: str = "", allowed_origins: tuple[str, ...] = (),
-                         preregistered=None, limits: Limits | None = None) -> RemoteMCPApp:
+                         preregistered=None, limits: Limits | None = None,
+                         probe_slot_path: str | None = None) -> RemoteMCPApp:
     """PRODUCTION builder — the ONLY production path. It serves the per-account catalog
     (``_build_catalog_adapter``) and execution ALWAYS crosses the separate,
     mutually-authenticated worker over mTLS; there is NO parameter,
@@ -334,10 +367,12 @@ def build_production_app(stand: str, *, resource: str, issuer: str,
     rc = ResourceConfig(resource=resource, authorization_server=issuer)
     authz = AuthorizationServer(issuer=issuer, resource=resource, token_store=store,
                                 preregistered=dict(preregistered or {}))
-    return RemoteMCPApp(adapter=adapter, token_store=store, authz=authz, resource=rc,
-                        allowed_hosts=allowed_hosts, allowed_origins=allowed_origins,
-                        login_provider=gl, live_authority=gl, console_url=console_url,
-                        limits=limits or Limits(), allow_x_access_token=False)
+    app = RemoteMCPApp(adapter=adapter, token_store=store, authz=authz, resource=rc,
+                       allowed_hosts=allowed_hosts, allowed_origins=allowed_origins,
+                       login_provider=gl, live_authority=gl, console_url=console_url,
+                       limits=limits or Limits(), allow_x_access_token=False)
+    attach_probe_slots(app, adapter.router, probe_slot_path)
+    return app
 
 
 def main(argv=None) -> int:

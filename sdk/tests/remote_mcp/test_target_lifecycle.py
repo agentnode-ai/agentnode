@@ -88,7 +88,7 @@ def env(tmp_path):
 
     ops = Operations(stand=reg.stand, register=reg, acks=acks, issuer=world.issuer, keyring_path=keyring,
                      gateway_instance="g1", deployment=world.deployment, bundles_dir=tmp_path / "bundles",
-                     worker_for=worker_for)
+                     worker_for=worker_for, slot=None)          # no serving process here: no slot service
     # the managed worker, with its own copies of the lists, so trust propagation can reach it
     from agentnode_sdk.pki import floor as floors
     managed = world.service("worker", "w1")
