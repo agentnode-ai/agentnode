@@ -116,10 +116,13 @@ def clear_stale_socket(path: str) -> None:
 class ProbeSlotServer:
     """Serves probe slots from `scheduler` on `path`. `limits_of(target_id)` -> (concurrency, queue) of
     an ACTIVE register target, or None (refused `target_unknown`); it may block (it reads the register),
-    so it runs off the event loop."""
+    so it runs off the event loop -- on the service's OWN small thread pool: the loop's default pool is the one
+    every running call occupies (`run_in_executor(None, ...)` in the transport), and a full house of calls must
+    not starve the probe's question for a slot (found on the two-host stand: 8 runs, 6 default threads)."""
 
     def __init__(self, scheduler, limits_of: Callable[[str], "tuple[int, int] | None"], path: str = PROBE_SLOT_SOCKET,
                  *, peer_uid_required: int = 0, uid_of: Callable = peer_uid):
+        from concurrent.futures import ThreadPoolExecutor
         self.scheduler = scheduler
         self.limits_of = limits_of
         self.path = path
@@ -128,6 +131,7 @@ class ProbeSlotServer:
         self._server = None
         self._inode = None
         self._tasks: set = set()
+        self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="probe-slot")
         self.granted = 0                       # introspection for tests and the audit of a run
         self.released = 0
 
@@ -156,6 +160,7 @@ class ProbeSlotServer:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         if server is not None:
             await server.wait_closed()
+        self._pool.shutdown(wait=False)
         try:
             if self._inode is not None and os.lstat(self.path).st_ino == self._inode:
                 os.unlink(self.path)
@@ -186,7 +191,7 @@ class ProbeSlotServer:
                 return
             target_id = req["acquire"]
             loop = asyncio.get_running_loop()
-            limits = await loop.run_in_executor(None, self.limits_of, target_id)
+            limits = await loop.run_in_executor(self._pool, self.limits_of, target_id)
             if limits is None:
                 await self._reply(writer, {"refused": "target_unknown"})
                 return

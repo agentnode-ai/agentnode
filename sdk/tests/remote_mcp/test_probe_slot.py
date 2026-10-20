@@ -109,6 +109,26 @@ def test_a_grant_is_one_real_slot_released_exactly_on_close(h):
 
 
 @needs_unix
+def test_a_full_house_of_calls_does_not_starve_the_slot_service(h):
+    """Every running call occupies a thread of the loop's DEFAULT pool (the transport dispatches there); the slot
+    service answers from its own pool, so a probe still gets its answer (found on the two-host stand)."""
+    from concurrent.futures import ThreadPoolExecutor
+    block = threading.Event()
+    pool = ThreadPoolExecutor(max_workers=1)
+    h.loop.call_soon_threadsafe(h.loop.set_default_executor, pool)
+    h.loop.call_soon_threadsafe(lambda: h.loop.run_in_executor(None, block.wait, 30))   # the default pool: full
+    time.sleep(0.2)
+    try:
+        t0 = time.time()
+        slot = PS.acquire("t-a", path=h.path, budget=0)
+        assert time.time() - t0 < 5 and h.running("t-a") == 1
+        slot.release()
+    finally:
+        block.set()
+        pool.shutdown(wait=False)
+
+
+@needs_unix
 def test_a_killed_client_frees_its_slot(h):
     """CC23: the prober dies holding the slot -> released at once (EOF), exactly once."""
     code = ("import sys, time; sys.path.insert(0, %r); from agentnode_sdk.remote_mcp import probe_slot as P; "
