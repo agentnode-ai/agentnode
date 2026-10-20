@@ -109,13 +109,33 @@ register refuses every run with 503.
   6 h 10 min. Red = the unit fails (→ `rmcp-alert@`, again every hour while red) and
   `/var/lib/agentnode-mcp/alerts/trust-watchdog.json` says why. The daily `rmcp-cert-check`
   watches the watchdog's own timer through the drop-in `rmcp-cert-check.service.d/trust-watchdog.conf`.
+* **Attestation renewal.** Every active target's observation record (signed with the register) is
+  renewed before it runs short: `rmcp-attest-renew.timer` (03:30/09:30/15:30/21:30 UTC, Persistent)
+  runs `targets_cli attest-renew`. A target is due at ≤ 78 h 10 min left (managed, 72 h reserve) or
+  ≤ 18 h 10 min (customer, 12 h reserve); earliest expiry first, at most four probes a run, one at a
+  time, each holding one run slot of `rmcp-control`'s own scheduler (root-only Unix socket
+  `/run/agentnode-mcp/probe-slot.sock`), never while the gateway kill switch is set. The target stays
+  `active` and its old record in force while measuring; the new record is published in ONE signed
+  generation only if the target did not change meanwhile. A renewal with the same identity, endpoint,
+  suite and properties keeps the facts generation and every outstanding approval; anything else
+  re-binds approvals. Positive evidence (another identity at the address, the identity withdrawn, no
+  current certificate, the pair key gone, an escape, a limit not enforced) suspends the target -- the
+  managed default too, never falling back to another. Anything inconclusive keeps the old record
+  until it expires. Both fail the unit (→ `rmcp-alert@`). The trust watchdog also checks every active
+  record (> 48 h left managed, > 6 h customer), the default being active, the renewal timer, the
+  renewal state (`/var/lib/agentnode-mcp/alerts/attest-renew.json`) and probes open for 30 minutes.
+  `targets_cli attest-status` shows it all without secrets; `targets_cli probe --target T` on an active
+  target is a renewal, on a suspended one the operator's only way back.
 * **Installing and removing the timers.** Only with `trust-timers.sh` (control host, root):
-  `install <release-dir>` validates the units, installs them and the drop-in, enables and restarts
-  both timers and FAILS unless both have a finite next run within their bound; `check` repeats that
-  judgement; `remove` (before a rollback to a release without them, using the release that
-  installed them: `TRF_SDK=<release>/sdk <release>/sdk/deploy/remote-mcp/trust-timers.sh remove`)
-  deletes units, drop-in, both stamp files and the watchdog state and proves them gone. Never
-  `systemctl start` the refresh to make a dead timer look alive.
+  `install <release-dir>` validates the units, initialises the renewal state from the register,
+  installs the units and the drop-in, enables and restarts all three timers and FAILS unless each has
+  a finite next run within its bound; `check` repeats that judgement; `preflight` is the rollback's
+  quiescence check alone; `remove` (before a rollback to a release without them, using the release
+  that installed them: `TRF_SDK=<release>/sdk <release>/sdk/deploy/remote-mcp/trust-timers.sh remove`)
+  first stops the renewal timer and REFUSES while a renewal runs, a probe lock is held, a `renew`
+  operation is open or the managed default has < 48 h left (the older release cannot renew it), then
+  deletes units, drop-in, stamp files and both state files and proves them gone. The register and lock
+  files are never touched. Never `systemctl start` the refresh to make a dead timer look alive.
 * **Reachability.** The control plane dials the target over the private network; there is no
   public worker port. A worker behind NAT that connects out is a different protocol and not part
   of this.

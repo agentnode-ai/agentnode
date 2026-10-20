@@ -180,10 +180,53 @@ class RemoteMCPApp:
         # Hard-capped and swept on insert so unauthenticated /authorize cannot grow it unbounded.
         self._continuations: dict[str, tuple[dict, float]] = {}
         self.max_continuations = int(max_continuations)
+        #: (startup, shutdown) coroutine functions run on the serving event loop by the ASGI lifespan
+        #: protocol -- the probe-slot service lives there, beside the scheduler it hands slots from.
+        self.lifespan_hooks: list[tuple[Callable[[], Awaitable[None]], Callable[[], Awaitable[None]]]] = []
+
+    @property
+    def scheduler(self) -> Scheduler:
+        return self._scheduler
+
+    async def _lifespan(self, receive, send) -> None:
+        """ASGI lifespan: startup runs every hook (a hook that raises fails the startup, named);
+        shutdown runs them in reverse. Any other message is a protocol error, never ignored."""
+        started = []
+        while True:
+            message = await receive()
+            kind = message.get("type") if isinstance(message, dict) else None
+            if kind == "lifespan.startup":
+                try:
+                    for hook in self.lifespan_hooks:
+                        await hook[0]()
+                        started.append(hook)
+                except Exception as exc:                       # noqa: BLE001 - reported to the server
+                    for hook in reversed(started):
+                        try:
+                            await hook[1]()
+                        except Exception:                      # noqa: BLE001
+                            pass
+                    await send({"type": "lifespan.startup.failed", "message": "%s: %s" % (type(exc).__name__, exc)})
+                    return
+                await send({"type": "lifespan.startup.complete"})
+            elif kind == "lifespan.shutdown":
+                failed = ""
+                for hook in reversed(started):
+                    try:
+                        await hook[1]()
+                    except Exception as exc:                   # noqa: BLE001
+                        failed = failed or "%s: %s" % (type(exc).__name__, exc)
+                await send({"type": "lifespan.shutdown.failed", "message": failed} if failed
+                           else {"type": "lifespan.shutdown.complete"})
+                return
+            else:
+                raise RuntimeError("unexpected lifespan message %r" % (kind,))
 
     # ---- ASGI entrypoint ------------------------------------------------- #
     async def __call__(self, scope: dict, receive: Callable[[], Awaitable[dict]],
                        send: Callable[[dict], Awaitable[None]]) -> None:
+        if scope["type"] == "lifespan":
+            return await self._lifespan(receive, send)
         if scope["type"] != "http":
             return
         headers = {k.decode("latin1").lower(): v.decode("latin1") for k, v in scope.get("headers", [])}

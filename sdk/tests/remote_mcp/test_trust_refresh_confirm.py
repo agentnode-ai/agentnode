@@ -28,7 +28,7 @@ def _twin_ops(env, **kw):
     o = env["ops"]
     return Operations(stand=o.stand, register=o.register, acks=o.acks, issuer=o.issuer, keyring_path=o.keyring_path,
                       gateway_instance=o.gateway, deployment=o.deployment, bundles_dir=o.bundles,
-                      worker_for=o.worker_for, **kw)
+                      worker_for=o.worker_for, slot=None, **kw)
 
 
 def _crl(env):
@@ -114,7 +114,7 @@ def test_the_cli_exits_non_zero_when_busy(env, monkeypatch, capsys):
     busy = _twin_ops(env)
     monkeypatch.setattr(busy, "refresh_trust", lambda force=False: (_ for _ in ()).throw(
         OperationFailed("trust_refresh.busy", "held")))
-    monkeypatch.setattr(targets_cli, "build", lambda stand, canary: (busy, None, None))
+    monkeypatch.setattr(targets_cli, "build", lambda stand, canary, **kw: (busy, None, None))
     assert targets_cli.main(["--stand", "S", "trust-refresh"]) == 5
     assert "trust_refresh.busy" in capsys.readouterr().out
 

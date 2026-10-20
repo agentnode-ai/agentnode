@@ -29,6 +29,9 @@ def main(argv=None) -> int:
     p.add_argument("--console-url", default="")
     p.add_argument("--host", default="127.0.0.1", help="loopback only; nginx terminates TLS in front")
     p.add_argument("--port", type=int, default=8800)
+    p.add_argument("--probe-slot-socket", default=None,
+                   help="the root-only Unix socket renewal probes take their run slot from "
+                        "(default /run/agentnode-mcp/probe-slot.sock); a path, never a network address")
     args = p.parse_args(argv)
 
     # Optional preregistered OAuth clients (client_id -> [redirect_uri,...]) from a stand file.
@@ -46,9 +49,9 @@ def main(argv=None) -> int:
         args.stand, resource=args.resource, issuer=args.issuer,
         allowed_hosts=tuple(args.allowed_hosts), gateway_dir=args.gateway_dir,
         console_url=args.console_url, allowed_origins=tuple(args.allowed_origins),
-        preregistered=prereg)
+        preregistered=prereg, probe_slot_path=args.probe_slot_socket)
     import uvicorn
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning", lifespan="on")
     return 0
 
 

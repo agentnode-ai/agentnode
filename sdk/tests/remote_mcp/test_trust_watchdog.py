@@ -27,13 +27,32 @@ from .catalog_fixtures import raw_pub
 from .target_fixtures import make_register
 
 
-def _show(next_usec):
+def _show(next_usec, renew_usec="same"):
+    """systemd as it answers for each timer: the refresh timer at `next_usec`, the attestation-renewal
+    timer at `renew_usec` (by default the same)."""
+    nexts = {W.REFRESH_TIMER: next_usec, W.RENEW_TIMER: next_usec if renew_usec == "same" else renew_usec}
+
     def run(argv):
+        unit = argv[2] if argv[1] == "show" else argv[-1]
+        nxt = nexts.get(unit)
         if argv[1] == "show":
             return "LoadState=loaded\nActiveState=active\nUnitFileState=enabled\nNextElapseUSecMonotonic=%s\n" % (
-                "0" if next_usec else "infinity")
-        return json.dumps([{"next": next_usec, "unit": W.REFRESH_TIMER}])
+                "0" if nxt else "infinity")
+        return json.dumps([{"next": nxt, "unit": unit}])
     return run
+
+
+def bootstrap_renew_state(reg, *, at=None) -> Path:
+    """What `trust-timers.sh install` does before the timers run: the renewal state from the register."""
+    from agentnode_sdk.remote_mcp import target_ops as O
+    snap = reg.load()
+    at = time.time() if at is None else at
+    doc = {"schema": O.RENEW_STATE_SCHEMA, "bootstrapped_at": at, "last_run": None, "updated_at": at,
+           "targets": {t.target_id: {"result": "bootstrap", "published_record_digest": t.attestation["record_digest"]}
+                       for t in snap.targets.values() if t.effective_status(snap.now) == T.ACTIVE}}
+    path = O.renew_state_path(reg.stand)
+    O._write_private(path, doc)
+    return path
 
 
 class Stand:
@@ -49,6 +68,7 @@ class Stand:
         self.acks = T.TrustAcks(self.stand, raw_pub(self.op), operator_private=self.op)
         self.state = tmp_path / "alerts" / "trust-watchdog.json"
         self.ack("managed-w1")
+        self.renew_state = bootstrap_renew_state(self.reg)
 
     def pair(self):
         return (Path(self.tls.revocation_list).read_bytes(), Path(self.tls.identity_tombstones).read_bytes())
