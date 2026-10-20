@@ -813,7 +813,12 @@ def test_lists_and_approved_runs_continue_during_a_renewal_of_the_default(st):
     alice, tok = st.account("alice")
     w = ProbeWorker(st.register.load().target("managed-w1").identity_uri, delay=0.3)
     ops = _stand_ops(st, w)
-    ops.renew("managed-w1", force=True)                        # a probe's own record first: the next one is EQUIVALENT
+    canary = P.Canary("127.0.0.1")                             # a probe's own record first (not through the renewal
+    try:                                                       # under test): the renewal below is then EQUIVALENT
+        rec = P.probe(st.register.load().target("managed-w1"), w, canary)
+    finally:
+        canary.close()
+    st.register.set_attestation("managed-w1", rec, actor="t")
     seen = []
     w.on_job = lambda n, job: seen.append(st.register.load().target("managed-w1").status)
     stop, events = threading.Event(), []
