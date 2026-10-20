@@ -62,7 +62,8 @@ class ProbeWorker(SandboxLikeWorker):
             if self.delay:
                 time.sleep(self.delay)
             prog = job.artifact.decode("utf-8")
-            if self.controls_fail and "bytearray" in prog and "range(64)" in prog:
+            failing = {True: ("range(64)",), "memory": ("range(64)",), "wall": ("_t.sleep(1)",)}.get(self.controls_fail, ())
+            if any(m in prog for m in failing):
                 self.ran.append(job.run_id)
                 from agentnode_sdk.worker import Outcome
                 return Outcome(exit_code=1, stdout="", stderr="podman: cannot start")
@@ -443,6 +444,8 @@ INCONCLUSIVE = {
     "control_side_list": dict(raise_exc=WorkerUnreachable("tls")),       # cause set in the test
     "untrusted_chain": dict(raise_exc=WorkerUnreachable("tls")),
     "memory_control_failed": dict(controls_fail=True),
+    "wall_control_failed": dict(controls_fail="wall"),
+    "control_side_floor": dict(raise_exc=WorkerUnreachable("tls")),     # cause set in the test
 }
 
 
@@ -457,6 +460,10 @@ def test_inconclusive_keeps_the_old_record_and_never_suspends(env, case):
     if case == "untrusted_chain":
         exc = WorkerUnreachable("tls")
         exc.__cause__ = ssl.SSLCertVerificationError("unable to get local issuer certificate")
+        kw["raise_exc"] = exc
+    if case == "control_side_floor":
+        exc = WorkerUnreachable("tls")
+        exc.__cause__ = PeerRefused("time-floor-unreadable", "", "this side's floor could not be read")
         kw["raise_exc"] = exc
     _managed(env)
     _establish(env)
@@ -508,6 +515,69 @@ def test_positive_evidence_suspends_at_once(env, case):
     assert report["status"] == "blocked" and report["results"]["managed-w1"] == "blocked"
     assert env["reg"].load().target("managed-w1").status == T.SUSPENDED
     assert load_renew_state(env["ops"].state_path)["targets"]["managed-w1"]["result"] == "blocked"
+
+
+def test_an_unreadable_keyring_on_this_side_is_inconclusive(env):
+    """Negative 9: this side's own store unreadable is no evidence against the target."""
+    _managed(env)
+    _establish(env)
+    Path(env["keyring"]).write_text("{not a keyring")
+    report = env["ops"].attest_renew(target_id="managed-w1", force=True)
+    assert report["results"]["managed-w1"] == "degraded"
+    assert env["reg"].load().target("managed-w1").status == T.ACTIVE
+    assert "keyring_unreadable" in load_renew_state(env["ops"].state_path)["targets"]["managed-w1"]["reason"]
+
+
+def test_no_slot_means_no_probe_job(env):
+    """Negative 16: without a grant from the serving scheduler not one probe job runs."""
+    from agentnode_sdk.remote_mcp import probe_slot as PS
+    w = _managed(env)
+    _establish(env)
+    jobs = w.jobs
+
+    def refused(tid):
+        raise PS.SlotRefused("control_not_serving")
+    env["ops"]._slot = refused
+    report = env["ops"].attest_renew(target_id="managed-w1", force=True)
+    assert report["results"]["managed-w1"] == "degraded" and w.jobs == jobs
+    assert "no_slot:control_not_serving" in load_renew_state(env["ops"].state_path)["targets"]["managed-w1"]["reason"]
+
+
+def test_equal_expiry_is_ordered_by_target_id(env):
+    """Negative 23: the same expiry -> the lower target id first."""
+    _managed(env)
+    for tid, inst in (("cust-zz", "c8"), ("cust-aa", "c9")):
+        _customer(env, tid, inst, 5)
+
+    def same(doc, now):
+        exp = doc["targets"]["cust-zz"]["attestation"]["expires_at"]
+        a = copy.deepcopy(doc["targets"]["cust-aa"]["attestation"])
+        a["expires_at"] = exp
+        a["measured_at"] = exp - T.ATTESTATION_MAX_SECONDS[a["assurance"]] + 60
+        a["record_digest"] = T.digest({k: a[k] for k in sorted(a) if k != "record_digest"})
+        doc["targets"]["cust-aa"]["attestation"] = a
+        return "test: equal expiry"
+    env["reg"].change(same, actor="t")
+    order = []
+    for tid in ("cust-zz", "cust-aa"):
+        env["workers"][tid].on_job = (lambda tid: (lambda n, job: order.append(tid) if n == 1 else None))(tid)
+    env["ops"].attest_renew()
+    assert order[:2] == ["cust-aa", "cust-zz"]
+
+
+def test_a_renewal_changes_nothing_but_the_record(env):
+    """Negative 30: visibility, ownership, defaults, permanent sets and every other target are untouched."""
+    _managed(env)
+    _customer(env, "cust-other", "c7", 20)
+    before = env["reg"].load().document
+    env["ops"].renew("managed-w1", force=True)
+    after = env["reg"].load().document
+    for k in ("account_defaults", "default_target", "used_target_ids", "used_identity_uris", "schema"):
+        assert after[k] == before[k], k
+    assert after["targets"]["cust-other"] == before["targets"]["cust-other"]
+    mine_b, mine_a = before["targets"]["managed-w1"], after["targets"]["managed-w1"]
+    assert {k: v for k, v in mine_a.items() if k not in ("attestation", "facts_generation")} == \
+        {k: v for k, v in mine_b.items() if k not in ("attestation", "facts_generation")}
 
 
 def test_a_kill_switch_runs_no_probe(env):
