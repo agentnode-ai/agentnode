@@ -711,6 +711,7 @@ def test_lists_and_approved_runs_continue_during_a_renewal_of_the_default(st):
     alice, tok = st.account("alice")
     w = ProbeWorker(st.register.load().target("managed-w1").identity_uri, delay=0.3)
     ops = _stand_ops(st, w)
+    ops.renew("managed-w1", force=True)                        # a probe's own record first: the next one is EQUIVALENT
     seen = []
     w.on_job = lambda n, job: seen.append(st.register.load().target("managed-w1").status)
     stop, events = threading.Event(), []
@@ -720,11 +721,11 @@ def test_lists_and_approved_runs_continue_during_a_renewal_of_the_default(st):
         while not stop.is_set():
             i += 1
             code, body = rpc(st.app, tok, "tools/list")
-            events.append(("list", code == 200 and bool((body or {}).get("result", {}).get("tools"))))
+            events.append(("list", code == 200 and bool((body or {}).get("result", {}).get("tools")), code))
             _first, ran = _run(st, tok, dict(REGEX_ARGS, test_string="during %d" % i))
             sc = (ran.get("result") or {}).get("structuredContent") or {}
             events.append(("run", ran["result"].get("isError") is False
-                           and (sc.get("target") or {}).get("target_id") == "managed-w1"))
+                           and (sc.get("target") or {}).get("target_id") == "managed-w1", sc.get("code")))
     th = threading.Thread(target=traffic)
     th.start()
     try:
@@ -735,9 +736,9 @@ def test_lists_and_approved_runs_continue_during_a_renewal_of_the_default(st):
         stop.set()
         th.join(60)
     assert set(seen) == {T.ACTIVE}                             # first: never probing, whatever else
-    assert op["params"]["result"] in ("renewed", "renewed_changed")
-    runs = [ok for kind, ok in events if kind == "run"]
-    assert events and all(ok for _k, ok in events) and len(runs) >= 3, events
+    assert op["params"]["result"] == "renewed"                 # equivalent: approvals in flight stay valid
+    runs = [ok for kind, ok, _c in events if kind == "run"]
+    assert events and [e for e in events if not e[1]] == [] and len(runs) >= 3
 
 
 def test_an_equivalent_renewal_keeps_an_outstanding_approval(st):
