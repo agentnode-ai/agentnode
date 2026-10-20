@@ -264,6 +264,33 @@ def test_a_change_during_the_probe_supersedes_the_renewal(env, race):
     assert reg.load().target("managed-w1").attestation["record_digest"] != measured
 
 
+@pytest.mark.parametrize("what", ["start_identity", "start_endpoint", "record_identity", "record_endpoint"])
+def test_publication_compares_identity_and_endpoint(env, what):
+    """C7 / CC6 at the register itself: a start tuple or a record that names another identity or endpoint
+    than the target holds NOW is never published -- even when the record digests agree."""
+    reg = env["reg"]
+    t = reg.load().target("managed-w1")
+    start = {"status": t.status, "identity_uri": t.identity_uri, "endpoint_digest": t.endpoint_digest,
+             "record_digest": t.attestation["record_digest"]}
+    record = copy.deepcopy(t.attestation)
+    record["measured_at"] += 1
+    record["expires_at"] += 1
+    if what == "start_identity":
+        start["identity_uri"] = "agentnode://rmcp-test/worker/other"
+    elif what == "start_endpoint":
+        start["endpoint_digest"] = "0" * 64
+    elif what == "record_identity":
+        record["identity_uri"] = "agentnode://rmcp-test/worker/other"
+    else:
+        record["endpoint_digest"] = "0" * 64
+    record["record_digest"] = T.digest({k: record[k] for k in sorted(record) if k != "record_digest"})
+    before = reg.load()
+    with pytest.raises(T.TargetsRefused) as refused:
+        reg.renew_attestation("managed-w1", record, start, actor="t")
+    assert refused.value.code == "renew.superseded"
+    assert reg.load().digest == before.digest
+
+
 class Crash(BaseException):
     pass
 
@@ -272,7 +299,6 @@ class Crash(BaseException):
 def test_a_crash_after_any_step_publishes_nothing_until_resumed(env, step):
     """C17 / CC7: the record reaches the register only in the last step; resume completes it."""
     _managed(env)
-    _establish(env)
     before = _record(env, "managed-w1")
 
     def crash(name):
@@ -285,7 +311,7 @@ def test_a_crash_after_any_step_publishes_nothing_until_resumed(env, step):
     assert env["reg"].load().target("managed-w1").status == T.ACTIVE
     env["ops"]._crash_after = lambda name: None
     report = env["ops"].attest_renew()
-    assert report["results"]["managed-w1"] == "renewed"
+    assert report["results"]["managed-w1"].startswith("renewed")
     assert _record(env, "managed-w1")["record_digest"] != before["record_digest"]
     assert env["ops"].open_operations() == []
 
@@ -638,8 +664,8 @@ def test_lists_and_approved_runs_continue_during_a_renewal_of_the_default(st):
     finally:
         stop.set()
         th.join(60)
+    assert set(seen) == {T.ACTIVE}                             # first: never probing, whatever else
     assert op["params"]["result"] in ("renewed", "renewed_changed")
-    assert set(seen) == {T.ACTIVE}
     runs = [ok for kind, ok in events if kind == "run"]
     assert events and all(ok for _k, ok in events) and len(runs) >= 3, events
 

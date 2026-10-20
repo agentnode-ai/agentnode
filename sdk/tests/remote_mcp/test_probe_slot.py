@@ -161,7 +161,7 @@ def test_a_probe_never_counts_against_a_customer_account(h):
     async def fill():
         return [await h.sched.acquire("acct-00000000000000aa", "t-b", concurrency=4, queue=4) for _ in range(2)]
     held = h.call(fill())                                              # the customer account is at its 2
-    slot = PS.acquire("t-a", path=h.path)
+    slot = PS.acquire("t-a", path=h.path, budget=0)
     assert h.on_loop(lambda: h.sched.in_flight("acct-00000000000000aa")) == 2
     assert h.on_loop(lambda: h.sched.in_flight(PS.PROBE_ACCOUNT_PREFIX + "t-a")) == 1
     slot.release()
@@ -212,7 +212,7 @@ def test_retries_are_bounded_and_go_through_the_queue_again(h):
 
 
 @needs_unix
-@pytest.mark.parametrize("payload", [b"x" * 300 + b"\n", b"{not json}\n", b'{"acquire": "t-a", "and": 1}\n',
+@pytest.mark.parametrize("payload", [b'{"acquire": "t-a"}' + b" " * 300 + b"\n", b"{not json}\n", b'{"acquire": "t-a", "and": 1}\n',
                                      b'{"acquire": "../t-a"}\n', b'["t-a"]\n'])
 def test_a_malformed_request_is_refused_and_holds_nothing(h, payload):
     """CC25: bounded framing, exact shape, a valid target id."""
