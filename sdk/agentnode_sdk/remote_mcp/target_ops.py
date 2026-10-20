@@ -403,8 +403,17 @@ class Operations:
     def _steps_probe(self, op: dict) -> dict:
         tid = op["target_id"]
 
-        def probing(op):
+        def current() -> T.Target:
+            """The target, or the operation ends `failed`: a terminal target (revoked, expired) is never probed,
+            and its probe operation never stays open to be retried forever."""
             t = self._target(tid)
+            status = t.effective_status(self.register.now())
+            if status in T.TERMINAL:
+                raise _Close("failed", "the target is %s; a terminal target is never probed" % status)
+            return t
+
+        def probing(op):
+            t = current()
             if t.status == T.ACTIVE:
                 # an operation the parent release left open for an active target (it could not set the
                 # managed default probing): closed, never retried; an active target is renewed instead
@@ -415,10 +424,16 @@ class Operations:
                 raise OperationFailed("probe.state", t.status)
 
         def trust(op):
-            self._push_trust(self._target(tid))
+            t = current()
+            try:
+                self._push_trust(t)
+            except OperationFailed:
+                raise
+            except Exception as exc:                          # noqa: BLE001 - named, the operation stays open
+                raise OperationFailed("probe.trust_push", type(exc).__name__) from exc
 
         def observe(op):
-            t = self._target(tid)
+            t = current()
             if self._kill_switch():
                 raise OperationFailed("probe.kill_switch", "the gateway is stopped; no probe runs")
             try:
@@ -438,7 +453,7 @@ class Operations:
             self.register.set_attestation(tid, record, actor="targets_cli")
 
         def activate(op):
-            t = self._target(tid)
+            t = current()
             self._consistent_or_refuse(t)
             self.register.set_status(tid, T.ACTIVE, actor="targets_cli", why=op["op_id"])
             self._state_note(tid, result="activated", reason="", record=t.attestation, op_id=op["op_id"],

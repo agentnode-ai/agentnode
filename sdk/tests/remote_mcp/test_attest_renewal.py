@@ -580,6 +580,38 @@ def test_a_renewal_changes_nothing_but_the_record(env):
         {k: v for k, v in mine_b.items() if k not in ("attestation", "facts_generation")}
 
 
+def test_an_operator_probe_that_cannot_push_trust_is_a_named_refusal(env):
+    """A target whose worker cannot take the trust lists (here: unreachable) -- `probe.trust_push`, never a crash."""
+    _managed(env)
+    _left(env, "managed-w1", 70)
+    env["reg"].block("managed-w1", actor="t", why="test")
+    _managed(env, raise_exc=WorkerUnreachable("could not be reached"))
+    env["workers"]["managed-w1"].install_trust = lambda crl, tombs: (_ for _ in ()).throw(WorkerUnreachable("down"))
+    with pytest.raises(OperationFailed) as refused:
+        env["ops"].probe("managed-w1")
+    assert refused.value.code == "probe.trust_push"
+
+
+def test_a_probe_operation_of_a_target_that_became_terminal_is_closed(env):
+    """Its probe operation can never complete: closed `failed` at resume, so nothing stays open for ever (a
+    rollback's preflight refuses while anything is open)."""
+    _managed(env)
+    env["reg"].block("managed-w1", actor="t", why="test")
+
+    def crash(name):
+        if name == "status_probing":
+            raise Crash(name)
+    env["ops"]._crash_after = crash
+    with pytest.raises(Crash):
+        env["ops"].probe("managed-w1")
+    env["ops"]._crash_after = lambda name: None
+    env["reg"].change(lambda d, now: (d["targets"]["managed-w1"].update(status=T.REVOKED), "test")[1], actor="t")
+    (op,) = env["ops"].open_operations()
+    env["ops"].resume()
+    done = json.loads((env["ops"].ops_dir / (op["op_id"] + ".json")).read_text())
+    assert done["state"] == "failed" and env["ops"].open_operations() == []
+
+
 def test_a_kill_switch_runs_no_probe(env):
     """CC26: the gateway stopped -> no probe job at all; inconclusive."""
     w = _managed(env)
