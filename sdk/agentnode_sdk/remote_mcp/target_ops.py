@@ -509,11 +509,26 @@ class Operations:
         (compare-and-change) | block | degraded. Status is never set `probing`."""
         tid, p = op["target_id"], op["params"]
 
+        def as_started() -> T.Target:
+            """The target exactly as this renewal journaled it, or the operation ends `superseded` -- checked
+            before the evidence AND again right before the probe (a resumed operation skips the evidence step):
+            a target that changed meanwhile is never probed for this renewal, let alone published."""
+            snap = self.register.load()
+            t = snap.target(tid)
+            now_tuple = None if t is None else {
+                "status": t.effective_status(snap.now), "identity_uri": t.identity_uri,
+                "endpoint_digest": t.endpoint_digest, "record_digest": (t.attestation or {}).get("record_digest")}
+            if now_tuple != {k: p["start"][k] for k in ("status", "identity_uri", "endpoint_digest", "record_digest")}:
+                self._state_note(tid, result="superseded", reason="changed before the probe", op_id=op["op_id"])
+                raise _Close("superseded", "the target changed before the probe")
+            return t
+
         def evidence(op):
             p["evidence"] = ""
             p["inconclusive"] = []
+            t = as_started()
             try:
-                p["evidence"] = self._local_evidence(self._target(tid))
+                p["evidence"] = self._local_evidence(t)
             except OperationFailed as exc:
                 p["inconclusive"] = [exc.code]
 
@@ -526,7 +541,7 @@ class Operations:
             if stopped:
                 p["inconclusive"] = ["kill_switch"]
                 return
-            t = self._target(tid)
+            t = as_started()
             try:
                 record = self._observe(t)
             except Exception as exc:                          # noqa: BLE001 - every failure is named
@@ -591,7 +606,11 @@ class Operations:
                                  published=True)
             elif verdict == P.LOST:
                 why = ",".join(reasons)
-                self.register.block(tid, actor="targets_cli", why="renewal %s: %s" % (op["op_id"], why))
+                try:
+                    self.register.block(tid, actor="targets_cli", why="renewal %s: %s" % (op["op_id"], why))
+                except T.TargetsRefused as exc:                # already terminal (revoked, expired): nothing to block
+                    self._state_note(tid, result="superseded", reason=exc.code, op_id=op["op_id"])
+                    raise _Close("superseded", exc.code)
                 p["result"] = "blocked"
                 self._note(op, "blocked", reasons=reasons)
                 self._state_note(tid, result="blocked", reason=why, op_id=op["op_id"])
@@ -610,37 +629,47 @@ class Operations:
             doc = None                                        # rebuilt below; the watchdog saw it red meanwhile
         return doc or {"schema": RENEW_STATE_SCHEMA, "targets": {}, "last_run": None}
 
+    def _update_state(self, change: Callable[[dict], None]) -> dict:
+        """Read-change-write of the renewal state under its own lock: the timer's runner and an operator's
+        probe of ANOTHER target may both record a result at once, and neither may lose the other's."""
+        from agentnode_sdk.gateway.filelock import ProcessLock
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        with ProcessLock(self.state_path, timeout=30.0):
+            doc = self._load_state()
+            change(doc)
+            doc["updated_at"] = round(self.clock(), 3)
+            _write_private(self.state_path, doc)
+            return doc
+
     def _state_note(self, target_id: str, *, result: str, reason: str, op_id: str = "", record: dict | None = None,
                     published: bool = False) -> None:
-        doc = self._load_state()
-        entry = dict(doc["targets"].get(target_id) or {})
-        now = round(self.clock(), 3)
-        entry.update(result=result, reason=reason[:300], at=now, op_id=op_id)
-        if published and record:
-            entry.update(published_record_digest=record["record_digest"], published_expires_at=record["expires_at"],
-                         last_success_at=now, consecutive_failures=0)
-        elif result in ("degraded", "blocked"):
-            entry["consecutive_failures"] = int(entry.get("consecutive_failures") or 0) + 1
-        doc["targets"][target_id] = entry
-        doc["updated_at"] = now
-        _write_private(self.state_path, doc)
+        def change(doc):
+            entry = dict(doc["targets"].get(target_id) or {})
+            now = round(self.clock(), 3)
+            entry.update(result=result, reason=reason[:300], at=now, op_id=op_id)
+            if published and record:
+                entry.update(published_record_digest=record["record_digest"], published_expires_at=record["expires_at"],
+                             last_success_at=now, consecutive_failures=0)
+            elif result in ("degraded", "blocked"):
+                entry["consecutive_failures"] = int(entry.get("consecutive_failures") or 0) + 1
+            doc["targets"][target_id] = entry
+        self._update_state(change)
 
     def bootstrap_state(self) -> dict:
         """Initialise the renewal state from the verified register (D8): every active target's CURRENT
         record is the last published one, so a fresh install is not a false "missing state"."""
         snap = self.register.load()
-        doc = self._load_state()
-        for t in snap.targets.values():
-            if t.effective_status(snap.now) == T.ACTIVE and t.attestation and t.target_id not in doc["targets"]:
-                doc["targets"][t.target_id] = {"result": "bootstrap", "reason": "", "at": round(self.clock(), 3),
-                                               "op_id": "", "published_record_digest": t.attestation["record_digest"],
-                                               "published_expires_at": t.attestation["expires_at"],
-                                               "last_success_at": float(t.attestation["measured_at"]),
-                                               "consecutive_failures": 0}
-        doc.setdefault("bootstrapped_at", round(self.clock(), 3))
-        doc["updated_at"] = round(self.clock(), 3)
-        _write_private(self.state_path, doc)
-        return doc
+
+        def change(doc):
+            for t in snap.targets.values():
+                if t.effective_status(snap.now) == T.ACTIVE and t.attestation and t.target_id not in doc["targets"]:
+                    doc["targets"][t.target_id] = {"result": "bootstrap", "reason": "", "at": round(self.clock(), 3),
+                                                   "op_id": "", "published_record_digest": t.attestation["record_digest"],
+                                                   "published_expires_at": t.attestation["expires_at"],
+                                                   "last_success_at": float(t.attestation["measured_at"]),
+                                                   "consecutive_failures": 0}
+            doc.setdefault("bootstrapped_at", round(self.clock(), 3))
+        return self._update_state(change)
 
     # ------------------------------------------------------------ the timer's run
     def attest_renew(self, *, target_id: str | None = None, force: bool = False) -> dict:
@@ -702,11 +731,9 @@ class Operations:
             results = set(report["results"].values())
             report["status"] = ("blocked" if "blocked" in results else
                                 "degraded" if results & {"degraded", "probe.busy", "renew.not_active"} else "ok")
-            doc = self._load_state()
-            doc["last_run"] = {"started_at": started, "finished_at": round(self.clock(), 3),
-                               "status": report["status"], "results": report["results"]}
-            doc["updated_at"] = round(self.clock(), 3)
-            _write_private(self.state_path, doc)
+            last = {"started_at": started, "finished_at": round(self.clock(), 3), "status": report["status"],
+                    "results": report["results"]}
+            self._update_state(lambda doc: doc.__setitem__("last_run", last))
             return report
         finally:
             lock.__exit__(None, None, None)

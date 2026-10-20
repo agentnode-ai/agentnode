@@ -291,6 +291,76 @@ def test_publication_compares_identity_and_endpoint(env, what):
     assert reg.load().digest == before.digest
 
 
+def test_a_resumed_renewal_of_a_target_that_changed_probes_nothing(env):
+    """A renewal journaled, then the target revoked before its probe: closed superseded, no job runs."""
+    w = _managed(env)
+
+    def crash(name):
+        if name == "evidence":
+            raise Crash(name)
+    env["ops"]._crash_after = crash
+    with pytest.raises(Crash):
+        env["ops"].renew("managed-w1", force=True)
+    env["ops"]._crash_after = lambda name: None
+    _left(env, "managed-w1", 50)                               # another change won meanwhile
+    jobs = w.jobs
+    (op,) = env["ops"].open_operations()
+    env["ops"].resume()
+    done = json.loads((env["ops"].ops_dir / (op["op_id"] + ".json")).read_text())
+    assert done["state"] == "superseded" and w.jobs == jobs
+
+
+def test_positive_evidence_against_a_target_revoked_meanwhile_closes_superseded(env):
+    """The probe finds an escape, but the target was revoked during it: nothing to block, nothing left open."""
+    w = _managed(env, leaky=True)
+
+    def revoke(n, job):
+        if n == 3:
+            env["reg"].change(lambda d, now: (d["targets"]["managed-w1"].update(status=T.REVOKED), "test")[1], actor="t")
+    w.on_job = revoke
+    op = env["ops"].renew("managed-w1", force=True)
+    assert op["state"] == "superseded" and env["ops"].open_operations() == []
+    assert env["reg"].load().target("managed-w1").status == T.REVOKED
+
+
+def test_concurrent_state_writers_lose_nothing(env):
+    """The timer's runner and an operator's probe of ANOTHER target record at the same time."""
+    ops = env["ops"]
+    errors = []
+
+    def writer(tid):
+        try:
+            for i in range(25):
+                ops._state_note(tid, result="renewed", reason=str(i), op_id="op-%s-%d" % (tid, i))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+    ths = [threading.Thread(target=writer, args=("t-%d" % k,)) for k in range(4)]
+    for th in ths:
+        th.start()
+    for th in ths:
+        th.join(60)
+    doc = load_renew_state(ops.state_path)
+    assert errors == [] and sorted(doc["targets"]) == ["t-0", "t-1", "t-2", "t-3"]
+    assert all(doc["targets"][t]["reason"] == "24" for t in doc["targets"])
+
+
+def test_a_slot_is_held_only_while_the_connection_is_open_and_silent():
+    import socket as _s
+    from agentnode_sdk.remote_mcp import probe_slot as PS
+    a, b = _s.socketpair()
+    slot = PS.ProbeSlot(a, "t", 0.0, 1)
+    assert slot.still_held() is True
+    b.sendall(b'{"refused": "protocol"}\n')                    # anything after the grant: gone
+    time.sleep(0.1)
+    assert slot.still_held() is False
+    c, d = _s.socketpair()
+    slot2 = PS.ProbeSlot(c, "t", 0.0, 1)
+    d.close()                                                  # the server went away
+    time.sleep(0.1)
+    assert slot2.still_held() is False
+    slot.release(), slot2.release(), b.close()
+
+
 class Crash(BaseException):
     pass
 

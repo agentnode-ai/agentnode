@@ -229,14 +229,15 @@ class ProbeSlot:
         self.attempts = attempts
 
     def still_held(self) -> bool:
-        """False once the server has gone away (control restarted): the probe must stop."""
+        """True only while the connection is open and SILENT: the server closing it (control restarted) or
+        saying anything after the grant (a refusal) both mean the slot is gone -- the probe's result is void."""
         try:
             self._sock.setblocking(False)
             try:
-                data = self._sock.recv(1, socket.MSG_PEEK)
+                self._sock.recv(1, socket.MSG_PEEK)
             except BlockingIOError:
-                return True
-            return bool(data)
+                return True                                   # nothing to read: still held
+            return False                                      # EOF, or an answer after the grant
         except OSError:
             return False
         finally:
