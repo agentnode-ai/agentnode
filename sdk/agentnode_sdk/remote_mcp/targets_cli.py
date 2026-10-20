@@ -61,7 +61,8 @@ def _kill_switch(stand: str, gateway_dir: str | None):
     return stopped
 
 
-def build(stand: str, canary_host: str, *, gateway_dir: str | None = None, probe_slot_socket: str | None = None):
+def build(stand: str, canary_host: str, *, gateway_dir: str | None = None, probe_slot_socket: str | None = None,
+          slot_budget: float = 600.0):
     from agentnode_sdk.pki.issuer import Issuer
     from agentnode_sdk.remote_mcp import probe_slot
     from agentnode_sdk.remote_mcp.catalog_audit import CatalogLedger
@@ -81,7 +82,8 @@ def build(stand: str, canary_host: str, *, gateway_dir: str | None = None, probe
                      gateway_instance=own_instance(tls), deployment=cfg["deployment"],
                      bundles_dir=os.path.join(stand, "targets", "bundles"),
                      worker_for=target_worker_factory(stand), canary_host=canary_host, ledger=ledger,
-                     slot=lambda tid: probe_slot.acquire(tid, path=probe_slot_socket or probe_slot.PROBE_SLOT_SOCKET),
+                     slot=lambda tid: probe_slot.acquire(tid, path=probe_slot_socket or probe_slot.PROBE_SLOT_SOCKET,
+                                                         budget=slot_budget),
                      kill_switch=_kill_switch(stand, gateway_dir))
     return ops, cfg, tls
 
@@ -116,6 +118,8 @@ def main(argv=None) -> int:
     p.add_argument("--gateway-dir", default=None, help="the gateway state dir whose kill switch stops probes too "
                                                        "(default: <stand>/../gwdir)")
     p.add_argument("--probe-slot-socket", default=None, help="the serving process's probe-slot socket path")
+    p.add_argument("--slot-budget", type=float, default=600.0,
+                   help="how long a probe waits, in all, for a run slot before it is inconclusive (seconds)")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("attest-renew")
     s.add_argument("--target")
@@ -151,8 +155,10 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     if args.cmd == "attest-renew" and args.force and not args.target:
         p.error("--force renews one named --target")
+    if not 0 <= args.slot_budget <= 3600:
+        p.error("--slot-budget is between 0 and 3600 seconds")
     ops, cfg, tls = build(args.stand, args.canary_host, gateway_dir=args.gateway_dir,
-                          probe_slot_socket=args.probe_slot_socket)
+                          probe_slot_socket=args.probe_slot_socket, slot_budget=args.slot_budget)
     out: object
     try:
         if args.cmd == "attest-renew":

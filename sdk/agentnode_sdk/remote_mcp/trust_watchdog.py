@@ -244,7 +244,8 @@ def _lock_held(path: Path, held: set | None) -> str:
     return "lock held" if (st.st_dev, st.st_ino) in held else "lock not held"
 
 
-def attestation_problems(stand, *, now: float, run: Runner = _run, state_path=None) -> tuple[list[str], dict]:
+def attestation_problems(stand, *, now: float, run: Runner = _run, state_path=None,
+                         renew_timer: str = RENEW_TIMER) -> tuple[list[str], dict]:
     """Every active target's record valid with more than its class warning left (effective, pinned time);
     the default target active; the renewal timer finite; the renewal state present, recent and agreeing
     with the register; no target degraded or blocked; no renew/probe operation open for 30 minutes."""
@@ -253,7 +254,7 @@ def attestation_problems(stand, *, now: float, run: Runner = _run, state_path=No
 
     problems: list[str] = []
     facts: dict[str, Any] = {}
-    tstate = timer_state(RENEW_TIMER, run=run)
+    tstate = timer_state(renew_timer, run=run)
     problems += timer_problems(tstate, now=now, bound_seconds=RENEW_BOUND_SECONDS)
     nxt = next_elapse(tstate)
     facts["renew_next"] = _iso(nxt) if nxt else None
@@ -352,7 +353,7 @@ def write_state(path, doc: dict) -> None:
 
 
 def check(stand, *, now: float | None = None, timer: str = REFRESH_TIMER, state_file=STATE_FILE,
-          run: Runner = _run, tls=None, view=None, renew_state_file=None) -> dict:
+          run: Runner = _run, tls=None, view=None, renew_state_file=None, renew_timer: str = RENEW_TIMER) -> dict:
     """One watchdog run. Returns the report that was written; `report["state"]` is green or red."""
     now = time.time() if now is None else float(now)
     try:
@@ -364,7 +365,8 @@ def check(stand, *, now: float | None = None, timer: str = REFRESH_TIMER, state_
     nxt = next_elapse(tstate)
     facts["refresh_next"] = _iso(nxt) if nxt else None
     try:
-        more, afacts = attestation_problems(stand, now=now, run=run, state_path=renew_state_file)
+        more, afacts = attestation_problems(stand, now=now, run=run, state_path=renew_state_file,
+                                            renew_timer=renew_timer)
     except Exception as exc:                                  # noqa: BLE001 - an unknown failure is red
         more, afacts = ["attestation_watchdog_error (%s)" % type(exc).__name__], {}
     problems += more
@@ -386,12 +388,15 @@ def main(argv=None) -> int:
     c.add_argument("--stand", required=True)
     c.add_argument("--timer", default=REFRESH_TIMER)
     c.add_argument("--state-file", default=STATE_FILE)
+    c.add_argument("--renew-timer", default=RENEW_TIMER)
+    c.add_argument("--renew-state-file", default=None)
     t = sub.add_parser("timer-check")
     t.add_argument("--unit", action="append", required=True)
     t.add_argument("--bound-seconds", type=float, action="append", required=True)
     args = p.parse_args(argv)
     if args.cmd == "check":
-        report = check(args.stand, timer=args.timer, state_file=args.state_file)
+        report = check(args.stand, timer=args.timer, state_file=args.state_file, renew_timer=args.renew_timer,
+                       renew_state_file=args.renew_state_file)
         print(json.dumps(report, indent=1, sort_keys=True))
         return 0 if report["state"] == "green" else 1
     if len(args.unit) != len(args.bound_seconds):
