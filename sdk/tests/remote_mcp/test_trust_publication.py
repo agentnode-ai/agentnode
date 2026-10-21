@@ -635,6 +635,22 @@ def test_rollback_materialises_the_pointer_generation_into_the_legacy_files(env,
     assert ((legacy / "revoked.crl").read_bytes(), (legacy / "revoked-identities.json").read_bytes()) == want
 
 
+def test_the_rollback_removal_writes_the_legacy_predecessor_first(env, monkeypatch, tmp_path):
+    """C22 / CC22: `trust-timers.sh remove` (the rollback) leaves the parent's legacy files = the pointer's pair."""
+    from agentnode_sdk.remote_mcp import trust_timers as TT
+    from .test_trust_schedule import FakeSystemd
+    _synced(env)
+    T.save_previous_pair(env["reg"].stand, b"stale", b"stale")   # what the parent saved long ago
+    monkeypatch.setattr(TP, "ROTATE_AFTER_SECONDS", 0.0)
+    env["ops"].refresh_trust(force=True)
+    want = T.previous_pair(env["reg"].stand)
+    root = tmp_path / "root"
+    done = TT.remove(root=root, run=FakeSystemd(root), stand=str(env["reg"].stand), preflight=False)
+    legacy = Path(env["reg"].stand) / "targets" / T.PREVIOUS_DIR
+    assert ((legacy / "revoked.crl").read_bytes(), (legacy / "revoked-identities.json").read_bytes()) == want
+    assert not any("MATERIALIZE" in item for item in done["left"])
+
+
 def test_install_imports_a_newer_legacy_predecessor(env, monkeypatch):
     """R3: the parent saved a predecessor during a rollback window; install makes it the pointer's generation."""
     _synced(env)
