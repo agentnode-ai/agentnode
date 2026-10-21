@@ -270,7 +270,8 @@ def _published_at(stand, pair, facts) -> float | None:
     return facts.pop("_this_update", None)
 
 
-def publication_problems(stand, *, now: float, run: Runner = _run) -> tuple[list[str], dict]:
+def publication_problems(stand, *, now: float, run: Runner = _run, cycle_timer: str = CYCLE_TIMER,
+                         floor_timer: str = FLOOR_TIMER) -> tuple[list[str], dict]:
     """trust-floor C20/C21: both new timers finite, the journal readable with no record open > 10 min (lock
     held or not, read from /proc/locks), the predecessor pointer readable, consistent and naming a generation
     whose bytes match it and whose facts equal what its record saved, and the last cycle successful recently."""
@@ -279,7 +280,7 @@ def publication_problems(stand, *, now: float, run: Runner = _run) -> tuple[list
     from agentnode_sdk.remote_mcp import trust_publication as TP
     problems: list[str] = []
     facts: dict[str, Any] = {}
-    for unit in (CYCLE_TIMER, FLOOR_TIMER):
+    for unit in (cycle_timer, floor_timer):
         st = timer_state(unit, run=run)
         problems += timer_problems(st, now=now, bound_seconds=FIVE_MINUTE_BOUND_SECONDS)
         nxt = next_elapse(st)
@@ -476,7 +477,8 @@ def write_state(path, doc: dict) -> None:
 
 
 def check(stand, *, now: float | None = None, timer: str = REFRESH_TIMER, state_file=STATE_FILE,
-          run: Runner = _run, tls=None, view=None, renew_state_file=None, renew_timer: str = RENEW_TIMER) -> dict:
+          run: Runner = _run, tls=None, view=None, renew_state_file=None, renew_timer: str = RENEW_TIMER,
+          cycle_timer: str = CYCLE_TIMER, floor_timer: str = FLOOR_TIMER) -> dict:
     """One watchdog run. Returns the report that was written; `report["state"]` is green or red."""
     now = time.time() if now is None else float(now)
     try:
@@ -495,7 +497,7 @@ def check(stand, *, now: float | None = None, timer: str = REFRESH_TIMER, state_
     problems += more
     facts.update(afacts)
     try:
-        more, pfacts = publication_problems(stand, now=now, run=run)
+        more, pfacts = publication_problems(stand, now=now, run=run, cycle_timer=cycle_timer, floor_timer=floor_timer)
     except Exception as exc:                                  # noqa: BLE001 - an unknown failure is red
         more, pfacts = ["publication_watchdog_error (%s)" % type(exc).__name__], {}
     problems += more
@@ -520,13 +522,16 @@ def main(argv=None) -> int:
     c.add_argument("--state-file", default=STATE_FILE)
     c.add_argument("--renew-timer", default=RENEW_TIMER)
     c.add_argument("--renew-state-file", default=None)
+    c.add_argument("--cycle-timer", default=CYCLE_TIMER)
+    c.add_argument("--floor-timer", default=FLOOR_TIMER)
     t = sub.add_parser("timer-check")
     t.add_argument("--unit", action="append", required=True)
     t.add_argument("--bound-seconds", type=float, action="append", required=True)
     args = p.parse_args(argv)
     if args.cmd == "check":
         report = check(args.stand, timer=args.timer, state_file=args.state_file, renew_timer=args.renew_timer,
-                       renew_state_file=args.renew_state_file)
+                       renew_state_file=args.renew_state_file, cycle_timer=args.cycle_timer,
+                       floor_timer=args.floor_timer)
         print(json.dumps(report, indent=1, sort_keys=True))
         return 0 if report["state"] == "green" else 1
     if len(args.unit) != len(args.bound_seconds):

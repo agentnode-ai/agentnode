@@ -381,16 +381,16 @@ def test_monotonic_numbers_across_a_crash_and_a_revocation(env, monkeypatch):
     _synced(env)
     seen = [_current(env)]
     monkeypatch.setattr(TP, "ROTATE_AFTER_SECONDS", 0.0)
-    env["ops"].refresh_trust(force=True)
-    seen.append(_current(env))
+    for _ in range(2):
+        env["ops"].refresh_trust(force=True)
+        seen.append(_current(env))
+    numbers = [f["revocation_list_number"] for f in seen]
+    assert numbers == sorted(numbers) and len(set(numbers)) == len(numbers)
     tid = _provision(env)
     env["ops"].probe(tid)
     env["ops"].revoke(tid)
-    seen.append(_current(env))
-    numbers = [f["revocation_list_number"] for f in seen]
-    assert numbers == sorted(numbers) and len(set(numbers)) == len(numbers)
-    first, last = TI.facts_of(*_pair_bytes(env)), seen[0]
-    assert first["content_sha256"] != last["content_sha256"]
+    after = _current(env)
+    assert after["revocation_list_number"] > numbers[-1] and after["content_sha256"] != seen[0]["content_sha256"]
 
 
 # ---------------------------------------------------------------------- C10-C13: guard and security
