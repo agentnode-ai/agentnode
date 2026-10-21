@@ -285,10 +285,10 @@ def test_remove_refuses_when_not_quiescent_and_never_unlinks_a_lock(s, tmp_path)
     lock.write_text("")
     before = {p: p.read_bytes() for p in (Path(s.reg.stand) / "targets").rglob("*") if p.is_file()}
     _open_op(s, 5, "renew")
-    done = TT.remove(root=root, run=_quiet_systemd([]), stand=str(s.stand), wait_seconds=0)
+    done = TT.remove(root=root, run=_quiet_systemd([]), stand=str(s.stand), wait_seconds=0, trust_check=s.trust_refusals)
     assert done["removed"] is False and any(x.startswith("PREFLIGHT") for x in done["left"])
     (Path(s.reg.stand) / "targets" / "ops" / "op-1-abcd.json").unlink()
-    done = TT.remove(root=root, run=_quiet_systemd([]), stand=str(s.stand), wait_seconds=0)
+    done = TT.remove(root=root, run=_quiet_systemd([]), stand=str(s.stand), wait_seconds=0, trust_check=s.trust_refusals)
     assert lock.exists()
     after = {p: p.read_bytes() for p in (Path(s.reg.stand) / "targets").rglob("*") if p.is_file()}
     for p, data in before.items():

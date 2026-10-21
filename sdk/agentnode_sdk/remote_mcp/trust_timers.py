@@ -329,6 +329,8 @@ def restore_legacy_floor(*, root="/", run: Runner = _run) -> list[str]:
     try:
         manifest = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
+        if not any((etc / n).exists() or (etc / n).is_symlink() for n in FLOOR_UNITS):
+            return []                                         # no floor units here at all: nothing to restore
         return ["no legacy floor backup to restore"]
     except (OSError, ValueError) as exc:
         return ["legacy floor backup unreadable (%s)" % type(exc).__name__]

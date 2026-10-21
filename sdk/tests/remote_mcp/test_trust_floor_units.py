@@ -237,6 +237,18 @@ def test_install_backs_up_and_remove_restores_the_floor_units_byte_exact(tmp_pat
     assert not TT.legacy_dir(root).exists()
 
 
+def test_no_backup_is_fine_only_where_there_never_was_a_floor_unit(tmp_path):
+    """A host that never had floor units (nothing installed): nothing to restore. A floor unit with no backup:
+    named, never silently deleted."""
+    root = tmp_path / "root"
+    assert TT.restore_legacy_floor(root=root, run=FakeSystemd(root)) == []
+    etc = root / "etc" / "systemd" / "system"
+    etc.mkdir(parents=True)
+    (etc / TT.FLOOR_TIMER).write_text(LEGACY_TIMER)
+    assert TT.restore_legacy_floor(root=root, run=FakeSystemd(root)) == ["no legacy floor backup to restore"]
+    assert (etc / TT.FLOOR_TIMER).read_text() == LEGACY_TIMER
+
+
 def test_a_changed_legacy_script_is_reported(tmp_path, release):
     root, etc, script = _legacy_root(tmp_path)
     fake = FakeSystemd(root)
