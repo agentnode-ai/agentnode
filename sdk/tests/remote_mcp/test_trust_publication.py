@@ -96,8 +96,20 @@ def test_the_floor_run_never_publishes_a_rotation(env, monkeypatch):
     assert _pair_bytes(env) == before and report["failure"] == ""
     assert "publication left to the publication authority" in report["tick"]["list"]
     assert _admitted(env) is True
-    assert [r for r in _records(env) if r["reason"] != "import_legacy" and r.get("result")] == [] or all(
-        not TI.differences(r["result"], _current(env)) for r in _records(env) if r.get("result"))
+    assert [r for r in _records(env) if r["kind"] == TP.PUBLICATION] == []
+
+
+def test_a_revocation_is_published_by_the_authority(env):
+    """C1 / CC2: `Operations.revoke` commits the withdrawal and the AUTHORITY publishes it (a journaled
+    security record whose result is the deployment's pair) -- the issuer publishes nothing on its own."""
+    _synced(env)
+    tid = _provision(env)
+    env["ops"].probe(tid)
+    env["ops"].revoke(tid)
+    sec = [r for r in _records(env) if r["kind"] == TP.PUBLICATION and r["reason"].startswith("security:")]
+    assert len(sec) == 1 and not TI.differences(sec[0]["result"], _current(env)), sec
+    assert sec[0]["state"] == TP.DONE and env["world"].issuer.reconcile()["reason"] == ""
+    assert _admitted(env) is True and env["reg"].load().target(tid).status == T.REVOKED
 
 
 def test_the_generic_root_run_still_publishes_when_due(env, monkeypatch):

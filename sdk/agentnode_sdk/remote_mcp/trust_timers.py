@@ -187,7 +187,8 @@ def unit_problems(name: str, text: str) -> list[str]:
     if name in (WATCHDOG_SERVICE, WATCHDOG_TIMER, DROPIN):
         for section in units.values():
             for k, v in section:
-                if k in DEPENDENCIES and ("rmcp-trust-refresh" in v or "rmcp-attest-renew" in v):
+                if k in DEPENDENCIES and any(w in v for w in ("rmcp-trust-refresh", "rmcp-attest-renew",
+                                                              "rmcp-trust-cycle", "rmcp-control-floor")):
                     out.append("%s: depends on what it watches (%s=%s)" % (name, k, v))
     if name == RENEW_SERVICE:
         unit, service = dict(units.get("Unit", [])), units.get("Service", [])

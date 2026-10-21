@@ -159,8 +159,22 @@ def _next_id(stand) -> str:
     return "r-%012d" % (max(seqs, default=0) + 1)
 
 
+def _write_settled(path: Path, data: bytes) -> None:
+    """`_write_durably`, retried for an instant when Windows refuses the rename over a file a reader holds
+    open (POSIX renames over it atomically; the control is Linux)."""
+    import time
+    for attempt in range(40):
+        try:
+            _write_durably(path, data)
+            return
+        except PermissionError:
+            if attempt == 39:
+                raise
+            time.sleep(0.05)
+
+
 def _write_record(stand, rec: dict) -> None:
-    _write_durably(records_dir(stand) / (rec["record_id"] + ".json"),
+    _write_settled(records_dir(stand) / (rec["record_id"] + ".json"),
                    (json.dumps(rec, indent=1, sort_keys=True) + "\n").encode("utf-8"))
 
 
@@ -324,7 +338,7 @@ def _save_previous(ops, report: dict, rec: dict, crl: bytes, tombs: bytes) -> No
                "tombstones_sha256": hashlib.sha256(tombs).hexdigest(),
                "revocation_list_number": facts["revocation_list_number"],
                "content_sha256": facts["content_sha256"], "saved_at": round(ops.clock(), 3)}
-    _write_durably(pointer_path(ops.stand), (json.dumps(pointer, indent=1, sort_keys=True) + "\n").encode("utf-8"))
+    _write_settled(pointer_path(ops.stand), (json.dumps(pointer, indent=1, sort_keys=True) + "\n").encode("utf-8"))
     rec["previous"] = {"generation": gen, "number": facts["revocation_list_number"]}
 
 

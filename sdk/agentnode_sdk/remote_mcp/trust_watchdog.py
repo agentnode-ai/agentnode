@@ -14,6 +14,11 @@ unit dependency with the refresh, and checks the RESULT, not the refresh:
       deployment's pair (number, both digests, every validity time), at most 13 hours old;
   (c) the refresh timer: loaded, enabled, active, and a FINITE next elapse in the future within one
       period of the schedule -- `active` with no next elapse is the defect itself, and red;
+  (e) the publication authority (trust-floor C20/C21): the 5-minute cycle and floor timers finite, the journal
+      readable with no record open longer than 10 minutes, the predecessor pointer readable and naming the
+      generation its record saved, the last cycle successful within 15 minutes; a live target on the exact
+      admissible predecessor is `ack_previous` (not red) for 10 minutes after the current pair's publication,
+      `distribution_overdue` afterwards; any other difference stays `ack_mismatch` at once.
   (d) the attestations (attest-renewal D8): every active target's record valid with more than its class
       warning left (48 h managed, 6 h customer) at the effective, pinned time; the default target active;
       the renewal timer finite within 6 h 10 min; the renewal state present, its last run at most
