@@ -228,24 +228,24 @@ def _quiet_systemd(calls):
 
 def test_preflight_passes_when_quiescent(s):
     calls = []
-    assert TT.quiesce(stand=str(s.stand), run=_quiet_systemd(calls), wait_seconds=0) == []
-    assert ["systemctl", "disable", "--now", TT.RENEW_TIMER] == calls[0]          # scheduling stopped first
+    assert TT.quiesce(stand=str(s.stand), trust_check=s.trust_refusals, run=_quiet_systemd(calls), wait_seconds=0) == []
+    assert ["systemctl", "disable", "--now", TT.RENEW_TIMER, TT.CYCLE_TIMER, TT.REFRESH_TIMER] == calls[0]   # scheduling stopped first
 
 
 def test_preflight_refuses_an_open_head_only_operation(s):
     """CC32: a36ddcdd cannot resume a `renew` operation -- none may be open across the rollback."""
     _open_op(s, 5, "renew")
-    found = TT.quiesce(stand=str(s.stand), run=_quiet_systemd([]), wait_seconds=0)
+    found = TT.quiesce(stand=str(s.stand), trust_check=s.trust_refusals, run=_quiet_systemd([]), wait_seconds=0)
     assert any("open renew operation" in p for p in found)
 
 
 def test_preflight_refuses_below_48_hours_on_the_default(s):
     """CC35."""
     _left(s.reg, "managed-w1", 47.9)
-    found = TT.quiesce(stand=str(s.stand), run=_quiet_systemd([]), wait_seconds=0)
+    found = TT.quiesce(stand=str(s.stand), trust_check=s.trust_refusals, run=_quiet_systemd([]), wait_seconds=0)
     assert any("below 48 h" in p for p in found)
     _left(s.reg, "managed-w1", 48.1)
-    assert TT.quiesce(stand=str(s.stand), run=_quiet_systemd([]), wait_seconds=0) == []
+    assert TT.quiesce(stand=str(s.stand), trust_check=s.trust_refusals, run=_quiet_systemd([]), wait_seconds=0) == []
 
 
 def test_preflight_waits_for_a_running_renewal_then_refuses(s):
@@ -253,7 +253,7 @@ def test_preflight_waits_for_a_running_renewal_then_refuses(s):
 
     def run(argv):
         return (0, "ActiveState=active\n") if argv[1] == "show" else (0, "")
-    found = TT.quiesce(stand=str(s.stand), run=run, now=lambda: clock["t"],
+    found = TT.quiesce(stand=str(s.stand), trust_check=s.trust_refusals, run=run, now=lambda: clock["t"],
                        sleep=lambda x: clock.__setitem__("t", clock["t"] + x), wait_seconds=60)
     assert any("still running" in p for p in found) and clock["t"] >= 60
 
@@ -272,7 +272,7 @@ def test_preflight_refuses_a_held_probe_lock(s):
     th.start()
     try:
         assert ready.wait(10)
-        assert any("lock held" in p for p in TT.quiesce(stand=str(s.stand), run=_quiet_systemd([]), wait_seconds=0))
+        assert any("lock held" in p for p in TT.quiesce(stand=str(s.stand), trust_check=s.trust_refusals, run=_quiet_systemd([]), wait_seconds=0))
     finally:
         release.set()
         th.join(10)

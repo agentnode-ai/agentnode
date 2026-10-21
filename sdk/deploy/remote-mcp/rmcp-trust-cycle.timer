@@ -1,0 +1,11 @@
+[Unit]
+# Wall clock only (DEFECT-LIVE-001): a calendar elapse always exists; Persistent=true runs a missed one at once.
+Description=AgentNode remote MCP: trust publication and distribution cycle, every 5 minutes
+
+[Timer]
+OnCalendar=*-*-* *:0/5:00 UTC
+Persistent=true
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

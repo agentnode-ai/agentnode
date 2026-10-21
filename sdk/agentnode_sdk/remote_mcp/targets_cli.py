@@ -13,7 +13,11 @@ needs the stand operator key, the issuer and the pair-key file, so it runs as ro
   revoke --target T                       final: admission off, identity withdrawn, pair forgotten
   reconcile-expiry | resume-ops           complete derived expiry / open operations
   account-default --account A (--target T | --clear)
-  trust-refresh [--force]                 publish when due, push to every live target, alert (exit 3)
+  trust-refresh [--force]                 the publication authority's cycle, waiting for a distribution in
+                                          progress (the 6-hourly timer, an operator); alert = exit 3
+  trust-cycle                             the same cycle without waiting (the 5-minute timer); busy = exit 5
+  trust-status                            the publication journal, the predecessor pointer, the last cycle
+  trust-import-legacy | trust-materialize-legacy   predecessor layout migration (install / rollback)
   reconcile-dispatch --invocation-hash H  settle an indeterminate dispatch from the target's journal
   show                                    the register without transport secrets
 
@@ -84,7 +88,8 @@ def build(stand: str, canary_host: str, *, gateway_dir: str | None = None, probe
                      worker_for=target_worker_factory(stand), canary_host=canary_host, ledger=ledger,
                      slot=lambda tid: probe_slot.acquire(tid, path=probe_slot_socket or probe_slot.PROBE_SLOT_SOCKET,
                                                          budget=slot_budget),
-                     kill_switch=_kill_switch(stand, gateway_dir))
+                     kill_switch=_kill_switch(stand, gateway_dir),
+                     effective_time=lambda: tls.trust("gateway").effective_time())
     return ops, cfg, tls
 
 
@@ -150,6 +155,8 @@ def main(argv=None) -> int:
     g.add_argument("--clear", action="store_true")
     s = sub.add_parser("trust-refresh")
     s.add_argument("--force", action="store_true")
+    for name in ("trust-cycle", "trust-status", "trust-import-legacy", "trust-materialize-legacy"):
+        sub.add_parser(name)
     s = sub.add_parser("reconcile-dispatch")
     s.add_argument("--invocation-hash", required=True)
     args = p.parse_args(argv)
@@ -232,10 +239,29 @@ def main(argv=None) -> int:
         elif args.cmd == "account-default":
             out = _safe(ops.register.set_account_default(args.account, None if args.clear else args.target,
                                                          actor="targets_cli"))
-        elif args.cmd == "trust-refresh":
-            report = ops.refresh_trust(force=args.force)
+        elif args.cmd in ("trust-refresh", "trust-cycle"):
+            from agentnode_sdk.remote_mcp import trust_publication as TP
+            if args.cmd == "trust-cycle":
+                report = ops.refresh_trust(entry="cycle", distribute_wait=0.0, write_state=True)
+            else:
+                report = ops.refresh_trust(force=args.force, entry="manual" if args.force else "refresh",
+                                           distribute_wait=TP.DISTRIBUTION_WAIT_SECONDS, write_state=True)
             print(json.dumps(report, indent=1, default=str))
             return 3 if (report["alerts"] or report["lagging"]) else 0
+        elif args.cmd == "trust-status":
+            out = trust_status(ops, args.stand)
+        elif args.cmd == "trust-import-legacy":
+            from agentnode_sdk.remote_mcp import trust_publication as TP
+            try:
+                out = {"import": TP.import_legacy(ops) or "nothing to import"}
+            except TP.Refused as exc:
+                raise OperationFailed(exc.code, exc.detail) from exc
+        elif args.cmd == "trust-materialize-legacy":
+            from agentnode_sdk.remote_mcp import trust_publication as TP
+            try:
+                out = {"materialized": TP.materialize_legacy(args.stand)}
+            except TP.Refused as exc:
+                raise OperationFailed(exc.code, exc.detail) from exc
         elif args.cmd == "reconcile-dispatch":
             out = reconcile_dispatch(ops, args.stand, args.invocation_hash)
         else:
@@ -248,6 +274,24 @@ def main(argv=None) -> int:
         return 6
     print(json.dumps(out, indent=1, default=str))
     return 0
+
+
+def trust_status(ops: Operations, stand: str) -> dict:
+    """The publication authority's state, without a key, address or secret: open records, the last ten,
+    the predecessor pointer, the current pair, every live target's acknowledged number, the last cycle."""
+    from agentnode_sdk.remote_mcp import trust_publication as TP
+
+    def brief(r):
+        return {k: r.get(k) for k in ("record_id", "kind", "reason", "state", "phase", "created_at", "closed_at",
+                                      "error", "publication")} | {
+            "from": TP._short(r.get("from")), "result": TP._short(r.get("result")), "targets": r.get("targets")}
+    records = TP.load_records(stand)
+    acks = ops.acks.load()
+    return {"pair": TP._short(ops._pair()[2]), "pointer": TP.load_pointer(stand),
+            "open": [brief(r) for r in records if r["state"] == TP.OPEN],
+            "recent": [brief(r) for r in records[-10:]],
+            "acks": {tid: a.get("revocation_list_number") for tid, a in sorted(acks.items())},
+            "cycle": TP.load_cycle_state(stand)}
 
 
 def reconcile_dispatch(ops: Operations, stand: str, invocation_hash: str) -> dict:

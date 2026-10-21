@@ -1,13 +1,16 @@
 [Unit]
-# Target-router R3: publish the deployment's revocation and tombstone lists when they are due,
-# hand them to every live execution target over the worker channel, record what each worker
-# acknowledged, retire overdue pair-key overlaps, and FAIL (-> rmcp-alert@) on anything an operator
-# must see: a list within 48 h of expiry, or a target that did not acknowledge the current lists.
+# The publication authority's cycle (trust-floor; target-router R3), four times a day, waiting for a
+# distribution in progress: resume a crashed publication, publish a security change at once, rotate the
+# deployment's revocation and tombstone lists when they are 24 h old and every live target holds the
+# current pair (or < 72 h are left), save the predecessor first, hand the ONE pair to every live target and
+# record exact acknowledgements, retire overdue pair-key overlaps -- and FAIL (-> rmcp-alert@) on anything an
+# operator must see: a list within 48 h of expiry, a target not on the current pair, a deferred rotation.
 Description=AgentNode remote MCP: trust distribution to execution targets
 After=network-online.target rmcp-control.service
 OnFailure=rmcp-alert@%n.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=20min
 Environment=PYTHONPATH=/opt/agentnode/sdk
 ExecStart=/opt/agentnode/venv/bin/python -m agentnode_sdk.remote_mcp.targets_cli --stand /var/lib/agentnode-mcp/stand --canary-host 10.0.0.4 trust-refresh

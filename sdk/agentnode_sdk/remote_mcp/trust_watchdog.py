@@ -52,6 +52,12 @@ WATCHDOG_TIMER = "rmcp-trust-watchdog.timer"
 #: The attestation renewal (attest-renewal): its timer, how far its next run may lie, how old its last
 #: finished run may be (one period + its timeout + slack).
 RENEW_TIMER = "rmcp-attest-renew.timer"
+#: trust-floor: the publication authority's 5-minute cycle and the control floor run, and how far their next
+#: elapse may lie (5 min + AccuracySec + slack); the last successful cycle may be at most this old.
+CYCLE_TIMER = "rmcp-trust-cycle.timer"
+FLOOR_TIMER = "rmcp-control-floor.timer"
+FIVE_MINUTE_BOUND_SECONDS = 330
+CYCLE_SUCCESS_MAX_AGE_SECONDS = 900
 RENEW_BOUND_SECONDS = 6 * 3600 + 600
 RENEW_RUN_MAX_AGE_SECONDS = 6 * 3600 + 2400
 #: Red below this much validity left on either list.
@@ -155,6 +161,7 @@ def trust_problems(stand, *, now: float, view=None, tls=None) -> tuple[list[str]
     try:
         rl = _revocation.read(crl, anchor, effective)
         facts["list_number"] = rl.number
+        facts["_this_update"] = rl.this_update
         facts["list_next_update"] = _iso(rl.next_update)
         if rl.this_update > ref + trust_install.MAX_SKEW_SECONDS:
             problems.append("list_not_yet_valid (thisUpdate %s)" % _iso(rl.this_update))
@@ -193,13 +200,24 @@ def trust_problems(stand, *, now: float, view=None, tls=None) -> tuple[list[str]
     facts["register_generation"] = snap.generation
     for tid in sorted(set(acks) - set(snap.targets)):
         problems.append("ack_unknown_target %s" % tid)      # a register keeps every target, terminal ones too
+    prev = _verified_previous(stand, view, tls)
+    published_at = _published_at(stand, pair, facts)
     for tid in live:
         ack = acks.get(tid)
         if not ack:
             problems.append("ack_missing %s" % tid)
             continue
         wrong = trust_install.differences(ack, pair)
-        if wrong:
+        if wrong and prev and pair and not trust_install.differences(ack, prev) \
+                and prev.get("content_sha256") == pair.get("content_sha256"):
+            # trust-floor R10: the admissible predecessor, inside the distribution window, is not red
+            if published_at is not None and now - published_at <= DISTRIBUTION_WINDOW_SECONDS:
+                facts.setdefault("ack_previous", []).append(tid)
+            else:
+                problems.append("distribution_overdue %s (on the predecessor %s, current published %s)"
+                                % (tid, ack.get("revocation_list_number"),
+                                   _iso(published_at) if published_at else "unknown"))
+        elif wrong:
             problems.append("ack_mismatch %s (%s)" % (tid, ",".join(wrong)))
         try:
             age = now - float(ack["acked_at"])
@@ -208,6 +226,106 @@ def trust_problems(stand, *, now: float, view=None, tls=None) -> tuple[list[str]
             continue
         if age > ACK_MAX_AGE_SECONDS:
             problems.append("ack_stale %s (%d s old)" % (tid, int(age)))
+    return problems, facts
+
+
+DISTRIBUTION_WINDOW_SECONDS = 600
+PUBLICATION_HUNG_SECONDS = 600
+
+
+def _verified_previous(stand, view, tls) -> dict | None:
+    """The saved predecessor's facts, only if this control's anchor verifies both documents (as the router)."""
+    from agentnode_sdk.pki import revocation as _revocation
+    from agentnode_sdk.pki import tombstones as _tombstones
+    from agentnode_sdk.remote_mcp import targets as T
+    from agentnode_sdk.worker import trust_install
+    pair = T.previous_pair(stand)
+    if pair is None:
+        return None
+    try:
+        effective = view.effective_time()
+        _revocation.read(pair[0], view.anchor(), effective)
+        _tombstones.read(pair[1], deployment=tls.deployment, verifier=view._verify_with_anchor).usable_at(effective)
+        return trust_install.facts_of(*pair)
+    except Exception:                                         # noqa: BLE001 - not believed
+        return None
+
+
+def _published_at(stand, pair, facts) -> float | None:
+    """When the current pair was published: the record that published it, else the list's thisUpdate."""
+    from agentnode_sdk.remote_mcp import trust_publication as TP
+    from agentnode_sdk.worker import trust_install
+    try:
+        for r in reversed(TP.load_records(stand)):
+            if r["kind"] == TP.PUBLICATION and r.get("result") and pair \
+                    and not trust_install.differences(r["result"], pair):
+                return float(r.get("published_at") or r["created_at"])
+    except ValueError:
+        pass                                                  # named by publication_problems
+    return facts.pop("_this_update", None)
+
+
+def publication_problems(stand, *, now: float, run: Runner = _run) -> tuple[list[str], dict]:
+    """trust-floor C20/C21: both new timers finite, the journal readable with no record open > 10 min (lock
+    held or not, read from /proc/locks), the predecessor pointer readable, consistent and naming a generation
+    whose bytes match it and whose facts equal what its record saved, and the last cycle successful recently."""
+    from agentnode_sdk.remote_mcp import target_ops as O
+    from agentnode_sdk.remote_mcp import targets as T
+    from agentnode_sdk.remote_mcp import trust_publication as TP
+    problems: list[str] = []
+    facts: dict[str, Any] = {}
+    for unit in (CYCLE_TIMER, FLOOR_TIMER):
+        st = timer_state(unit, run=run)
+        problems += timer_problems(st, now=now, bound_seconds=FIVE_MINUTE_BOUND_SECONDS)
+        nxt = next_elapse(st)
+        facts[unit + "_next"] = _iso(nxt) if nxt else None
+    held = held_flock_inodes()
+    tdir = Path(stand) / "targets"
+    try:
+        records = TP.load_records(stand)
+    except ValueError as exc:
+        records = []
+        problems.append("trust_journal_unreadable (%s)" % exc)
+    for r in records:
+        if r["state"] != TP.OPEN:
+            continue
+        age = now - float(r.get("created_at") or 0)
+        if age > PUBLICATION_HUNG_SECONDS:
+            lock = Path(str(tdir / (O.REFRESH_LOCK_NAME if r.get("phase") in ("begun", "previous_saved")
+                                    else TP.DISTRIBUTION_LOCK_NAME)) + ".lock")
+            problems.append("trust_publication_hung %s %s %s (%d s open, %s)" % (
+                r["record_id"], r["kind"], r.get("phase"), int(age), _lock_held(lock, held)))
+    try:
+        pointer = TP.load_pointer(stand)
+    except ValueError as exc:
+        pointer = None
+        problems.append("previous_pointer_unreadable (%s)" % exc)
+    else:
+        if pointer is None:
+            if any(r["kind"] == TP.PUBLICATION and r.get("previous") not in (None, "unverifiable") for r in records):
+                problems.append("previous_missing (a record saved a predecessor, no pointer selects it)")
+        else:
+            pair = T.previous_pair(stand)
+            saver = next((r for r in records if r["record_id"] == pointer.get("record_id")), None)
+            if pair is None:
+                problems.append("previous_missing (pointer %s names no consistent generation)" % pointer.get("generation"))
+            elif saver is None or not saver.get("from") or \
+                    saver["from"].get("revocation_list_sha256") != pointer.get("revocation_list_sha256") or \
+                    saver["from"].get("tombstones_sha256") != pointer.get("tombstones_sha256"):
+                problems.append("previous_mismatch (generation %s is not what record %s saved)"
+                                % (pointer.get("generation"), pointer.get("record_id")))
+            facts["previous"] = {"generation": pointer.get("generation"), "number": pointer.get("revocation_list_number")}
+    try:
+        state = TP.load_cycle_state(stand)
+    except ValueError as exc:
+        state = None
+        problems.append("trust_cycle_state_unreadable (%s)" % exc)
+    since = float((state or {}).get("last_success_at") or 0)
+    if now - since > CYCLE_SUCCESS_MAX_AGE_SECONDS:
+        last = (state or {}).get("last_run") or {}
+        problems.append("trust_cycle_not_succeeding (last success %s, last run %s %s)"
+                        % (_iso(since) if since else "never", last.get("status"), str(last.get("failure", ""))[:80]))
+    facts["cycle_last_success"] = _iso(since) if since else None
     return problems, facts
 
 
@@ -371,6 +489,13 @@ def check(stand, *, now: float | None = None, timer: str = REFRESH_TIMER, state_
         more, afacts = ["attestation_watchdog_error (%s)" % type(exc).__name__], {}
     problems += more
     facts.update(afacts)
+    try:
+        more, pfacts = publication_problems(stand, now=now, run=run)
+    except Exception as exc:                                  # noqa: BLE001 - an unknown failure is red
+        more, pfacts = ["publication_watchdog_error (%s)" % type(exc).__name__], {}
+    problems += more
+    facts.update(pfacts)
+    facts.pop("_this_update", None)
     report = {"state": "red" if problems else "green", "checked_at": _iso(now), "problems": problems,
               "facts": facts}
     try:

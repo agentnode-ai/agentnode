@@ -32,6 +32,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -762,8 +763,34 @@ def save_previous_pair(stand, revocation_list: bytes, identity_tombstones: bytes
     _write_durably(d / "revoked.crl", revocation_list)
 
 
+#: The publication authority's predecessor (trust-floor D4/R3): immutable generations selected by ONE pointer
+#: file replaced atomically, so a reader sees one complete generation or the other, never a mixed pair.
+PUBLICATION_DIR = "trust-publication"
+PREVIOUS_POINTER = "previous.json"
+PREVIOUS_GENERATIONS = "previous"
+
+
 def previous_pair(stand) -> tuple[bytes, bytes] | None:
-    d = Path(stand) / "targets" / PREVIOUS_DIR
+    """The saved predecessor's bytes: through the pointer when there is one -- a pointer that cannot be read,
+    names no generation or disagrees with its files gives NONE, never the legacy files -- else the legacy
+    two-file directory (a stand no publication authority has written yet, or the parent's layout)."""
+    base = Path(stand) / "targets"
+    pointer = base / PUBLICATION_DIR / PREVIOUS_POINTER
+    if os.path.lexists(pointer):
+        try:
+            doc = json.loads(pointer.read_bytes().decode("utf-8"))
+            gen = str(doc["generation"])
+            if not gen or "/" in gen or "\\" in gen or gen.startswith("."):
+                return None
+            d = base / PUBLICATION_DIR / PREVIOUS_GENERATIONS / gen
+            crl, tombs = (d / "revoked.crl").read_bytes(), (d / "revoked-identities.json").read_bytes()
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        if (hashlib.sha256(crl).hexdigest() != doc.get("revocation_list_sha256")
+                or hashlib.sha256(tombs).hexdigest() != doc.get("tombstones_sha256")):
+            return None
+        return crl, tombs
+    d = base / PREVIOUS_DIR
     try:
         return (d / "revoked.crl").read_bytes(), (d / "revoked-identities.json").read_bytes()
     except OSError:
@@ -793,5 +820,5 @@ __all__ = ["ACTIVE", "ASSURANCE_CLASSES", "ATTESTATION_BINDING_KEYS", "ATTESTATI
            "attestation_binding_view", "CUSTOMER", "CUSTOMER_OBSERVED",
            "ENROLLED", "EXPIRED", "HARDWARE_ATTESTED", "INVITED", "MANAGED", "OPERATOR_MANAGED", "PROBING",
            "PROVISIONING_FAILED", "REVOKED", "Register", "RegisterSnapshot", "SUSPENDED", "TERMINAL", "Target",
-           "PREVIOUS_DIR", "TargetsRefused", "TargetsUnavailable", "TrustAcks", "check_successor", "digest",
+           "PREVIOUS_DIR", "PREVIOUS_GENERATIONS", "PREVIOUS_POINTER", "PUBLICATION_DIR", "TargetsRefused", "TargetsUnavailable", "TrustAcks", "check_successor", "digest",
            "endpoint_digest", "previous_pair", "save_previous_pair", "trust_current", "validate_document"]

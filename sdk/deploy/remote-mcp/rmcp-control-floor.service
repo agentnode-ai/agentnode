@@ -1,0 +1,13 @@
+[Unit]
+# The control's floor run (trust-floor D2/D3): LOCAL work only -- the publication authority's security
+# reconciliation (no rotation, no network), then the issuer's root run with publication OFF: settle crashed
+# stages, end run-out overlaps, advance the floors (held back while a revocation is unpublished). It never
+# publishes a pair on its own and never waits for a worker. Bounded; any failure -> rmcp-alert@.
+Description=AgentNode remote MCP control: advance the issuer/gateway floor
+OnFailure=rmcp-alert@%n.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=60
+Environment=PYTHONPATH=/opt/agentnode/sdk
+ExecStart=/opt/agentnode/venv/bin/python -m agentnode_sdk.remote_mcp.control_floor --stand /var/lib/agentnode-mcp/stand
