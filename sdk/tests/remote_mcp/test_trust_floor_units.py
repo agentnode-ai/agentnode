@@ -268,6 +268,34 @@ def test_a_symlinked_floor_unit_is_refused_before_anything_changes(tmp_path, rel
     assert done["installed"] is False and done["stage"] == "floor-backup"
 
 
+@pytest.mark.skipif(not Path("/proc/locks").exists(), reason="the kernel's lock table is a Linux file")
+@pytest.mark.parametrize("name", ["DISTRIBUTION", "PUBLICATION"])
+def test_rollback_refuses_a_held_publication_or_distribution_lock(tmp_path, name):
+    """C22 / negative: a lock held by a running publication or distribution refuses the rollback (read from
+    /proc/locks, never by taking it)."""
+    import threading
+    from agentnode_sdk.gateway.filelock import ProcessLock
+    from agentnode_sdk.remote_mcp import target_ops as O
+    from .test_attest_watchdog import _quiet_systemd
+    s = Stand(tmp_path)
+    lock_name = TP.DISTRIBUTION_LOCK_NAME if name == "DISTRIBUTION" else O.REFRESH_LOCK_NAME
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with ProcessLock(Path(s.stand) / "targets" / lock_name, timeout=5):
+            held.set()
+            release.wait(30)
+    t = threading.Thread(target=hold)
+    t.start()
+    held.wait(5)
+    try:
+        found = TT.quiesce(stand=str(s.stand), trust_check=s.trust_refusals, run=_quiet_systemd([]), wait_seconds=0)
+    finally:
+        release.set()
+        t.join(10)
+    assert any(lock_name in p and "lock held" in p for p in found), found
+
+
 def test_rollback_refuses_an_open_publication_record(tmp_path):
     """C22 / CC21."""
     s = Stand(tmp_path)

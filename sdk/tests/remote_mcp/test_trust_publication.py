@@ -613,14 +613,124 @@ def test_the_journal_is_not_in_the_operation_journal(env, monkeypatch):
     env["ops"].resume()                                          # the parent's resume path does not choke
 
 
-def test_an_unreadable_journal_is_a_named_refusal(env):
-    """Negative: a foreign or truncated record stops the authority (named), never a guess."""
+@pytest.mark.parametrize("body", ['{"schema": "something-else"}', '{"schema": "agentnode.trust-publ',
+                                  "<truncated>", "contradictory-id", "unknown-state"])
+def test_an_unreadable_journal_is_a_named_refusal(env, body):
+    """Negative: a foreign, truncated or contradictory record stops the authority (named), never a guess."""
     d = TP.records_dir(env["reg"].stand)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "r-000000000001.json").write_text('{"schema": "something-else"}')
+    good = {"schema": TP.SCHEMA, "record_id": "r-000000000001", "kind": TP.PUBLICATION, "state": TP.DONE}
+    text = {"<truncated>": json.dumps(good)[:20],
+            "contradictory-id": json.dumps(dict(good, record_id="r-000000000002")),
+            "unknown-state": json.dumps(dict(good, state="half-done"))}.get(body, body)
+    (d / "r-000000000001.json").write_text(text)
+    before = _pair_bytes(env)
     with pytest.raises(OperationFailed) as failed:
-        env["ops"].refresh_trust()
-    assert failed.value.code == "trust_publication.journal_unreadable"
+        env["ops"].refresh_trust(force=True)
+    assert failed.value.code == "trust_publication.journal_unreadable" and _pair_bytes(env) == before
+
+
+def test_a_lost_journal_after_publication_is_distributed_not_republished(env, monkeypatch):
+    """Negative: the journal is gone after a publication took effect (crash, then the records were lost): the next
+    cycle distributes the deployment's pair as a retry of its own -- no second publication, no lost target."""
+    import shutil
+    _synced(env)
+    monkeypatch.setattr(TP, "ROTATE_AFTER_SECONDS", 0.0)
+    env["ops"]._crash_after = lambda s: (_ for _ in ()).throw(Crash()) if s == "tp:published" else None
+    with pytest.raises(Crash):
+        env["ops"].refresh_trust(force=True)
+    env["ops"]._crash_after = lambda s: None
+    number = _current(env)["revocation_list_number"]
+    shutil.rmtree(TP.records_dir(env["reg"].stand))
+    monkeypatch.setattr(TP, "ROTATE_AFTER_SECONDS", None)          # not due by age: nothing to rotate
+    report = env["ops"].refresh_trust()
+    assert _current(env)["revocation_list_number"] == number and report["lagging"] == []
+    recs = _records(env)
+    assert [r["kind"] for r in recs] == [TP.DISTRIBUTION] and recs[0]["state"] == TP.DONE
+    assert not TI.differences(env["acks"].load()["managed-w1"], _current(env)) and _admitted(env)
+
+
+def test_a_revocation_during_distribution_is_never_acknowledged_as_current(env):
+    """Negative: a security publication lands while a content-equal pair is being pushed: the answer for the old
+    pair is a historical attempt (`trust.pair_changed`), the target is refused (new content), the next cycle
+    distributes the security pair and admits it again."""
+    _synced(env)
+    tid = _provision(env)
+    env["ops"].probe(tid)
+    _synced(env)
+    inst = env["reg"].load().target(tid).worker["instance"]
+    w = env["workers"]["managed-w1"]
+    real, fired = w.install_trust, []
+
+    def revoke_meanwhile(crl, tombs):
+        if not fired:
+            fired.append(1)
+            with TP._publication_lock(env["ops"]):              # what Operations.revoke does, mid-distribution
+                env["world"].issuer.recover_entry("worker", inst, publish=False)
+                TP.local(env["ops"], TP.new_report("revoke"), rotate=False)
+        return real(crl, tombs)
+    w.install_trust = revoke_meanwhile
+    report = env["ops"].refresh_trust(force=True)
+    assert "trust.pair_changed" in str(report["pushed"]["managed-w1"]) and _admitted(env) is False
+    w.install_trust = real
+    assert env["ops"].refresh_trust()["lagging"] == [] and _admitted(env) is True
+
+
+@pytest.mark.parametrize("jump", [25 * 3600, -2 * 86400])
+def test_a_clock_jump_neither_breaks_nor_refuses(env, jump):
+    """Negative: forward, the pair is due and rotated content-equal (still admitted); backward, the list looks
+    'from the future' -- no rotation, no failure, nobody refused."""
+    _synced(env)
+    number = _current(env)["revocation_list_number"]
+    env["ops"].clock = lambda: time.time() + jump
+    report = env["ops"].refresh_trust()
+    assert report["lagging"] == [] and _admitted(env) is True
+    assert _current(env)["revocation_list_number"] == (number + 1 if jump > 0 else number)
+
+
+def test_a_reinstall_with_an_open_record_leaves_it_for_the_next_cycle(env, monkeypatch, tmp_path):
+    """Negative: `trust-timers.sh install` over an open publication record touches no record; the next cycle
+    completes it (exactly one terminal)."""
+    from agentnode_sdk.remote_mcp import trust_timers as TT
+    from .test_trust_schedule import DEPLOY, FakeSystemd
+    import shutil
+    _synced(env)
+    monkeypatch.setattr(TP, "ROTATE_AFTER_SECONDS", 0.0)
+    env["ops"]._crash_after = lambda s: (_ for _ in ()).throw(Crash()) if s == "tp:published" else None
+    with pytest.raises(Crash):
+        env["ops"].refresh_trust(force=True)
+    env["ops"]._crash_after = lambda s: None
+    before = {p.name: p.read_bytes() for p in TP.records_dir(env["reg"].stand).glob("r-*.json")}
+    rel = tmp_path / "release"
+    shutil.copytree(DEPLOY, rel / "sdk" / "deploy" / "remote-mcp")
+    root = tmp_path / "root"
+    fake = FakeSystemd(root)
+    assert TT.install(rel, root=root, run=fake, now=lambda: fake.now, stand=str(env["reg"].stand))["installed"]
+    assert {p.name: p.read_bytes() for p in TP.records_dir(env["reg"].stand).glob("r-*.json")} == before
+    env["ops"].refresh_trust()
+    assert all(r["state"] in TP.TERMINAL for r in _records(env)) and _admitted(env) is True
+
+
+def test_an_overlap_that_runs_out_is_a_security_publication(env):
+    """Negative / D7: a certificate whose overlap ran out is revoked by the authority's reconciliation and published
+    as SECURITY content at once: old acknowledgements no longer admit until the new pair is distributed."""
+    _synced(env)
+    tid = _provision(env)
+    env["ops"].probe(tid)
+    _synced(env)
+    inst = env["reg"].load().target(tid).worker["instance"]
+    issuer = env["world"].issuer
+    with issuer._lock():                                        # an overlap whose bound has passed, not yet ended
+        issuer._begin()
+        inv = issuer._inventory()
+        cert = inv["entries"]["worker/" + inst]["certificates"][-1]
+        cert.update(status="overlapping", overlap_until=round(time.time() - 1, 3))
+        issuer._commit(inv, "test-overlap")
+    with TP._publication_lock(env["ops"]):
+        report = TP.new_report("floor")
+        TP.local(env["ops"], report, rotate=False)
+    assert report["security"] == "missing_serials" and _admitted(env, "managed-w1") is False
+    assert env["ops"].refresh_trust()["lagging"] == [] and _admitted(env, "managed-w1") is True
 
 
 # ---------------------------------------------------------------------- R3 / D10: layout migration
