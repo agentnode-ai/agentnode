@@ -112,7 +112,7 @@ def test_a_lock_that_cannot_be_had_is_a_named_failure(env):
 
 def test_the_cli_exits_non_zero_when_busy(env, monkeypatch, capsys):
     busy = _twin_ops(env)
-    monkeypatch.setattr(busy, "refresh_trust", lambda force=False: (_ for _ in ()).throw(
+    monkeypatch.setattr(busy, "refresh_trust", lambda force=False, **kw: (_ for _ in ()).throw(
         OperationFailed("trust_refresh.busy", "held")))
     monkeypatch.setattr(targets_cli, "build", lambda stand, canary, **kw: (busy, None, None))
     assert targets_cli.main(["--stand", "S", "trust-refresh"]) == 5
@@ -120,9 +120,12 @@ def test_the_cli_exits_non_zero_when_busy(env, monkeypatch, capsys):
 
 
 def test_one_stable_pair_for_every_target(env):
-    """C7 / CC15: an issuer publication in the middle of a refresh does not split the targets."""
+    """C7 / CC15: an issuer publication in the middle of a refresh does not split the targets -- and
+    (trust-floor C15) the answers for the pair it replaced are never recorded as current acknowledgements."""
     tid = _provision(env)
     env["ops"].probe(tid)
+    assert env["ops"].refresh_trust()["lagging"] == []        # every live target on the current pair first
+    before = env["acks"].load()
     offered, fired = {}, []
     for target_id, w in env["workers"].items():
         real = w.install_trust
@@ -134,9 +137,11 @@ def test_one_stable_pair_for_every_target(env):
                 env["world"].issuer.publish()                # someone publishes while we push
             return _real(crl, tombs)
         w.install_trust = spy
-    report = env["ops"].refresh_trust()
+    report = env["ops"].refresh_trust(force=True)
     assert len(offered) == 2 and len(set(offered.values())) == 1, offered
-    assert report["lagging"] == [] and len(set(report["pushed"].values())) == 1
+    assert sorted(report["lagging"]) == sorted(offered), report
+    assert all("trust.pair_changed" in str(v) for v in report["pushed"].values()), report["pushed"]
+    assert env["acks"].load() == before                       # nothing stale became routing evidence
 
 
 @pytest.mark.parametrize("field,change", [("revocation_list_number", lambda v: v + 1),
@@ -311,13 +316,20 @@ def test_a_revocation_makes_the_previous_pair_inadmissible(env):
     assert env["ops"].refresh_trust()["lagging"] == [] and _admitted(env) is True
 
 
-def test_only_one_publication_behind_is_admitted(env):
-    """The saved pair is the one replaced by the LAST scheduled publication; a target two behind runs nowhere."""
+def test_only_one_publication_behind_is_admitted(env, monkeypatch):
+    """The saved pair is the one replaced by the LAST publication; a target two behind runs nowhere. The
+    rotation guard (trust-floor C10) therefore publishes no second rotation while a target is one behind --
+    until less than 72 h are left on the current pair."""
+    from agentnode_sdk.remote_mcp import trust_publication as TP
     w = env["workers"]["managed-w1"]
     assert env["ops"].refresh_trust()["lagging"] == []
     w.install_trust = lambda crl, tombs: (_ for _ in ()).throw(OSError("worker unreachable"))
     env["ops"].refresh_trust(force=True)
     assert _admitted(env) is True                              # one behind, same content
+    held = env["ops"].refresh_trust(force=True)
+    assert held["published"] is None and "managed-w1" in held["deferred"]
+    assert _admitted(env) is True                              # the guard kept it one behind
+    monkeypatch.setattr(TP, "GUARD_RESERVE_SECONDS", 8 * 86400)  # the reserve is gone: rotate anyway
     env["ops"].refresh_trust(force=True)
     assert _admitted(env) is False                             # two behind
 

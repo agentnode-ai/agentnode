@@ -1,0 +1,12 @@
+[Unit]
+# Wall clock only (DEFECT-LIVE-001, trust-floor D3): replaces the hand-installed OnActiveSec/OnUnitActiveSec
+# timer. The gateway floor is trusted for 900 s, so a missed elapse is caught up at once (Persistent=true).
+Description=AgentNode remote MCP control: advance the issuer/gateway floor, every 5 minutes
+
+[Timer]
+OnCalendar=*-*-* *:0/5:00 UTC
+Persistent=true
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

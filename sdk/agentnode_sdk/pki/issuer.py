@@ -753,7 +753,7 @@ class Issuer:
             return {"serial": serial, "entry": name, "effective": effective}
 
     def recover_entry(self, role: str, instance: str, *, secret_at=None, owner_uid=None,
-                      owner_gid=None) -> dict:
+                      owner_gid=None, publish: bool = True) -> dict:
         """Decision 5.6, as amended by Q-TGT-0001 R6: the entry's key is compromised. In ONE call,
         under the issuer lock and with one commit: lock the entry against renewal, revoke every
         serial it ever had, withdraw its identity FOR GOOD, take away any secret it still had --
@@ -761,7 +761,11 @@ class Issuer:
         replacement is a NEW entry with a new instance name. A renewal racing this either landed
         before (and is revoked here, because every recorded serial is) or comes after (and is
         refused, whatever key it shows). `secret_at`, `owner_uid` and `owner_gid` are accepted
-        for compatibility and unused."""
+        for compatibility and unused.
+
+        `publish=False` (the remote-MCP control, trust-floor D7): commit the withdrawal and leave its
+        publication to the caller's coordinator; until then the root run holds the floors back and
+        `effective` is False."""
         with self._lock():
             self._begin()
             inventory = self._inventory()
@@ -782,8 +786,10 @@ class Issuer:
             entry["secret_sha256"] = ""
             entry["secret_expires"] = 0
             self._commit(inventory, "recover")            # remembers the withdrawal for good
-            ca_key, ca_cert = self._ca()
-            effective = self._publish_list(inventory, ca_key, ca_cert)
+            effective = False
+            if publish:
+                ca_key, ca_cert = self._ca()
+                effective = self._publish_list(inventory, ca_key, ca_cert)
             return {"entry": name, "revoked": revoked, "effective": effective,
                     "withdrawn": str(entry.get("uri"))}
 
@@ -796,6 +802,79 @@ class Issuer:
             ca_key, ca_cert = self._ca()
             published = self._publish_list(inventory, ca_key, ca_cert)
             return {"published": published, "number": int(inventory.get("list_number") or 0)}
+
+    def publish_tombstones(self) -> bool:
+        """Sign and publish the tombstone list alone, from the inventory: completes a publication whose
+        revocation list was promoted and whose tombstones were not (a crash between the two)."""
+        with self._lock():
+            self._begin()
+            inventory = self._inventory()
+            ca_key, _ca_cert = self._ca()
+            return self._publish_tombstones(inventory, ca_key)
+
+    def next_publication(self) -> dict:
+        """What the NEXT publication from the inventory as it is now will be: its list number and the digest
+        of what it refuses (deployment, revoked serials, withdrawn identities -- the same content digest as
+        `worker.trust_install.facts_of`). A caller that journals this before `publish()` can tell its own
+        publication from any other afterwards: the number is the inventory's, used once."""
+        with self._lock():
+            self._begin()
+            inventory = self._inventory()
+            content = {"deployment": str(inventory.get("deployment") or ""),
+                       "revoked_serials": sorted(_revocation.serial_text(int(s, 16)) for s in self._revoked(inventory)),
+                       "withdrawn_identities": sorted(str(u) for u in self._withdrawn_identities(inventory))}
+            return {"number": int(inventory.get("list_number") or 0) + 1,
+                    "content_sha256": hashlib.sha256(json.dumps(content, sort_keys=True).encode("utf-8")).hexdigest()}
+
+    def settle(self) -> str:
+        """Resolve what a crash left of a list publication, under the lock (`files.settle_stage`)."""
+        with self._lock():
+            self._begin()
+            return self._settle_list()
+
+    def reconcile(self) -> dict:
+        """What a security publication must carry that the published lists do not: ends overlaps that
+        ran out (committed), then compares the inventory with the published revocation list and the
+        published tombstones. Publishes nothing. `reason` is "" when the lists carry everything:
+
+            {"reason": "list_unreadable" | "missing_serials" | "tombstones_unreadable"
+                       | "missing_identities" | "",
+             "missing_serials": [...], "missing_identities": [...], "list_number": int}
+        """
+        with self._lock():
+            self._begin()
+            self._settle_list()
+            inventory = self._inventory()
+            if self._end_overlaps(inventory):
+                self._commit(inventory, "overlap-ended")
+            _ca_key, ca_cert = self._ca()
+            out = {"reason": "", "missing_serials": [], "missing_identities": [],
+                   "list_number": int(inventory.get("list_number") or 0)}
+            published, _why = self._published(ca_cert)
+            if published is None:
+                out["reason"] = "list_unreadable"
+                return out
+            out["missing_serials"] = sorted(set(self._revoked(inventory)) - set(published.serials))
+            withdrawn = self._withdrawn_identities(inventory)
+            try:
+                from cryptography.hazmat.primitives import hashes
+                from cryptography.hazmat.primitives.asymmetric import ec
+
+                def verify(body: bytes, signature: bytes) -> None:
+                    ca_cert.public_key().verify(signature, body, ec.ECDSA(hashes.SHA256()))
+                held = _tombstones.read(self.files.read(self._tombstone_path()),
+                                        deployment=str(inventory.get("deployment") or ""), verifier=verify)
+                held.usable_at(_now())
+            except Exception:                                 # noqa: BLE001 - unreadable is republished
+                out["reason"] = out["reason"] or ("missing_serials" if out["missing_serials"]
+                                                  else "tombstones_unreadable")
+                return out
+            out["missing_identities"] = sorted(withdrawn - set(held.uris))
+            if out["missing_serials"]:
+                out["reason"] = "missing_serials"
+            elif out["missing_identities"]:
+                out["reason"] = "missing_identities"
+            return out
 
     # ------------------------------------------------------------------ the root run (stage 5)
 
@@ -815,7 +894,7 @@ class Issuer:
                     ended.append(record["serial"])
         return ended
 
-    def tick(self, floor_dir=None) -> dict:
+    def tick(self, floor_dir=None, *, publish: bool = True) -> dict:
         """The root run, in the order decision 5.0 fixes -- also, and above all, after a restart:
 
             1. resolve what a crash left of the list's publication, then of each floor's
@@ -827,6 +906,10 @@ class Issuer:
 
         Returns what it did. Never raises for a failed step: it reports it, and the floor --
         which ages -- is what turns a writer that keeps failing into services that stop.
+
+        `publish=False` (the remote-MCP control, trust-floor D2): step 3 publishes nothing -- neither a
+        refresh nor a reconciliation; the deployment's one publication authority does both
+        (`remote_mcp.trust_publication`). A revocation the list lacks still holds the floors back.
         """
         report: dict = {"list": "", "overlaps_ended": [], "pending_revocation": False,
                         "floors": {}}
@@ -872,7 +955,9 @@ class Issuer:
             missing = revoked - set(published.serials) if published else revoked
             due = (published is None or bool(missing)
                    or _now() - published.this_update >= _revocation.REFRESH_AFTER_SECONDS)
-            if due and not settle_failed:
+            if due and not publish:
+                report["list"] += "; publication left to the publication authority"
+            elif due and not settle_failed:
                 if self._publish_list(inventory, ca_key, ca_cert):
                     report["list"] += "; published number %d" % inventory["list_number"]
                 else:

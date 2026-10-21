@@ -246,13 +246,13 @@ class FakeSystemd:
 
     def __call__(self, argv):
         self.calls.append(list(argv))
-        if argv[0] == "env":                                  # targets_cli attest-bootstrap
-            return 0, "bootstrapped"
+        if argv[0] == "env":                                  # targets_cli attest-bootstrap / trust-import-legacy
+            return 0, "bootstrapped" if argv[-1] == "attest-bootstrap" else "nothing to import"
         verb = argv[1]
         if verb in ("daemon-reload", "reset-failed"):
             return 0, ""
         if verb == "enable":
-            for u in argv[2:]:
+            for u in [a for a in argv[2:] if not a.startswith("--")]:
                 wants = self._etc() / "timers.target.wants"
                 wants.mkdir(parents=True, exist_ok=True)
                 (wants / u).write_text("link")
@@ -262,7 +262,8 @@ class FakeSystemd:
             for u in argv[2:]:
                 t = self.timers.setdefault(u, {})
                 t["active"] = True
-                t["next"] = {"calendar": int((self.now + 3600) * 1e6), "defect": None,
+                soon = 60 if u in (TT.CYCLE_TIMER, TT.FLOOR_TIMER) else 3600      # the 5-minute timers
+                t["next"] = {"calendar": int((self.now + soon) * 1e6), "defect": None,
                              "far": int((self.now + 30 * 3600) * 1e6)}[self.mode]
             return 0, ""
         if verb == "disable":
@@ -307,9 +308,11 @@ def test_install_then_check_green(tmp_path, release):
     for name in TT.UNITS:                                     # byte-exact from the release, 0644
         assert (root / "etc/systemd/system" / name).read_bytes() == (release / TT.SOURCE / name).read_bytes()
     assert fake.calls[0][0] == "env" and fake.calls[0][-1] == "attest-bootstrap"   # state before any timer
-    verbs = [c[1] for c in fake.calls[1:]]
+    assert fake.calls[1][0] == "env" and fake.calls[1][-1] == "trust-import-legacy"  # predecessor layout (R3)
+    verbs = [c[1] for c in fake.calls[2:]]
     assert verbs[:3] == ["daemon-reload", "enable", "restart"]
-    assert ["systemctl", "restart", TT.REFRESH_TIMER, TT.WATCHDOG_TIMER, TT.RENEW_TIMER] in fake.calls
+    assert ["systemctl", "restart", TT.REFRESH_TIMER, TT.WATCHDOG_TIMER, TT.RENEW_TIMER, TT.CYCLE_TIMER,
+            TT.FLOOR_TIMER] in fake.calls
 
 
 def test_install_hard_fails_on_an_active_timer_without_next(tmp_path, release):
@@ -318,7 +321,7 @@ def test_install_hard_fails_on_an_active_timer_without_next(tmp_path, release):
     fake = FakeSystemd(root, mode="defect")
     done = TT.install(release, root=root, run=fake, now=lambda: fake.now)
     assert done["installed"] is False and done["stage"] == "verify"
-    assert sum(p.startswith("timer_next_not_finite") for p in done["problems"]) == 3
+    assert sum(p.startswith("timer_next_not_finite") for p in done["problems"]) == 5
 
 
 def test_install_hard_fails_on_a_next_beyond_the_bound(tmp_path, release):
@@ -374,7 +377,8 @@ def test_remove_leaves_no_residue(tmp_path, release):
     assert done == {"removed": True, "left": []}
     assert _installed(root) == [TT.DROPIN_DIR + "/someone-else.conf"]   # only what is not ours stays
     assert not any(s.exists() for s in TT._stamps(root)) and not TT._state(root).exists()
-    assert ["systemctl", "disable", "--now", TT.REFRESH_TIMER, TT.WATCHDOG_TIMER, TT.RENEW_TIMER] in fake.calls
+    assert ["systemctl", "disable", "--now", TT.REFRESH_TIMER, TT.WATCHDOG_TIMER, TT.RENEW_TIMER,
+            TT.CYCLE_TIMER] in fake.calls                     # the floor timer is restored, never just stopped
 
 
 @pytest.mark.parametrize("left_behind", ["stamp-refresh", "stamp-watchdog", "state", "wants-link"])

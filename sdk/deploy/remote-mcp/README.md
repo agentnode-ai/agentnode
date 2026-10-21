@@ -91,17 +91,34 @@ register refuses every run with 503.
   `revoke` or expiry. Every operation is journaled before its first side effect and resumable
   (`resume-ops`). A revoked or expired target is never reactivated: its identity is withdrawn
   for good in the issuer, and a replacement takes a new instance name.
-* **Trust distribution.** `rmcp-trust-refresh.timer` runs at 00, 06, 12 and 18 UTC
-  (`OnCalendar`, `Persistent=true`: a missed run is made up right after boot or install; there is
-  no monotonic trigger, which is what left the first version with no next run after a reinstall,
-  DEFECT-LIVE-001). One run at a time (`stand/targets/.trust-refresh.lock`; a run that cannot get
-  it fails as `trust_refresh.busy`). It publishes the revocation and tombstone lists when they are
-  due, offers ONE pair to every live target over the worker channel (`install_trust`), and records
-  an acknowledgement only when the worker's answer -- computed from the files it read back after
-  installing them -- is exactly that pair: list number, both SHA-256 digests, `nextUpdate`, and the
-  tombstones' `published_at`/`not_after`. It retires pair-key overlaps after 24 h and fails into
-  `rmcp-alert@` when a list is within 48 h of expiry or a target lags. A target runs only while its
-  acknowledgement is exactly the control plane's own current pair.
+* **Trust publication and distribution: ONE authority** (`remote_mcp/trust_publication.py`,
+  trust-floor). Every publication of the deployment's revocation and tombstone lists on this control --
+  the 24 h rotation, `trust-refresh --force`, a revocation's, the reconciliation of a list that lacks a
+  revoked serial or withdrawn identity -- is one journaled record (`stand/targets/trust-publication/
+  records/`), written before any effect, under the publication lock `stand/targets/.trust-refresh.lock`
+  (local steps only, ≤ 30 s, busy = `trust_refresh.busy`): the current pair, verified under this
+  control's anchor, is saved as an immutable generation selected by ONE atomic pointer
+  (`trust-publication/previous.json`), then the issuer publishes. Distribution follows WITHOUT that lock
+  (under `.trust-distribute.lock`): ONE pair, read once, to every live target over the worker channel
+  (`install_trust`); an acknowledgement is recorded only when the worker's read-back answer is exactly
+  that pair (list number, both SHA-256 digests, `nextUpdate`, tombstones `published_at`/`not_after`) and
+  that pair is still current. A crash anywhere is completed by the next run, exactly one terminal per
+  record. A content-equal rotation starts only when every live target holds the current pair (unless
+  < 72 h are left), so a target holding the predecessor stays admitted until its new acknowledgement; a
+  security publication (new content) never waits: every target not on it is refused at once. Entry
+  points: `rmcp-trust-cycle.timer` (every 5 min, `targets_cli trust-cycle`, retries lagging targets),
+  `rmcp-trust-refresh.timer` (00/06/12/18 UTC, waits for a distribution in progress), an operator's
+  `targets_cli trust-refresh [--force]`, a revocation. All are `OnCalendar` + `Persistent=true` (no
+  monotonic trigger: DEFECT-LIVE-001) and fail into `rmcp-alert@` when a list is within 48 h of expiry,
+  a target lags or a rotation is deferred. `targets_cli trust-status` shows the journal, the pointer and
+  every acknowledged number without secrets. A target runs only while its acknowledgement is exactly
+  the current pair, or exactly the saved predecessor with identical content.
+* **Control floor.** `rmcp-control-floor.timer` (every 5 min, `OnCalendar`, `AccuracySec=15s`) runs
+  `python -m agentnode_sdk.remote_mcp.control_floor`: LOCAL work only -- the authority's security
+  reconciliation, then `Issuer.tick(publish=False)` (settle stages, end overlaps, advance the 900 s floor;
+  held back while a revocation is unpublished). It never re-signs a pair on its own and never waits for a
+  worker. `trust-timers.sh install` saves the floor units it replaces (bytes, mode, owner, digest) and
+  `remove` puts them back byte-exact.
 * **Trust watchdog.** `rmcp-trust-watchdog.timer` (hourly at :20 UTC) runs
   `trust_watchdog check`, which shares no unit dependency with the refresh: both lists valid and
   signed at the effective time with ≥ 48 h left, every live target's exact acknowledgement at most
@@ -127,15 +144,19 @@ register refuses every run with 503.
   `targets_cli attest-status` shows it all without secrets; `targets_cli probe --target T` on an active
   target is a renewal, on a suspended one the operator's only way back.
 * **Installing and removing the timers.** Only with `trust-timers.sh` (control host, root):
-  `install <release-dir>` validates the units, initialises the renewal state from the register,
-  installs the units and the drop-in, enables and restarts all three timers and FAILS unless each has
-  a finite next run within its bound; `check` repeats that judgement; `preflight` is the rollback's
-  quiescence check alone; `remove` (before a rollback to a release without them, using the release
-  that installed them: `TRF_SDK=<release>/sdk <release>/sdk/deploy/remote-mcp/trust-timers.sh remove`)
-  first stops the renewal timer and REFUSES while a renewal runs, a probe lock is held, a `renew`
-  operation is open or the managed default has < 48 h left (the older release cannot renew it), then
-  deletes units, drop-in, stamp files and both state files and proves them gone. The register and lock
-  files are never touched. Never `systemctl start` the refresh to make a dead timer look alive.
+  `install <release-dir>` validates the units, initialises the renewal state from the register, imports
+  a predecessor an older release saved (legacy `targets/trust-previous/`) into the pointer, backs up the
+  floor units it replaces, installs the units and the drop-in, enables and restarts all five timers and
+  FAILS unless each has a finite next run within its bound; `check` repeats that judgement; `preflight`
+  is the rollback's quiescence check alone; `remove` (before a rollback to a release without them, using
+  the release that installed them: `TRF_SDK=<release>/sdk <release>/sdk/deploy/remote-mcp/trust-timers.sh
+  remove`) first stops the renewal, cycle and refresh timers and REFUSES while one of them runs, a probe,
+  publication or distribution lock is held, a `renew` operation or a publication record is open, a live
+  target is refused on trust (an undistributed security change) or the managed default has < 48 h left;
+  then writes the pointer's predecessor into the legacy files, deletes units, drop-in, stamp files and
+  the state files, restores the saved floor units byte-exact and starts their timer, and proves all of
+  it. The register, the journal and lock files are never touched. Never `systemctl start` the refresh to
+  make a dead timer look alive.
 * **Reachability.** The control plane dials the target over the private network; there is no
   public worker port. A worker behind NAT that connects out is a different protocol and not part
   of this.

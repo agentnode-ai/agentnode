@@ -27,10 +27,13 @@ from .catalog_fixtures import raw_pub
 from .target_fixtures import make_register
 
 
-def _show(next_usec, renew_usec="same"):
+def _show(next_usec, renew_usec="same", five_usec=None):
     """systemd as it answers for each timer: the refresh timer at `next_usec`, the attestation-renewal
-    timer at `renew_usec` (by default the same)."""
-    nexts = {W.REFRESH_TIMER: next_usec, W.RENEW_TIMER: next_usec if renew_usec == "same" else renew_usec}
+    timer at `renew_usec` (by default the same), the two 5-minute timers (trust-floor) at `five_usec`
+    (by default a minute from the wall clock)."""
+    five = int((time.time() + 60) * 1e6) if five_usec is None else five_usec
+    nexts = {W.REFRESH_TIMER: next_usec, W.RENEW_TIMER: next_usec if renew_usec == "same" else renew_usec,
+             W.CYCLE_TIMER: five, W.FLOOR_TIMER: five}
 
     def run(argv):
         unit = argv[2] if argv[1] == "show" else argv[-1]
@@ -76,14 +79,39 @@ class Stand:
     def facts(self):
         return trust_install.facts_of(*self.pair())
 
+    def trust_refusals(self, stand, now):
+        """The rollback gate's trust judgement on this stand: live targets `trust_current` refuses."""
+        from agentnode_sdk.remote_mcp.target_ops import LIVE
+        snap, acks = self.reg.load(), self.acks.load()
+        return [t.target_id for t in snap.targets.values() if t.effective_status(snap.now) in LIVE
+                and not T.trust_current(acks.get(t.target_id), now=now, deployment=self.facts())]
+
     def ack(self, target_id, *, acked_at=None, **change):
         self.acks.record(target_id, dict(self.facts(), acked_at=time.time() if acked_at is None else acked_at,
                                          **change))
 
+    #: the publication authority's last cycle succeeded just before each check (trust-floor; its own tests
+    #: in test_trust_publication.py turn this off)
+    cycle_ok = True
+
     def check(self, *, now=None, next_usec="default", state_file=None):
         now = time.time() if now is None else now
         nxt = int((now + 3600) * 1e6) if next_usec == "default" else next_usec
-        return W.check(self.stand, now=now, run=_show(nxt), tls=self.tls, state_file=state_file or self.state)
+        if self.cycle_ok:
+            healthy_cycle(self.stand, at=now)
+        return W.check(self.stand, now=now, run=_show(nxt, five_usec=int((now + 60) * 1e6)), tls=self.tls,
+                       state_file=state_file or self.state)
+
+
+def healthy_cycle(stand, *, at=None) -> Path:
+    """What a successful `targets_cli trust-cycle` leaves: its state file with a recent success."""
+    from agentnode_sdk.remote_mcp import trust_publication as TP
+    at = time.time() if at is None else at
+    path = TP.cycle_state_path(stand)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema": TP.CYCLE_STATE_SCHEMA, "last_success_at": at,
+                                "last_run": {"finished_at": at, "status": "ok", "entry": "cycle"}}))
+    return path
 
 
 def _codes(report):

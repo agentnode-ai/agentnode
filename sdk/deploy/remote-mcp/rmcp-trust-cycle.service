@@ -1,0 +1,14 @@
+[Unit]
+# The publication authority's 5-minute cycle (trust-floor D6): the same procedure as rmcp-trust-refresh,
+# without waiting for a distribution another run is doing (busy is a FAILURE, never a silent skip). It
+# resumes a crashed publication, rotates a due pair (guarded), and retries every target not exactly on the
+# current pair -- so a target that missed a push is retried within minutes, not hours.
+Description=AgentNode remote MCP: trust publication and distribution cycle
+After=network-online.target rmcp-control.service
+OnFailure=rmcp-alert@%n.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=4min
+Environment=PYTHONPATH=/opt/agentnode/sdk
+ExecStart=/opt/agentnode/venv/bin/python -m agentnode_sdk.remote_mcp.targets_cli --stand /var/lib/agentnode-mcp/stand --canary-host 10.0.0.4 trust-cycle
