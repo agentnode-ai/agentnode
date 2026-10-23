@@ -395,6 +395,44 @@ def test_an_expired_or_unsigned_pair_is_still_red(s):
     assert "list_unusable" in _codes(_check(s, _healthy(s, now), now=now))
 
 
+def test_an_inadmissible_predecessor_is_a_mismatch_even_inside_the_window(s):
+    """C7 / CC9 / negatives: the target holds exactly the saved, verified predecessor, but the current pair's
+    revocation content differs (a security publication 60 s ago): `ack_mismatch` at once, never `ack_previous`;
+    and a content-equal predecessor whose saved generation no longer verifies is no predecessor either."""
+    from .test_trust_floor_units import _record as _rec
+    from .test_trust_floor_units import _save_generation
+    now = time.time()
+    prev = _save_generation(s)                                   # what the target holds, saved as the predecessor
+    _rec(s, "r-000000000001", state=TP.DONE, phase="distributing", **{"from": prev})
+    key, cert = s.world._ca()
+    Path(s.tls.revocation_list).write_bytes(rl.build(key, cert, {"0abc01": now - 5},
+                                                     number=rl.number_of(s.pair()[0]) + 1, now=now))
+    cur = s.facts()
+    assert cur["content_sha256"] != prev["content_sha256"]
+    _rec(s, "r-000000000002", state=TP.DONE, phase="distributing", **{"from": prev, "result": cur},
+         published_at=now - 60)
+    report = _check(s, _healthy(s, now), now=now)
+    assert "ack_mismatch" in _codes(report) and "managed-w1" not in report["facts"].get("ack_previous", [])
+    assert not T.trust_current(s.acks.load()["managed-w1"], now=now, deployment=cur, previous=prev)
+
+
+def test_an_unverifiable_predecessor_admits_nothing_inside_the_window(tmp_path):
+    """C7 / negatives: content-equal rotation 60 s ago, but the saved generation was damaged: no `ack_previous`."""
+    from .test_trust_floor_units import _record as _rec
+    from .test_trust_floor_units import _save_generation
+    s = Stand(tmp_path)
+    now = time.time()
+    prev = _save_generation(s)
+    _rec(s, "r-000000000001", state=TP.DONE, phase="distributing", **{"from": prev})
+    s.world.issuer.publish()
+    _rec(s, "r-000000000002", state=TP.DONE, phase="distributing", **{"from": prev, "result": s.facts()},
+         published_at=now - 60)
+    (TP.generations_dir(s.stand) / "g-000000000001" / "revoked.crl").write_bytes(b"x")
+    report = _check(s, _healthy(s, now), now=now)
+    assert {"ack_mismatch", "previous_missing"} <= _codes(report)
+    assert "managed-w1" not in report["facts"].get("ack_previous", [])
+
+
 def _list_aged(s, age: float, now: float):
     """The current list re-signed with thisUpdate `age` seconds ago, and the target exactly on it."""
     key, cert = s.world._ca()
