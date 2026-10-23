@@ -40,9 +40,11 @@ It is read-only: the operator PUBLIC key only, no private key, no issuer lock, n
 no publication, no write to the register (its pinned clock included), acknowledgements, floors or
 ledgers. It writes its own state file (atomically, 0644), and failing to write it is red; and once per
 red episode, on the first GREEN run after it, it APPENDS one line `<ts> rmcp-trust-watchdog recovered
-(red since <ts>: <codes>)` to `alerts.log` beside it (trust-watchdog D6) -- one O_APPEND write, after the
-state that says so is durable, never twice for one episode, never truncating, rewriting or rotating the
-log; failing to append is red. Red = exit 1 with every problem named (codes, numbers, short digests,
+(episode <id>, red since <ts>: <codes>)` to `alerts.log` beside it (trust-watchdog D6) -- one O_APPEND
+write, after the state that says so is durable, never twice for one episode (a random id per episode, not
+its start second), never truncating, rewriting or rotating the log; failing to append is red. Two runs at
+once cannot both write it: a per-episode claim file created with O_EXCL (`alerts/.trust-watchdog-recovery/`)
+decides -- no lock is ever taken, so inspection never waits for or delays anything. Red = exit 1 with every problem named (codes, numbers, short digests,
 times, target ids -- never key or token material); the unit then fails and `OnFailure=rmcp-alert@`
 records a persistent alert. Every hourly run while red fails again. `initializing` exits 0.
 
@@ -721,27 +723,33 @@ def _previous_report(state_file) -> dict | None:
     return doc if isinstance(doc, dict) and doc.get("state") in ("green", "red", "initializing") else None
 
 
-def _red_since(prev: dict | None) -> str | None:
-    """When the red episode the previous run was in began. A red report of the parent release (no `red_since`)
-    counts as red since its own check (R4); an `initializing` run carries an episode on without ending it."""
+def _episode(prev: dict | None) -> tuple[str | None, str | None]:
+    """The red episode the previous run was in: (red_since, episode id), or (None, None). The id is what makes an
+    episode unique (two episodes may begin in the same second); it is drawn at random when an episode begins and
+    persisted. A red report of the parent release (no id, no `red_since`) is an episode since its own check (R4),
+    its id derived from that report's bytes so a retry finds the same one; an `initializing` run carries an
+    episode on without ending it."""
     if not prev:
-        return None
-    if prev.get("state") == "red":
-        return prev.get("red_since") or prev.get("checked_at")
-    if prev.get("state") == "initializing":
-        return prev.get("red_since")
-    return None
+        return None, None
+    if prev.get("state") == "red" or (prev.get("state") == "initializing" and prev.get("red_since")):
+        since = prev.get("red_since") or prev.get("checked_at")
+        ep = prev.get("red_episode")
+        if not ep:
+            import hashlib
+            ep = "p" + hashlib.sha256(json.dumps(prev, sort_keys=True).encode("utf-8")).hexdigest()[:15]
+        return since, ep
+    return None, None
 
 
 def _codes(problems) -> str:
     return ",".join(sorted({str(p).split()[0] for p in problems})) or "-"
 
 
-def _append_recovery(log: Path, red_since: str, line: str) -> str:
-    """D6/R4: ONE O_APPEND write of the recovery line, unless the log already holds the line of this episode (a
+def _append_recovery(log: Path, episode: str, line: str) -> str:
+    """D6/R4: ONE O_APPEND write of the recovery line, unless the log already holds the line of this EPISODE (a
     run that crashed after the write and before its marker). Never truncates, rewrites or rotates the log."""
     try:
-        if ("recovered (red since %s:" % red_since) in log.read_text(encoding="utf-8", errors="replace"):
+        if ("rmcp-trust-watchdog recovered (episode %s," % episode) in log.read_text(encoding="utf-8", errors="replace"):
             return "already logged"
     except FileNotFoundError:
         pass
@@ -797,29 +805,78 @@ def check(stand, *, now: float | None = None, timer: str = REFRESH_TIMER, state_
     if running:
         facts["timer_running"] = running
     facts.pop("_this_update", None)
-    checked_at = _iso(now)
-    prev = _previous_report(state_file)
-    red_since = _red_since(prev)
-    report = {"state": "red" if problems else ("initializing" if pending else "green"), "checked_at": checked_at,
+    report = {"state": "red" if problems else ("initializing" if pending else "green"), "checked_at": _iso(now),
               "problems": problems, "pending": pending, "facts": facts}
+    log = Path(alerts_log) if alerts_log is not None else Path(state_file).parent / ALERTS_LOG_NAME
+    return _episode_and_write(report, state_file, log)
+
+
+#: trust-watchdog D6 / F-TWD-R1-002: one marker per recovered episode beside the alert log. A run that CREATES
+#: `<episode>.claim` (O_EXCL: never waits, never contends for any lock -- the watchdog takes none) writes the line
+#: and renames the claim to `<episode>.done`; any other run writes nothing. A claim older than this was left by a
+#: run that died; exactly one later run takes it over (an atomic rename only one can win).
+RECOVERY_MARKERS = ".trust-watchdog-recovery"
+CLAIM_STALE_SECONDS = 60.0
+
+
+def _recover_once(log: Path, episode: str, line: str) -> bool:
+    """Append the recovery line of `episode` exactly once across crashes and concurrent runs. True = the line is
+    in the log (now or before); False = another run is writing it right now (this run owes nothing). Raises
+    OSError when the line could not be written (the claim is given back, so the next green run retries)."""
+    import secrets
+    d = log.parent / RECOVERY_MARKERS
+    d.mkdir(parents=True, exist_ok=True)
+    claim, done = d / (episode + ".claim"), d / (episode + ".done")
+    if done.exists():
+        return True
+    try:
+        os.close(os.open(str(claim), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
+        mine = claim
+    except FileExistsError:
+        try:
+            if time.time() - claim.stat().st_mtime < CLAIM_STALE_SECONDS:
+                return done.exists()                          # another run is writing it right now
+            mine = d / (episode + ".claim.taken-" + secrets.token_hex(4))
+            os.rename(str(claim), str(mine))                  # only one run can win this
+        except FileNotFoundError:
+            return done.exists()                              # finished, or taken over, meanwhile
+    try:
+        _append_recovery(log, episode, line)                  # scans first: a line written before a crash stays one
+    except OSError:
+        try:
+            os.unlink(str(mine))
+        except OSError:
+            pass
+        raise
+    os.replace(str(mine), str(done))
+    return True
+
+
+def _episode_and_write(report: dict, state_file, log: Path) -> dict:
+    """Carry or begin the red episode, record a recovery, write the state, append the line once, mark it."""
+    import secrets
+    prev = _previous_report(state_file)
+    red_since, episode = _episode(prev)
+    checked_at = report["checked_at"]
     for key in ("last_red", "recovered_at", "recovered_from", "recovery_logged"):
         if prev and key in prev and red_since is None:
             report[key] = prev[key]                           # the last episode's record rolls on while green
     if prev and "last_red" in prev and red_since is not None:
         report["last_red"] = prev["last_red"]
-    log = Path(alerts_log) if alerts_log is not None else Path(state_file).parent / ALERTS_LOG_NAME
     if report["state"] == "red":
         report["red_since"] = red_since or checked_at
-        report["last_red"] = {"checked_at": checked_at, "problems": list(problems)}
+        report["red_episode"] = episode or secrets.token_hex(8)
+        report["last_red"] = {"checked_at": checked_at, "problems": list(report["problems"])}
         for key in ("recovered_at", "recovered_from", "recovery_logged"):
             report.pop(key, None)
     elif report["state"] == "initializing":
         if red_since is not None:
             report["red_since"] = red_since                   # initializing never ends an episode
+            report["red_episode"] = episode
     elif red_since is not None:
         codes = _codes((report.get("last_red") or {}).get("problems") or (prev or {}).get("problems") or [])
         report["recovered_at"] = checked_at
-        report["recovered_from"] = {"red_since": red_since, "codes": codes}
+        report["recovered_from"] = {"red_since": red_since, "episode": episode, "codes": codes}
         report["recovery_logged"] = False
     return _write_and_log(report, state_file, log)
 
@@ -834,15 +891,16 @@ def _write_and_log(report: dict, state_file, log: Path) -> dict:
         return report
     if report["state"] == "green" and report.get("recovered_from") and report.get("recovery_logged") is False:
         rf = report["recovered_from"]
-        line = "%s rmcp-trust-watchdog recovered (red since %s: %s)" % (report["recovered_at"], rf["red_since"],
-                                                                         rf["codes"])
+        line = "%s rmcp-trust-watchdog recovered (episode %s, red since %s: %s)" % (
+            report["recovered_at"], rf["episode"], rf["red_since"], rf["codes"])
         try:
-            _append_recovery(log, rf["red_since"], line)
+            logged = _recover_once(log, rf["episode"], line)
         except OSError as exc:
             # not recovered after all: the episode goes on, and the next green run owes the line again
             report["problems"].append("alerts_log_unwritable (%s)" % type(exc).__name__)
             report["state"] = "red"
             report["red_since"] = rf["red_since"]             # `last_red` keeps the episode's own problems
+            report["red_episode"] = rf["episode"]
             for key in ("recovered_at", "recovered_from", "recovery_logged"):
                 report.pop(key, None)
             try:
@@ -850,6 +908,8 @@ def _write_and_log(report: dict, state_file, log: Path) -> dict:
             except OSError as exc2:
                 report["problems"].append("state_file_unwritable (%s)" % type(exc2).__name__)
             return report
+        if not logged:
+            return report                                     # another run is writing it; the marker will say so
         report["recovery_logged"] = True
         try:
             write_state(state_file, report)

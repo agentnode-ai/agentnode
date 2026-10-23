@@ -10,6 +10,7 @@ criterion (Cn), counter-check (CCn) or negative it holds."""
 from __future__ import annotations
 
 import json
+import os
 import socket
 import ssl
 import time
@@ -690,6 +691,54 @@ def test_reach_never_outlives_its_deadline(monkeypatch):
     assert TP.REACH_DEADLINE_SECONDS < 240 and TP.REACH_THREADS == 8 and TP.REACH_BUDGET_SECONDS == 10.0
 
 
+HUNG_CHILD = r"""
+import sys, threading, time
+from types import SimpleNamespace
+from agentnode_sdk.remote_mcp import trust_publication as TP
+
+class Hung:
+    def confirm_reachable(self, budget=None):
+        threading.Event().wait()                     # a handshake that ignores its budget: never returns
+
+targets = [SimpleNamespace(target_id="t%d" % i, endpoint_digest="e%d" % i, worker={}) for i in range(3)]
+TP._live = lambda ops: targets
+TP.REACH_DEADLINE_SECONDS = 1.0
+out = TP.observe_reach(SimpleNamespace(register=None, acks=None, worker_for=lambda t: Hung()), {"pushed": {}})
+print(sorted({v["code"] for v in out.values()}), flush=True)
+"""
+
+
+def test_a_hung_handshake_cannot_keep_the_cycle_process_alive(tmp_path):
+    """C9 / F-TWD-R1-001: a preflight that never returns is `reach_deadline` at the deadline AND the process
+    exits right after -- it is not held past the cycle's 240 s TimeoutStartSec by a worker it cannot stop."""
+    import subprocess
+    import sys
+    script = tmp_path / "hung_child.py"
+    script.write_text(HUNG_CHILD)
+    sdk = str(Path(__file__).resolve().parents[2])
+    started = time.monotonic()
+    done = subprocess.run([sys.executable, str(script)], cwd=sdk, env=dict(os.environ, PYTHONPATH=sdk),
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=60)
+    assert done.returncode == 0 and "['reach_deadline']" in done.stdout, done.stdout
+    assert time.monotonic() - started < 30
+
+
+def test_a_failure_to_set_up_the_observation_is_an_observation(env, monkeypatch):
+    """C9 / F-TWD-R1-001: the router or the threads cannot be set up -> every unpushed live target is
+    `reach_error:<type>`; the cycle's report and exit semantics are those of the publication."""
+    _synced(env)
+    _reachable(env, how="ok")
+    good = _cycle(env)
+
+    def broken(*a, **k):
+        raise RuntimeError("cannot start a thread")
+    monkeypatch.setattr(TR, "TargetRouter", broken)
+    bad = _cycle(env)
+    assert bad["reach"]["managed-w1"] == {"ok": False, "via": "preflight", "code": "reach_error:RuntimeError"}
+    for k in ("alerts", "lagging", "published", "deferred", "security"):
+        assert good[k] == bad[k], k
+
+
 def test_the_cycle_state_carries_the_same_boot_stamps(env, monkeypatch):
     """C12 / C14: `last_success_mono` and `boot_id` beside the wall-clock fields; the schema stays v1 and the
     parent's reader (only the schema is checked) reads it."""
@@ -817,13 +866,14 @@ def test_the_first_green_after_red_records_recovery_once(s):
     appends ONE recovery line; the next green run appends nothing."""
     now = time.time()
     red, green = _red_then(s, now, _healthy(s, now + 3600))
-    assert red["red_since"] == W._iso(now) and red["last_red"]["problems"]
+    assert red["red_since"] == W._iso(now) and red["last_red"]["problems"] and len(red["red_episode"]) == 16
     assert green["state"] == "green" and green["recovered_at"] == W._iso(now + 3600)
-    assert green["recovered_from"] == {"red_since": W._iso(now), "codes": "timer_next_not_finite"}
+    assert green["recovered_from"] == {"red_since": W._iso(now), "episode": red["red_episode"],
+                                       "codes": "timer_next_not_finite"}
     assert green["recovery_logged"] is True
     lines = _alerts(s).read_text().splitlines()
-    assert lines == ["%s rmcp-trust-watchdog recovered (red since %s: timer_next_not_finite)"
-                     % (W._iso(now + 3600), W._iso(now))]
+    assert lines == ["%s rmcp-trust-watchdog recovered (episode %s, red since %s: timer_next_not_finite)"
+                     % (W._iso(now + 3600), red["red_episode"], W._iso(now))]
     again = _check(s, _healthy(s, now + 7200), now=now + 7200)
     assert again["state"] == "green" and _alerts(s).read_text().splitlines() == lines
     assert again["last_red"] == red["last_red"]                  # the last episode stays on record
@@ -849,8 +899,10 @@ def test_a_red_report_of_the_parent_release_is_an_episode(s):
     s.state.write_text(json.dumps({"state": "red", "checked_at": "2026-10-23T08:20:15Z",
                                    "problems": ["timer_next_not_finite rmcp-trust-cycle.timer (x)"], "facts": {}}))
     green = _check(s, _healthy(s, now), now=now)
-    assert green["recovered_from"] == {"red_since": "2026-10-23T08:20:15Z", "codes": "timer_next_not_finite"}
-    assert _alerts(s).read_text().endswith("(red since 2026-10-23T08:20:15Z: timer_next_not_finite)\n")
+    rf = green["recovered_from"]
+    assert (rf["red_since"], rf["codes"]) == ("2026-10-23T08:20:15Z", "timer_next_not_finite")
+    assert rf["episode"].startswith("p") and len(rf["episode"]) == 16
+    assert _alerts(s).read_text().endswith(", red since 2026-10-23T08:20:15Z: timer_next_not_finite)\n")
 
 
 def test_an_unreadable_previous_state_is_previous_unknown(s):
@@ -902,8 +954,12 @@ def test_a_crash_around_the_append_never_duplicates_the_line(s, monkeypatch):
     with pytest.raises(_Crash):
         _check(s, _healthy(s, now + 3600), now=now + 3600)
     assert json.loads(s.state.read_text())["recovery_logged"] is False and not _alerts(s).exists()
+    claims = list((s.state.parent / W.RECOVERY_MARKERS).glob("*.claim"))
+    assert len(claims) == 1                                       # the dead run's claim
+    old = time.time() - W.CLAIM_STALE_SECONDS - 5
+    os.utime(claims[0], (old, old))
     monkeypatch.setattr(W, "_append_recovery", real_append)
-    _check(s, _healthy(s, now + 3700), now=now + 3700)
+    _check(s, _healthy(s, now + 3700), now=now + 3700)            # takes the stale claim over
     assert len(_alerts(s).read_text().splitlines()) == 1
 
     # second episode: the crash comes AFTER the line is written
@@ -944,7 +1000,58 @@ def test_the_alert_log_is_only_ever_appended_to(s):
     _check(s, _healthy(s, now + 3600), now=now + 3600)
     data = _alerts(s).read_bytes()
     assert data.startswith(sentinel + concurrent) and data.count(b"\n") == sentinel.count(b"\n") + 2
-    assert data.endswith(b"(red since %s: timer_next_not_finite)\n" % W._iso(now).encode())
+    assert data.endswith(b", red since %s: timer_next_not_finite)\n" % W._iso(now).encode())
+
+
+def test_two_episodes_in_the_same_second_each_get_their_line(s):
+    """C13 / F-TWD-R1-002: red -> green -> red -> green within ONE second: two episodes, two ids, two lines."""
+    now = float(int(time.time()))
+    eps = []
+    for _ in range(2):
+        sd = _healthy(s, now)
+        sd.timer(W.FLOOR_TIMER, next_usec=None)
+        eps.append(_check(s, sd, now=now)["red_episode"])
+        assert _check(s, _healthy(s, now), now=now)["state"] == "green"
+    lines = _alerts(s).read_text().splitlines()
+    assert eps[0] != eps[1] and len(lines) == 2
+    assert all(("episode %s," % e) in line for e, line in zip(eps, lines))
+
+
+def _red_episode(s, now):
+    sd = _healthy(s, now)
+    sd.timer(W.FLOOR_TIMER, next_usec=None)
+    return _check(s, sd, now=now)["red_episode"]
+
+
+def test_a_concurrent_run_writing_the_line_is_not_doubled(s):
+    """C13 / F-TWD-R1-002: another run holds the episode's fresh claim (it is writing the line right now): this
+    run appends nothing and stays owed; once that run marked it done, the next run sees it logged -- one line."""
+    now = time.time()
+    ep = _red_episode(s, now)
+    d = s.state.parent / W.RECOVERY_MARKERS
+    d.mkdir(parents=True, exist_ok=True)
+    (d / (ep + ".claim")).write_bytes(b"")                       # the other run's claim, just created
+    green = _check(s, _healthy(s, now + 60), now=now + 60)
+    assert green["state"] == "green" and green["recovery_logged"] is False and not _alerts(s).exists()
+    _alerts(s).write_text("%s rmcp-trust-watchdog recovered (episode %s, red since %s: x)\n" % (W._iso(now + 60), ep,
+                                                                                               W._iso(now)))
+    os.replace(d / (ep + ".claim"), d / (ep + ".done"))          # ... and that run finished
+    again = _check(s, _healthy(s, now + 120), now=now + 120)
+    assert again["recovery_logged"] is True and len(_alerts(s).read_text().splitlines()) == 1
+
+
+def test_the_watchdog_takes_no_lock_for_its_bookkeeping(s, monkeypatch):
+    """C13 / D8 negative of attest-renewal: red -> green with a recovery line, no ProcessLock entered at all."""
+    from agentnode_sdk.gateway import filelock
+
+    def forbidden(self):
+        raise AssertionError("the watchdog took a lock")
+    monkeypatch.setattr(filelock.ProcessLock, "__enter__", forbidden)
+    now = time.time()
+    _red_episode(s, now)
+    green = _check(s, _healthy(s, now + 60), now=now + 60)
+    assert green["state"] == "green" and green["recovery_logged"] is True
+    assert len(_alerts(s).read_text().splitlines()) == 1
 
 
 # ====================================================================== C14: nothing else changes

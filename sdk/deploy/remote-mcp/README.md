@@ -132,8 +132,8 @@ register refuses every run with 503.
   (install, forward, restart, boot) a missing first cycle is `pending` and the state `initializing`
   (exit 0). Red = the unit fails (→ `rmcp-alert@`, again every hour while red) and
   `/var/lib/agentnode-mcp/alerts/trust-watchdog.json` says why; the first green run after red records
-  the recovery there and appends ONE `... rmcp-trust-watchdog recovered (red since ...: codes)` line to
-  `alerts.log`. The daily `rmcp-cert-check` watches the watchdog's own timer through the drop-in
+  the recovery there and appends ONE `... rmcp-trust-watchdog recovered (episode <id>, red since ...:
+  codes)` line to `alerts.log`. The daily `rmcp-cert-check` watches the watchdog's own timer through the drop-in
   `rmcp-cert-check.service.d/trust-watchdog.conf`.
 * **Attestation renewal.** Every active target's observation record (signed with the register) is
   renewed before it runs short: `rmcp-attest-renew.timer` (03:30/09:30/15:30/21:30 UTC, Persistent)

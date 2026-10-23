@@ -50,7 +50,6 @@ import json
 import os
 import secrets
 import time
-from concurrent.futures import ThreadPoolExecutor, wait as _wait
 from pathlib import Path
 from typing import Any, Callable
 
@@ -662,8 +661,10 @@ def observe_reach(ops, report: dict) -> dict:
     acknowledgement was (`report["pushed"]` holds its list number); every other live target -- exact and not
     pushed, or whose push failed -- gets the router's handshake-only preflight (nothing sent, nothing changed),
     at most REACH_THREADS at once and all of them within REACH_DEADLINE_SECONDS; one not finished by then is
-    `reach_deadline`. Returns {target_id: {"ok", "via", "code"}}; never raises, never touches the status."""
-    from agentnode_sdk.remote_mcp.target_router import TargetRefusal, TargetRouter
+    `reach_deadline`. The workers are DAEMON threads: one whose handshake ignores its budget is abandoned at the
+    deadline and cannot keep the cycle's process alive past it (an interpreter does not wait for a daemon thread).
+    Returns {target_id: {"ok", "via", "code"}}; never raises -- a failure to set up, start or judge the observation
+    is itself an observation (`reach_error:<type>`) -- and never touches the status."""
     out: dict[str, dict] = {}
     try:
         live = _live(ops)
@@ -678,27 +679,54 @@ def observe_reach(ops, report: dict) -> dict:
             todo.append(t)
     if not todo:
         return out
+    try:
+        out.update(_preflight_all(ops, todo))
+    except Exception as exc:                                  # noqa: BLE001 - named, never raised
+        for t in todo:
+            out.setdefault(t.target_id, {"ok": False, "via": "preflight", "code": "reach_error:" + type(exc).__name__})
+    return out
+
+
+def _preflight_all(ops, todo: list) -> dict:
+    """The router's handshake-only preflight of every target in `todo` on at most REACH_THREADS daemon threads,
+    all of them within REACH_DEADLINE_SECONDS; whatever has not answered by then is `reach_deadline`."""
+    import queue
+    import threading
+    from agentnode_sdk.remote_mcp.target_router import TargetRefusal, TargetRouter
     router = TargetRouter(register=ops.register, acks=ops.acks, worker_for=ops.worker_for,
                           deployment_trust=lambda: None)
+    pending: "queue.Queue" = queue.Queue()
+    for t in todo:
+        pending.put(t)
+    results: dict[str, dict] = {}
+    lock = threading.Lock()
 
-    def one(t) -> dict:
-        try:
-            router.preflight(t, budget=REACH_BUDGET_SECONDS)
-            return {"ok": True, "via": "preflight", "code": ""}
-        except TargetRefusal as exc:
-            return {"ok": False, "via": "preflight", "code": exc.code}
-        except Exception as exc:                              # noqa: BLE001 - every failure is named
-            return {"ok": False, "via": "preflight", "code": "reach_error:" + type(exc).__name__}
+    def work() -> None:
+        while True:
+            try:
+                t = pending.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                router.preflight(t, budget=REACH_BUDGET_SECONDS)
+                r = {"ok": True, "via": "preflight", "code": ""}
+            except TargetRefusal as exc:
+                r = {"ok": False, "via": "preflight", "code": exc.code}
+            except Exception as exc:                          # noqa: BLE001 - every failure is named
+                r = {"ok": False, "via": "preflight", "code": "reach_error:" + type(exc).__name__}
+            with lock:
+                results[t.target_id] = r
 
-    pool = ThreadPoolExecutor(max_workers=max(1, min(REACH_THREADS, len(todo))), thread_name_prefix="reach")
-    try:
-        futures = {pool.submit(one, t): t.target_id for t in todo}
-        done, _not_done = _wait(futures, timeout=REACH_DEADLINE_SECONDS)
-        for f, tid in futures.items():
-            out[tid] = f.result() if f in done else {"ok": False, "via": "preflight", "code": "reach_deadline"}
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
-    return out
+    deadline = monotonic() + REACH_DEADLINE_SECONDS
+    workers = [threading.Thread(target=work, name="reach-%d" % i, daemon=True)
+               for i in range(max(1, min(REACH_THREADS, len(todo))))]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join(max(0.0, deadline - monotonic()))
+    with lock:
+        return {t.target_id: dict(results.get(t.target_id)
+                                  or {"ok": False, "via": "preflight", "code": "reach_deadline"}) for t in todo}
 
 
 def _write_cycle_state(ops, report: dict, failure: str) -> None:
