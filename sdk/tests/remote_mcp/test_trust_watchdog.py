@@ -104,13 +104,20 @@ class Stand:
 
 
 def healthy_cycle(stand, *, at=None) -> Path:
-    """What a successful `targets_cli trust-cycle` leaves: its state file with a recent success."""
+    """What a successful `targets_cli trust-cycle` leaves: its state file with a recent success, and every
+    live target of the register reached in that run (trust-watchdog D3)."""
     from agentnode_sdk.remote_mcp import trust_publication as TP
+    from agentnode_sdk.remote_mcp.target_ops import LIVE
     at = time.time() if at is None else at
+    pub = bytes.fromhex((Path(stand) / "operator_pub.hex").read_text().strip())
+    snap = T.Register(stand, pub, pin_clock=False).load()
+    reach = {t.target_id: {"ok_at": at, "ok_mono": None, "boot_id": None, "failing_since": None, "code": "",
+                           "via": "preflight"}
+             for t in snap.targets.values() if t.effective_status(snap.now) in LIVE}
     path = TP.cycle_state_path(stand)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"schema": TP.CYCLE_STATE_SCHEMA, "last_success_at": at,
-                                "last_run": {"finished_at": at, "status": "ok", "entry": "cycle"}}))
+                                "last_run": {"finished_at": at, "status": "ok", "entry": "cycle"}, "reach": reach}))
     return path
 
 
@@ -176,11 +183,13 @@ def test_missing_ack_is_red(s):
     assert "ack_missing" in _codes(s.check())
 
 
-def test_stale_ack_is_red(s):
-    s.ack("managed-w1", acked_at=time.time() - 13 * 3600 - 5)
-    assert _codes(s.check()) == {"ack_stale"}
-    s.ack("managed-w1", acked_at=time.time() - 13 * 3600 + 60)
-    assert s.check()["state"] == "green"
+def test_an_exact_current_ack_13_to_24_hours_old_is_green(s):
+    """trust-watchdog D2/C15 (was `test_stale_ack_is_red`): an exact target is pushed again only at the daily
+    rotation, so its ack is up to a day old by design; age alone is no fault while the pair is valid."""
+    for age in (13 * 3600 + 5, 23.9 * 3600, 24 * 3600):
+        s.ack("managed-w1", acked_at=time.time() - age)
+        assert s.check()["state"] == "green" and T.trust_current(s.acks.load()["managed-w1"], now=time.time(),
+                                                                 deployment=s.facts())
 
 
 @pytest.mark.parametrize("field,value", [("revocation_list_number", 99), ("revocation_list_sha256", "0" * 64),

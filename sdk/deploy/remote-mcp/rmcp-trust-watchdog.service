@@ -10,6 +10,8 @@ OnFailure=rmcp-alert@%n.service
 
 [Service]
 Type=oneshot
+# trust-watchdog D1: bounded, so the cert-check's look at THIS timer can tell a running watchdog from a hung one.
+TimeoutStartSec=2min
 Environment=PYTHONPATH=/opt/agentnode/sdk
 ExecStart=/opt/agentnode/venv/bin/python -m agentnode_sdk.remote_mcp.trust_watchdog check --stand /var/lib/agentnode-mcp/stand
 NoNewPrivileges=yes

@@ -11,14 +11,24 @@ unit dependency with the refresh, and checks the RESULT, not the refresh:
       anchor, valid at the effective time (clock and durable floor, as the TLS door judges them),
       and with at least 48 hours left measured from the later of the two;
   (b) every live target in the register: an operator-signed acknowledgement EXACTLY equal to the
-      deployment's pair (number, both digests, every validity time), at most 13 hours old;
+      deployment's pair (number, both digests, every validity time). Its age alone is no fault
+      (trust-watchdog D2): an exact target is pushed again only at the daily rotation, so the age is judged
+      on the PAIR -- `rotation_overdue` once the current list's thisUpdate is older than the cycle's own
+      rotation age + 900 s with no live target behind and no publication open;
   (c) the refresh timer: loaded, enabled, active, and a FINITE next elapse in the future within one
-      period of the schedule -- `active` with no next elapse is the defect itself, and red;
+      period of the schedule -- `active` with no next elapse is the defect itself, and red, unless the
+      service the timer triggered is running right now within its own bound (trust-watchdog D1: systemd
+      computes the next elapse only when that run ends), measured on the monotonic clock;
   (e) the publication authority (trust-floor C20/C21): the 5-minute cycle and floor timers finite, the journal
       readable with no record open longer than 10 minutes, the predecessor pointer readable and naming the
       generation its record saved, the last cycle successful within 15 minutes; a live target on the exact
       admissible predecessor is `ack_previous` (not red) for 10 minutes after the current pair's publication,
-      `distribution_overdue` afterwards; any other difference stays `ack_mismatch` at once.
+      `distribution_overdue` afterwards; any other difference stays `ack_mismatch` at once. Every live
+      target reached within 15 minutes by the cycle's own non-mutating reachability check (trust-watchdog D3:
+      an exact push or the router's handshake-only preflight), else `target_unreachable` with the router's
+      classification. Until the first cycle after the cycle timer's activation has finished (an install, a
+      forward switch, a restart, a reboot's catch-up), but at most 600 monotonic seconds, a missing cycle
+      success or reach is `pending` and the report `initializing` -- never red, never green (D4).
   (d) the attestations (attest-renewal D8): every active target's record valid with more than its class
       warning left (48 h managed, 6 h customer) at the effective, pinned time; the default target active;
       the renewal timer finite within 6 h 10 min; the renewal state present, its last run at most
@@ -28,17 +38,24 @@ unit dependency with the refresh, and checks the RESULT, not the refresh:
 
 It is read-only: the operator PUBLIC key only, no private key, no issuer lock, no worker connection,
 no publication, no write to the register (its pinned clock included), acknowledgements, floors or
-ledgers. It writes one thing, its own state file (atomically, 0644), and failing to write it is red.
-Red = exit 1 with every problem named (codes, numbers, short digests, times, target ids -- never
-key or token material); the unit then fails and `OnFailure=rmcp-alert@` records a persistent alert.
-Every hourly run while red fails again.
+ledgers. It writes its own state file (atomically, 0644), and failing to write it is red; and once per
+red episode, on the first GREEN run after it, it APPENDS one line `<ts> rmcp-trust-watchdog recovered
+(episode <id>, red since <ts>: <codes>)` to `alerts.log` beside it (trust-watchdog D6) -- one O_APPEND
+write, after the state that says so is durable, never twice for one episode (a random id per episode, not
+its start second), never truncating, rewriting or rotating the log; failing to append is red. Two runs at
+once cannot both write it: the one holding a non-blocking OS lock on the episode's own marker file
+(`alerts/.trust-watchdog-recovery/<id>.claim`, released by the kernel when its holder dies) writes it, any
+other run writes nothing -- the watchdog never WAITS for a lock and never takes a probe, trust, distribution
+or renewal lock, so inspection cannot take, release or delay any of them; no clock decides ownership. Red = exit 1 with every problem named (codes, numbers, short digests,
+times, target ids -- never key or token material); the unit then fails and `OnFailure=rmcp-alert@`
+records a persistent alert. Every hourly run while red fails again. `initializing` exits 0.
 
 `timer-check` is the same timer judgement on its own, for the installer (`trust-timers.sh`) and for
 the existing daily certificate check, which watches THIS watchdog's timer (Codex D4: the refresh is
 never made responsible for the watchdog's liveness).
 
   python -m agentnode_sdk.remote_mcp.trust_watchdog check --stand S [--timer U] [--state-file F]
-  python -m agentnode_sdk.remote_mcp.trust_watchdog timer-check --unit U --bound-seconds N
+  python -m agentnode_sdk.remote_mcp.trust_watchdog timer-check --unit U --bound-seconds N [--role R]
 """
 from __future__ import annotations
 
@@ -67,13 +84,33 @@ RENEW_BOUND_SECONDS = 6 * 3600 + 600
 RENEW_RUN_MAX_AGE_SECONDS = 6 * 3600 + 2400
 #: Red below this much validity left on either list.
 MARGIN_SECONDS = 48 * 3600
-#: Red when a live target's acknowledgement is older: two refresh periods and an hour.
-ACK_MAX_AGE_SECONDS = 13 * 3600
 #: How far ahead a timer's next elapse may lie: the period + RandomizedDelaySec + AccuracySec + slack.
 REFRESH_BOUND_SECONDS = 6 * 3600 + 600
 WATCHDOG_BOUND_SECONDS = 3600 + 300
 STATE_FILE = "/var/lib/agentnode-mcp/alerts/trust-watchdog.json"
-SHOW_PROPERTIES = ("LoadState", "ActiveState", "UnitFileState", "NextElapseUSecMonotonic", "LastTriggerUSec")
+#: The persistent alert log `rmcp-alert@` appends to; the watchdog appends only its recovery line (D6).
+ALERTS_LOG_NAME = "alerts.log"
+SHOW_PROPERTIES = ("LoadState", "ActiveState", "UnitFileState", "NextElapseUSecMonotonic", "LastTriggerUSec",
+                   "Triggers", "ActiveEnterTimestampMonotonic")
+SERVICE_PROPERTIES = ("ActiveState", "SubState", "ExecMainStartTimestampMonotonic", "ExecMainExitTimestampMonotonic",
+                      "ExecMainStatus", "Result")
+#: trust-watchdog D1/R1: how long the service a timer triggered may run while the timer has no next elapse --
+#: the service's own TimeoutStartSec + 60 s. Per ROLE, so units of another name and the same role are judged
+#: alike; the unit policy (`trust_timers.unit_problems`) holds every such service to TimeoutStartSec <= bound - 60.
+RUN_BOUND_SECONDS = {"refresh": 1260, "renew": 1860, "cycle": 300, "floor": 120, "watchdog": 180}
+ROLES = {REFRESH_TIMER: "refresh", RENEW_TIMER: "renew", CYCLE_TIMER: "cycle", FLOOR_TIMER: "floor",
+         WATCHDOG_TIMER: "watchdog"}
+#: A service state in which its main process may be running (a oneshot is `activating` while it runs).
+RUNNING_STATES = ("activating", "active", "deactivating")
+#: trust-watchdog D2: a content-equal rotation is overdue this long after it became due (three cycle slots).
+ROTATION_GRACE_SECONDS = 900
+#: trust-watchdog D3: a live target must have been reached by the cycle within this long.
+REACH_MAX_AGE_SECONDS = 900
+#: trust-watchdog D4: how long after the cycle timer's activation a missing first cycle is `pending`:
+#: one period (300) + AccuracySec (15) + the cycle's TimeoutStartSec (240) + 45.
+INIT_GRACE_SECONDS = 600
+#: trust-watchdog R3: a wall-clock age more negative than this is a clock that went back, named red.
+CLOCK_REGRESSION_SECONDS = 300.0
 
 Runner = Callable[[list], str]
 
@@ -133,6 +170,65 @@ def timer_problems(state: dict, *, now: float, bound_seconds: float) -> list[str
     return out
 
 
+def service_state(unit: str, *, run: Runner = _run) -> dict:
+    """What systemd says about a service: its states and its main process's monotonic start/exit and result."""
+    state: dict[str, Any] = {"unit": unit}
+    for line in run(["systemctl", "show", unit, "-p", ",".join(SERVICE_PROPERTIES)]).splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key in SERVICE_PROPERTIES:
+            state[key] = value.strip()
+    return state
+
+
+def _usec(value) -> int | None:
+    """A systemd monotonic timestamp in microseconds, or None when it is unset (0), infinite or malformed."""
+    try:
+        v = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
+def judge_timer(unit: str, *, role: str, now: float, bound_seconds: float, run: Runner = _run,
+                monotonic: Callable[[], float] = time.monotonic, state: dict | None = None
+                ) -> tuple[list[str], str | None, dict]:
+    """trust-watchdog D1: the timer judgement of `timer_problems`, except that a loaded, enabled, active timer
+    with no finite next elapse is NOT red while the one service it triggers (`<name>.service`, R1) is running
+    and has run for at most `RUN_BOUND_SECONDS[role]` on the monotonic clock -- systemd computes the next elapse
+    only when that run ends. One second over is `timer_service_overrunning`. A service that is not running gets
+    one re-read of the timer (the run may have ended between the two reads): a valid finite next elapse then
+    counts; otherwise `timer_next_not_finite` stands. Returns (problems, a `timer_running` note or None, the
+    timer state finally judged)."""
+    st = state if state is not None else timer_state(unit, run=run)
+    problems = timer_problems(st, now=now, bound_seconds=bound_seconds)
+    if not any(p.startswith("timer_next_not_finite ") for p in problems):
+        return problems, None, st
+    if any(not p.startswith("timer_next_not_finite ") for p in problems):
+        return problems, None, st                             # not loaded/enabled/active: nothing explains it
+    if st.get("next_usec") is not None:
+        return problems, None, st                             # a next elapse that is there but malformed: red
+    expected = unit[:-len(".timer")] + ".service" if unit.endswith(".timer") else ""
+    triggers = (st.get("Triggers") or "").split()
+    if not expected or not triggers:
+        return problems, None, st                             # nothing named that could be running: red as it is
+    if triggers != [expected]:
+        return problems + ["timer_trigger_unexpected %s (%s)" % (unit, " ".join(triggers))], None, st
+    svc = service_state(expected, run=run)
+    start = _usec(svc.get("ExecMainStartTimestampMonotonic"))
+    bound = RUN_BOUND_SECONDS[role]
+    if svc.get("ActiveState") in RUNNING_STATES and start is not None:
+        age = monotonic() - start / 1_000_000.0
+        if 0 <= age <= bound:
+            return [], "timer_running %s (%s %d s)" % (unit, expected, int(age)), st
+        if age > bound:
+            return ["timer_service_overrunning %s (%s %d s, bound %d s)" % (unit, expected, int(age), bound)], None, st
+        return problems, None, st                             # a start in the future: not this clock, not believed
+    again = timer_state(unit, run=run)
+    if next_elapse(again) is not None:
+        return timer_problems(again, now=now, bound_seconds=bound_seconds), None, again
+    return problems, None, st
+
+
 # ---------------------------------------------------------------------- trust
 def _iso(t: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
@@ -163,10 +259,11 @@ def trust_problems(stand, *, now: float, view=None, tls=None) -> tuple[list[str]
     except Exception as exc:                                  # noqa: BLE001 - the door would refuse too
         return ["effective_time_or_anchor_unusable (%s)" % type(exc).__name__], facts
     ref = max(now, effective)
+    this_update = None
     try:
         rl = _revocation.read(crl, anchor, effective)
         facts["list_number"] = rl.number
-        facts["_this_update"] = rl.this_update
+        facts["_this_update"] = this_update = rl.this_update
         facts["list_next_update"] = _iso(rl.next_update)
         if rl.this_update > ref + trust_install.MAX_SKEW_SECONDS:
             problems.append("list_not_yet_valid (thisUpdate %s)" % _iso(rl.this_update))
@@ -225,13 +322,39 @@ def trust_problems(stand, *, now: float, view=None, tls=None) -> tuple[list[str]
         elif wrong:
             problems.append("ack_mismatch %s (%s)" % (tid, ",".join(wrong)))
         try:
-            age = now - float(ack["acked_at"])
+            float(ack["acked_at"])                            # a malformed ack; its AGE is no fault (D2)
         except (KeyError, TypeError, ValueError):
             problems.append("ack_time_missing %s" % tid)
-            continue
-        if age > ACK_MAX_AGE_SECONDS:
-            problems.append("ack_stale %s (%d s old)" % (tid, int(age)))
+    problems += _rotation_problems(stand, now=now, this_update=this_update, pair=pair, live=live, acks=acks,
+                                   facts=facts)
     return problems, facts
+
+
+def _rotation_problems(stand, *, now: float, this_update: float | None, pair: dict | None, live: list, acks: dict,
+                       facts: dict) -> list[str]:
+    """trust-watchdog D2: the age is judged on the PAIR. `rotation_overdue` when the verified current list's
+    thisUpdate -- the age the cycle itself rotates by (`trust_publication.local`) -- is more than the cycle's own
+    rotation age (`_rotate_after()`, never a second constant) + 900 s old, while no live target differs from the
+    current pair (a lagging target is red on its own and holds the rotation back by design) and no publication
+    record is open (that one explains the transition)."""
+    from agentnode_sdk.remote_mcp import trust_publication as TP
+    from agentnode_sdk.worker import trust_install
+    if this_update is None or pair is None:
+        return []
+    if any(not acks.get(tid) or trust_install.differences(acks.get(tid), pair) for tid in live):
+        return []
+    try:
+        if any(r["kind"] == TP.PUBLICATION and r["state"] == TP.OPEN for r in TP.load_records(stand)):
+            return []
+    except ValueError:
+        return []                                             # named by publication_problems
+    due = TP._rotate_after() + ROTATION_GRACE_SECONDS
+    age = now - this_update
+    facts["list_age_seconds"] = int(age)
+    if age > due:
+        return ["rotation_overdue (current #%s thisUpdate %s, %d s old, due after %d s)"
+                % (facts.get("list_number"), _iso(this_update), int(age), int(due))]
+    return []
 
 
 DISTRIBUTION_WINDOW_SECONDS = 600
@@ -271,18 +394,28 @@ def _published_at(stand, pair, facts) -> float | None:
 
 
 def publication_problems(stand, *, now: float, run: Runner = _run, cycle_timer: str = CYCLE_TIMER,
-                         floor_timer: str = FLOOR_TIMER) -> tuple[list[str], dict]:
+                         floor_timer: str = FLOOR_TIMER, live: list | None = None,
+                         monotonic: Callable[[], float] = time.monotonic,
+                         boot_id: Callable[[], str | None] | None = None) -> tuple[list[str], dict, list[str]]:
     """trust-floor C20/C21: both new timers finite, the journal readable with no record open > 10 min (lock
     held or not, read from /proc/locks), the predecessor pointer readable, consistent and naming a generation
-    whose bytes match it and whose facts equal what its record saved, and the last cycle successful recently."""
+    whose bytes match it and whose facts equal what its record saved, and the last cycle successful recently;
+    trust-watchdog D3-D5: every live target reached recently, and a missing first cycle `pending` while the
+    cycle timer's activation is initializing. Returns (problems, facts, pending)."""
     from agentnode_sdk.remote_mcp import target_ops as O
     from agentnode_sdk.remote_mcp import targets as T
     from agentnode_sdk.remote_mcp import trust_publication as TP
     problems: list[str] = []
+    pending: list[str] = []
     facts: dict[str, Any] = {}
-    for unit in (cycle_timer, floor_timer):
-        st = timer_state(unit, run=run)
-        problems += timer_problems(st, now=now, bound_seconds=FIVE_MINUTE_BOUND_SECONDS)
+    states = {}
+    for unit, role in ((cycle_timer, "cycle"), (floor_timer, "floor")):
+        found, note, st = judge_timer(unit, role=role, now=now, bound_seconds=FIVE_MINUTE_BOUND_SECONDS, run=run,
+                                      monotonic=monotonic)
+        problems += found
+        if note:
+            facts.setdefault("timer_running", []).append(note)
+        states[unit] = st
         nxt = next_elapse(st)
         facts[unit + "_next"] = _iso(nxt) if nxt else None
     held = held_flock_inodes()
@@ -326,13 +459,115 @@ def publication_problems(stand, *, now: float, run: Runner = _run, cycle_timer: 
     except ValueError as exc:
         state = None
         problems.append("trust_cycle_state_unreadable (%s)" % exc)
+    boot = (boot_id or TP.current_boot_id)()
+    mono = monotonic()
+    init = initialization(cycle_timer, run=run, monotonic=monotonic, timer=states.get(cycle_timer))
+    facts["cycle_initialization"] = init["status"]
     since = float((state or {}).get("last_success_at") or 0)
-    if now - since > CYCLE_SUCCESS_MAX_AGE_SECONDS:
+    age = _evidence_age((state or {}).get("last_success_mono"), (state or {}).get("boot_id"), since or None,
+                        now=now, mono=mono, boot=boot)
+    if age.get("regressed") is not None:
+        problems.append("clock_regressed (cycle success, %d s)" % age["regressed"])
+    elif age["age"] is None or age["age"] > CYCLE_SUCCESS_MAX_AGE_SECONDS:
         last = (state or {}).get("last_run") or {}
-        problems.append("trust_cycle_not_succeeding (last success %s, last run %s %s)"
-                        % (_iso(since) if since else "never", last.get("status"), str(last.get("failure", ""))[:80]))
+        what = "trust_cycle_not_succeeding (last success %s, last run %s %s" % (
+            _iso(since) if since else "never", last.get("status"), str(last.get("failure", ""))[:80])
+        if init["status"] == "initializing" and not age.get("same_boot_stale"):
+            pending.append(what + ", initializing %d s since the cycle timer's activation)" % init["age"])
+        elif init["status"] == "expired":
+            problems.append(what + ", initializing expired after %d s)" % init["age"])
+        elif init["status"] == "failed":
+            problems.append(what + ", the first cycle since activation finished %s)" % init["detail"])
+        else:
+            problems.append(what + ")")
     facts["cycle_last_success"] = _iso(since) if since else None
-    return problems, facts
+    more, rpending, rfacts = reach_problems((state or {}).get("reach") or {}, live=live or [], now=now, mono=mono,
+                                            boot=boot, initializing=init["status"] == "initializing")
+    problems += more
+    pending += rpending
+    facts.update(rfacts)
+    return problems, facts, pending
+
+
+def initialization(cycle_timer: str = CYCLE_TIMER, *, run: Runner = _run,
+                   monotonic: Callable[[], float] = time.monotonic, timer: dict | None = None) -> dict:
+    """trust-watchdog D4: where the cycle timer's CURRENT activation stands, on systemd's monotonic facts only.
+    `initializing` while no run of its service has finished since the timer became active (an install, a forward
+    switch, a restart, a boot) and that activation is at most INIT_GRACE_SECONDS old; `expired` after that with no
+    run finished; `failed` when the first run that finished since then did not succeed; `completed` when it did;
+    `unknown` when systemd does not say (then nothing is pending: the plain judgement applies)."""
+    st = timer if timer is not None and "ActiveEnterTimestampMonotonic" in timer else timer_state(cycle_timer, run=run)
+    act = _usec(st.get("ActiveEnterTimestampMonotonic"))
+    if act is None:
+        return {"status": "unknown", "age": 0, "detail": ""}
+    age = monotonic() - act / 1_000_000.0
+    if age < 0:
+        return {"status": "unknown", "age": 0, "detail": "activation in the future"}
+    svc = service_state(cycle_timer[:-len(".timer")] + ".service" if cycle_timer.endswith(".timer") else cycle_timer,
+                        run=run)
+    ended = _usec(svc.get("ExecMainExitTimestampMonotonic"))
+    if ended is not None and ended >= act:
+        if svc.get("Result") == "success" and str(svc.get("ExecMainStatus")) == "0":
+            return {"status": "completed", "age": int(age), "detail": ""}
+        return {"status": "failed", "age": int(age),
+                "detail": "result %s status %s" % (svc.get("Result"), svc.get("ExecMainStatus"))}
+    if age <= INIT_GRACE_SECONDS:
+        return {"status": "initializing", "age": int(age), "detail": ""}
+    return {"status": "expired", "age": int(age), "detail": ""}
+
+
+def _evidence_age(at_mono, at_boot, at_wall, *, now: float, mono: float, boot: str | None) -> dict:
+    """trust-watchdog D5/R3: how old a piece of the cycle's evidence is. Monotonic when it was taken in THIS boot
+    (a wall-clock jump cannot age or refresh it); else the wall clock, where a clock more than 300 s behind the
+    evidence is `regressed` (named red) and a smaller difference counts as 0. `age` None = no evidence."""
+    if at_mono is not None and boot is not None and at_boot == boot:
+        try:
+            age = mono - float(at_mono)
+        except (TypeError, ValueError):
+            age = None
+        if age is not None and age >= 0:
+            return {"age": age, "same_boot_stale": age > CYCLE_SUCCESS_MAX_AGE_SECONDS}
+    if not at_wall:
+        return {"age": None}
+    age = now - float(at_wall)
+    if age < -CLOCK_REGRESSION_SECONDS:
+        return {"age": None, "regressed": int(age)}
+    return {"age": max(age, 0.0)}
+
+
+def reach_problems(reach: dict, *, live: list, now: float, mono: float, boot: str | None,
+                   initializing: bool) -> tuple[list[str], list[str], dict]:
+    """trust-watchdog D3: every live target reached by the cycle (an exact push or the router's handshake-only
+    preflight) within REACH_MAX_AGE_SECONDS, judged monotonically in this boot. Older: `target_unreachable` with
+    the router's classification, the first failure of the episode and the last success. No evidence in this boot:
+    `target_reach_unknown` -- `pending` while the cycle timer is initializing (D4), red afterwards."""
+    problems: list[str] = []
+    pending: list[str] = []
+    facts: dict[str, Any] = {"reach": {}}
+    for tid in sorted(live):
+        e = reach.get(tid) if isinstance(reach.get(tid), dict) else None
+        if e is None:
+            (pending if initializing else problems).append("target_reach_unknown %s (no reach recorded)" % tid)
+            continue
+        age = _evidence_age(e.get("ok_mono"), e.get("boot_id"), e.get("ok_at"), now=now, mono=mono, boot=boot)
+        same_boot = e.get("boot_id") == boot and boot is not None
+        facts["reach"][tid] = {"last_reached": _iso(float(e["ok_at"])) if e.get("ok_at") else None,
+                               "code": e.get("code") or ""}
+        if age.get("regressed") is not None:
+            problems.append("clock_regressed (reach %s, %d s)" % (tid, age["regressed"]))
+        elif age["age"] is not None and age["age"] <= REACH_MAX_AGE_SECONDS:
+            continue
+        elif not same_boot and initializing:
+            pending.append("target_reach_unknown %s (no reach in this boot yet)" % tid)
+        elif e.get("code") or e.get("failing_since"):
+            problems.append("target_unreachable %s (%s, failing since %s, last reached %s)" % (
+                tid, e.get("code") or "unknown", _iso(float(e["failing_since"])) if e.get("failing_since") else "unknown",
+                _iso(float(e["ok_at"])) if e.get("ok_at") else "never"))
+        else:
+            problems.append("target_unreachable %s (not reached for %s, last reached %s)" % (
+                tid, "%d s" % age["age"] if age["age"] is not None else "unknown",
+                _iso(float(e["ok_at"])) if e.get("ok_at") else "never"))
+    return problems, pending, facts
 
 
 # ---------------------------------------------------------------------- attestations (attest-renewal D8)
@@ -369,7 +604,8 @@ def _lock_held(path: Path, held: set | None) -> str:
 
 
 def attestation_problems(stand, *, now: float, run: Runner = _run, state_path=None,
-                         renew_timer: str = RENEW_TIMER) -> tuple[list[str], dict]:
+                         renew_timer: str = RENEW_TIMER,
+                         monotonic: Callable[[], float] = time.monotonic) -> tuple[list[str], dict]:
     """Every active target's record valid with more than its class warning left (effective, pinned time);
     the default target active; the renewal timer finite; the renewal state present, recent and agreeing
     with the register; no target degraded or blocked; no renew/probe operation open for 30 minutes."""
@@ -378,8 +614,11 @@ def attestation_problems(stand, *, now: float, run: Runner = _run, state_path=No
 
     problems: list[str] = []
     facts: dict[str, Any] = {}
-    tstate = timer_state(renew_timer, run=run)
-    problems += timer_problems(tstate, now=now, bound_seconds=RENEW_BOUND_SECONDS)
+    found, note, tstate = judge_timer(renew_timer, role="renew", now=now, bound_seconds=RENEW_BOUND_SECONDS, run=run,
+                                      monotonic=monotonic)
+    problems += found
+    if note:
+        facts["timer_running"] = [note]
     nxt = next_elapse(tstate)
     facts["renew_next"] = _iso(nxt) if nxt else None
     op_pub = bytes.fromhex(io.open(os.path.join(str(stand), "operator_pub.hex"), encoding="utf-8").read().strip())
@@ -476,40 +715,244 @@ def write_state(path, doc: dict) -> None:
             os.close(dfd)
 
 
+def _previous_report(state_file) -> dict | None:
+    """The last run's report, or None = previous unknown (missing, unreadable, malformed). Never a reason to be
+    green: an unknown previous state only means no recovery can be recorded (D6)."""
+    try:
+        doc = json.loads(Path(state_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) and doc.get("state") in ("green", "red", "initializing") else None
+
+
+def _episode(prev: dict | None) -> tuple[str | None, str | None]:
+    """The red episode the previous run was in: (red_since, episode id), or (None, None). The id is what makes an
+    episode unique (two episodes may begin in the same second); it is drawn at random when an episode begins and
+    persisted. A red report of the parent release (no id, no `red_since`) is an episode since its own check (R4),
+    its id derived from that report's bytes so a retry finds the same one; an `initializing` run carries an
+    episode on without ending it."""
+    if not prev:
+        return None, None
+    if prev.get("state") == "red" or (prev.get("state") == "initializing" and prev.get("red_since")):
+        since = prev.get("red_since") or prev.get("checked_at")
+        ep = prev.get("red_episode")
+        if not ep:
+            import hashlib
+            ep = "p" + hashlib.sha256(json.dumps(prev, sort_keys=True).encode("utf-8")).hexdigest()[:15]
+        return since, ep
+    return None, None
+
+
+def _codes(problems) -> str:
+    return ",".join(sorted({str(p).split()[0] for p in problems})) or "-"
+
+
+def _append_recovery(log: Path, episode: str, line: str) -> str:
+    """D6/R4: ONE O_APPEND write of the recovery line, unless the log already holds the line of this EPISODE (a
+    run that crashed after the write and before its marker). Never truncates, rewrites or rotates the log."""
+    try:
+        if ("rmcp-trust-watchdog recovered (episode %s," % episode) in log.read_text(encoding="utf-8", errors="replace"):
+            return "already logged"
+    except FileNotFoundError:
+        pass
+    data = (line + "\n").encode("utf-8")
+    fd = os.open(str(log), os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
+    try:
+        if os.write(fd, data) != len(data):
+            raise OSError("short write")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return "appended"
+
+
 def check(stand, *, now: float | None = None, timer: str = REFRESH_TIMER, state_file=STATE_FILE,
           run: Runner = _run, tls=None, view=None, renew_state_file=None, renew_timer: str = RENEW_TIMER,
-          cycle_timer: str = CYCLE_TIMER, floor_timer: str = FLOOR_TIMER) -> dict:
-    """One watchdog run. Returns the report that was written; `report["state"]` is green or red."""
+          cycle_timer: str = CYCLE_TIMER, floor_timer: str = FLOOR_TIMER, alerts_log=None,
+          monotonic: Callable[[], float] = time.monotonic, boot_id: Callable[[], str | None] | None = None) -> dict:
+    """One watchdog run. Returns the report that was written; `report["state"]` is green, initializing (only
+    `pending` items, no problem: D4) or red. A red episode is remembered (`red_since`, `last_red`); the first green
+    run after it records `recovered_at`/`recovered_from` and appends one recovery line to the alert log (D6)."""
     now = time.time() if now is None else float(now)
     try:
         problems, facts = trust_problems(stand, now=now, tls=tls, view=view)
     except Exception as exc:                                  # noqa: BLE001 - an unknown failure is red
         problems, facts = ["watchdog_error (%s)" % type(exc).__name__], {}
-    tstate = timer_state(timer, run=run)
-    problems += timer_problems(tstate, now=now, bound_seconds=REFRESH_BOUND_SECONDS)
+    pending: list[str] = []
+    found, note, tstate = judge_timer(timer, role=ROLES.get(timer, "refresh"), now=now,
+                                      bound_seconds=REFRESH_BOUND_SECONDS, run=run, monotonic=monotonic)
+    problems += found
+    if note:
+        facts.setdefault("timer_running", []).append(note)
     nxt = next_elapse(tstate)
     facts["refresh_next"] = _iso(nxt) if nxt else None
     try:
         more, afacts = attestation_problems(stand, now=now, run=run, state_path=renew_state_file,
-                                            renew_timer=renew_timer)
+                                            renew_timer=renew_timer, monotonic=monotonic)
     except Exception as exc:                                  # noqa: BLE001 - an unknown failure is red
         more, afacts = ["attestation_watchdog_error (%s)" % type(exc).__name__], {}
     problems += more
+    running = facts.pop("timer_running", []) + afacts.pop("timer_running", [])
     facts.update(afacts)
     try:
-        more, pfacts = publication_problems(stand, now=now, run=run, cycle_timer=cycle_timer, floor_timer=floor_timer)
+        more, pfacts, ppending = publication_problems(stand, now=now, run=run, cycle_timer=cycle_timer,
+                                                      floor_timer=floor_timer, live=facts.get("live_targets"),
+                                                      monotonic=monotonic, boot_id=boot_id)
     except Exception as exc:                                  # noqa: BLE001 - an unknown failure is red
-        more, pfacts = ["publication_watchdog_error (%s)" % type(exc).__name__], {}
+        more, pfacts, ppending = ["publication_watchdog_error (%s)" % type(exc).__name__], {}, []
     problems += more
+    pending += ppending
+    running += pfacts.pop("timer_running", [])
     facts.update(pfacts)
+    if running:
+        facts["timer_running"] = running
     facts.pop("_this_update", None)
-    report = {"state": "red" if problems else "green", "checked_at": _iso(now), "problems": problems,
-              "facts": facts}
+    report = {"state": "red" if problems else ("initializing" if pending else "green"), "checked_at": _iso(now),
+              "problems": problems, "pending": pending, "facts": facts}
+    log = Path(alerts_log) if alerts_log is not None else Path(state_file).parent / ALERTS_LOG_NAME
+    return _episode_and_write(report, state_file, log)
+
+
+#: trust-watchdog D6 / F-TWD-R1-002 / F-TWD-R2-001: one marker directory beside the alert log. The run that HOLDS
+#: `<episode>.claim` -- an exclusive, NON-BLOCKING OS file lock on the watchdog's own marker file, released by the
+#: kernel the moment its holder exits or dies -- is the only one that may scan the log, append the line and create
+#: `<episode>.done`. A run that cannot have it at once writes nothing (it never waits, so it never delays anything,
+#: and it never touches a probe, trust, distribution or renewal lock). Ownership is fenced by the kernel, not
+#: inferred from any clock: a forward or backward clock jump changes nothing.
+RECOVERY_MARKERS = ".trust-watchdog-recovery"
+
+
+def _own(fd: int) -> bool:
+    """Take the exclusive lock on `fd` without waiting: True = this run owns the episode's recovery now."""
+    try:
+        import fcntl
+    except ImportError:                                       # Windows: a byte-range lock with the same semantics
+        import msvcrt
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _disown(fd: int) -> None:
+    try:
+        import fcntl
+    except ImportError:
+        import msvcrt
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        return
+    fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def _mark_done(done: Path) -> None:
+    import secrets
+    tmp = done.with_name(done.name + ".tmp-" + secrets.token_hex(4))
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    os.close(fd)
+    os.replace(str(tmp), str(done))
+
+
+def _recover_once(log: Path, episode: str, line: str) -> bool:
+    """Append the recovery line of `episode` exactly once across crashes, concurrent runs and clock jumps. True =
+    the line is in the log (now or before); False = another LIVE run owns it right now (this run owes nothing; the
+    next run sees `.done`, or owns the claim itself if that run died). Raises OSError when the line could not be
+    written (the ownership is released, so the next green run retries)."""
+    d = log.parent / RECOVERY_MARKERS
+    d.mkdir(parents=True, exist_ok=True)
+    claim, done = d / (episode + ".claim"), d / (episode + ".done")
+    if done.exists():
+        return True
+    fd = os.open(str(claim), os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
+    try:
+        if not _own(fd):
+            return False                                      # a live run is writing it right now
+        try:
+            if done.exists():
+                return True                                   # it finished between the two looks
+            _append_recovery(log, episode, line)              # scan + one write, by the only owner there can be
+            _mark_done(done)
+            return True
+        finally:
+            _disown(fd)
+    finally:
+        os.close(fd)
+
+
+def _episode_and_write(report: dict, state_file, log: Path) -> dict:
+    """Carry or begin the red episode, record a recovery, write the state, append the line once, mark it."""
+    import secrets
+    prev = _previous_report(state_file)
+    red_since, episode = _episode(prev)
+    checked_at = report["checked_at"]
+    for key in ("last_red", "recovered_at", "recovered_from", "recovery_logged"):
+        if prev and key in prev and red_since is None:
+            report[key] = prev[key]                           # the last episode's record rolls on while green
+    if prev and "last_red" in prev and red_since is not None:
+        report["last_red"] = prev["last_red"]
+    if report["state"] == "red":
+        report["red_since"] = red_since or checked_at
+        report["red_episode"] = episode or secrets.token_hex(8)
+        report["last_red"] = {"checked_at": checked_at, "problems": list(report["problems"])}
+        for key in ("recovered_at", "recovered_from", "recovery_logged"):
+            report.pop(key, None)
+    elif report["state"] == "initializing":
+        if red_since is not None:
+            report["red_since"] = red_since                   # initializing never ends an episode
+            report["red_episode"] = episode
+    elif red_since is not None:
+        codes = _codes((report.get("last_red") or {}).get("problems") or (prev or {}).get("problems") or [])
+        report["recovered_at"] = checked_at
+        report["recovered_from"] = {"red_since": red_since, "episode": episode, "codes": codes}
+        report["recovery_logged"] = False
+    return _write_and_log(report, state_file, log)
+
+
+def _write_and_log(report: dict, state_file, log: Path) -> dict:
+    """The state first, durably; then the recovery line (if one is owed); then the marker that it was written."""
     try:
         write_state(state_file, report)
     except OSError as exc:
         report["problems"].append("state_file_unwritable (%s)" % type(exc).__name__)
         report["state"] = "red"
+        return report
+    if report["state"] == "green" and report.get("recovered_from") and report.get("recovery_logged") is False:
+        rf = report["recovered_from"]
+        line = "%s rmcp-trust-watchdog recovered (episode %s, red since %s: %s)" % (
+            report["recovered_at"], rf["episode"], rf["red_since"], rf["codes"])
+        try:
+            logged = _recover_once(log, rf["episode"], line)
+        except OSError as exc:
+            # not recovered after all: the episode goes on, and the next green run owes the line again
+            report["problems"].append("alerts_log_unwritable (%s)" % type(exc).__name__)
+            report["state"] = "red"
+            report["red_since"] = rf["red_since"]             # `last_red` keeps the episode's own problems
+            report["red_episode"] = rf["episode"]
+            for key in ("recovered_at", "recovered_from", "recovery_logged"):
+                report.pop(key, None)
+            try:
+                write_state(state_file, report)
+            except OSError as exc2:
+                report["problems"].append("state_file_unwritable (%s)" % type(exc2).__name__)
+            return report
+        if not logged:
+            return report                                     # another run is writing it; the marker will say so
+        report["recovery_logged"] = True
+        try:
+            write_state(state_file, report)
+        except OSError as exc:
+            report["problems"].append("state_file_unwritable (%s)" % type(exc).__name__)
+            report["state"] = "red"
     return report
 
 
@@ -527,32 +970,39 @@ def main(argv=None) -> int:
     t = sub.add_parser("timer-check")
     t.add_argument("--unit", action="append", required=True)
     t.add_argument("--bound-seconds", type=float, action="append", required=True)
+    t.add_argument("--role", action="append", choices=sorted(RUN_BOUND_SECONDS), default=None,
+                   help="the unit's role (its run bound, D1); default: the role of a shipped timer's name")
     args = p.parse_args(argv)
     if args.cmd == "check":
         report = check(args.stand, timer=args.timer, state_file=args.state_file, renew_timer=args.renew_timer,
                        renew_state_file=args.renew_state_file, cycle_timer=args.cycle_timer,
                        floor_timer=args.floor_timer)
         print(json.dumps(report, indent=1, sort_keys=True))
-        return 0 if report["state"] == "green" else 1
+        return 0 if report["state"] in ("green", "initializing") else 1
     if len(args.unit) != len(args.bound_seconds):
         p.error("one --bound-seconds per --unit")
+    roles = args.role or [ROLES.get(u) for u in args.unit]
+    if len(roles) != len(args.unit) or None in roles:
+        p.error("one --role per --unit for a timer that is not one of the shipped ones")
     now = time.time()
     problems = []
-    for unit, bound in zip(args.unit, args.bound_seconds):
-        st = timer_state(unit)
-        found = timer_problems(st, now=now, bound_seconds=bound)
+    for unit, bound, role in zip(args.unit, args.bound_seconds, roles):
+        found, note, st = judge_timer(unit, role=role, now=now, bound_seconds=bound)
         nxt = next_elapse(st)
-        print("%s %s next=%s" % ("RED" if found else "OK", unit, _iso(nxt) if nxt else "none"))
+        print("%s %s next=%s%s" % ("RED" if found else "OK", unit, _iso(nxt) if nxt else "none",
+                                   (" " + note) if note else ""))
         problems += found
     for line in problems:
         print("ALERT %s" % line)
     return 1 if problems else 0
 
 
-__all__ = ["ACK_MAX_AGE_SECONDS", "MARGIN_SECONDS", "REFRESH_BOUND_SECONDS", "REFRESH_TIMER", "RENEW_BOUND_SECONDS",
-           "RENEW_RUN_MAX_AGE_SECONDS", "RENEW_TIMER", "STATE_FILE", "WATCHDOG_BOUND_SECONDS", "WATCHDOG_TIMER",
-           "attestation_problems", "check", "held_flock_inodes", "main", "next_elapse", "timer_problems",
-           "timer_state", "trust_problems", "write_state"]
+__all__ = ["ALERTS_LOG_NAME", "INIT_GRACE_SECONDS", "MARGIN_SECONDS", "REACH_MAX_AGE_SECONDS", "REFRESH_BOUND_SECONDS",
+           "REFRESH_TIMER", "RENEW_BOUND_SECONDS", "RENEW_RUN_MAX_AGE_SECONDS", "RENEW_TIMER", "ROLES",
+           "ROTATION_GRACE_SECONDS", "RUN_BOUND_SECONDS", "STATE_FILE", "WATCHDOG_BOUND_SECONDS", "WATCHDOG_TIMER",
+           "attestation_problems", "check", "held_flock_inodes", "initialization", "judge_timer", "main",
+           "next_elapse", "reach_problems", "service_state", "timer_problems", "timer_state", "trust_problems",
+           "write_state"]
 
 
 if __name__ == "__main__":
