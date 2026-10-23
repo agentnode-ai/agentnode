@@ -954,15 +954,27 @@ def test_a_crash_around_the_append_never_duplicates_the_line(s, monkeypatch):
     with pytest.raises(_Crash):
         _check(s, _healthy(s, now + 3600), now=now + 3600)
     assert json.loads(s.state.read_text())["recovery_logged"] is False and not _alerts(s).exists()
-    claims = list((s.state.parent / W.RECOVERY_MARKERS).glob("*.claim"))
-    assert len(claims) == 1                                       # the dead run's claim
-    old = time.time() - W.CLAIM_STALE_SECONDS - 5
-    os.utime(claims[0], (old, old))
     monkeypatch.setattr(W, "_append_recovery", real_append)
-    _check(s, _healthy(s, now + 3700), now=now + 3700)            # takes the stale claim over
+    _check(s, _healthy(s, now + 3700), now=now + 3700)            # the dead run's lock is gone: this run owns it
     assert len(_alerts(s).read_text().splitlines()) == 1
 
-    # second episode: the crash comes AFTER the line is written
+    # killed AFTER the line was appended and BEFORE `.done`: the next owner finds the line and adds none
+    sd = _healthy(s, now + 3800)
+    sd.timer(W.FLOOR_TIMER, next_usec=None)
+    _check(s, sd, now=now + 3800)
+
+    def crash_before_done(done):
+        raise _Crash()
+    real_mark_done = W._mark_done
+    monkeypatch.setattr(W, "_mark_done", crash_before_done)
+    with pytest.raises(_Crash):
+        _check(s, _healthy(s, now + 3900), now=now + 3900)
+    assert len(_alerts(s).read_text().splitlines()) == 2
+    monkeypatch.setattr(W, "_mark_done", real_mark_done)
+    _check(s, _healthy(s, now + 3950), now=now + 3950)
+    assert len(_alerts(s).read_text().splitlines()) == 2
+
+    # third episode: the crash comes AFTER the line and `.done`, before the state's marker
     sd = _healthy(s, now + 4000)
     sd.timer(W.FLOOR_TIMER, next_usec=None)
     _check(s, sd, now=now + 4000)
@@ -978,9 +990,10 @@ def test_a_crash_around_the_append_never_duplicates_the_line(s, monkeypatch):
     with pytest.raises(_Crash):
         _check(s, _healthy(s, now + 5000), now=now + 5000)
     monkeypatch.setattr(W, "write_state", real_write)
-    assert len(_alerts(s).read_text().splitlines()) == 2
+    assert len(_alerts(s).read_text().splitlines()) == 3
     _check(s, _healthy(s, now + 5100), now=now + 5100)
-    assert len(_alerts(s).read_text().splitlines()) == 2
+    lines = _alerts(s).read_text().splitlines()
+    assert len(lines) == 3 and len({ln.split("(episode ")[1].split(",")[0] for ln in lines}) == 3
     assert json.loads(s.state.read_text())["recovery_logged"] is True
 
 
@@ -1023,21 +1036,60 @@ def _red_episode(s, now):
     return _check(s, sd, now=now)["red_episode"]
 
 
-def test_a_concurrent_run_writing_the_line_is_not_doubled(s):
-    """C13 / F-TWD-R1-002: another run holds the episode's fresh claim (it is writing the line right now): this
-    run appends nothing and stays owed; once that run marked it done, the next run sees it logged -- one line."""
-    now = time.time()
-    ep = _red_episode(s, now)
+def _another_owner(s, ep):
+    """Another live run holding the episode's claim (its own open file, its own OS lock)."""
     d = s.state.parent / W.RECOVERY_MARKERS
     d.mkdir(parents=True, exist_ok=True)
-    (d / (ep + ".claim")).write_bytes(b"")                       # the other run's claim, just created
-    green = _check(s, _healthy(s, now + 60), now=now + 60)
-    assert green["state"] == "green" and green["recovery_logged"] is False and not _alerts(s).exists()
-    _alerts(s).write_text("%s rmcp-trust-watchdog recovered (episode %s, red since %s: x)\n" % (W._iso(now + 60), ep,
-                                                                                               W._iso(now)))
-    os.replace(d / (ep + ".claim"), d / (ep + ".done"))          # ... and that run finished
-    again = _check(s, _healthy(s, now + 120), now=now + 120)
+    fd = os.open(str(d / (ep + ".claim")), os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
+    assert W._own(fd)
+    return d, fd
+
+
+@pytest.mark.parametrize("jump", [0.0, 10 * 86400.0, -10 * 86400.0])
+def test_a_live_owner_is_never_taken_over_whatever_the_clock_says(s, monkeypatch, jump):
+    """C13 / F-TWD-R2-001: while another live run owns the episode (it is slow, or the wall clock jumped forward or
+    back), this run appends nothing and stays owed -- no takeover, no clock decides; when the owner finishes, the
+    next run sees it logged: exactly one line. The owner's own completion is never invalidated."""
+    now = time.time()
+    ep = _red_episode(s, now)
+    d, fd = _another_owner(s, ep)
+    try:
+        for k in (1, 2):
+            green = _check(s, _healthy(s, now + 60 * k), now=now + 60 * k)
+            assert green["state"] == "green" and green["recovery_logged"] is False and not _alerts(s).exists()
+        # the recovery step itself under a wall clock thrown forward or back (the stand's trust material would not
+        # survive a 10-day jump, so the jump is applied to the step that decides ownership)
+        real_time = W.time.time
+        monkeypatch.setattr(W.time, "time", lambda: real_time() + jump)
+        assert W._recover_once(_alerts(s), ep, "never written") is False and not _alerts(s).exists()
+        monkeypatch.setattr(W.time, "time", real_time)
+        # the owner resumes and completes exactly as a run does
+        W._append_recovery(_alerts(s), ep, "%s rmcp-trust-watchdog recovered (episode %s, red since %s: x)"
+                           % (W._iso(now + 200), ep, W._iso(now)))
+        W._mark_done(d / (ep + ".done"))
+    finally:
+        W._disown(fd)
+        os.close(fd)
+    again = _check(s, _healthy(s, now + 300), now=now + 300)
     assert again["recovery_logged"] is True and len(_alerts(s).read_text().splitlines()) == 1
+
+
+def test_a_dead_owners_claim_is_owned_by_the_next_run_without_any_clock(s, monkeypatch):
+    """C13 / F-TWD-R2-001: the owner died (its OS lock went with it) before writing; the next run owns the claim at
+    once -- whatever the clock, even one set years back -- and writes the line once."""
+    now = time.time()
+    ep = _red_episode(s, now)
+    d, fd = _another_owner(s, ep)
+    W._disown(fd)
+    os.close(fd)                                                 # the process is gone: the kernel released its lock
+    real_time = W.time.time
+    monkeypatch.setattr(W.time, "time", lambda: 1.0)             # a clock thrown back to 1970 ...
+    line = "%s rmcp-trust-watchdog recovered (episode %s, red since %s: x)" % (W._iso(now + 60), ep, W._iso(now))
+    assert W._recover_once(_alerts(s), ep, line) is True         # ... decides nothing: the next run owns it at once
+    monkeypatch.setattr(W.time, "time", real_time)
+    assert len(_alerts(s).read_text().splitlines()) == 1
+    green = _check(s, _healthy(s, now + 60), now=now + 60)
+    assert green["recovery_logged"] is True and len(_alerts(s).read_text().splitlines()) == 1
 
 
 def test_the_watchdog_takes_no_lock_for_its_bookkeeping(s, monkeypatch):

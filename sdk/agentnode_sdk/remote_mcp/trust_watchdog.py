@@ -43,8 +43,10 @@ red episode, on the first GREEN run after it, it APPENDS one line `<ts> rmcp-tru
 (episode <id>, red since <ts>: <codes>)` to `alerts.log` beside it (trust-watchdog D6) -- one O_APPEND
 write, after the state that says so is durable, never twice for one episode (a random id per episode, not
 its start second), never truncating, rewriting or rotating the log; failing to append is red. Two runs at
-once cannot both write it: a per-episode claim file created with O_EXCL (`alerts/.trust-watchdog-recovery/`)
-decides -- no lock is ever taken, so inspection never waits for or delays anything. Red = exit 1 with every problem named (codes, numbers, short digests,
+once cannot both write it: the one holding a non-blocking OS lock on the episode's own marker file
+(`alerts/.trust-watchdog-recovery/<id>.claim`, released by the kernel when its holder dies) writes it, any
+other run writes nothing -- the watchdog never WAITS for a lock and never takes a probe, trust, distribution
+or renewal lock, so inspection cannot take, release or delay any of them; no clock decides ownership. Red = exit 1 with every problem named (codes, numbers, short digests,
 times, target ids -- never key or token material); the unit then fails and `OnFailure=rmcp-alert@`
 records a persistent alert. Every hourly run while red fails again. `initializing` exits 0.
 
@@ -811,45 +813,80 @@ def check(stand, *, now: float | None = None, timer: str = REFRESH_TIMER, state_
     return _episode_and_write(report, state_file, log)
 
 
-#: trust-watchdog D6 / F-TWD-R1-002: one marker per recovered episode beside the alert log. A run that CREATES
-#: `<episode>.claim` (O_EXCL: never waits, never contends for any lock -- the watchdog takes none) writes the line
-#: and renames the claim to `<episode>.done`; any other run writes nothing. A claim older than this was left by a
-#: run that died; exactly one later run takes it over (an atomic rename only one can win).
+#: trust-watchdog D6 / F-TWD-R1-002 / F-TWD-R2-001: one marker directory beside the alert log. The run that HOLDS
+#: `<episode>.claim` -- an exclusive, NON-BLOCKING OS file lock on the watchdog's own marker file, released by the
+#: kernel the moment its holder exits or dies -- is the only one that may scan the log, append the line and create
+#: `<episode>.done`. A run that cannot have it at once writes nothing (it never waits, so it never delays anything,
+#: and it never touches a probe, trust, distribution or renewal lock). Ownership is fenced by the kernel, not
+#: inferred from any clock: a forward or backward clock jump changes nothing.
 RECOVERY_MARKERS = ".trust-watchdog-recovery"
-CLAIM_STALE_SECONDS = 60.0
+
+
+def _own(fd: int) -> bool:
+    """Take the exclusive lock on `fd` without waiting: True = this run owns the episode's recovery now."""
+    try:
+        import fcntl
+    except ImportError:                                       # Windows: a byte-range lock with the same semantics
+        import msvcrt
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _disown(fd: int) -> None:
+    try:
+        import fcntl
+    except ImportError:
+        import msvcrt
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        return
+    fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def _mark_done(done: Path) -> None:
+    import secrets
+    tmp = done.with_name(done.name + ".tmp-" + secrets.token_hex(4))
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    os.close(fd)
+    os.replace(str(tmp), str(done))
 
 
 def _recover_once(log: Path, episode: str, line: str) -> bool:
-    """Append the recovery line of `episode` exactly once across crashes and concurrent runs. True = the line is
-    in the log (now or before); False = another run is writing it right now (this run owes nothing). Raises
-    OSError when the line could not be written (the claim is given back, so the next green run retries)."""
-    import secrets
+    """Append the recovery line of `episode` exactly once across crashes, concurrent runs and clock jumps. True =
+    the line is in the log (now or before); False = another LIVE run owns it right now (this run owes nothing; the
+    next run sees `.done`, or owns the claim itself if that run died). Raises OSError when the line could not be
+    written (the ownership is released, so the next green run retries)."""
     d = log.parent / RECOVERY_MARKERS
     d.mkdir(parents=True, exist_ok=True)
     claim, done = d / (episode + ".claim"), d / (episode + ".done")
     if done.exists():
         return True
+    fd = os.open(str(claim), os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
     try:
-        os.close(os.open(str(claim), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
-        mine = claim
-    except FileExistsError:
+        if not _own(fd):
+            return False                                      # a live run is writing it right now
         try:
-            if time.time() - claim.stat().st_mtime < CLAIM_STALE_SECONDS:
-                return done.exists()                          # another run is writing it right now
-            mine = d / (episode + ".claim.taken-" + secrets.token_hex(4))
-            os.rename(str(claim), str(mine))                  # only one run can win this
-        except FileNotFoundError:
-            return done.exists()                              # finished, or taken over, meanwhile
-    try:
-        _append_recovery(log, episode, line)                  # scans first: a line written before a crash stays one
-    except OSError:
-        try:
-            os.unlink(str(mine))
-        except OSError:
-            pass
-        raise
-    os.replace(str(mine), str(done))
-    return True
+            if done.exists():
+                return True                                   # it finished between the two looks
+            _append_recovery(log, episode, line)              # scan + one write, by the only owner there can be
+            _mark_done(done)
+            return True
+        finally:
+            _disown(fd)
+    finally:
+        os.close(fd)
 
 
 def _episode_and_write(report: dict, state_file, log: Path) -> dict:
