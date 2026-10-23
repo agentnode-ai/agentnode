@@ -121,11 +121,20 @@ register refuses every run with 503.
   `remove` puts them back byte-exact.
 * **Trust watchdog.** `rmcp-trust-watchdog.timer` (hourly at :20 UTC) runs
   `trust_watchdog check`, which shares no unit dependency with the refresh: both lists valid and
-  signed at the effective time with ≥ 48 h left, every live target's exact acknowledgement at most
-  13 h old, and `rmcp-trust-refresh.timer` loaded, enabled, active with a finite next run within
-  6 h 10 min. Red = the unit fails (→ `rmcp-alert@`, again every hour while red) and
-  `/var/lib/agentnode-mcp/alerts/trust-watchdog.json` says why. The daily `rmcp-cert-check`
-  watches the watchdog's own timer through the drop-in `rmcp-cert-check.service.d/trust-watchdog.conf`.
+  signed at the effective time with ≥ 48 h left, every live target's EXACT acknowledgement (its age is
+  no fault: an exact target is pushed again only at the daily rotation; `rotation_overdue` once the
+  list is older than the rotation age + 15 min with no target behind), every live target reached by
+  the cycle within 15 min (`target_unreachable` with the router's classification), and
+  `rmcp-trust-refresh.timer` loaded, enabled, active with a finite next run within 6 h 10 min. A
+  timer without a next run is not red while the one service it triggers is running within its bound
+  (its TimeoutStartSec + 60 s, monotonic; systemd computes the next run when that run ends), red
+  beyond it (`timer_service_overrunning`). For at most 10 min after the cycle timer's activation
+  (install, forward, restart, boot) a missing first cycle is `pending` and the state `initializing`
+  (exit 0). Red = the unit fails (→ `rmcp-alert@`, again every hour while red) and
+  `/var/lib/agentnode-mcp/alerts/trust-watchdog.json` says why; the first green run after red records
+  the recovery there and appends ONE `... rmcp-trust-watchdog recovered (red since ...: codes)` line to
+  `alerts.log`. The daily `rmcp-cert-check` watches the watchdog's own timer through the drop-in
+  `rmcp-cert-check.service.d/trust-watchdog.conf`.
 * **Attestation renewal.** Every active target's observation record (signed with the register) is
   renewed before it runs short: `rmcp-attest-renew.timer` (03:30/09:30/15:30/21:30 UTC, Persistent)
   runs `targets_cli attest-renew`. A target is due at ≤ 78 h 10 min left (managed, 72 h reserve) or

@@ -36,6 +36,12 @@ until its new acknowledgement (owner point 1); the guard yields only when either
 72 h left. A SECURITY publication (new content) never waits for the guard, a push or a lock held across
 the network: old acknowledgements are inadmissible at once (the content differs) and distribution starts
 immediately and is retried every cycle.
+
+An exact target is pushed only at a rotation, so its acknowledgement no longer says it is still there.
+Every cycle that did not fail therefore also REACHES every live target (trust-watchdog D3): an exact push
+of this run counts; every other live target gets the router's own handshake-only preflight
+(`TargetRouter.preflight`, nothing sent, nothing changed), bounded in threads and time. The result is
+recorded in the cycle state for the watchdog -- it never changes this cycle's status or exit code.
 """
 from __future__ import annotations
 
@@ -43,8 +49,10 @@ import hashlib
 import json
 import os
 import secrets
+import time
+from concurrent.futures import ThreadPoolExecutor, wait as _wait
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agentnode_sdk.pki import revocation as _revocation
 from agentnode_sdk.pki import tombstones as _tombstones
@@ -74,6 +82,22 @@ DISTRIBUTION_WINDOW_SECONDS = 600
 OPEN, DONE, DONE_DEGRADED, SUPERSEDED = "open", "done", "done_degraded", "superseded"
 TERMINAL = (DONE, DONE_DEGRADED, SUPERSEDED)
 PUBLICATION, DISTRIBUTION = "publication", "distribution"
+#: trust-watchdog D3/R2: each preflight's budget, how many run at once, and the deadline for all of them
+#: (well below the cycle service's 240 s TimeoutStartSec, whatever the number of live targets).
+REACH_BUDGET_SECONDS = 10.0
+REACH_THREADS = 8
+REACH_DEADLINE_SECONDS = 60.0
+#: The monotonic clock the cycle state's same-boot stamps come from (trust-watchdog D5); tests replace it.
+monotonic: Callable[[], float] = time.monotonic
+BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
+
+
+def current_boot_id() -> str | None:
+    """This boot's id (the kernel's), or None where there is none: a monotonic stamp is comparable only within it."""
+    try:
+        return Path(BOOT_ID_PATH).read_text(encoding="ascii").strip() or None
+    except OSError:
+        return None
 
 
 class Refused(Exception):
@@ -621,6 +645,8 @@ def cycle(ops, *, entry: str, force: bool = False, rotate: bool = True, distribu
             with _publication_lock(ops):
                 local(ops, report, force=force, rotate=rotate)
             distribute(ops, report, wait=wait)
+        if write_state:
+            report["reach"] = observe_reach(ops, report)
     except (OperationFailed, Refused) as exc:
         failure = exc.code + (" " + exc.detail if exc.detail else "")
         raise
@@ -631,6 +657,50 @@ def cycle(ops, *, entry: str, force: bool = False, rotate: bool = True, distribu
     return report
 
 
+def observe_reach(ops, report: dict) -> dict:
+    """trust-watchdog D3: was every live target there in this run? A target this run pushed to with an EXACT
+    acknowledgement was (`report["pushed"]` holds its list number); every other live target -- exact and not
+    pushed, or whose push failed -- gets the router's handshake-only preflight (nothing sent, nothing changed),
+    at most REACH_THREADS at once and all of them within REACH_DEADLINE_SECONDS; one not finished by then is
+    `reach_deadline`. Returns {target_id: {"ok", "via", "code"}}; never raises, never touches the status."""
+    from agentnode_sdk.remote_mcp.target_router import TargetRefusal, TargetRouter
+    out: dict[str, dict] = {}
+    try:
+        live = _live(ops)
+    except Exception as exc:                                  # noqa: BLE001 - named, never raised
+        return {"*": {"ok": False, "via": "register", "code": "reach_error:" + type(exc).__name__}}
+    todo = []
+    for t in sorted(live, key=lambda t: t.target_id):
+        pushed = report["pushed"].get(t.target_id)
+        if isinstance(pushed, int) and not isinstance(pushed, bool):
+            out[t.target_id] = {"ok": True, "via": "push", "code": ""}
+        else:
+            todo.append(t)
+    if not todo:
+        return out
+    router = TargetRouter(register=ops.register, acks=ops.acks, worker_for=ops.worker_for,
+                          deployment_trust=lambda: None)
+
+    def one(t) -> dict:
+        try:
+            router.preflight(t, budget=REACH_BUDGET_SECONDS)
+            return {"ok": True, "via": "preflight", "code": ""}
+        except TargetRefusal as exc:
+            return {"ok": False, "via": "preflight", "code": exc.code}
+        except Exception as exc:                              # noqa: BLE001 - every failure is named
+            return {"ok": False, "via": "preflight", "code": "reach_error:" + type(exc).__name__}
+
+    pool = ThreadPoolExecutor(max_workers=max(1, min(REACH_THREADS, len(todo))), thread_name_prefix="reach")
+    try:
+        futures = {pool.submit(one, t): t.target_id for t in todo}
+        done, _not_done = _wait(futures, timeout=REACH_DEADLINE_SECONDS)
+        for f, tid in futures.items():
+            out[tid] = f.result() if f in done else {"ok": False, "via": "preflight", "code": "reach_deadline"}
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return out
+
+
 def _write_cycle_state(ops, report: dict, failure: str) -> None:
     path = cycle_state_path(ops.stand)
     try:
@@ -639,10 +709,16 @@ def _write_cycle_state(ops, report: dict, failure: str) -> None:
         prev = {}
     status = "failed" if failure else ("degraded" if (report["alerts"] or report["lagging"]) else "ok")
     now = round(ops.clock(), 3)
-    doc = {"schema": CYCLE_STATE_SCHEMA, "last_run": {"finished_at": now, "status": status, "entry": report["entry"],
-                                                      "failure": failure, "lagging": report["lagging"],
-                                                      "record": report["record"], "published": report["published"]},
-           "last_success_at": now if status == "ok" else prev.get("last_success_at")}
+    mono, boot = round(monotonic(), 3), current_boot_id()
+    doc = {"schema": CYCLE_STATE_SCHEMA, "last_run": {"finished_at": now, "finished_mono": mono, "status": status,
+                                                      "entry": report["entry"], "failure": failure,
+                                                      "lagging": report["lagging"], "record": report["record"],
+                                                      "published": report["published"]},
+           "last_success_at": now if status == "ok" else prev.get("last_success_at"),
+           # trust-watchdog D5: the same success on the monotonic clock of this boot
+           "last_success_mono": mono if status == "ok" else prev.get("last_success_mono"),
+           "boot_id": boot if status == "ok" else prev.get("boot_id"),
+           "reach": _merge_reach(prev.get("reach"), report.get("reach"), now=now, mono=mono, boot=boot)}
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name("." + path.name + ".tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
@@ -654,6 +730,27 @@ def _write_cycle_state(ops, report: dict, failure: str) -> None:
     os.chmod(str(tmp), 0o644)
     os.replace(str(tmp), str(path))
     _fsync_dir(path.parent)
+
+
+def _merge_reach(prev, observed: dict | None, *, now: float, mono: float, boot: str | None) -> dict:
+    """The reach record of every live target observed in this run: a success stamps `ok_at`/`ok_mono`/`boot_id`
+    and ends the failure episode; a failure keeps the last success and the FIRST failure of the episode
+    (`failing_since`) and names this run's code. A run that observed nothing (it failed) keeps what was there;
+    a target no longer live is no longer listed."""
+    prev = prev if isinstance(prev, dict) else {}
+    if observed is None:
+        return prev
+    out = {}
+    for tid, r in sorted(observed.items()):
+        old = prev.get(tid) if isinstance(prev.get(tid), dict) else {}
+        if r.get("ok"):
+            out[tid] = {"ok_at": now, "ok_mono": mono, "boot_id": boot, "failing_since": None, "code": "",
+                        "via": r.get("via", "")}
+        else:
+            out[tid] = {"ok_at": old.get("ok_at"), "ok_mono": old.get("ok_mono"), "boot_id": old.get("boot_id"),
+                        "failing_since": old.get("failing_since") or now, "code": r.get("code") or "unknown",
+                        "via": r.get("via", "")}
+    return out
 
 
 def unresolved_security(ops) -> list[str]:

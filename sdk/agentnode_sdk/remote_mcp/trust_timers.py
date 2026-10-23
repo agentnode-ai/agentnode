@@ -49,6 +49,9 @@ UNITS = (REFRESH_SERVICE, REFRESH_TIMER, WATCHDOG_SERVICE, WATCHDOG_TIMER, RENEW
 TIMERS = ((REFRESH_TIMER, W.REFRESH_BOUND_SECONDS), (WATCHDOG_TIMER, W.WATCHDOG_BOUND_SECONDS),
           (RENEW_TIMER, W.RENEW_BOUND_SECONDS), (CYCLE_TIMER, W.FIVE_MINUTE_BOUND_SECONDS),
           (FLOOR_TIMER, W.FIVE_MINUTE_BOUND_SECONDS))
+#: trust-watchdog D1: the role (run bound) of every service a timer judgement may find running.
+SERVICE_ROLES = {REFRESH_SERVICE: "refresh", WATCHDOG_SERVICE: "watchdog", RENEW_SERVICE: "renew",
+                 CYCLE_SERVICE: "cycle", FLOOR_SERVICE: "floor"}
 #: The floor units the release replaces: saved byte-exact with their metadata before, restored on rollback.
 FLOOR_UNITS = (FLOOR_SERVICE, FLOOR_TIMER)
 LEGACY_DIR = "var/lib/agentnode-mcp/trust-floor-legacy"
@@ -229,6 +232,15 @@ def unit_problems(name: str, text: str) -> list[str]:
         execs = [v for k, v in units.get("Service", []) if k == "ExecStart"]
         if not any("trust_watchdog timer-check" in v and "--unit %s" % WATCHDOG_TIMER in v for v in execs):
             out.append("%s: does not check the watchdog timer" % name)
+    role = SERVICE_ROLES.get(name)
+    if role is not None:
+        # trust-watchdog D1/C5: a timer whose service is running has no next elapse; the watchdog accepts that
+        # only up to RUN_BOUND, so the service itself must end within RUN_BOUND - 60 s
+        limit = W.RUN_BOUND_SECONDS[role] - 60
+        timeout = [_seconds(v) for k, v in units.get("Service", []) if k == "TimeoutStartSec"]
+        if not timeout or timeout[-1] is None or timeout[-1] <= 0 or timeout[-1] > limit:
+            out.append("%s: TimeoutStartSec must be finite and at most %ds (%r)" % (
+                name, limit, [v for k, v in units.get("Service", []) if k == "TimeoutStartSec"][-1:] or None))
     return out
 
 
@@ -378,8 +390,9 @@ def check(*, run: Runner = _run, now: float | None = None) -> list[str]:
     now = time.time() if now is None else now
     out: list[str] = []
     for unit, bound in TIMERS:
-        state = W.timer_state(unit, run=lambda argv: run(argv)[1])
-        out += W.timer_problems(state, now=now, bound_seconds=bound)
+        found, _note, _st = W.judge_timer(unit, role=W.ROLES[unit], now=now, bound_seconds=bound,
+                                          run=lambda argv: run(argv)[1])
+        out += found
     return out
 
 
