@@ -112,10 +112,11 @@ def _ca(env):
     return env["world"]._ca()
 
 
-def _forge(env, number, at, *, key=None, cert=None, deployment=None, tomb_at=None, tomb_key=None, uris=()):
+def _forge(env, number, at, *, key=None, cert=None, deployment=None, tomb_at=None, tomb_key=None, uris=(),
+           revoked=None):
     """A pair signed by the deployment's CA (or the given key/cert), with any number and times."""
     k, c = _ca(env)
-    crl = rl.build(key or k, cert or c, {}, number=number, now=at)
+    crl = rl.build(key or k, cert or c, revoked or {}, number=number, now=at)
     signer = tomb_key or key or k
     tombs = tomb.publish(deployment or env["world"].deployment, uris, now=at if tomb_at is None else tomb_at,
                          signer=lambda b: signer.sign(b, ec.ECDSA(hashes.SHA256())))
@@ -371,24 +372,31 @@ def test_a_future_dated_older_pair_is_still_older(env, monkeypatch):
     assert TP.import_legacy(env["ops"]).startswith("older than the pointer's")
 
 
+def _like(env, number, pair, **kw):
+    """A pair numbered `number`, signed with exactly the list and tombstone times of `pair`."""
+    return _forge(env, number, TP._this_update(pair[0]), tomb_at=TI.facts_of(*pair)["tombstones_published_at"], **kw)
+
+
+# Each of the next three is dated so that EVERY later check passes: only its own guard refuses it.
 def test_the_pointers_number_with_other_statements_is_equivocation(env, monkeypatch):
-    """C7 / CC7: a different list with the pointer's number."""
+    """C7 / CC7: a different list with the pointer's number (dated like the pointer's, one more serial)."""
     _rotated(env, monkeypatch)
-    T.save_previous_pair(env["reg"].stand, *_forge(env, _pointer_number(env), time.time() - 10))
+    T.save_previous_pair(env["reg"].stand, *_like(env, _pointer_number(env), T.previous_pair(env["reg"].stand),
+                                                       revoked={"7a": time.time() - 60}))
     _refused(env, "equivocation")
 
 
 def test_the_current_number_with_other_bytes_is_equivocation(env, monkeypatch):
-    """C7 / CC7 / CC13: a different list with the current pair's number -- even with equal content."""
+    """C7 / CC13: a different list with the current pair's number -- even with equal content and time."""
     _rotated(env, monkeypatch)
-    T.save_previous_pair(env["reg"].stand, *_forge(env, _number(_pair(env)), time.time() - 1))
+    T.save_previous_pair(env["reg"].stand, *_like(env, _number(_pair(env)), _pair(env)))
     _refused(env, "equivocation")
 
 
 def test_a_number_beyond_the_current_is_ahead(env, monkeypatch):
     """C8 / CC8: #C+1 = #U+1, signed by the deployment's own CA, is refused `legacy_ahead`."""
     _rotated(env, monkeypatch)
-    T.save_previous_pair(env["reg"].stand, *_forge(env, _number(_pair(env)) + 1, time.time() - 1))
+    T.save_previous_pair(env["reg"].stand, *_like(env, _number(_pair(env)) + 1, _pair(env)))
     _refused(env, "ahead")
 
 
