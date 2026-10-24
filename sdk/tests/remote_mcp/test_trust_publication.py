@@ -767,9 +767,17 @@ def test_install_imports_a_newer_legacy_predecessor(env, monkeypatch):
     monkeypatch.setattr(TP, "ROTATE_AFTER_SECONDS", 0.0)
     env["ops"].refresh_trust(force=True)
     T.save_previous_pair(env["reg"].stand, *_pair_bytes(env))   # what the parent's refresh would have saved
+    pointer_before = TP.load_pointer(env["reg"].stand)["revocation_list_number"]
+    records = len(_records(env))
     assert TP.import_legacy(env["ops"]).startswith("imported")
     assert T.previous_pair(env["reg"].stand) == _pair_bytes(env)
+    # Q-TIL-0001 D8: newer by number (pointer < legacy == current), ONE record, the legacy directory retired
+    assert TP.load_pointer(env["reg"].stand)["revocation_list_number"] == pointer_before + 1
+    assert [r["reason"] for r in _records(env)[records:]] == ["import_legacy"]
+    assert not (Path(env["reg"].stand) / "targets" / T.PREVIOUS_DIR).exists()
+    assert len(list(TP.retired_dir(env["reg"].stand).iterdir())) == 1
     assert TP.import_legacy(env["ops"]) == ""                    # idempotent
+    assert len(_records(env)) == records + 1
 
 
 def test_unresolved_security_distribution_is_named(env):

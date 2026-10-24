@@ -380,34 +380,223 @@ def materialize_legacy(stand) -> dict:
             "tombstones_sha256": hashlib.sha256(pair[1]).hexdigest()}
 
 
-def import_legacy(ops) -> str:
-    """Install-time migration (R3): a legacy predecessor that differs from the pointer's generation (a parent
-    publication during a rollback window) becomes a new generation and the pointer selects it. "" = nothing."""
-    d = Path(ops.stand) / "targets" / T.PREVIOUS_DIR
+#: FINDING-TFL-INSTALL-1 (Codex Q-TIL-0001): the legacy predecessor is ordered by its anchor-authenticated list
+#: number, never by its bytes; what was decided is moved out of the parent's reach, never deleted.
+IMPORT_REASON = "import_legacy"
+LEGACY_RETIRED = "legacy-retired"
+RETIRED_SCHEMA = "agentnode.trust-legacy-retired.v1"
+#: How far a legacy pair's tombstones may be signed before / after its list (a crash completes the tombstones
+#: of a publication later: `_judge_after_publish`), and how far in the future either may be dated.
+LEGACY_TORN_BEFORE_SECONDS = 300
+LEGACY_TORN_AFTER_SECONDS = 600
+LEGACY_FUTURE_SECONDS = 300
+
+
+def legacy_dir(stand) -> Path:
+    return Path(stand) / "targets" / T.PREVIOUS_DIR
+
+
+def retired_dir(stand) -> Path:
+    return publication_dir(stand) / LEGACY_RETIRED
+
+
+def _legacy_refused(what: str, detail: str = "") -> Refused:
+    return Refused("trust_publication.legacy_" + what, detail)
+
+
+def _authenticate(ops, crl: bytes, tombs: bytes, what: str = "legacy") -> dict:
+    """A pair's facts, authenticated WITHOUT judging time: the list is signed by this control's anchor (and names
+    it as issuer), the tombstones' signed body by the same anchor and for this deployment. Refuses malformed /
+    foreign; the facts carry what an order needs (number, times, the signed bytes for semantic equality)."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    anchor = x509.load_pem_x509_certificate((Path(ops.issuer.trust_dir) / "ca.pem").read_bytes())
+    try:
+        parsed = x509.load_pem_x509_crl(crl)
+        facts = _trust_install.facts_of(crl, tombs)
+        this_update = _revocation._stamp(parsed, "last_update")
+    except Exception as exc:                                  # noqa: BLE001 - one answer: does not parse
+        raise _legacy_refused("malformed", "%s pair does not parse (%s)" % (what, type(exc).__name__)) from exc
+
+    def verify(body: bytes, signature: bytes) -> None:
+        anchor.public_key().verify(signature, body, ec.ECDSA(hashes.SHA256()))
+    try:
+        signed = _tombstones.read(tombs, deployment=ops.deployment, verifier=verify)
+    except _tombstones.ListUnusable as exc:
+        if exc.reason == _tombstones.MALFORMED:
+            raise _legacy_refused("malformed", "%s tombstones: %s" % (what, exc.reason)) from exc
+        raise _legacy_refused("foreign", "%s tombstones: %s" % (what, exc.reason)) from exc
+    try:
+        ours = parsed.issuer == anchor.subject and parsed.is_signature_valid(anchor.public_key())
+    except Exception:                                         # noqa: BLE001 - not believed
+        ours = False
+    if not ours:
+        raise _legacy_refused("foreign", "%s revocation list is not signed by this control's anchor" % what)
+    return dict(facts, this_update=float(this_update), tbs=parsed.tbs_certlist_bytes,
+                body=_tombstones.body_to_sign(signed.deployment, signed.published_at, signed.not_after, signed.uris))
+
+
+def _legacy_audit(ops, report: dict, step: str, **fields) -> None:
+    """One `trust_publication` ledger event for a legacy decision that writes no record (R8)."""
+    if ops.ledger is None:
+        return
+    try:
+        ops.ledger.append("trust_publication", record_id="", record_kind="legacy", step=step, state="decided",
+                          reason="install", **fields)
+    except Exception as exc:                                  # noqa: BLE001 - named, never undoes an effect
+        report["alerts"].append("audit_failed legacy %s (%s)" % (step, type(exc).__name__))
+
+
+def _recover_import(ops, report: dict, rec: dict) -> None:
+    """An OPEN import record (a crash during an import): `done` only when the pointer selects -- digest-consistent --
+    the generation this record saved; otherwise `superseded`. Never through `_advance` (nothing is published)."""
+    gen = "g-" + rec["record_id"][2:]
+    pointer = load_pointer_safely(ops.stand)
+    selected = (isinstance(pointer, dict) and pointer.get("generation") == gen
+                and pointer.get("record_id") == rec["record_id"] and T.previous_pair(ops.stand) is not None)
+    if selected:
+        rec["previous"] = {"generation": gen, "number": pointer.get("revocation_list_number")}
+        _close(ops, report, rec, DONE, "resumed: the saved generation is the selected one")
+    else:
+        _close(ops, report, rec, SUPERSEDED, "interrupted before the predecessor was saved")
+
+
+def _retire(ops, report: dict, outcome: str, legacy: dict, pointer: dict | None, record_id: str | None) -> str:
+    """Move the decided legacy directory out of every reader's path (the rollback target re-imports anything left
+    in `trust-previous/`): its account first, durably, inside it; then ONE rename; then both parents fsynced."""
+    src = legacy_dir(ops.stand)
+    meta = {"schema": RETIRED_SCHEMA, "outcome": outcome, "number": legacy.get("revocation_list_number"),
+            "revocation_list_sha256": legacy.get("revocation_list_sha256"),
+            "tombstones_sha256": legacy.get("tombstones_sha256"),
+            "pointer_number_before": (pointer or {}).get("revocation_list_number"),
+            "pointer_generation_before": (pointer or {}).get("generation"), "record_id": record_id,
+            "retired_at": round(ops.clock(), 3)}
+    _write_settled(src / "retired.json", (json.dumps(meta, indent=1, sort_keys=True) + "\n").encode("utf-8"))
+    ops._crash_after("tp:legacy_retired_meta")
+    dest = retired_dir(ops.stand)
+    dest.mkdir(parents=True, exist_ok=True)
+    os.chmod(str(dest), 0o700)
+    name = "%s-%s-%s" % (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(ops.clock())), outcome, secrets.token_hex(4))
+    try:
+        os.replace(str(src), str(dest / name))
+        _fsync_dir(src.parent)
+        _fsync_dir(dest)
+    except OSError as exc:
+        raise _legacy_refused("retire_failed", type(exc).__name__) from exc
+    if os.path.lexists(src):
+        raise _legacy_refused("retire_failed", "trust-previous/ is still there")
+    ops._crash_after("tp:legacy_retired")
+    return name
+
+
+def _legacy_decision(ops, report: dict) -> str:
+    """The whole decision, under the publication lock (R1/R4). Returns what was done; raises a named Refused."""
+    d = legacy_dir(ops.stand)
+    present = [n for n in (_revocation.LIST_NAME, _tombstones.LIST_NAME) if os.path.lexists(d / n)]
+    if not present:
+        return ""
     try:
         crl, tombs = (d / _revocation.LIST_NAME).read_bytes(), (d / _tombstones.LIST_NAME).read_bytes()
-    except OSError:
-        return ""
-    current = None
+    except OSError as exc:
+        raise _legacy_refused("incomplete", "%s present, the pair unreadable (%s)" % (",".join(present),
+                                                                                    type(exc).__name__)) from exc
+    legacy = _authenticate(ops, crl, tombs)
+    short = report["legacy"] = {"number": legacy["revocation_list_number"],
+                                "crl": legacy["revocation_list_sha256"][:16],
+                                "tombstones": legacy["tombstones_sha256"][:16]}
+    pointer = None
+    previous = None
     if os.path.lexists(pointer_path(ops.stand)):
-        current = T.previous_pair(ops.stand)
-        if current == (crl, tombs):
-            return ""
+        pair = T.previous_pair(ops.stand)
+        try:
+            pointer = load_pointer(ops.stand)
+            if pair is None:
+                raise ValueError("the pointer names no consistent generation")
+            previous = _authenticate(ops, pair[0], pair[1], "pointer's")
+        except (ValueError, Refused) as exc:
+            raise _legacy_refused("pointer_unreadable", str(exc)) from exc
+    cur_crl, cur_tombs, _facts = ops._pair()
     try:
-        facts = verify_pair(ops, crl, tombs)
-    except ValueError:
-        return "legacy predecessor not verifiable: left as it is"
+        current = _authenticate(ops, cur_crl, cur_tombs, "current")   # the order needs no time (DECISION-0003)
+    except Refused as exc:
+        raise _legacy_refused("current_unverifiable", exc.detail) from exc
+    short["current"] = current["revocation_list_number"]
+    try:
+        records = load_records(ops.stand)
+    except ValueError as exc:
+        raise Refused("trust_publication.journal_unreadable", str(exc)) from exc
+    for rec in records:
+        if rec["state"] == OPEN and rec["kind"] == PUBLICATION and rec.get("reason") == IMPORT_REASON:
+            _recover_import(ops, report, rec)
+    if any(r["state"] == OPEN and r["kind"] == PUBLICATION and r.get("phase") in ("begun", "previous_saved")
+           for r in load_records(ops.stand)):
+        raise _legacy_refused("open_record", "a crashed local phase must be resumed by the cycle first")
+    if previous is not None:
+        short["pointer"] = previous["revocation_list_number"]
+        if (crl, tombs) == T.previous_pair(ops.stand) or (legacy["tbs"] == previous["tbs"]
+                                                           and legacy["body"] == previous["body"]):
+            _legacy_audit(ops, report, "legacy_equal", **short)
+            return "equal to the pointer's generation: retired %s" % _retire(ops, report, "equal", legacy, pointer, None)
+        if legacy["revocation_list_number"] < previous["revocation_list_number"]:
+            _legacy_audit(ops, report, "legacy_older", **short)
+            return "older than the pointer's #%d: ignored, retired %s" % (
+                previous["revocation_list_number"], _retire(ops, report, "older", legacy, pointer, None))
+        if legacy["revocation_list_number"] == previous["revocation_list_number"]:
+            raise _legacy_refused("equivocation", "another pair with the pointer's number %d"
+                                  % previous["revocation_list_number"])
+    n, n_cur = legacy["revocation_list_number"], current["revocation_list_number"]
+    used = int(ops.issuer.next_publication()["number"]) - 1
+    if n == n_cur and (crl, tombs) != (cur_crl, cur_tombs):
+        raise _legacy_refused("equivocation", "another pair with the current number %d" % n_cur)
+    if n > n_cur or n > used or n_cur > used:
+        raise _legacy_refused("ahead", "legacy #%d, current #%d, highest used #%d" % (n, n_cur, used))
+    try:
+        verify_pair(ops, cur_crl, cur_tombs)                  # an import needs a current pair valid NOW
+    except ValueError as exc:
+        raise _legacy_refused("current_unverifiable", str(exc)) from exc
+    effective = float(ops.effective_time())
+    if min(legacy["revocation_list_next_update"], legacy["tombstones_not_after"]) <= effective:
+        raise _legacy_refused("expired", "legacy #%d" % n)
+    if max(legacy["this_update"], legacy["tombstones_published_at"]) > effective + LEGACY_FUTURE_SECONDS:
+        raise _legacy_refused("not_yet_valid", "legacy #%d" % n)
+    low = previous or {"this_update": float("-inf"), "tombstones_published_at": float("-inf")}
+    if not (low["this_update"] <= legacy["this_update"] <= current["this_update"]
+            and low["tombstones_published_at"] <= legacy["tombstones_published_at"]
+            <= current["tombstones_published_at"]
+            and legacy["this_update"] - LEGACY_TORN_BEFORE_SECONDS <= legacy["tombstones_published_at"]
+            <= legacy["this_update"] + LEGACY_TORN_AFTER_SECONDS):
+        raise _legacy_refused("inconsistent", "legacy #%d is not one publication between the pointer's and the "
+                                              "current pair" % n)
+    facts = {k: v for k, v in legacy.items() if k not in ("this_update", "tbs", "body")}
+    rec = {"schema": SCHEMA, "record_id": _next_id(ops.stand), "kind": PUBLICATION, "reason": IMPORT_REASON,
+           "security": False, "created_at": round(ops.clock(), 3), "state": OPEN, "phase": "begun",
+           "from": facts, "expect": None, "previous": None, "result": None, "targets": {}, "error": ""}
+    _transition(ops, report, rec, "begun")
+    _save_previous(ops, report, rec, crl, tombs)
+    rec["phase"] = "previous_saved"
+    _transition(ops, report, rec, "previous_saved")
+    _close(ops, report, rec, DONE, "legacy predecessor imported; nothing published")
+    name = _retire(ops, report, "imported", legacy, pointer, rec["record_id"])
+    _legacy_audit(ops, report, "legacy_retired", record=rec["record_id"], retired=name, **short)
+    return "imported %s, retired %s" % (rec["previous"]["generation"], name)
+
+
+def import_legacy(ops) -> str:
+    """Install-time migration (R3, FINDING-TFL-INSTALL-1): the legacy predecessor `trust-previous/` is IMPORTED only
+    when this control's anchor proves it the newer predecessor (pointer < legacy <= current, in list numbers),
+    IGNORED when it is older than or the same statements as the pointer's generation -- both then moved to
+    `trust-publication/legacy-retired/` -- and REFUSED by name otherwise, the pointer untouched. "" = nothing there."""
     report: dict = {"alerts": []}
     with _publication_lock(ops):
-        rec = {"schema": SCHEMA, "record_id": _next_id(ops.stand), "kind": PUBLICATION, "reason": "import_legacy",
-               "security": False, "created_at": round(ops.clock(), 3), "state": OPEN, "phase": "begun",
-               "from": facts, "expect": None, "previous": None, "result": None, "targets": {}, "error": ""}
-        _transition(ops, report, rec, "begun")
-        _save_previous(ops, report, rec, crl, tombs)
-        rec["phase"] = "previous_saved"
-        _transition(ops, report, rec, "previous_saved")
-        _close(ops, report, rec, DONE, "legacy predecessor imported; nothing published")
-    return "imported %s" % rec["previous"]["generation"]
+        try:
+            said = _legacy_decision(ops, report)
+        except Refused as exc:
+            _legacy_audit(ops, report, exc.code.rsplit(".", 1)[-1], detail=exc.detail[:200],
+                          **report.get("legacy", {}))
+            raise
+    return said + ("".join("; " + a for a in report["alerts"]) if said else "")
 
 
 # ---------------------------------------------------------------------- the local phase
@@ -513,7 +702,9 @@ def local(ops, report: dict, *, force: bool = False, rotate: bool = True) -> Non
     except ValueError as exc:
         raise Refused("trust_publication.journal_unreadable", str(exc)) from exc
     for rec in open_pubs:
-        if rec["phase"] in ("begun", "previous_saved"):
+        if rec.get("reason") == IMPORT_REASON:                # nothing to publish: its own recovery (Q-TIL-0001 D6)
+            _recover_import(ops, report, rec)
+        elif rec["phase"] in ("begun", "previous_saved"):
             _advance(ops, report, rec)
     rc = ops.issuer.reconcile()
     if rc["reason"]:
