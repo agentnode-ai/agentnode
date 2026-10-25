@@ -341,3 +341,20 @@ def test_the_wsl_step_refuses_a_changed_manifest_or_rpm_before_any_rpm_call(tmp_
     (b / "a.rpm").write_bytes(b"rpm one")
     (b / "b.rpm").write_bytes(b"stranger")
     assert "REFUSED artifact_hash_mismatch: the RPMs here" in run(good).stdout
+
+
+def test_a_rollback_restores_the_rolled_back_releases_pins():
+    """CC38 / L12 (found preparing the final stand run): the pins in force are those of the release `current` points
+    at -- each release keeps its own, switch_to installs them, nothing writes them ahead of the switch -- so an update
+    rolled back for wrong pins does not leave the old release running with the new release's pins."""
+    import re
+    from pathlib import Path
+    s = (Path(__file__).resolve().parents[2] / "deploy" / "local-worker" / "linux" / "install.sh").read_text(encoding="utf-8")
+    writes = [m.start() for m in re.finditer(r'"\$ETC/pins\.json(\.next)?"', s)]
+    body = s[s.index("switch_to() {"):s.index("\n}\n", s.index("switch_to() {"))]
+    assert 'install -o root -g root -m 0644 "$1/pins.json" "$ETC/pins.json.next"' in body
+    assert 'mv -T "$ETC/pins.json.next" "$ETC/pins.json"' in body
+    inside = [w for w in writes if s.index("switch_to() {") < w < s.index("switch_to() {") + len(body)]
+    writers = [w for w in writes if w not in inside and re.match(r'.*(install|cp|mv|>)', s[s.rfind("\n", 0, w):w])]
+    assert writers == [], [s[s.rfind("\n", 0, w):w + 20] for w in writers]
+    assert 'cp "$WORK/pins.json" "$REL/pins.json"' in s

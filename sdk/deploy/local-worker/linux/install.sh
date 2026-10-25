@@ -162,6 +162,7 @@ done
 DIST=$(ls -d "$REL"/venv/lib/python3.12/site-packages/agentnode_sdk-*.dist-info)
 printf '%s\n' "$SDKSHA" > "$DIST/AGENTNODE_ARTEFACT"
 cp "$HERE/manifest.json" "$HERE/manifest.sig" "$HERE/check-runtime.sh" "$REL/"
+cp "$WORK/pins.json" "$REL/pins.json"           # a release's pins travel with it: a rollback restores them too
 chmod -R a+rX,go-w "$REL"
 echo "  installed release $SEQ into $REL"
 
@@ -184,7 +185,7 @@ for d in "$STATE" "$STATE/tls" "$STATE/journal"; do
     [ "$(stat -c '%U %a' "$d")" = "$U 700" ] || refuse state_permissions_unsafe "$d"
 done
 install -d -o root -g root -m 0755 "$ETC" "$FLOORDIR" "$(dirname "$RELFLOOR")"
-install -o root -g root -m 0644 "$WORK/pins.json" "$ETC/pins.json"
+# the pins in force are ALWAYS those of the release `current` points at: written by switch_to, never ahead of it
 install -o root -g root -m 0644 "$WORK/release-pub.pem" "$ETC/release-pub.pem"
 
 asuser() { ( cd "$STATE" && runuser -u "$U" -- env HOME="$STATE" XDG_RUNTIME_DIR="/run/user/$UIDN" TMPDIR="$STATE/tmp" PYTHONUNBUFFERED=1 "$@" ); }
@@ -223,6 +224,9 @@ PY
     chown root:"$U" "$STATE/tls/runtime-pin.json"; chmod 0640 "$STATE/tls/runtime-pin.json"
 }
 switch_to() {   # atomically point `current` at a release directory, and pin the agent to exactly that release
+    [ -f "$1/pins.json" ] || refuse release_manifest_invalid "$1 carries no pins"
+    install -o root -g root -m 0644 "$1/pins.json" "$ETC/pins.json.next"
+    mv -T "$ETC/pins.json.next" "$ETC/pins.json"
     ln -sfn "$1" "$OPT/current.next"
     mv -T "$OPT/current.next" "$OPT/current"
     write_pin "$1"
