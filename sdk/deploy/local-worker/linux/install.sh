@@ -130,11 +130,22 @@ python3 -I -c "import sys; a=[int(x) for x in sys.argv[1].split('.')]; b=[int(x)
 for c in cpu memory pids; do
     grep -qw "$c" /sys/fs/cgroup/cgroup.controllers 2>/dev/null || refuse cgroup_controllers_missing "$c"
 done
-for h in newuidmap newgidmap; do
+# The ONLY privilege the unit lets through (Codex D8, measured): newuidmap/newgidmap's file capabilities. So they must be
+# exactly the distribution's: root:root 0755, exactly cap_setuid=ep / cap_setgid=ep, owned by its shadow-utils package.
+command -v getcap >/dev/null 2>&1 || refuse runtime_identity_unsafe "getcap is missing; the id-mapping helpers cannot be checked"
+for pair in newuidmap:cap_setuid newgidmap:cap_setgid; do
+    h=${pair%%:*}; cap=${pair#*:}
     P=$(command -v $h) || refuse subid_unavailable "$h is missing"
-    O=$(stat -c '%U' "$P"); M=$(stat -c '%a' "$P")
-    [ "$O" = root ] || refuse runtime_identity_unsafe "$P is not root's"
-    case "$M" in *[2367]?|*?[2367]) refuse runtime_identity_unsafe "$P is writable by others";; esac
+    [ "$(stat -c '%U:%G %a' "$P")" = "root:root 755" ] || refuse runtime_identity_unsafe "$P is not root:root 0755"
+    [ "$(getcap "$P" | sed 's/^[^ ]* //')" = "$cap=ep" ] || refuse runtime_identity_unsafe "$P does not carry exactly $cap=ep"
+    if command -v rpm >/dev/null 2>&1; then
+        rpm -qf "$P" 2>/dev/null | grep -q '^shadow-utils-' || refuse runtime_identity_unsafe "$P is not shadow-utils'"
+        rpm -V shadow-utils 2>/dev/null | grep -q " $P\$" && refuse runtime_identity_unsafe "$P differs from its package"
+    elif command -v dpkg >/dev/null 2>&1; then
+        dpkg -S "$P" 2>/dev/null | grep -q '^uidmap:' || refuse runtime_identity_unsafe "$P is not the uidmap package's"
+    else
+        refuse runtime_identity_unsafe "no package database to check $P against"
+    fi
 done
 command -v systemctl >/dev/null 2>&1 || refuse release_platform_mismatch "systemd is required"
 PYV=$(python3 -I -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')
@@ -234,15 +245,20 @@ Restart=on-failure
 RestartSec=10
 KillSignal=SIGTERM
 TimeoutStopSec=170
-NoNewPrivileges=@NNP@
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
-ReadWritePaths={S} /run/user/{uid}
-InaccessiblePaths=-/root -/etc/agentnode -/var/lib/agentnode-worker -/var/lib/agentnode-mcp
-CapabilityBoundingSet=
+# MEASURED (Codex D8 / Q-LW2-0006): rootless podman maps its user namespace through newuidmap/newgidmap, whose file
+# capabilities the kernel applies only without no_new_privs and only inside the bounding set. So: NoNewPrivileges off,
+# the bounding set exactly SETUID+SETGID, nothing ambient -- the service process itself holds no capability at all.
+NoNewPrivileges=no
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
 AmbientCapabilities=
-RestrictSUIDSGID=no
+PrivateDevices=yes
+ProtectSystem=strict
+# ProtectHome=yes would hide /run/user entirely (podman: "lstat /run/user/<uid>: permission denied")
+ProtectHome=tmpfs
+BindPaths=/run/user/{uid}
+PrivateTmp=yes
+ReadWritePaths={S}
+InaccessiblePaths=-/etc/agentnode -/var/lib/agentnode-worker -/var/lib/agentnode-mcp
 LockPersonality=yes
 UMask=0077
 
@@ -250,7 +266,6 @@ UMask=0077
 WantedBy=multi-user.target
 """.format(uid=uid, S=S, cmd=" ".join(args)))
 PY
-    sed -i "s/@NNP@/${NNP:-no}/" "$UNIT"
     chmod 0644 "$UNIT"
 }
 health() {   # 0 when the agent completed an inner handshake (or was refused by NAME) after $1, within 60 s
@@ -330,7 +345,7 @@ OnUnitActiveSec=10min
 [Install]
 WantedBy=timers.target
 EOF
-NNP=${AGENTNODE_AGENT_NNP:-yes} write_unit
+write_unit
 if [ -n "$STAND_HOSTS" ]; then
     install -d -m 0755 /etc/systemd/system/agentnode-agent.service.d
     printf '[Service]\n# PRIVATE TEST STAND ONLY: the public name resolves to the stand for this unit alone\nBindReadOnlyPaths=%s:/etc/hosts\n' \

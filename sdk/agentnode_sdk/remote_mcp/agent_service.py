@@ -512,7 +512,9 @@ class AgentApp:
                      "e.preventDefault();const fd=new FormData(e.target);"
                      "const r=await fetch('/v1/session',{method:'POST',headers:{'content-type':'application/json'},"
                      "body:JSON.stringify({code:fd.get('code'),client_name:'browser'})});"
-                     "if(r.ok){window.location.reload();}else{document.getElementById('msg').textContent="
+                     # the sign-in reaches this service through root's authority projection, a moment later
+                     "if(r.ok){document.getElementById('msg').textContent='signed in, one moment...';"
+                     "setTimeout(()=>window.location.reload(),3000);}else{document.getElementById('msg').textContent="
                      "'sign-in failed ('+r.status+')';}});</script>" % (html.escape(why), nonce), nonce)
 
     def _page_get(self, headers) -> tuple:
