@@ -497,3 +497,22 @@ def test_the_proof_grammar_is_closed(bad):
 def test_the_hub_without_an_address_binds_nothing(edge):
     """An edge-only hub has no TCP listener of its own."""
     assert edge.hub.host is None and edge.hub._socket is None
+
+
+def test_a_relay_waits_as_long_as_the_request_may_take():
+    """slice 2 (measured on the stand): through rmcp-agent's relay a run's answer must be awaited for the run's own
+    wall clock plus margin -- the relay's 60-s default made a 90-s job `dispatch_indeterminate` while it finished."""
+    from agentnode_sdk.worker import WorkerUnreachable
+    from agentnode_sdk.worker.remote import ReverseWorker
+
+    asked = []
+
+    class Relay(R.RelayClient):
+        def checkout(self, instance, budget, *, wait=60.0):
+            asked.append(wait)
+            raise R.SlotRefused("target_offline")
+    w = ReverseWorker("reverse://" + INST, Relay("/nonexistent"), instance=INST)
+    for seconds in (5.0, 200.0):
+        with pytest.raises(WorkerUnreachable):
+            w._ask("describe", {}, wait=seconds)
+    assert asked == [20.0, 215.0]
