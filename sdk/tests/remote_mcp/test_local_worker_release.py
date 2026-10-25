@@ -225,3 +225,119 @@ def test_nothing_updates_the_agent_on_its_own():
     assert actions and all(not forbidden.search(a) for a in actions), actions
     assert len(re.findall(r"Register-ScheduledTask ", ps)) == 1
     assert not list(root.rglob("*.timer")) and not list(root.rglob("*.xml"))
+
+
+ROCKY = "Rocky-10-WSL-Base-10.2-20260525.0.x86_64.wsl"
+
+
+def _checksum(name, data):
+    import hashlib
+    return "# %s: %d bytes\nSHA256 (%s) = %s\n" % (name, len(data), name, hashlib.sha256(data).hexdigest())
+
+
+def test_a_rootfs_must_be_the_file_its_upstream_checksum_names(tmp_path):
+    """CC20 / L12: the dated image against Rocky's (signature-checked) CHECKSUM, at release time."""
+    img = tmp_path / ROCKY
+    img.write_bytes(b"rootfs bytes")
+    good = _checksum(ROCKY, b"rootfs bytes")
+    assert RL.check_upstream(img, good) == __import__("hashlib").sha256(b"rootfs bytes").hexdigest()
+    for bad in (_checksum(ROCKY, b"other bytes"), _checksum("Rocky-10-WSL-Base.latest.x86_64.wsl", b"rootfs bytes"),
+                good + good.splitlines()[1] + "\n", good.replace(": 12 bytes", ": 13 bytes"), ""):
+        with pytest.raises(RL.ReleaseRefused) as got:
+            RL.check_upstream(img, bad)
+        assert got.value.code == "release_provenance_invalid"
+
+
+def _build_inputs(tmp_path):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as K
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    (wheels / "agentnode_sdk-0.25.0-py3-none-any.whl").write_bytes(b"wheel")
+    pins = tmp_path / "pins.json"
+    pins.write_text(json.dumps({k: PINS[k] for k in ("control_url", "anchor_sha256", "operator_pub",
+                                                     "gateway_deployment", "gateway_instance")}))
+    key = tmp_path / "release.key"
+    key.write_text(K.generate().private_bytes_raw().hex())
+    wsl = tmp_path / "wsl"
+    (wsl / "rpms").mkdir(parents=True)
+    (wsl / ROCKY).write_bytes(b"rootfs bytes")
+    (wsl / (ROCKY + ".CHECKSUM")).write_text(_checksum(ROCKY, b"rootfs bytes"))
+    (wsl / (ROCKY + ".CHECKSUM.asc")).write_text("signature checked on the build host")
+    (wsl / "rpms" / "podman-5.8.2-11.el10_2.x86_64.rpm").write_bytes(b"rpm")
+    return wheels, pins, key, wsl
+
+
+def _builder(tmp_path, wheels, pins, key, wsl, out):
+    import subprocess
+    import sys
+    from pathlib import Path
+    sdk = Path(__file__).resolve().parents[2]
+    return subprocess.run([sys.executable, "-I", str(sdk / "deploy" / "local-worker" / "release-tools" / "build_bundle.py"),
+                           "--wheels", str(wheels), "--sdk", str(sdk), "--pins", str(pins), "--commit", "c" * 40,
+                           "--version", "0.25.0", "--key", str(key), "--out", str(out), "--seq", "3",
+                           "--windows", str(wsl)], capture_output=True, text=True, timeout=300)
+
+
+def test_the_builder_signs_a_windows_release_only_over_the_named_rootfs(tmp_path):
+    """CC20: the product's builder checks the image against its upstream CHECKSUM BEFORE it signs anything."""
+    wheels, pins, key, wsl = _build_inputs(tmp_path)
+    out = tmp_path / "bundle.tar"
+    ok = _builder(tmp_path, wheels, pins, key, wsl, out)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    import tarfile
+    with tarfile.open(out) as tar:
+        doc = json.loads(tar.extractfile("manifest.json").read())
+    assert doc["compat"]["rootfs_upstream_checksum"] == RL.check_upstream(wsl / ROCKY, (wsl / (ROCKY + ".CHECKSUM")).read_text())
+    out.unlink()
+    (wsl / ROCKY).write_bytes(b"rootfs bytez")
+    bad = _builder(tmp_path, wheels, pins, key, wsl, out)
+    assert bad.returncode == 2 and "REFUSED release_provenance_invalid" in bad.stdout and not out.exists()
+
+
+def test_the_wsl_step_installs_nothing_it_has_not_rechecked():
+    """CC20/CC24 (order): inside the distribution the manifest is the bytes Windows verified, then every RPM's hash,
+    then rpm -K against a private database -- and only then is anything installed; nothing comes from a repository."""
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2] / "deploy" / "local-worker"
+    s = (root / "windows" / "wsl-inner.sh").read_text(encoding="utf-8")
+    first_rpm = s.index("\nrpm ")
+    assert s.index('= "$WANT" ]') < s.index("REFUSED artifact_hash_mismatch") < first_rpm
+    checks = [m.start() for m in re.finditer(r"rpm --dbpath \"\$DB\" -K", s)]
+    install = s.index("rpm -Uvh")
+    assert checks and max(checks) < s.index('"--verify-only" ] && {') < install
+    assert "|| true" not in s[install:s.index("\n", install)]
+    assert not re.search(r"\b(dnf|yum|curl|wget)\b", s)
+    ps = (root / "windows" / "install-agentnode-worker.ps1").read_text(encoding="utf-8")
+    assert "wsl-inner.sh $mSha" in ps and "ComputeHash($mBytes)" in ps
+    lin = (root / "linux" / "install.sh").read_text(encoding="utf-8")
+    pips = re.findall(r"pip\" install[^\n]*", lin)
+    assert pips and all("--no-index" in p and "--no-deps" in p for p in pips)
+    assert not re.search(r"\b(dnf|yum|curl|wget)\b", lin)
+
+
+@pytest.mark.skipif(os.name != "posix" or not __import__("shutil").which("sha256sum"), reason="POSIX shell tools")
+def test_the_wsl_step_refuses_a_changed_manifest_or_rpm_before_any_rpm_call(tmp_path):
+    """CC20/CC24, executed: a manifest that is not the verified bytes, an RPM with another hash, an RPM it does not
+    name -- each refused by name before rpm is asked anything."""
+    import hashlib
+    import subprocess
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[2] / "deploy" / "local-worker" / "windows" / "wsl-inner.sh"
+    b = tmp_path / "bundle"
+    b.mkdir()
+    (b / "a.rpm").write_bytes(b"rpm one")
+    doc = {"artifacts": [{"name": "a.rpm", "kind": "rpm", "platform": "wsl-rocky10-x86_64", "size": 7,
+                          "sha256": hashlib.sha256(b"rpm one").hexdigest()}]}
+    (b / "manifest.json").write_text(json.dumps(doc))
+    good = hashlib.sha256((b / "manifest.json").read_bytes()).hexdigest()
+
+    def run(want):
+        return subprocess.run(["sh", str(script), want, "--verify-only", str(b)], capture_output=True, text=True)
+    assert "REFUSED release_signature_invalid" in run("0" * 64).stdout
+    assert "REFUSED release_manifest_invalid" in run("").stdout
+    (b / "a.rpm").write_bytes(b"rpm two")
+    assert "REFUSED artifact_hash_mismatch: a.rpm" in run(good).stdout
+    (b / "a.rpm").write_bytes(b"rpm one")
+    (b / "b.rpm").write_bytes(b"stranger")
+    assert "REFUSED artifact_hash_mismatch: the RPMs here" in run(good).stdout

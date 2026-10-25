@@ -133,6 +133,29 @@ def check_artifact(doc: dict, name: str, data_path) -> dict:
     return entry
 
 
+def check_upstream(data_path, checksum_text: str) -> str:
+    """At RELEASE time: a third-party file (the dated Rocky WSL rootfs) against its upstream CHECKSUM file, whose
+    signature the preparing host verified against the pinned upstream key. The CHECKSUM must name exactly this file,
+    once, with its size and SHA-256 -- and both must match (`release_provenance_invalid`). Returns the SHA-256."""
+    import re
+
+    p = Path(data_path)
+    name = p.name
+    sums = re.findall(r"^SHA256 \((.+)\) = ([0-9a-f]{64})$", str(checksum_text), re.M)
+    sizes = re.findall(r"^# (.+): (\d+) bytes$", str(checksum_text), re.M)
+    mine = [h for n, h in sums if n == name]
+    size = [int(s) for n, s in sizes if n == name]
+    if len(sums) != 1 or len(mine) != 1 or len(size) != 1:
+        raise ReleaseRefused("release_provenance_invalid", "the upstream CHECKSUM does not name exactly %s" % name)
+    h = hashlib.sha256()
+    with open(p, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    if p.stat().st_size != size[0] or h.hexdigest() != mine[0]:
+        raise ReleaseRefused("release_provenance_invalid", "%s is not the file its upstream CHECKSUM names" % name)
+    return mine[0]
+
+
 # ---------------------------------------------------------------------- the floor (root-owned, monotonic)
 def read_floor(path, *, owner_uid: int = 0) -> int:
     """The highest sequence ever installed here. Absent = 0 (first install). Unreadable, malformed, or on POSIX not

@@ -161,7 +161,9 @@ Say "systemd is $($r.Out.Trim()) in $Distro"
 # the bundle into the distribution's own filesystem, then every RPM checked with rpm -K against the pinned Rocky key
 $r = InDistro "rm -rf /opt/agentnode-agent-bundle && mkdir -p /opt/agentnode-agent-bundle && cp '$mnt'/* /opt/agentnode-agent-bundle/ && chmod 0755 /opt/agentnode-agent-bundle && echo copied"
 if ($r.Out.Trim() -ne 'copied') { Refuse artifact_hash_mismatch "the bundle could not be copied into $Distro" }
-$r = InDistro 'sh /opt/agentnode-agent-bundle/wsl-inner.sh'
+# the SHA-256 of the very manifest bytes verified above: inside, nothing copied that differs from them is believed
+$mSha = -join ([Security.Cryptography.SHA256]::Create().ComputeHash($mBytes) | ForEach-Object { $_.ToString('x2') })
+$r = InDistro "sh /opt/agentnode-agent-bundle/wsl-inner.sh $mSha"
 Write-Output ($r.Out.TrimEnd())
 if ($r.Code -ne 0) { Refuse wsl_systemd_unavailable "the distribution could not be prepared ($($r.Code))" }
 

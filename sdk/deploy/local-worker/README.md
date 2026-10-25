@@ -183,6 +183,14 @@ tombstoned, revocation list published, pair key forgotten. A suspended account i
   `SOURCE_DATE_EPOCH` = commit time; two independent Linux builds are byte-identical, the Windows build is
   content-identical (only the ZIP `create_system` field and deflate output differ). Third-party wheels, RPMs and the
   rootfs are pinned and provenance-checked, not rebuilt.
+* Building: `release-tools/prepare-wsl-inputs.sh rootfs|rpms` (on a Rocky 10 build host) fetches the dated image,
+  verifies its CHECKSUM's signature against the pinned Rocky key and the image against the CHECKSUM, resolves the RPM
+  set inside a container of that image and checks every RPM with `rpm -K` against a private database -- any mismatch
+  stops it. `release-tools/build_bundle.py` (on the release key holder's machine) checks the image against the
+  CHECKSUM once more (`release_provenance_invalid`) before it signs anything, and writes the signed bundle.
+* Inside WSL2, before anything is installed, `wsl-inner.sh` checks that its copy of the manifest is the exact bytes
+  Windows verified (Windows passes their SHA-256), that every RPM there is one the manifest names with its size and
+  hash, and runs `rpm -K` against a private rpm database holding only the image's Rocky key file.
 * Vulnerabilities: reports go to the security contact the owner publishes with activation (not yet published); the
   beta supports only the latest release sequence; a fix is a new sequence, and `min_release_seq` moves when an older
   one must not be installed any more.
