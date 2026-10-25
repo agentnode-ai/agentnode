@@ -36,7 +36,9 @@ JOB_REQUIREMENTS = {"network": "none", "memory_mb": 1024, "wall_clock_s": 120, "
 
 CODES = ("target_unknown", "target_inactive", "target_expired", "target_revoked", "target_unsuitable",
          "target_properties_stale", "target_trust_unavailable", "target_full", "target_offline",
-         "target_identity_mismatch", "target_protocol_mismatch", "target_bad_wish")
+         "target_identity_mismatch", "target_protocol_mismatch", "target_bad_wish",
+         # local-worker slice 1 (dial-back targets only; every other target keeps the codes above)
+         "target_device_revoked", "target_account_suspended", "target_suspended", "target_authority_unverifiable")
 
 
 class TargetRefusal(Exception):
@@ -100,6 +102,13 @@ def _eligible(target: T.Target, entry, now: float, acks: dict, deployment: dict 
             failed.append(key)
     if props.get("wall_clock_enforced") is not True:      # observed to cut a job off, not a claimed duration
         failed.append("wall_clock_s")
+    if target.is_reverse:                                 # local-worker D6: observed, never claimed
+        if props.get("cpu_quota_enforced") is not True:
+            failed.append("cpu")
+        if props.get("isolation_observed") is not True:
+            failed.append("isolation")
+        if not (props.get("platform") or {}).get("runtime"):
+            failed.append("platform")
     if failed:
         raise TargetRefusal("target_unsuitable", ",".join(failed))
     if not T.trust_current(acks.get(target.target_id), now=now, deployment=deployment, previous=previous):
@@ -117,6 +126,25 @@ class TargetRouter:
         self._previous_trust = previous_trust or (lambda: None)
         self._workers: dict[tuple, Any] = {}
         self._mutex = threading.Lock()
+        #: local-worker D4: (owner account, device) -> "" or a refusal code, for dial-back targets. None: no
+        #: authority wired -> every dial-back target is refused `target_authority_unverifiable` (fail closed).
+        self.reverse_authority: Callable[[str, str], str] | None = None
+
+    def _reverse_gate(self, target: T.Target, now: float) -> None:
+        """A dial-back target's own gate, before the common eligibility: suspended by name, then the owner's
+        account and the device it was paired from, as the control plane's live authority says NOW."""
+        if not target.is_reverse:
+            return
+        if target.effective_status(now) == T.SUSPENDED:
+            raise TargetRefusal("target_suspended")
+        authority = self.reverse_authority
+        try:
+            code = "target_authority_unverifiable" if authority is None else \
+                authority(str(target.owner_account or ""), target.device_id)
+        except Exception:                                      # noqa: BLE001 - unreadable authority refuses
+            code = "target_authority_unverifiable"
+        if code:
+            raise TargetRefusal(code)
 
     # ------------------------------------------------------------ resolution
     def resolve(self, account: str, wish: Any, entry, *, snapshot: T.RegisterSnapshot | None = None) -> Resolution:
@@ -132,6 +160,7 @@ class TargetRouter:
             if target is None:                                 # a default that is not visible: never widened
                 raise TargetRefusal("target_unknown", reason=reason)
         try:
+            self._reverse_gate(target, snap.now)
             _eligible(target, entry, snap.now, self.acks.load(), self._deployment_trust(), self._previous_trust())
         except TargetRefusal as refusal:
             refusal.target_id, refusal.selection_reason = target.target_id, reason
@@ -154,6 +183,7 @@ class TargetRouter:
         if status == T.SUSPENDED:
             raise TargetRefusal("target_suspended_while_queued", target_id=t.target_id)
         try:
+            self._reverse_gate(t, snap.now)
             _eligible(t, entry, snap.now, self.acks.load(), self._deployment_trust(), self._previous_trust())
         except TargetRefusal as refusal:
             code ="target_properties_stale" if refusal.code == "target_properties_stale" else refusal.code
@@ -205,6 +235,12 @@ def classify(exc: BaseException) -> str:
             return "target_trust_unavailable"
         if "no-common-protocol" in str(seen) or "no tested wire version" in str(seen):
             return "target_protocol_mismatch"
+        if "worker-busy" in str(seen):                        # local-worker R6: its signed concurrency is in use
+            return "target_full"
+        # local-worker: a slot refusal names its routing code (device revoked, account suspended, ...)
+        cause = getattr(seen, "cause", None)
+        if isinstance(cause, str) and cause in CODES:
+            return cause
         seen = seen.__cause__ or seen.__context__
     return "target_offline"
 

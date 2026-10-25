@@ -93,6 +93,16 @@ def build(stand: str, canary_host: str, *, gateway_dir: str | None = None, probe
     return ops, cfg, tls
 
 
+def _reverse_authority(ops, cfg: dict, gateway_dir: str) -> None:
+    """local-worker slice 1: the reverse hub dial-back workers are told to dial, and the gateway's live
+    (account, device) authority an invite is checked against."""
+    from agentnode_sdk.remote_mcp import reverse_hub as R
+    from agentnode_sdk.remote_mcp.accounts_login import GatewayLogin
+
+    ops.reverse_hub = str(cfg.get("reverse_listen") or "")
+    ops.device_authority = R.device_authority(GatewayLogin(gateway_dir).authority_error)
+
+
 def _managed_spec(cfg, tls, target_id: str, concurrency: int, queue: int) -> dict:
     from agentnode_sdk.worker.tls import own_instance
 
@@ -137,10 +147,12 @@ def main(argv=None) -> int:
     s.add_argument("--queue", type=int, default=32)
     s = sub.add_parser("invite")
     s.add_argument("--account", required=True)
-    s.add_argument("--address", required=True)
+    s.add_argument("--address", default="")
     s.add_argument("--concurrency", type=int, default=1)
     s.add_argument("--queue", type=int, default=2)
     s.add_argument("--valid-days", type=int, default=7)
+    s.add_argument("--reverse", action="store_true", help="a dial-back worker (local-worker slice 1): no address")
+    s.add_argument("--device", default="", help="with --reverse: the owner's device it is paired from")
     s = sub.add_parser("enroll")
     s.add_argument("--target", required=True)
     s.add_argument("--request", required=True)
@@ -207,8 +219,12 @@ def main(argv=None) -> int:
             ops.acks.record(args.managed_id, dict(ack, acked_at=_t.time()))
             out = _safe(snap)
         elif args.cmd == "invite":
+            if not args.reverse and not args.address:
+                p.error("invite needs --address, or --reverse --device for a dial-back worker")
+            if args.reverse:
+                _reverse_authority(ops, cfg, args.gateway_dir or os.path.join(os.path.dirname(os.path.abspath(args.stand)), "gwdir"))
             op = ops.invite(args.account, address=args.address, concurrency=args.concurrency, queue=args.queue,
-                            valid_days=args.valid_days)
+                            valid_days=args.valid_days, device=args.device, reverse=args.reverse)
             out = {"target_id": op["target_id"], "instance": op["params"]["instance"],
                    "bundle": str(Path(ops.bundles) / op["target_id"]), "op": op["op_id"]}
         elif args.cmd == "enroll":

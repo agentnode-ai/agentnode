@@ -44,7 +44,7 @@ from urllib.parse import urlparse
 
 #: The two arrangements, as `worker/__init__.py` names them. Imported from there rather than
 #: restated, so there is one list.
-from agentnode_sdk.worker import SEPARATE_WORKER_HOST, SINGLE_HOST_DEVELOPMENT, TOPOLOGIES
+from agentnode_sdk.worker import REVERSE_SESSION, SEPARATE_WORKER_HOST, SINGLE_HOST_DEVELOPMENT, TOPOLOGIES
 
 #: The configuration key that carries the declaration, on the gateway side.
 DECLARED_KEY = "worker_topology"
@@ -54,12 +54,16 @@ IN_PROCESS = "in-process"
 UNIX = "unix"
 LOOPBACK_TCPS = "loopback-tcps"
 REMOTE_TCPS = "remote-tcps"
+#: `reverse://<worker instance>`: not an address anything dials. The worker dialled the control plane; the
+#: control plane reaches it only over a connection the worker opened (local-worker slice 1).
+REVERSE = "reverse"
 
 #: Which address classes each declaration permits. A class not listed is refused, so adding a
 #: transport later is a deliberate edit here rather than something that starts working by itself.
 PERMITTED = {
     SINGLE_HOST_DEVELOPMENT: (IN_PROCESS, UNIX, LOOPBACK_TCPS),
     SEPARATE_WORKER_HOST: (REMOTE_TCPS,),
+    REVERSE_SESSION: (REVERSE,),
 }
 
 
@@ -85,6 +89,11 @@ UNKNOWN_TOPOLOGY = "topology_not_recognised"
 ADDRESS_UNUSABLE = "address_unusable"
 WILDCARD = "address_is_every_interface"
 DISAGREES = "topology_disagrees_with_address"
+
+
+def reverse_instance_ok(instance: str) -> bool:
+    """A worker instance as `reverse://` names it: lower-case letters and digits, 3..32 of them."""
+    return 3 <= len(instance) <= 32 and all(ch in "abcdefghijklmnopqrstuvwxyz0123456789" for ch in instance)
 
 
 def is_loopback(host: str) -> bool:
@@ -116,6 +125,14 @@ def address_class(address: str) -> str:
     scheme = (parsed.scheme or "").lower()
     if scheme in ("unix", "unix+stream"):
         return UNIX
+    if scheme == "reverse":
+        instance = address[len("reverse://"):] if address.startswith("reverse://") else ""
+        if not reverse_instance_ok(instance):
+            raise TopologyRefused(
+                ADDRESS_UNUSABLE,
+                "a reverse address is reverse://<worker instance> and nothing else, and %r is not." % (address[:60],),
+                "Write the address as reverse://<instance>, the instance the worker's certificate names.")
+        return REVERSE
     if scheme != "tcps":
         raise TopologyRefused(
             ADDRESS_UNUSABLE,

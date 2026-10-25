@@ -256,12 +256,37 @@ class Bench:
     #: arrangement, where there is one control plane and nothing to fence against.
     leases = None
 
-    #: The caller the current connection proved itself to be. Set by the TLS door before the
-    #: conversation; empty on the socket, where the kernel's account check stands in for it.
-    _caller = ""
+    #: local-worker slice 1: the most runs at once (the target's signed concurrency) on a dial-back worker, which
+    #: keeps no run queue of its own -- one more is refused `worker-busy` and nothing is started. None: unbounded,
+    #: as every other worker has always been.
+    max_runs = None
+
+    #: What this worker says it speaks beyond the wire version, in `describe` (empty: nothing extra).
+    features: tuple = ()
+
+    #: The caller of a door with ONE caller (the socket, a test): empty on the socket, where the
+    #: kernel's account check stands in for it.
+    _default_caller = ""
+
+    @property
+    def _caller(self) -> str:
+        """The caller the CURRENT connection proved itself to be (local-worker D1/C7). Per
+        conversation and never shared: the TLS door and the dial-back agent set it with
+        `proved_caller` in the connection's own thread, a thread-local for that conversation -- a field on this shared
+        object written by every connection thread would let one gateway's lease request be
+        attributed to another's while two conversations overlap."""
+        said = getattr(self.__dict__.get("_calling"), "who", None)
+        return self._default_caller if said is None else said
+
+    @_caller.setter
+    def _caller(self, value: str) -> None:
+        self._default_caller = str(value)
 
     def __init__(self, worker, address: str, key: bytes, only_uid: int | None,
                  remembers_at=None) -> None:
+        import threading as _threading
+
+        self._calling = _threading.local()
         self.worker = worker
         self.address = address
         self.key = key
@@ -394,6 +419,15 @@ class Bench:
                 return
         self.converse(connection)
 
+    def proved_caller(self, who: str | None) -> None:
+        """Who the handshake proved the connection THIS thread is serving to be (None: forget it).
+        Set by a door right before `converse` and cleared right after, in the same thread."""
+        if "_calling" not in self.__dict__:
+            import threading as _threading
+
+            self._calling = _threading.local()
+        self._calling.who = None if who is None else str(who)
+
     def converse(self, connection, noted=None, key=None) -> None:
         """Everything after the door: MAC, nonce, floor, the closed list, the answer.
 
@@ -519,6 +553,8 @@ class Bench:
                 # was refused with "this worker holds no lease, so nothing may give it work".
                 # The worker was right and nobody had ever asked. Now the answer comes first.
                 "leases": self.leases is not None,
+                # local-worker D11: `reverse-session/1` on a worker that dialled the control plane.
+                "features": list(self.features),
             }
         if method == "take_lease":
             if self.leases is None:
@@ -547,7 +583,16 @@ class Bench:
             # and starting foreign code for a control plane that has since gone is the thing
             # the lease exists to prevent.
             self._with_lease(params)
-            return self._run_at_most_once(job)
+            if self.max_runs is None:
+                return self._run_at_most_once(job)
+            # A dial-back worker asks again at EVERY run, before the journal claims it: a runtime that went away
+            # after the start is `runtime-absent`, nothing is claimed, nothing runs on this host (local-worker D6).
+            can = self.worker.can_it_isolate()
+            if not can.available:
+                raise wire.ProtocolError(wire.RUNTIME_ABSENT, "no isolating runtime here now (%s); nothing was "
+                                         "started" % (can.reason or can.backend))
+            with self._a_run_slot():
+                return self._run_at_most_once(job)
         if method == "result":
             return self._result(str(params.get("run_id") or ""),
                                 acknowledge=bool(params.get("acknowledge")))
@@ -595,6 +640,26 @@ class Bench:
             return _trust_install.install(self.tls, listed.encode("utf-8"), tombs.encode("utf-8"))
         except _trust_install.TrustRefused as refused:
             raise wire.ProtocolError(wire.BAD_PARAMS, "trust not installed: " + refused.reason) from refused
+
+    def _a_run_slot(self):
+        """One of `max_runs` run slots, or `worker-busy` at once: no queue here (local-worker D10/R6)."""
+        import contextlib
+
+        bench = self
+
+        @contextlib.contextmanager
+        def held():
+            with bench._in_flight_lock:
+                if getattr(bench, "_running", 0) >= int(bench.max_runs):
+                    raise wire.ProtocolError(wire.WORKER_BUSY, "this worker runs at most %d at once and keeps no "
+                                             "queue; the control plane's scheduler holds the waiting" % bench.max_runs)
+                bench._running = getattr(bench, "_running", 0) + 1
+            try:
+                yield
+            finally:
+                with bench._in_flight_lock:
+                    bench._running -= 1
+        return held()
 
     def in_flight(self):
         """(run_id, container_name) for every run this worker has started and not finished.
@@ -818,7 +883,8 @@ class CannotHoldItsLimits(RuntimeError):
 def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
           tls_address: str = "", tls=None,
           topology: str = _topology.SINGLE_HOST_DEVELOPMENT, keyring_path: str = "",
-          journal_at: str = "") -> None:
+          journal_at: str = "", dial: str = "", max_runs: int | None = None,
+          allow_loopback_dial: bool = False) -> None:
     """Start a worker on this machine and answer until something stops the process.
 
     `tls_address` and `tls` open the mutual-TLS door, TCP on loopback (`worker/tls.py`). Both or
@@ -831,7 +897,22 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
     door alone now opens only that one, and no socket file is created; a worker asked for
     neither is refused, because a worker nobody can reach is not a worker.
     """
-    if bool(tls_address) != bool(tls):
+    # LOCAL-WORKER SLICE 1: a worker that DIALS its control plane (`dial` = the hub's tcps:// address) under the
+    # reverse-session topology. It opens no socket file and no listening port at all; the TLS settings serve the
+    # connections it dials itself (`worker/dialback.py`).
+    if dial or topology == _topology.REVERSE_SESSION:
+        if not (dial and topology == _topology.REVERSE_SESSION):
+            raise ValueError("a dial-back worker is the reverse-session topology with the control plane's address, "
+                             "both or neither")
+        if address or tls_address or not tls:
+            raise ValueError("a dial-back worker listens nowhere (no socket, no TLS address) and needs its "
+                             "certificate settings to answer the connections it opens")
+        if not max_runs or int(max_runs) < 1:
+            raise ValueError("a dial-back worker runs at most its signed concurrency (max_runs >= 1)")
+        from agentnode_sdk.worker import dialback as _dialback
+
+        _dialback.control_endpoint(dial, allow_loopback=allow_loopback_dial)   # refused before anything else
+    elif bool(tls_address) != bool(tls):
         raise ValueError(
             "a TLS listener needs both an address and its certificate settings; one without the "
             "other is refused rather than started without its checks")
@@ -842,7 +923,7 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
     # BEFORE A RUNTIME IS TOUCHED. A worker for another machine that holds no per-pair key is
     # misconfigured, and finding that out after proving a memory ceiling wastes a minute and
     # buries the reason under other output.
-    if topology == _topology.SEPARATE_WORKER_HOST and not journal_at:
+    if topology in (_topology.SEPARATE_WORKER_HOST, _topology.REVERSE_SESSION) and not journal_at:
         from agentnode_sdk.worker import journal as _journal
 
         raise _journal.JournalRefused(
@@ -852,7 +933,7 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             "ordinary there, and each carries a fresh nonce, so nothing else would stop the "
             "same job running twice.",
             "Start it with --journal <directory> on the worker's own disk.")
-    if topology == _topology.SEPARATE_WORKER_HOST and not keyring_path:
+    if topology in (_topology.SEPARATE_WORKER_HOST, _topology.REVERSE_SESSION) and not keyring_path:
         from agentnode_sdk.worker import pairkeys as _pairkeys
 
         raise _pairkeys.KeyringRefused(
@@ -888,7 +969,18 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             "a worker is started for one account. Without one, anything that can reach the "
             "socket could ask it to run code, which is the thing the socket's permissions and "
             "this check exist to prevent.")
-    the_worker = worker or LocalWorker(ContainerBackend())
+    # A dial-back worker applies each job's own limits to its container (DECISION-0002); no other worker does.
+    the_worker = worker or LocalWorker(ContainerBackend(), apply_job_limits=bool(dial))
+    if dial:
+        # BEFORE ANY RUNTIME WORK OR DIAL: no isolating runtime -> connect to nothing, run nothing (runtime-absent).
+        from agentnode_sdk.worker import dialback as _dialback
+
+        print("  platform (as this agent sees it, a claim): %r" % (_dialback.platform_report(),), flush=True)
+        _dialback.refuse_without_isolation(the_worker)
+        secrets_kept = _dialback.private_state_problems(
+            [tls.key, keyring_path], [os.path.dirname(os.path.abspath(tls.key)), os.path.abspath(journal_at)])
+        if secrets_kept:
+            raise _dialback.DialRefused("secrets_not_private", "; ".join(secrets_kept))
 
     # WHAT A PREVIOUS WORKER LEFT, FIRST -- before the ceiling proof, before any namespace rebuild,
     # before anything else touches the runtime. This used to be the LAST thing the start did and it was
@@ -974,7 +1066,7 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
     # FALLBACK -- and a fallback that is never supposed to be used is one nobody notices being
     # used. It is None in that arrangement, and `converse` answers nothing without a pair key.
     shared_key = None
-    if not (topology == _topology.SEPARATE_WORKER_HOST and keyring_path):
+    if not (topology in (_topology.SEPARATE_WORKER_HOST, _topology.REVERSE_SESSION) and keyring_path):
         shared_key = wire.read_key(key_path)
     bench = Bench(the_worker, address, shared_key, only_uid,
                   remembers_at=remembers_at)
@@ -1037,6 +1129,23 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             from agentnode_sdk.worker.tls import own_instance
 
             listener.use_keyring(_pairkeys.Keyring.read(keyring_path), own_instance(tls))
+        if dial:
+            from agentnode_sdk.worker import dialback as _dialback
+
+            bench.max_runs = int(max_runs)
+            bench.features = (_dialback.FEATURE,)
+            agent = _dialback.DialBackAgent(listener, dial, slots=_dialback.slots_for(int(max_runs)),
+                                            allow_loopback=allow_loopback_dial)
+            print("  listening NOWHERE: %d dial-back slot(s) to the control plane at %s:%s, as %s, at most %d "
+                  "run(s) at once" % (agent.slots, agent.host, agent.port, bench.label, bench.max_runs), flush=True)
+            print("  it accepts gateway instance(s): " + ", ".join(sorted(tls.accept)), flush=True)
+            print("  this worker holds its own certificate and pair key only: no signing identity, no account, "
+                  "approval or client token.", flush=True)
+            try:
+                agent.serve_forever()
+            finally:
+                listener.stop_serving()
+            return
         host, port = listener.open()
         if address:
             threading.Thread(target=listener.serve_forever, daemon=True).start()

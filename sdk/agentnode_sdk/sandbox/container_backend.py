@@ -183,6 +183,25 @@ _HARDENED_FLAGS = [
     "--cpus", "1",
 ]
 
+def _with_job_ceilings(flags: list, limits: dict) -> list:
+    """The hardened flags with a job's OWN memory (memory and memory-swap equal) and CPU ceilings, when the spec
+    names them (`memory_mb`, `cpus`; local-worker DECISION-0002 -- only a dial-back worker sets them). Absent keys:
+    the flags exactly as they are. A value that is not a positive number is refused, never passed on."""
+    out = list(flags)
+    if "memory_mb" in limits:
+        mb = int(limits["memory_mb"])
+        if mb <= 0:
+            raise SandboxRequiredError("a memory ceiling is a positive number of MiB")
+        for flag in ("--memory", "--memory-swap"):
+            out[out.index(flag) + 1] = "%dm" % mb
+    if "cpus" in limits:
+        cpus = float(limits["cpus"])
+        if not cpus > 0:
+            raise SandboxRequiredError("a CPU ceiling is a positive number of cores")
+        out[out.index("--cpus") + 1] = "%g" % cpus
+    return out
+
+
 _PROBE_TIMEOUT = 5  # seconds; check_available must stay fast (no long ops, no pull)
 
 # EM3B-R1-REVIEW-0003 / F1. "The container is gone" and "I could not find out" are different
@@ -373,7 +392,7 @@ class ContainerBackend(SandboxBackend):
         argv = [rt, "run"]
         if spec.interactive:
             argv.append("-i")
-        argv += list(_HARDENED_FLAGS)
+        argv += _with_job_ceilings(list(_HARDENED_FLAGS), spec.limits or {})
 
         # Writable /tmp under the read-only rootfs; size overridable via
         # spec.limits["tmp_size"] (the toolpack BUILD bumps this for large PEP-517

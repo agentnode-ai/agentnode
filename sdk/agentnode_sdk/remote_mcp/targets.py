@@ -117,10 +117,23 @@ def digest(obj: Any) -> str:
     return hashlib.sha256(canonical(obj)).hexdigest()
 
 
+#: local-worker slice 1: a worker that dials out (`reverse://<instance>`), owned by an account AND by the device it
+#: was paired from. Only such an entry carries `device_id`; every other entry is byte-for-byte as before.
+REVERSE_SESSION = "reverse-session"
+REVERSE_WORKER_KEYS = WORKER_KEYS + ("device_id",)
+
+
+def is_reverse(worker: dict[str, Any]) -> bool:
+    return isinstance(worker, dict) and worker.get("topology") == REVERSE_SESSION
+
+
 def endpoint_digest(worker: dict[str, Any]) -> str:
-    """What the control plane dials and whom it expects there -- never the key material."""
-    return digest({k: worker.get(k) for k in ("address", "deployment", "instance", "identity_uri",
-                                              "topology", "protocols")})
+    """What the control plane dials and whom it expects there -- never the key material. A reverse target's device
+    is part of it, so re-pairing or replacing the device is a new endpoint (and voids outstanding approvals)."""
+    keys = ("address", "deployment", "instance", "identity_uri", "topology", "protocols")
+    if is_reverse(worker):
+        keys = keys + ("device_id",)
+    return digest({k: worker.get(k) for k in keys})
 
 
 @dataclass(frozen=True)
@@ -173,11 +186,23 @@ class Target:
         return digest({"assurance": self.assurance, "properties": self.properties})
 
     def binding(self, requirements_digest: str) -> dict[str, Any]:
-        """The canonical target binding that goes into the invocation nonce (Codex D2)."""
-        return {"target_id": self.target_id, "worker_identity_uri": self.identity_uri,
-                "endpoint_digest": self.endpoint_digest, "requirements_digest": requirements_digest,
-                "properties_digest": self.properties_digest, "attestation_assurance": self.assurance,
-                "target_generation": self.facts_generation}
+        """The canonical target binding that goes into the invocation nonce (Codex D2); a reverse target's
+        device is in it by name too (local-worker D7)."""
+        out = {"target_id": self.target_id, "worker_identity_uri": self.identity_uri,
+               "endpoint_digest": self.endpoint_digest, "requirements_digest": requirements_digest,
+               "properties_digest": self.properties_digest, "attestation_assurance": self.assurance,
+               "target_generation": self.facts_generation}
+        if self.is_reverse:
+            out["device_id"] = self.device_id
+        return out
+
+    @property
+    def is_reverse(self) -> bool:
+        return is_reverse(self.worker)
+
+    @property
+    def device_id(self) -> str:
+        return str(self.worker.get("device_id") or "") if self.is_reverse else ""
 
     def visible_to(self, account: str) -> bool:
         return self.type == MANAGED or (self.owner_account is not None and self.owner_account == account)
@@ -240,10 +265,18 @@ def _validate_entry(tid: str, e: Any) -> list[str]:
                                         or float(e["expires_at"]) <= float(e["created_at"] or 0)):
         errs.append(f"target {tid!r} has an invalid expiry")
     w = e["worker"]
-    if not isinstance(w, dict) or set(w) != set(WORKER_KEYS):
-        errs.append(f"target {tid!r} worker must carry exactly {sorted(WORKER_KEYS)}")
+    keys = REVERSE_WORKER_KEYS if is_reverse(w) else WORKER_KEYS
+    if not isinstance(w, dict) or set(w) != set(keys):
+        errs.append(f"target {tid!r} worker must carry exactly {sorted(keys)}")
     else:
-        if not str(w["address"]).startswith("tcps://"):
+        if is_reverse(w):
+            if e["type"] != CUSTOMER:
+                errs.append(f"target {tid!r} a reverse worker is a customer target")
+            if w["address"] != "reverse://%s" % w["instance"]:
+                errs.append(f"target {tid!r} reverse worker address must be reverse://<its instance>")
+            if not (isinstance(w["device_id"], str) and 3 <= len(w["device_id"]) <= 128):
+                errs.append(f"target {tid!r} reverse worker must name the device it was paired from")
+        elif not str(w["address"]).startswith("tcps://"):
             errs.append(f"target {tid!r} worker address must be a literal tcps:// address")
         uri = "agentnode://%s/worker/%s" % (w["deployment"], w["instance"])
         if w["identity_uri"] != uri:
@@ -556,7 +589,8 @@ class Register:
 
     @staticmethod
     def _new_entry(spec: dict, *, generation: int) -> dict:
-        worker = {k: copy.deepcopy(spec["worker"][k]) for k in WORKER_KEYS}
+        keys = REVERSE_WORKER_KEYS if is_reverse(spec["worker"]) else WORKER_KEYS
+        worker = {k: copy.deepcopy(spec["worker"][k]) for k in keys}
         return {"target_id": spec["target_id"], "type": spec["type"], "owner_account": spec.get("owner_account"),
                 "created_at": float(spec["created_at"]), "status": spec["status"],
                 "expires_at": spec.get("expires_at"), "worker": worker, "endpoint_digest": endpoint_digest(worker),

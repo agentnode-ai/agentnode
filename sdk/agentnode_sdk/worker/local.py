@@ -47,11 +47,23 @@ class LocalWorker(Worker):
 
     topology = SINGLE_HOST_DEVELOPMENT
 
-    def __init__(self, backend) -> None:
+    def __init__(self, backend, *, apply_job_limits: bool = False) -> None:
         #: What actually isolates a job. Held here and nowhere else: a gateway that could reach
         #: it would be a gateway that has to be where it is.
         self.backend = backend
         self._version_cache: str | None = None
+        #: local-worker DECISION-0002: a dial-back worker gives each job the memory, CPU and storage its own
+        #: `Limits` name (and nothing more); every other worker keeps the backend's fixed ceilings, unchanged.
+        self.apply_job_limits = bool(apply_job_limits)
+
+    def _limits_for(self, job: Job) -> dict:
+        if not self.apply_job_limits:
+            return {}
+        lim = job.limits
+        out = {"memory_mb": str(int(lim.memory_mb)), "cpus": "%g" % float(lim.cpu)}
+        if int(lim.storage_mb or 0) > 0:
+            out["tmp_size"] = "%dm" % int(lim.storage_mb)
+        return out
 
     # ------------------------------------------------------------------ what it is
 
@@ -225,6 +237,7 @@ class LocalWorker(Worker):
             clean_home=True,
             interactive=True,
             name=job.container_name,
+            limits=self._limits_for(job),
         )
         trouble = None
         result = None
