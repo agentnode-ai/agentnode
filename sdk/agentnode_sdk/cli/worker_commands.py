@@ -657,6 +657,11 @@ def cmd_pair(args) -> int:
     if not (getattr(args, "pins", "") and getattr(args, "state_dir", "")):
         print("  agentnode worker pair --pins <file> --state-dir <dir> [--name <n>] [--concurrency 1] [--queue 2]")
         return 2
+    if sys.platform.startswith("win"):
+        # a worker never runs on Windows itself (Codex D9): no key is made here, nothing is asked of the control plane
+        print("  Not paired: runtime-absent (native Windows runs no worker; install-agentnode-worker.ps1 sets one up "
+              "inside WSL2)")
+        return 1
     try:
         _pairing.pair(args.pins, args.state_dir, name=str(args.name or "worker"),
                       concurrency=int(args.concurrency), queue=int(args.queue))

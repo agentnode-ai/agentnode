@@ -32,7 +32,25 @@ def main(argv=None) -> int:
     p.add_argument("--probe-slot-socket", default=None,
                    help="the root-only Unix socket renewal probes take their run slot from "
                         "(default /run/agentnode-mcp/probe-slot.sock); a path, never a network address")
+    p.add_argument("--limits-file", default=None,
+                   help="an operator's JSON object overriding named fields of remote_mcp.limits.Limits (absent: the "
+                        "decided defaults); an unknown field or a non-number is refused at start")
     args = p.parse_args(argv)
+    limits = None
+    if args.limits_file:
+        import dataclasses
+        import json as _json
+
+        from agentnode_sdk.remote_mcp.limits import Limits
+
+        with open(args.limits_file, encoding="utf-8") as fh:
+            over = _json.load(fh)
+        known = {f.name: f.type for f in dataclasses.fields(Limits)}
+        if not isinstance(over, dict) or set(over) - set(known) or not all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in over.values()):
+            raise SystemExit("--limits-file names an unknown limit or a value that is not a positive number")
+        limits = Limits(**over)
+        print("limits overridden by %s: %s" % (args.limits_file, ", ".join(sorted(over))), flush=True)
 
     # Optional preregistered OAuth clients (client_id -> [redirect_uri,...]) from a stand file.
     # CIMD stays the primary dynamic path; this is for a named, pre-agreed client whose metadata
@@ -49,7 +67,7 @@ def main(argv=None) -> int:
         args.stand, resource=args.resource, issuer=args.issuer,
         allowed_hosts=tuple(args.allowed_hosts), gateway_dir=args.gateway_dir,
         console_url=args.console_url, allowed_origins=tuple(args.allowed_origins),
-        preregistered=prereg, probe_slot_path=args.probe_slot_socket)
+        preregistered=prereg, probe_slot_path=args.probe_slot_socket, limits=limits)
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning", lifespan="on")
     return 0

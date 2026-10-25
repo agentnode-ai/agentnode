@@ -34,7 +34,8 @@ PLATFORMS = ("any", "linux-x86_64", "windows-x86_64", "wsl-rocky10-x86_64")
 KEYS = ("schema", "channel", "release_seq", "min_release_seq", "version", "git_commit", "issued_at", "expires_at",
         "compat", "pins", "artifacts")
 ARTIFACT_KEYS = ("name", "kind", "platform", "sha256", "size", "source", "version")
-_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+~-]{0,200}\Z")
+#: an artifact's file name: no path, no space; `^` and `~` appear in RPM versions (`passt-0^20251210...`)
+_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+~^-]{0,200}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 

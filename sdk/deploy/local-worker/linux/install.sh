@@ -123,6 +123,10 @@ PODMAN_MIN=$(jq_ "$WORK/release.json" '["compat"]["podman_min"]')
 IMAGE=$(jq_ "$WORK/release.json" '["compat"]["sandbox_image"]')
 
 # ---- 3. what this machine must already be, BEFORE anything is changed --------------------------------------------
+# this beta supports the rpm-based distribution its manifest names (Rocky/RHEL 10): the id-mapping helpers are checked
+# against EXACTLY the shadow-utils package the release was measured with
+command -v rpm >/dev/null 2>&1 || refuse release_platform_mismatch "this release supports Rocky/RHEL 10 (rpm) only"
+SHADOW=$(jq_ "$WORK/release.json" '["compat"]["shadow_utils"]')
 command -v podman >/dev/null 2>&1 || refuse runtime-absent "podman is not installed"
 PV=$(podman --version 2>/dev/null | sed -n 's/^podman version \([0-9][0-9.]*\).*/\1/p')
 python3 -I -c "import sys; a=[int(x) for x in sys.argv[1].split('.')]; b=[int(x) for x in sys.argv[2].split('.')]; sys.exit(0 if a>=b else 1)" \
@@ -138,14 +142,9 @@ for pair in newuidmap:cap_setuid newgidmap:cap_setgid; do
     P=$(command -v $h) || refuse subid_unavailable "$h is missing"
     [ "$(stat -c '%U:%G %a' "$P")" = "root:root 755" ] || refuse runtime_identity_unsafe "$P is not root:root 0755"
     [ "$(getcap "$P" | sed 's/^[^ ]* //')" = "$cap=ep" ] || refuse runtime_identity_unsafe "$P does not carry exactly $cap=ep"
-    if command -v rpm >/dev/null 2>&1; then
-        rpm -qf "$P" 2>/dev/null | grep -q '^shadow-utils-' || refuse runtime_identity_unsafe "$P is not shadow-utils'"
-        rpm -V shadow-utils 2>/dev/null | grep -q " $P\$" && refuse runtime_identity_unsafe "$P differs from its package"
-    elif command -v dpkg >/dev/null 2>&1; then
-        dpkg -S "$P" 2>/dev/null | grep -q '^uidmap:' || refuse runtime_identity_unsafe "$P is not the uidmap package's"
-    else
-        refuse runtime_identity_unsafe "no package database to check $P against"
-    fi
+    [ ! -L "$P" ] && [ -f "$P" ] || refuse runtime_identity_unsafe "$P is not a regular file"
+    [ "$(rpm -qf "$P" 2>/dev/null)" = "$SHADOW" ] || refuse runtime_identity_unsafe "$P is not owned by $SHADOW"
+    rpm -V "$SHADOW" 2>/dev/null | grep -q " $P\$" && refuse runtime_identity_unsafe "$P differs from $SHADOW"
 done
 command -v systemctl >/dev/null 2>&1 || refuse release_platform_mismatch "systemd is required"
 PYV=$(python3 -I -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')
@@ -162,7 +161,7 @@ done
 "$REL/venv/bin/pip" check --disable-pip-version-check >/dev/null || refuse release_manifest_invalid "the wheel set is incomplete"
 DIST=$(ls -d "$REL"/venv/lib/python3.12/site-packages/agentnode_sdk-*.dist-info)
 printf '%s\n' "$SDKSHA" > "$DIST/AGENTNODE_ARTEFACT"
-cp "$HERE/manifest.json" "$HERE/manifest.sig" "$REL/"
+cp "$HERE/manifest.json" "$HERE/manifest.sig" "$HERE/check-runtime.sh" "$REL/"
 chmod -R a+rX,go-w "$REL"
 echo "  installed release $SEQ into $REL"
 
@@ -240,6 +239,11 @@ User=agentnode-agent
 Group=agentnode-agent
 WorkingDirectory={S}
 Environment=HOME={S} XDG_RUNTIME_DIR=/run/user/{uid} TMPDIR={S}/tmp PYTHONUNBUFFERED=1
+StateDirectory=agentnode-agent
+StateDirectoryMode=0700
+# before EVERY start, as root and before podman is touched: helpers, account, user manager, runtime dir, delegation,
+# and that the limits are actually enforced (Codex D8) -- a refusal here means the agent never starts
+ExecStartPre=+/bin/sh /opt/agentnode-agent/current/check-runtime.sh /opt/agentnode-agent/current
 ExecStart={cmd}
 Restart=on-failure
 RestartSec=10
@@ -291,6 +295,7 @@ PY
 if [ "$MODE" = update ]; then
     [ -f "$STATE/tls/target.json" ] || refuse release_manifest_invalid "nothing to update: not paired"
     PREV=$(readlink "$OPT/current" || true)
+    sh "$REL/check-runtime.sh" "$REL" || exit 2
     raise_floor
     systemctl stop agentnode-agent.service          # SIGTERM: drain (no new run; running ones end within bounds)
     switch_to "$REL"
@@ -329,6 +334,7 @@ asuser /usr/bin/podman image exists "$IMAGE" || asuser /usr/bin/podman pull --qu
     || refuse runtime-absent "the pinned sandbox image could not be fetched"
 asuser /usr/bin/podman run --rm --network none --user 1000:1000 "$IMAGE" /bin/true \
     || refuse runtime-absent "a rootless container does not start for $U"
+sh "$REL/check-runtime.sh" "$REL" || exit 2
 cat > /etc/systemd/system/agentnode-agent-floor.service <<EOF
 [Unit]
 Description=AgentNode local worker: root's time floor for its identity
