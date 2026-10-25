@@ -334,7 +334,9 @@ def test_the_wsl_step_refuses_a_changed_manifest_or_rpm_before_any_rpm_call(tmp_
 
     def run(want):
         return subprocess.run(["sh", str(script), want, "--verify-only", str(b)], capture_output=True, text=True)
-    assert "REFUSED release_signature_invalid" in run("0" * 64).stdout
+    # the manifest refusal by its own words: on a Rocky host an rpm -K refusal later would carry the same code
+    assert "REFUSED release_signature_invalid: the manifest in the distribution is not the one Windows verified" \
+        in run("0" * 64).stdout
     assert "REFUSED release_manifest_invalid" in run("").stdout
     (b / "a.rpm").write_bytes(b"rpm two")
     assert "REFUSED artifact_hash_mismatch: a.rpm" in run(good).stdout
