@@ -527,3 +527,12 @@ def test_a_revoked_worker_certificate_is_not_parkable(edge):
     edge.world.tick()
     time.sleep(0.5)
     assert _raw_request(edge, _head(_proof_headers(edge))) == (403, "edge_not_parkable")
+
+
+def test_an_expired_worker_certificate_is_refused_at_the_edge(edge):
+    """README section 11: a paired worker's certificate is not renewed in this beta; at expiry the edge refuses it
+    (fail-closed) -- a certificate of this deployment's CA for the target's own instance, but outside its validity."""
+    forged = edge.world.forge("expired", uri="agentnode://alpha/worker/%s" % INST, usages=["1.3.6.1.5.5.7.3.1"],
+                              not_after_days=-1, not_before_days=-30)
+    h = _proof_headers(edge, tls=edge.world.settings(forged, {GW}, role="worker"))
+    assert _raw_request(edge, _head(h)) == (401, "edge_proof_invalid")
