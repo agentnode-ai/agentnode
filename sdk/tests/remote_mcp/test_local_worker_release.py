@@ -355,6 +355,7 @@ def test_a_rollback_restores_the_rolled_back_releases_pins():
     assert 'install -o root -g root -m 0644 "$1/pins.json" "$ETC/pins.json.next"' in body
     assert 'mv -T "$ETC/pins.json.next" "$ETC/pins.json"' in body
     inside = [w for w in writes if s.index("switch_to() {") < w < s.index("switch_to() {") + len(body)]
-    writers = [w for w in writes if w not in inside and re.match(r'.*(install|cp|mv|>)', s[s.rfind("\n", 0, w):w])]
-    assert writers == [], [s[s.rfind("\n", 0, w):w + 20] for w in writers]
+    writers = [w for w in writes if w not in inside and re.match(r'.*(install|cp|mv|>)', s[s.rfind("\n", 0, w) + 1:w])]
+    assert writers == [], [s[s.rfind("\n", 0, w) + 1:w + 20] for w in writers]
+    assert len(inside) >= 2                                              # the pattern does find the switch's own
     assert 'cp "$WORK/pins.json" "$REL/pins.json"' in s
