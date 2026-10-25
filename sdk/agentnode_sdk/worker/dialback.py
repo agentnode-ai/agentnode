@@ -159,7 +159,17 @@ class DialBackAgent:
     def __init__(self, listener, control: str, *, slots: int, say=None, allow_loopback: bool = False,
                  idle: float = IDLE_SECONDS, dial=None, rate: float = MAX_DIALS_PER_SECOND) -> None:
         self.listener = listener
-        self.host, self.port = control_endpoint(control, allow_loopback=allow_loopback)
+        if str(control or "").startswith("https://"):
+            # slice 2: the public 443 path. The name is dialled through `dial` (an `edge.EdgeDialer`), which runs the
+            # outer TLS and the upgrade; the slot after it is this one, unchanged.
+            from agentnode_sdk.worker import edge as _edge
+
+            if dial is None:
+                raise DialRefused("control_address_unusable", "the 443 path is dialled through its edge dialer")
+            url = _edge.control_url(control)
+            self.host, self.port = url.host, url.port
+        else:
+            self.host, self.port = control_endpoint(control, allow_loopback=allow_loopback)
         self.slots = max(1, int(slots))
         self.idle = float(idle)
         self.say = say or (lambda text: print(text, flush=True))
@@ -203,7 +213,7 @@ class DialBackAgent:
                 self.failed_dials += 1
                 backoff = min(BACKOFF_MAX, max(BACKOFF_MIN, backoff * 2 or BACKOFF_MIN))
                 self.say("  the control plane could not be reached (%s); next try within %.1f s"
-                         % (type(exc).__name__, backoff))
+                         % (getattr(exc, "code", "") or type(exc).__name__, backoff))
                 self._stopped.wait(random.uniform(0.0, backoff))   # full jitter
                 continue
             _keepalive(raw)

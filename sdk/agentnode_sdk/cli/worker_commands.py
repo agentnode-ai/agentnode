@@ -614,7 +614,8 @@ def cmd_connect(args) -> int:
         return 1
     control = str(getattr(args, "control", "") or "")
     if not (control and keyring_at and getattr(args, "journal", "") and int(getattr(args, "max_runs", 0) or 0) >= 1):
-        print("  agentnode worker connect --control tcps://<hub-ip>:<port> --max-runs <n> --keyring <file> \\")
+        print("  agentnode worker connect --control https://<name> | tcps://<hub-ip>:<port> --max-runs <n> \\")
+        print("                           [--pins <file> --target-json <file>] --keyring <file> \\")
         print("                           --journal <dir> --tls-dir <dir> --trust <ca.pem> --deployment <id> \\")
         print("                           --accept-gateway <instance> --revocation-list <file> --tombstones <file> \\")
         print("                           --floor <file>")
@@ -630,7 +631,8 @@ def cmd_connect(args) -> int:
     print(f"  {bold('AgentNode dial-back worker')}: it listens nowhere and connects out to {control}.")
     try:
         serve("", "", None, tls=tls, topology=REVERSE_SESSION, keyring_path=keyring_at,
-              journal_at=str(args.journal), dial=control, max_runs=int(args.max_runs))
+              journal_at=str(args.journal), dial=control, max_runs=int(args.max_runs),
+              pins_path=str(getattr(args, "pins", "") or ""), target_path=str(getattr(args, "target_json", "") or ""))
     except KeyboardInterrupt:                                 # pragma: no cover - operator
         print("\n  stopped.")
         return 0
@@ -778,9 +780,14 @@ def add_parser(subparsers) -> None:
     # local-worker slice 1: the same arguments, plus where to dial and how many runs at once; never --listen.
     dial = actions.add_parser("connect", help="Dial the control plane's reverse hub; listen nowhere")
     the_same_arguments(dial)
-    dial.add_argument("--control", default="", metavar="ADDRESS", help="tcps://<hub-ip>:<port>")
+    dial.add_argument("--control", default="", metavar="ADDRESS",
+                      help="https://mcp.agentnode.net (slice 2), or tcps://<hub-ip>:<port> on a private stand")
     dial.add_argument("--max-runs", dest="max_runs", type=int, default=0, metavar="N",
                       help="the target's signed concurrency")
+    # slice 2: what the signed release pinned, and the operator-signed target this worker was paired as
+    dial.add_argument("--pins", default="", metavar="FILE", help="the installed release pins (https only)")
+    dial.add_argument("--target-json", dest="target_json", default="", metavar="FILE",
+                      help="the operator-signed target.json from pairing (https only)")
 
     # WHAT THE RUNTIME UNIT CALLS. It takes none of the arguments above: it needs no door, no keyring
     # and no trust material, because removing what this account owns is not about who may speak here.

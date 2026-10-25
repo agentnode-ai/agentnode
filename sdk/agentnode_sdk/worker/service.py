@@ -882,11 +882,29 @@ class CannotHoldItsLimits(RuntimeError):
         self.evidence = dict(evidence or {})
 
 
+def _edge_material(tls):
+    """(key, certificate DER, instance) for one 443 slot proof, read afresh each dial so a renewed certificate is
+    used at once (local-worker slice 2)."""
+    def material():
+        from cryptography import x509
+        from cryptography.hazmat.primitives.serialization import Encoding, load_pem_private_key
+
+        from agentnode_sdk.worker.tls import own_instance
+
+        with open(tls.key, "rb") as fh:
+            key = load_pem_private_key(fh.read(), password=None)
+        with open(tls.certificate, "rb") as fh:
+            der = x509.load_pem_x509_certificate(fh.read()).public_bytes(Encoding.DER)
+        return key, der, own_instance(tls)
+    return material
+
+
 def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
           tls_address: str = "", tls=None,
           topology: str = _topology.SINGLE_HOST_DEVELOPMENT, keyring_path: str = "",
           journal_at: str = "", dial: str = "", max_runs: int | None = None,
-          allow_loopback_dial: bool = False) -> None:
+          allow_loopback_dial: bool = False, pins_path: str = "", target_path: str = "",
+          edge_connect=None) -> None:
     """Start a worker on this machine and answer until something stops the process.
 
     `tls_address` and `tls` open the mutual-TLS door, TCP on loopback (`worker/tls.py`). Both or
@@ -913,7 +931,27 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             raise ValueError("a dial-back worker runs at most its signed concurrency (max_runs >= 1)")
         from agentnode_sdk.worker import dialback as _dialback
 
-        _dialback.control_endpoint(dial, allow_loopback=allow_loopback_dial)   # refused before anything else
+        if dial.startswith("https://"):
+            # slice 2, the public 443 path: before anything else, the name, a configured proxy, and that the signed
+            # release's pins, the operator-signed target.json, the anchor on disk and these arguments all agree
+            from agentnode_sdk.worker import edge as _edge
+            from agentnode_sdk.worker import pins as _pins
+
+            try:
+                _edge.control_url(dial)
+                _edge.refuse_configured_proxy()
+            except _edge.EdgeRefused as exc:
+                raise _dialback.DialRefused(exc.code, exc.detail) from None
+            if not (pins_path and target_path):
+                raise _dialback.DialRefused("pair_material_untrusted", "the 443 path needs the installed pins and "
+                                                                       "the signed target.json")
+            try:
+                _pins.check_installed(pins_path, target_path, tls.anchor, control=dial, deployment=tls.deployment,
+                                      accept=tls.accept)
+            except _pins.Untrusted as exc:
+                raise _dialback.DialRefused(exc.code, exc.detail) from None
+        else:
+            _dialback.control_endpoint(dial, allow_loopback=allow_loopback_dial)   # refused before anything else
     elif bool(tls_address) != bool(tls):
         raise ValueError(
             "a TLS listener needs both an address and its certificate settings; one without the "
@@ -1142,8 +1180,13 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
 
             bench.max_runs = int(max_runs)
             bench.features = (_dialback.FEATURE,)
+            dialer = None
+            if dial.startswith("https://"):
+                from agentnode_sdk.worker import edge as _edge
+
+                dialer = _edge.EdgeDialer(_edge.control_url(dial), _edge_material(tls), connect=edge_connect)
             agent = _dialback.DialBackAgent(listener, dial, slots=_dialback.slots_for(int(max_runs)),
-                                            allow_loopback=allow_loopback_dial)
+                                            allow_loopback=allow_loopback_dial, dial=dialer)
             print("  listening NOWHERE: %d dial-back slot(s) to the control plane at %s:%s, as %s, at most %d "
                   "run(s) at once" % (agent.slots, agent.host, agent.port, bench.label, bench.max_runs), flush=True)
             print("  it accepts gateway instance(s): " + ", ".join(sorted(tls.accept)), flush=True)
