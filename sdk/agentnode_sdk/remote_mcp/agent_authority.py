@@ -171,6 +171,12 @@ def mirror(stand, tls, out_dir, *, group: str = "") -> list[str]:
 
     out = Path(out_dir)
     written = []
+    trust = ((tls.anchor, "trust/ca.pem"), (tls.revocation_list, "trust/revoked.crl"),
+             (tls.identity_tombstones, "trust/revoked-identities.json"), (tls.floor, "trust/gateway.floor"))
+    unset = [rel for src, rel in trust if not src]
+    if unset:
+        # an unset path would be read as the working directory; refused before anything is copied
+        raise ValueError("the stand's worker settings name no file for %s" % ", ".join(unset))
 
     def put(src: Path, rel: str):
         dst = out / rel
@@ -193,8 +199,7 @@ def mirror(stand, tls, out_dir, *, group: str = "") -> list[str]:
             if not (out / "targets" / "history" / f.name).exists():          # history is append-only
                 put(f, "targets/history/" + f.name)
     put(Path(stand) / "operator_pub.hex", "operator_pub.hex")
-    for src, rel in ((tls.anchor, "trust/ca.pem"), (tls.revocation_list, "trust/revoked.crl"),
-                     (tls.identity_tombstones, "trust/revoked-identities.json"), (tls.floor, "trust/gateway.floor")):
+    for src, rel in trust:
         put(Path(src), rel)
     return written
 
