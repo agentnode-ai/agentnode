@@ -161,13 +161,24 @@ class ReverseHub:
     def start(self) -> None:
         if self._socket is None:
             self.open()
-        threading.Thread(target=self._accept_loop, name="reverse-hub", daemon=True).start()
+        self._acceptor = threading.Thread(target=self._accept_loop, name="reverse-hub", daemon=True)
+        self._acceptor.start()
         threading.Thread(target=self._reap_loop, name="reverse-hub-reap", daemon=True).start()
 
     def stop(self) -> None:
         self._stopped.set()
         if self._socket is not None:
+            # On Linux a listening socket another thread is blocked in accept() on is NOT released by close() until
+            # that accept returns; shutting it down first wakes the accept, so the address is free when stop returns
+            # (a hub restarted on the same port in the same process otherwise met EADDRINUSE).
+            try:
+                self._socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             _close(self._socket)
+            acceptor = getattr(self, "_acceptor", None)
+            if acceptor is not None and acceptor is not threading.current_thread():
+                acceptor.join(timeout=3.0)
         with self._cond:
             for pool in self._pools.values():
                 while pool:
