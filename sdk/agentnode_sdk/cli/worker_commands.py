@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 from agentnode_sdk.cli.output import bold
-from agentnode_sdk.worker import (SEPARATE_WORKER_HOST, SINGLE_HOST_DEVELOPMENT, TOPOLOGIES)
+from agentnode_sdk.worker import (REVERSE_SESSION, SEPARATE_WORKER_HOST, SINGLE_HOST_DEVELOPMENT, TOPOLOGIES)
 
 
 def cmd_key(args) -> int:
@@ -179,7 +179,7 @@ def _tls_from(args):
             "--floor and at least one --accept-gateway. Part of that is refused rather than "
             "started without its checks.")
     folder = pathlib.Path(args.tls_dir)
-    remote = str(getattr(args, "topology", "") or "") == SEPARATE_WORKER_HOST
+    remote = str(getattr(args, "topology", "") or "") in (SEPARATE_WORKER_HOST, REVERSE_SESSION)
     tombstones = str(getattr(args, "tombstones", "") or "")
     if remote and not tombstones:
         raise ValueError(
@@ -603,6 +603,49 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_connect(args) -> int:
+    """local-worker slice 1: a worker that DIALS its control plane's reverse hub and listens nowhere."""
+    from agentnode_sdk.worker.dialback import DialRefused
+    from agentnode_sdk.worker.reconcile import LeftoversRemain
+    from agentnode_sdk.worker.service import CannotHoldItsLimits, serve
+
+    keyring_at = str(getattr(args, "keyring", "") or "")
+    if _refuse_unless_pinned(pathlib.Path(keyring_at or "/etc/agentnode/x").parent, "worker"):
+        return 1
+    control = str(getattr(args, "control", "") or "")
+    if not (control and keyring_at and getattr(args, "journal", "") and int(getattr(args, "max_runs", 0) or 0) >= 1):
+        print("  agentnode worker connect --control tcps://<hub-ip>:<port> --max-runs <n> --keyring <file> \\")
+        print("                           --journal <dir> --tls-dir <dir> --trust <ca.pem> --deployment <id> \\")
+        print("                           --accept-gateway <instance> --revocation-list <file> --tombstones <file> \\")
+        print("                           --floor <file>")
+        return 2
+    args.topology = REVERSE_SESSION
+    args.listen = control                                    # what `_tls_from` asks for: the connections' address
+    try:
+        tls = _tls_from(args)
+    except ValueError as refusal:
+        print("  " + str(refusal))
+        return 2
+    print()
+    print(f"  {bold('AgentNode dial-back worker')}: it listens nowhere and connects out to {control}.")
+    try:
+        serve("", "", None, tls=tls, topology=REVERSE_SESSION, keyring_path=keyring_at,
+              journal_at=str(args.journal), dial=control, max_runs=int(args.max_runs))
+    except KeyboardInterrupt:                                 # pragma: no cover - operator
+        print("\n  stopped.")
+        return 0
+    except DialRefused as refused:
+        print("  This worker will not connect: %s (%s)" % (refused.code, refused.detail))
+        return 1
+    except (CannotHoldItsLimits, LeftoversRemain) as refusal:
+        print("  This worker will not connect: %s" % (getattr(refusal, "reason", "") or refusal))
+        return 1
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"  It did not start: {type(exc).__name__}: {exc}")
+        return 1
+    return 0
+
+
 def cmd_reconcile(args) -> int:
     """Remove everything of this worker's that no run is waiting for, and say whether that worked.
 
@@ -641,7 +684,7 @@ def cmd_reconcile(args) -> int:
 def dispatch(args) -> int:
     action = getattr(args, "worker_command", None)
     handlers = {"key": cmd_key, "serve": cmd_serve, "preflight": cmd_preflight,
-                "reconcile": cmd_reconcile}
+                "reconcile": cmd_reconcile, "connect": cmd_connect}
     if action not in handlers:
         print()
         print("  agentnode worker key       --at <path>")
@@ -732,6 +775,12 @@ def add_parser(subparsers) -> None:
         "serve", help="Listen for the one account, or the one gateway, that may speak here"))
     the_same_arguments(actions.add_parser(
         "preflight", help="Would this configuration serve? Opens nothing, starts nothing"))
+    # local-worker slice 1: the same arguments, plus where to dial and how many runs at once; never --listen.
+    dial = actions.add_parser("connect", help="Dial the control plane's reverse hub; listen nowhere")
+    the_same_arguments(dial)
+    dial.add_argument("--control", default="", metavar="ADDRESS", help="tcps://<hub-ip>:<port>")
+    dial.add_argument("--max-runs", dest="max_runs", type=int, default=0, metavar="N",
+                      help="the target's signed concurrency")
 
     # WHAT THE RUNTIME UNIT CALLS. It takes none of the arguments above: it needs no door, no keyring
     # and no trust material, because removing what this account owns is not about who may speak here.

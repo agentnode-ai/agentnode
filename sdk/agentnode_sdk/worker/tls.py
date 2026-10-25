@@ -436,6 +436,19 @@ def open_to_worker(address: str, settings: TlsSettings, contexts: Contexts,
     return connection, who, der
 
 
+def _readable_within(connection, seconds: float) -> bool:
+    """Whether a TLS connection has something to read (a request, or its peer's hang-up) within `seconds`."""
+    import select
+
+    if getattr(connection, "pending", lambda: 0)():
+        return True
+    try:
+        ready, _w, _x = select.select([connection], [], [], max(0.0, float(seconds)))
+    except (OSError, ValueError):
+        return True                                           # let the conversation find out what it is
+    return bool(ready)
+
+
 def _reason(exc: BaseException) -> str:
     """What OpenSSL said, without anything it quoted from a certificate."""
     return str(getattr(exc, "reason", "") or type(exc).__name__)
@@ -547,13 +560,26 @@ class TlsListener:
         connection.gateway_der = der                           # type: ignore[attr-defined]
         return connection
 
-    def _one(self, raw) -> None:
+    def _one(self, raw, idle: float | None = None) -> bool:
+        """One connection, one conversation. `idle` (the dial-back agent, local-worker D1): after the handshake
+        the connection is a parked slot at the control plane; it waits at most `idle` seconds for the one request
+        and is closed unused after that (replaced by a fresh one). Returns whether the handshake was admitted --
+        and, for a slot (`idle`), whether a request then arrived: a control plane that closes a slot straight after
+        the handshake (not eligible now, slots full) is a failed dial the agent backs off from, not a conversation."""
         connection = self.admit(raw)
         if connection is None:
-            return
+            return False
+        if idle is not None and not _readable_within(connection, idle):
+            try:
+                connection.close()
+            except OSError:                                   # pragma: no cover
+                pass
+            return True
         carrying: dict = {}
+        served = {"request": False}
 
         def noted(method: str, params: dict) -> None:
+            served["request"] = True
             # Which run this connection carries, if any -- so that a cut stops it (below).
             if method == "run":
                 job = params.get("job") or {}
@@ -579,7 +605,10 @@ class TlsListener:
             # WHO IS CALLING, from the certificate the handshake proved and from nothing the
             # caller sent. The lease is held by a named gateway, so the name has to come from
             # the same place the key does.
-            self.bench._caller = str(getattr(connection.gateway, "instance", "") or "")
+            # For THIS thread's conversation (`proved_caller`, a thread-local), never written on
+            # the shared bench, where another connection thread could overwrite it mid-request
+            # (local-worker D1/C7).
+            self.bench.proved_caller(str(getattr(connection.gateway, "instance", "") or ""))
             try:
                 for_this_caller = self._keys_for(connection.gateway)
             except _pairkeys.KeyringRefused as refused:
@@ -596,7 +625,9 @@ class TlsListener:
                 return
             self.bench.converse(connection, noted=noted, key=for_this_caller)
         finally:
+            self.bench.proved_caller(None)
             self.watch.remove(handle)
+        return True if idle is None else served["request"]
 
 
 __all__ = ["Contexts", "DEFAULT_REEVALUATE_SECONDS", "DEFAULT_RELOAD_SECONDS",

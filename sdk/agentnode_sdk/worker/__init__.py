@@ -65,7 +65,11 @@ SINGLE_HOST_DEVELOPMENT = "single-host-development"
 #: record carries is chosen from a list rather than written out at the place that happens to know.
 SEPARATE_WORKER_HOST = "separate-worker-host"
 
-TOPOLOGIES = (SINGLE_HOST_DEVELOPMENT, SEPARATE_WORKER_HOST)
+#: A worker on its own machine that DIALS OUT to the control plane (local-worker slice 1): it
+#: listens nowhere; the control plane reaches it only over connections the worker opened.
+REVERSE_SESSION = "reverse-session"
+
+TOPOLOGIES = (SINGLE_HOST_DEVELOPMENT, SEPARATE_WORKER_HOST, REVERSE_SESSION)
 
 #: What each topology does NOT protect against, in the record itself.
 #:
@@ -85,6 +89,11 @@ WHAT_A_TOPOLOGY_DOES_NOT_ESTABLISH = {
         "The worker is on its own machine. What that establishes has not been measured, because "
         "nothing has run in that arrangement yet; this text exists so a record made under it is "
         "not read as carrying a claim nobody checked."),
+    REVERSE_SESSION: (
+        "The worker is on a machine the customer controls and connects out to the control plane; "
+        "nothing reaches it inbound. What its isolation is worth is what the control plane observed "
+        "through those connections (customer_controlled_observed): a host its owner controls can "
+        "recognise a probe and behave for it."),
 }
 
 

@@ -119,6 +119,8 @@ ALREADY_RUNNING = "already-running"          # this run id is in flight here; it
 OUTCOME_UNKNOWN = "outcome-unknown"          # it was started and how it ended cannot be established
 RUN_ID_CONFLICT = "run-id-conflict"          # the same run id carrying different work
 JOURNAL_REFUSED = "journal-refused"          # the worker cannot write down what it is doing
+# local-worker slice 1: a dial-back worker runs at most its signed concurrency and keeps no queue of its own.
+WORKER_BUSY = "worker-busy"                  # every run slot it may use is taken; nothing was started
 
 #: EVERY code that may cross the wire. A code that is raised but missing from here is
 #: silently rewritten to INTERNAL by `refusal` below, which destroys the one fact a caller
@@ -141,7 +143,7 @@ ERRORS = (UNAUTHENTICATED, MALFORMED, STALE, REPLAY, ROLLED_BACK, TOO_LARGE, UNK
           BAD_PARAMS, DEADLINE_PASSED, RUNTIME_ABSENT, JOB_FAILED, NETWORK_UNAVAILABLE,
           NO_LEASE, NO_COMMON_PROTOCOL,
           ALREADY_RUNNING, OUTCOME_UNKNOWN, RUN_ID_CONFLICT, JOURNAL_REFUSED,
-          INTERNAL)
+          WORKER_BUSY, INTERNAL)
 
 
 class ProtocolError(Exception):

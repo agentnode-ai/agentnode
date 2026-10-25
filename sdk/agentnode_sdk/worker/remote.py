@@ -226,7 +226,7 @@ class SocketWorker(Worker):
             pass
 
     def _ask(self, method: str, params: dict, *, wait: float, run_id: str = "",
-             _lease_was_retaken: bool = False) -> object:
+             _lease_was_retaken: bool = False, open_budget: float | None = None) -> object:
         """One question and its answer, or a refusal that says which kind it is."""
         asked_with = params
         started_asking = time.time()
@@ -258,7 +258,7 @@ class SocketWorker(Worker):
             params["lease_epoch"] = self._hold_a_lease(wait=min(wait, QUICK_SECONDS))
         deadline = time.time() + wait
         body = wire.request(method, params, deadline=deadline)
-        connection, who = self._open()
+        connection, who = self._open(open_budget)
         if who is not None:
             # The identity THIS connection proved, noted before a byte is sent -- so that a run
             # whose connection is lost afterwards is still recorded against who was checked.
@@ -524,6 +524,11 @@ class SocketWorker(Worker):
                         epoch = self._lease_epoch
                     if epoch is None:
                         return
+                    if not self._may_renew():
+                        # local-worker D9: no renewal for a target that may not run now (account, device,
+                        # status, kill switch) -- its worker ends the run on its own clock at the lease bound.
+                        self._forget_the_lease()
+                        return
                     self._ask("renew_lease", {"lease_epoch": epoch}, wait=QUICK_SECONDS)
                 except Exception:                             # noqa: BLE001
                     # A missed beat is a busy machine or a blip. Several missed beats are what
@@ -533,6 +538,10 @@ class SocketWorker(Worker):
 
         self._heartbeat = threading.Thread(target=beat, name="worker-lease", daemon=True)
         self._heartbeat.start()
+
+    def _may_renew(self) -> bool:
+        """Whether the next renewal may be sent. Always, here; a dial-back target asks its hub (`ReverseWorker`)."""
+        return True
 
     def stop_leasing(self) -> None:
         """End the heartbeat. The lease lapses on the worker's own clock afterwards."""
@@ -745,9 +754,78 @@ class TlsWorker(SocketWorker):
         return self.transport, who.uri(), who.instance
 
 
+class ReverseWorker(SocketWorker):
+    """A worker that dialled the control plane (local-worker slice 1): the same line as `TlsWorker` -- MAC with the
+    pair's key chosen by the proved identity, describe/version, lease, one request per connection -- but `_open`
+    takes an exclusive SLOT the worker opened (`remote_mcp/reverse_hub`), never a dial. `hub` is the in-process
+    `ReverseHub` or a `RelayClient` to it; `may_run()` -> "" or a refusal code is asked before every lease renewal."""
+
+    transport = "reverse-mtls"
+    FEATURE = "reverse-session/1"
+
+    def __init__(self, address: str, hub, *, instance: str, may_run=None,
+                 run_margin: float = RUN_MARGIN_SECONDS, topology: str = "reverse-session") -> None:
+        super().__init__(address, b"", connect_timeout=10.0, run_margin=run_margin, topology=topology)
+        self._hub = hub
+        self._instance = str(instance)
+        self._may_run = may_run or (lambda: "")
+
+    def use_keyring(self, keyring, own_instance: str) -> None:
+        self._keyring = keyring
+        self._own_instance = str(own_instance)
+
+    def _open(self, budget: float | None = None):
+        from agentnode_sdk.remote_mcp.reverse_hub import SlotRefused
+
+        try:
+            connection, who = self._hub.checkout(self._instance, self.connect_timeout if budget is None else budget)
+        except SlotRefused as refused:
+            unreachable = WorkerUnreachable("the dial-back worker %s has no slot: %s" % (self._instance, refused))
+            unreachable.cause = refused.code
+            raise unreachable from refused
+        if str(getattr(who, "instance", "")) != self._instance:
+            try:
+                connection.close()
+            finally:
+                raise WorkerUnreachable("a slot proved another worker instance")
+        _ask_the_kernel_to_notice_a_dead_peer(connection)     # as `TlsWorker._open`: no reset is no answer
+        return connection, who
+
+    def confirm_reachable(self, budget: float | None = None) -> None:
+        """One authenticated round trip on one slot -- a `describe` the worker must ANSWER -- within `budget`.
+        A parked slot's age is not proof (Codex D2), and neither is a checkout alone: behind a NAT that drops
+        packets without a reset, a slot stays parked and looks alive while nothing behind it can answer, and a
+        dispatch admitted on it could only end `indeterminate`. So nothing is admitted until the worker spoke."""
+        allowed = max(1.0, float(self.connect_timeout if budget is None else budget))
+        self._ask("describe", {}, wait=allowed, open_budget=allowed)
+
+    def _agree_on_a_version(self, described: dict) -> str:
+        agreed = super()._agree_on_a_version(described)
+        if self.FEATURE not in [str(f) for f in (described.get("features") or ())]:
+            raise WorkerUnreachable("no-common-protocol: the worker does not speak %s, so nothing is sent"
+                                    % self.FEATURE)
+        return agreed
+
+    def _may_renew(self) -> bool:
+        try:
+            return not self._may_run()
+        except Exception:                                     # noqa: BLE001 - cannot judge: no renewal
+            return False
+
+    def instance_label(self) -> str:
+        self._describe()
+        return str(getattr(self._described_by, "instance", "") or "")
+
+    def who_ran(self, run_id: str) -> tuple[str, str, str]:
+        who = self._ran_on.get(run_id)
+        if who is None:
+            return self.transport, "", ""
+        return self.transport, who.uri(), who.instance
+
+
 def from_address(address: str, key: bytes | None, tls=None, *,
                  topology: str = SINGLE_HOST_DEVELOPMENT,
-                 keyring=None, own_instance: str = "") -> Worker:
+                 keyring=None, own_instance: str = "", hub=None, may_run=None) -> Worker:
     """The worker at this address. The only place that decides which transport is used.
 
     THE DECLARATION IS CHECKED FIRST, before any transport is chosen, so that a mismatch is a
@@ -778,6 +856,15 @@ def from_address(address: str, key: bytes | None, tls=None, *,
             "one.")
 
     parsed = urlparse(address or "")
+    if parsed.scheme == "reverse":
+        # A dial-back worker is never dialled: it is reached only through the hub's slots, or not at all.
+        if hub is None or keyring is None:
+            raise WorkerUnreachable("%r is a dial-back worker, reached only through the control plane's reverse "
+                                    "hub with its pair key; neither is a thing to fall back from" % address[:60])
+        worker = ReverseWorker(address, hub, instance=address[len("reverse://"):], may_run=may_run,
+                               topology=topology)
+        worker.use_keyring(keyring, own_instance)
+        return worker
     if parsed.scheme in ("unix", "unix+stream"):
         return SocketWorker(address, key or b"", topology=topology)
     if parsed.scheme == "tcps":

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import secrets
 import socket
 import threading
@@ -126,6 +127,167 @@ def wall_program(seconds: int) -> bytes:
     return _program("_t.sleep(%d)\n_emit({'slept': %d})\n" % (seconds, seconds))
 
 
+# ---------------------------------------------------------------------- dial-back targets (local-worker R3 / D-0002)
+REVERSE_MEMORY_USABLE_MB = 896
+STORAGE_WRITE_MB, STORAGE_PAST_MB = 448, 576
+CPU_SECONDS = 4
+
+
+def cpu_program(seconds: int) -> bytes:
+    """Two busy PROCESSES (not threads: one interpreter's threads share one core) for `seconds`; the cgroup's
+    quota and CPU usage as the job itself sees them."""
+    return _program(
+        "import os\n"
+        "def cg(p):\n    try:\n        return open(p).read().strip()\n    except Exception as e:\n        return type(e).__name__\n"
+        "def usage():\n    for line in open('/sys/fs/cgroup/cpu.stat'):\n"
+        "        if line.startswith('usage_usec'):\n            return int(line.split()[1])\n    return -1\n"
+        "u0 = usage(); t0 = _t.monotonic(); kids = []\n"
+        "for _ in range(2):\n    pid = os.fork()\n    if pid == 0:\n        end = _t.monotonic() + %d\n"
+        "        while _t.monotonic() < end:\n            pass\n        os._exit(0)\n    kids.append(pid)\n"
+        "for pid in kids:\n    os.waitpid(pid, 0)\n"
+        "wall = _t.monotonic() - t0; u1 = usage()\n"
+        "_emit({'cpu_max': cg('/sys/fs/cgroup/cpu.max'), 'usage_s': (u1 - u0) / 1e6, 'wall_s': wall,\n"
+        "       'cpus_visible': len(os.sched_getaffinity(0))})\n" % seconds)
+
+
+def storage_program(write_mb: int, past_mb: int) -> bytes:
+    return _program(
+        "import os, errno\n"
+        "def write(path, mb):\n    with open(path, 'ab') as f:\n        block = b'\\0' * (1 << 20)\n"
+        "        for _ in range(mb):\n            f.write(block)\n        f.flush(); os.fsync(f.fileno())\n"
+        "out = {}\n"
+        "try:\n    write('/tmp/agentnode-probe-a', %d); out['first'] = 'written'\n"
+        "except OSError as e:\n    out['first'] = errno.errorcode.get(e.errno, str(e.errno))\n"
+        "try:\n    write('/tmp/agentnode-probe-b', %d); out['past'] = 'written'\n"
+        "except OSError as e:\n    out['past'] = errno.errorcode.get(e.errno, str(e.errno))\n"
+        "_emit(out)\n" % (write_mb, past_mb - write_mb))
+
+
+def boundary_program() -> bytes:
+    """The platform and the isolation boundary as seen from INSIDE the job (observed, not reported)."""
+    return _program(
+        "import os\n"
+        "def read(p):\n    try:\n        return open(p).read()\n    except Exception as e:\n        return '!' + type(e).__name__\n"
+        "u = os.uname(); env = read('/run/.containerenv')\n"
+        "engine = ''\n"
+        "for line in env.splitlines():\n    if line.startswith('engine='):\n        engine = line.split('=', 1)[1].strip().strip('\"')\n"
+        # podman fills .containerenv only for a privileged container; for this one the file's existence is what
+        # can be observed (the engine family), and the version stays a claim (DECISION-0003)
+        "marker = 'podman' if not env.startswith('!') else ('docker' if os.path.exists('/.dockerenv') else '')\n"
+        "caps = [l.split()[1] for l in read('/proc/self/status').splitlines() if l.startswith('CapEff:')]\n"
+        "try:\n    open('/agentnode-probe-root', 'w').close(); rootfs = 'writable'\n"
+        "except OSError as e:\n    rootfs = 'refused'\n"
+        "pids = [d for d in os.listdir('/proc') if d.isdigit()]\n"
+        "pid1 = read('/proc/1/cmdline').split('\\0')[0]\n"
+        "_emit({'kernel': u.release, 'machine': u.machine, 'engine': engine, 'marker': marker,\n"
+        "       'uid_map': read('/proc/self/uid_map').split(), 'cap_eff': caps[0] if caps else '',\n"
+        "       'rootfs': rootfs, 'processes_visible': len(pids), 'pid1': pid1})\n")
+
+#: What PID 1 is on a host, never inside a job's own PID namespace.
+HOST_INITS = ("systemd", "/sbin/init", "/lib/systemd/systemd", "/usr/lib/systemd/systemd", "init")
+
+#: local-worker DECISION-0004 (Codex Q-LW-0002): the one runtime a dial-back target may run on in slice 1, and the
+#: oldest version the private stand proved. The ENGINE is observed in a job; the worker's VERSION is a claim that can
+#: only refuse -- it never establishes the engine, the platform, isolation or anything else.
+REVERSE_RUNTIME = "podman"
+MIN_PODMAN = (5, 8, 2)
+_CLAIM = re.compile(r"^podman ([0-9]+)\.([0-9]+)\.([0-9]+)$")
+_OBSERVED_ENGINE = re.compile(r"^(podman|docker)(?:[- ]v?([0-9]+)\.([0-9]+)\.([0-9]+))?$")
+
+
+def observed_engine(seen: dict) -> dict:
+    """The runtime engine as the boundary job saw it, and from where: `engine=` in .containerenv (normalised to its
+    family, with its version when it names one), else the file's existence (podman), else /.dockerenv (docker)."""
+    engine = str(seen.get("engine") or "").strip()
+    if engine:
+        m = _OBSERVED_ENGINE.match(engine)
+        if m is None:
+            return {"runtime_engine": "", "runtime_engine_source": "/run/.containerenv:engine-unrecognised"}
+        out = {"runtime_engine": m.group(1), "runtime_engine_source": "/run/.containerenv:engine"}
+        if m.group(2):
+            out["runtime_version_observed"] = "%s.%s.%s" % m.groups()[1:]
+        return out
+    marker = str(seen.get("marker") or "")
+    if marker == "podman":
+        return {"runtime_engine": "podman", "runtime_engine_source": "/run/.containerenv:marker"}
+    if marker == "docker":
+        return {"runtime_engine": "docker", "runtime_engine_source": "/.dockerenv:marker"}
+    return {"runtime_engine": "", "runtime_engine_source": ""}
+
+
+def claimed_runtime(raw) -> dict:
+    """The worker's own report, kept as a CLAIM: raw text, what the closed grammar parses out of it (or nothing)."""
+    text = str(raw or "")
+    m = _CLAIM.match(text.strip())
+    return {"runtime_engine": "podman" if m else "", "runtime_version": "%s.%s.%s" % m.groups() if m else "",
+            "runtime_version_raw": text, "runtime_version_source": "worker_claim", "runtime_version_verified": False}
+
+
+def _version(text) -> tuple | None:
+    parts = str(text or "").split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        return None
+    return tuple(int(p) for p in parts)
+
+
+def reverse_platform_failures(props: dict) -> list:
+    """["platform"] unless the OBSERVED kernel, machine and engine (podman) hold, an observed version (if any) and
+    the claimed version are both >= MIN_PODMAN, and the claim -- re-parsed from its raw text -- names the observed
+    family. A claim never compensates for a missing observation."""
+    p = props.get("platform") or {}
+    claim = claimed_runtime((props.get("reported_platform") or {}).get("runtime_version_raw"))
+    observed_version = p.get("runtime_version_observed")
+    ok = (bool(p.get("kernel")) and bool(p.get("machine")) and p.get("runtime_engine") == REVERSE_RUNTIME
+          and (observed_version is None or (_version(observed_version) or (0,)) >= MIN_PODMAN)
+          and claim["runtime_engine"] == p.get("runtime_engine")
+          and (_version(claim["runtime_version"]) or (0,)) >= MIN_PODMAN)
+    return [] if ok else ["platform"]
+
+
+def _reverse_observations(worker, prefix: str) -> tuple[dict, dict]:
+    """(results, properties) of the extra probes a dial-back target must pass; every value observed in a job."""
+    results: dict = {}
+    usable = _said(worker.run(_job(memory_program(REVERSE_MEMORY_USABLE_MB),
+                                   Limits(memory_mb=JOB_MEMORY_MB, wall_clock_s=60, storage_mb=64),
+                                   prefix + "-memory-usable")))
+    results["memory_usable"] = {"allocated_mb": (usable or {}).get("allocated_mb"), "ran": usable is not None}
+    cpu = _said(worker.run(_job(cpu_program(CPU_SECONDS), Limits(cpu=1.0, memory_mb=256, wall_clock_s=60,
+                                                                 storage_mb=64), prefix + "-cpu"))) or {}
+    results["cpu"] = cpu
+    # the negative control: the same program allowed two cores must use more than one -- else the measurement
+    # cannot see beyond one core, and a one-core quota "observed" through it would prove nothing (R3)
+    control = _said(worker.run(_job(cpu_program(CPU_SECONDS), Limits(cpu=2.0, memory_mb=256, wall_clock_s=60,
+                                                                     storage_mb=64), prefix + "-cpu-control"))) or {}
+    results["cpu_control"] = control
+    store = _said(worker.run(_job(storage_program(STORAGE_WRITE_MB, STORAGE_PAST_MB),
+                                  Limits(memory_mb=JOB_MEMORY_MB, wall_clock_s=90, storage_mb=JOB_STORAGE_MB),
+                                  prefix + "-storage"))) or {}
+    results["storage"] = store
+    seen = _said(worker.run(_job(boundary_program(), Limits(memory_mb=128, wall_clock_s=30, storage_mb=64),
+                                 prefix + "-boundary"))) or {}
+    results["boundary"] = seen
+    wall = float(cpu.get("wall_s") or 0) or 1.0
+    usage = float(cpu.get("usage_s") or 0)
+    one_core = str(cpu.get("cpu_max") or "").split()[:2] == ["100000", "100000"]
+    control_wall = float(control.get("wall_s") or 0) or 1.0
+    control_seen = float(control.get("usage_s") or 0) >= 1.5 * control_wall
+    cpu_ok = (one_core and int(cpu.get("cpus_visible") or 0) >= 2 and 0.5 * wall <= usage <= 1.25 * wall
+              and control_seen)
+    uid_map = list(seen.get("uid_map") or [])
+    isolation_ok = (uid_map[:3] != ["0", "0", "4294967295"] and len(uid_map) >= 3
+                    and str(seen.get("cap_eff") or "") == "0000000000000000" and seen.get("rootfs") == "refused"
+                    and 0 < int(seen.get("processes_visible") or 0) <= 16
+                    and str(seen.get("pid1") or "") not in HOST_INITS + ("",))
+    storage_ok = store.get("first") == "written" and store.get("past") in ("ENOSPC", "EDQUOT")
+    properties = {"cpu_quota_enforced": bool(cpu_ok), "isolation_observed": bool(isolation_ok),
+                  "storage_mb": JOB_STORAGE_MB if storage_ok else 0,
+                  # OBSERVED only: kernel, machine and the engine (with its version where the job can see it);
+                  # never the worker's own report, which is kept apart as a claim (DECISION-0004)
+                  "platform": {"kernel": str(seen.get("kernel") or ""), "machine": str(seen.get("machine") or ""),
+                               **observed_engine(seen)}}
+    return results, properties
+
+
 def _job(program: bytes, limits: Limits, run_id: str) -> Job:
     payload = base64.b64encode(program).decode("ascii")
     return Job(run_id=run_id, container_name="agentnode-probe-" + uuid.uuid4().hex[:12],
@@ -180,9 +342,14 @@ def probe(target: T.Target, worker, canary: Canary, *, now: float | None = None)
     wall = _said(out)
     results["wall_clock"] = {"killed": wall is None, "elapsed_s": round(elapsed, 2),
                              "within_bound": elapsed < WALL_PROBE_S * 4}
+    reverse = bool(getattr(target, "is_reverse", False))
+    if reverse:
+        results["reverse"], reverse_props = _reverse_observations(worker, prefix)
     # EVERY probe run must have been carried by the target's own proved identity, not only the first:
     # an observation stitched together from runs on different workers observes nothing
     runs = [prefix + s for s in ("-egress", "-memory-control", "-wall-control", "-memory", "-wall")]
+    if reverse:
+        runs += [prefix + s for s in ("-memory-usable", "-cpu", "-cpu-control", "-storage", "-boundary")]
     proved = {r: (worker.who_ran(r)[1] if hasattr(worker, "who_ran") else "") for r in runs}
     identity = proved[prefix + "-egress"]
     results["identity"] = {"proved_uri": identity, "expected_uri": target.identity_uri,
@@ -204,6 +371,14 @@ def probe(target: T.Target, worker, canary: Canary, *, now: float | None = None)
                                               and controls["wall_within_limit_ran"]),
                   "storage_mb": JOB_STORAGE_MB, "reported_platform": platform,
                   "bounds": BOUNDS}
+    if reverse:
+        # local-worker R2/R3: on a dial-back target nothing is hard-coded -- storage, CPU, isolation and the
+        # platform are what the jobs observed, and usable memory must have been shown too
+        properties.update(reverse_props)
+        if not (results["reverse"]["memory_usable"]["ran"] and properties["memory_ceiling_mb"]):
+            properties["memory_ceiling_mb"] = 0
+        # the worker's runtime report, kept as a labelled CLAIM beside the observations (DECISION-0004)
+        properties["reported_platform"] = {**platform, **claimed_runtime(platform.get("runtime_version"))}
     assurance = T.ASSURANCE_OF_TYPE[target.type]
     measured = float(now if now is not None else time.time())
     body = {"assurance": assurance, "suite": SUITE, "measured_at": measured,
@@ -275,6 +450,14 @@ def passed(record: dict) -> list[str]:
         failed.append("wall_clock")
     if not (r.get("identity") or {}).get("matches"):
         failed.append("identity")
+    if "reverse" in r:
+        if int(p.get("storage_mb") or 0) < JOB_STORAGE_MB:
+            failed.append("storage")
+        if p.get("cpu_quota_enforced") is not True:
+            failed.append("cpu")
+        if p.get("isolation_observed") is not True:
+            failed.append("isolation")
+        failed.extend(reverse_platform_failures(p))
     return failed
 
 

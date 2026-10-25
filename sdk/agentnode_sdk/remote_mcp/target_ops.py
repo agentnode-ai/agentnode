@@ -189,6 +189,10 @@ class Operations:
         self.state_path = Path(state_path) if state_path is not None else renew_state_path(self.stand)
         #: the control's effective time (clock and its floor, as its TLS door judges) for verifying a pair
         self.effective_time = effective_time or clock
+        #: local-worker slice 1: the reverse hub's address dial-back workers are told to dial ("" = none), and the
+        #: live (account, device) authority an invite of one is checked against (None = refused).
+        self.reverse_hub = ""
+        self.device_authority = None
 
     # ------------------------------------------------------------ the operation journal
     def _write(self, op: dict) -> None:
@@ -303,12 +307,29 @@ class Operations:
         return t
 
     # ------------------------------------------------------------ invite
-    def invite(self, account: str, *, address: str, concurrency: int = 1, queue: int = 2,
-               valid_days: int = INVITE_DAYS) -> dict:
+    def invite(self, account: str, *, address: str = "", concurrency: int = 1, queue: int = 2,
+               valid_days: int = INVITE_DAYS, device: str = "", reverse: bool = False) -> dict:
+        """A customer target. `reverse` (local-worker slice 1): a dial-back worker owned by `account` AND by
+        `device`, which must be that account's live device NOW (`device_authority`); it has no address anybody
+        dials -- `reverse://<instance>` -- and its bundle names the control plane's reverse hub instead."""
         target_id = "cust-" + secrets.token_hex(5)
         instance = "c" + secrets.token_hex(6)
+        if reverse:
+            if address:
+                raise OperationFailed("invite.reverse_address", "a dial-back worker has no address to dial")
+            if not self.reverse_hub:
+                raise OperationFailed("invite.no_reverse_hub", "this control plane has no reverse hub configured")
+            why = "target_authority_unverifiable" if self.device_authority is None else \
+                self.device_authority(account, device)
+            if why:
+                raise OperationFailed("invite.device", why)
+            address = "reverse://" + instance
+        elif device:
+            raise OperationFailed("invite.device", "only a dial-back worker is bound to a device")
         params = {"account": account, "address": address, "instance": instance, "concurrency": int(concurrency),
                   "queue": int(queue), "expires_at": round(self.clock() + valid_days * 86400, 3)}
+        if reverse:
+            params["device"] = str(device)
         op = self._begin("invite", target_id, params)
         return self._steps_invite(op)
 
@@ -323,6 +344,8 @@ class Operations:
                      "topology": "separate-worker-host", "protocols": ["agentnode-worker/1"],
                      "pair": {"gateway": self.gateway, "worker": p["instance"]}, "key_slot": "k1",
                      "config_digest": ""}
+                if p.get("device"):
+                    w.update(topology=T.REVERSE_SESSION, device_id=p["device"])
                 self.register.add_customer({"target_id": tid, "type": T.CUSTOMER, "owner_account": p["account"],
                                             "status": T.INVITED, "expires_at": p["expires_at"], "worker": w,
                                             "limits": {"concurrency": p["concurrency"], "queue": p["queue"]},
@@ -344,9 +367,16 @@ class Operations:
         def trust_files(op):
             for name in ("ca.pem", _revocation.LIST_NAME, "revoked-identities.json"):
                 shutil.copyfile(self.issuer.trust_dir / name, bundle / name)
-            (bundle / "target.json").write_text(json.dumps({
-                "target_id": tid, "deployment": self.deployment, "instance": p["instance"],
-                "accept_gateway": self.gateway, "listen": p["address"]}, indent=1, sort_keys=True))
+            if p.get("device"):
+                # a dial-back worker: where to dial, and the limits it enforces itself (no device or account
+                # credential, no approval material -- only what the worker needs to answer its own connections)
+                described = {"target_id": tid, "deployment": self.deployment, "instance": p["instance"],
+                             "accept_gateway": self.gateway, "connect": self.reverse_hub,
+                             "limits": {"concurrency": p["concurrency"], "queue": p["queue"]}}
+            else:
+                described = {"target_id": tid, "deployment": self.deployment, "instance": p["instance"],
+                             "accept_gateway": self.gateway, "listen": p["address"]}
+            (bundle / "target.json").write_text(json.dumps(described, indent=1, sort_keys=True))
 
         return self._run(op, [("register_invited", register), ("pki_entry", pki_entry),
                               ("pair_key", pair_key), ("bundle", trust_files)])

@@ -192,10 +192,75 @@ def target_worker_factory(stand: str):
         w = target.worker
         if w["pair"]["gateway"] != own_instance(tls):
             raise RuntimeError("target %s is paired with another gateway instance" % target.target_id)
+        if target.is_reverse:
+            # local-worker slice 1: reached only through the reverse hub's slots -- this process's own hub, or
+            # the serving process's over its local relay. No hub configured: no way to it, never a dial.
+            from agentnode_sdk.worker import REVERSE_SESSION
+
+            hub = _PROCESS_HUB.get(stand) or _relay_client(cfg)
+            if hub is None:
+                raise RuntimeError("target %s is a dial-back worker and no reverse hub is configured" % target.target_id)
+            return from_address(w["address"], None, topology=REVERSE_SESSION,
+                                keyring=pairkeys.Keyring.read(cfg["keyring"]), own_instance=own_instance(tls),
+                                hub=hub, may_run=_PROCESS_ELIGIBLE.get(stand, {}).get(target.target_id))
         settings = dataclasses.replace(tls, deployment=w["deployment"], accept=frozenset({w["instance"]}))
         return from_address(w["address"], None, tls=settings, topology=SEPARATE_WORKER_HOST,
                             keyring=pairkeys.Keyring.read(cfg["keyring"]), own_instance=own_instance(tls))
     return build
+
+
+#: stand -> the ReverseHub this process serves (set only where `reverse_listen` is configured).
+_PROCESS_HUB: dict = {}
+#: stand -> {target_id: () -> refusal code}, the serving process's renewal gate (`ReverseWorker._may_renew`).
+_PROCESS_ELIGIBLE: dict = {}
+
+
+def _relay_client(cfg: dict):
+    path = cfg.get("reverse_hub_socket")
+    if not path:
+        return None
+    from agentnode_sdk.remote_mcp.reverse_hub import RelayClient
+
+    return RelayClient(str(path))
+
+
+def attach_reverse_hub(app, stand: str, router, *, authority_error=None, kill_switch=None, allow_loopback=False):
+    """local-worker slice 1, OFF unless the stand's worker.json names `reverse_listen` (a private
+    tcps://<ip>:<port>): the hub of dial-back workers on `app`'s lifespan, and its local relay at
+    `reverse_hub_socket` for this control plane's other processes. Returns the hub, or None when not configured."""
+    from agentnode_sdk.remote_mcp import reverse_hub as R
+
+    cfg, tls = _worker_base(stand)
+    if not cfg.get("reverse_listen"):
+        return None
+    view = R.target_view(router.register)
+    authority = R.device_authority(authority_error) if authority_error is not None else None
+    eligible = R.eligibility(view, authority, kill_switch)
+    hub = R.ReverseHub(str(cfg["reverse_listen"]), tls, targets=view, eligible=eligible,
+                       max_total=int(cfg.get("reverse_max_slots") or R.DEFAULT_MAX_TOTAL),
+                       allow_loopback=allow_loopback)
+    relay = R.RelayServer(hub, str(cfg["reverse_hub_socket"])) if cfg.get("reverse_hub_socket") else None
+    _PROCESS_HUB[stand] = hub
+
+    class _Gate(dict):
+        def get(self, target_id, default=None):
+            return lambda: eligible(target_id)
+    _PROCESS_ELIGIBLE[stand] = _Gate()
+    router.reverse_authority = authority
+
+    async def start():
+        hub.start()
+        if relay is not None:
+            relay.start()
+
+    async def stop():
+        if relay is not None:
+            relay.stop()
+        hub.stop()
+
+    app.lifespan_hooks.append((start, stop))
+    app.reverse_hub = hub
+    return hub
 
 
 def deployment_trust(stand: str):
@@ -372,6 +437,14 @@ def build_production_app(stand: str, *, resource: str, issuer: str,
                        login_provider=gl, live_authority=gl, console_url=console_url,
                        limits=limits or Limits(), allow_x_access_token=False)
     attach_probe_slots(app, adapter.router, probe_slot_path)
+    # local-worker slice 1: nothing happens here unless the stand names `reverse_listen` (default: absent).
+    kill = None
+    if gateway_dir:
+        from agentnode_sdk.gateway import allowance
+
+        def kill():
+            return allowance.why_it_is_stopped(gateway_dir)
+    attach_reverse_hub(app, stand, adapter.router, authority_error=gl.authority_error, kill_switch=kill)
     return app
 
 
