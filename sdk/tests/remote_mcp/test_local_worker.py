@@ -1260,7 +1260,9 @@ def test_the_dial_back_start_deletes_the_spent_enrolment_secret(stand, monkeypat
     journal.mkdir(mode=0o700)
     monkeypatch.setenv("HOME", str(stand.tmp))
     seen = {}
-    monkeypatch.setattr(D.DialBackAgent, "serve_forever", lambda self: seen.update(
+    # slice 2: the dial-back start runs the agent through serve_dialback (start, wait for SIGTERM, drain) -- the moment
+    # this records is the same one, just before the first dial
+    monkeypatch.setattr(service, "serve_dialback", lambda agent, bench, **kw: seen.update(
         left=sorted(p.name for p in tls_dir.iterdir())))
     service.serve("", "", None, worker=AWorkerThatAnswers(), tls=stand.wk_tls, topology=REVERSE_SESSION,
                   keyring_path=str(ring_path), journal_at=str(journal), dial="tcps://127.0.0.1:%d" % stand.hub.port,
