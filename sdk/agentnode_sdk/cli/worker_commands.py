@@ -648,6 +648,42 @@ def cmd_connect(args) -> int:
     return 0
 
 
+def cmd_pair(args) -> int:
+    """local-worker slice 2: pair this machine with an account (the person approves in a browser)."""
+    from agentnode_sdk.worker import edge as _edge
+    from agentnode_sdk.worker import pairing as _pairing
+    from agentnode_sdk.worker import pins as _pins
+
+    if not (getattr(args, "pins", "") and getattr(args, "state_dir", "")):
+        print("  agentnode worker pair --pins <file> --state-dir <dir> [--name <n>] [--concurrency 1] [--queue 2]")
+        return 2
+    try:
+        _pairing.pair(args.pins, args.state_dir, name=str(args.name or "worker"),
+                      concurrency=int(args.concurrency), queue=int(args.queue))
+    except (_pairing.PairRefused, _edge.EdgeRefused) as refused:
+        print("  Not paired: %s%s" % (refused.code, (" (%s)" % refused.detail) if refused.detail else ""))
+        return 1
+    except _pins.Untrusted as refused:
+        print("  Not paired: %s (%s)" % (refused.code, refused.detail))
+        return 1
+    return 0
+
+
+def cmd_retire(args) -> int:
+    """local-worker slice 2: ask the control plane to retire this paired worker (what `uninstall --revoke` calls)."""
+    from agentnode_sdk.worker import pairing as _pairing
+    from agentnode_sdk.worker import pins as _pins
+
+    try:
+        outcome = _pairing.send_retire(args.pins, args.state_dir)
+    except (_pairing.PairRefused, _pins.Untrusted, OSError, ValueError) as exc:
+        print("  The control plane could not be asked: %s" % (getattr(exc, "code", "") or type(exc).__name__))
+        print("  Withdraw this machine in your device list instead.")
+        return 1
+    print("  retirement: %s" % outcome)
+    return 0 if outcome == "accepted" else 1
+
+
 def cmd_reconcile(args) -> int:
     """Remove everything of this worker's that no run is waiting for, and say whether that worked.
 
@@ -686,7 +722,7 @@ def cmd_reconcile(args) -> int:
 def dispatch(args) -> int:
     action = getattr(args, "worker_command", None)
     handlers = {"key": cmd_key, "serve": cmd_serve, "preflight": cmd_preflight,
-                "reconcile": cmd_reconcile, "connect": cmd_connect}
+                "reconcile": cmd_reconcile, "connect": cmd_connect, "pair": cmd_pair, "retire": cmd_retire}
     if action not in handlers:
         print()
         print("  agentnode worker key       --at <path>")
@@ -788,6 +824,18 @@ def add_parser(subparsers) -> None:
     dial.add_argument("--pins", default="", metavar="FILE", help="the installed release pins (https only)")
     dial.add_argument("--target-json", dest="target_json", default="", metavar="FILE",
                       help="the operator-signed target.json from pairing (https only)")
+
+    # local-worker slice 2: pairing with an account, against the signed release's pins
+    pairing = actions.add_parser("pair", help="Connect this machine to an AgentNode account (approved in a browser)")
+    pairing.add_argument("--pins", default="", metavar="FILE", help="the installed release pins")
+    pairing.add_argument("--state-dir", dest="state_dir", default="", metavar="DIR",
+                         help="where this worker's key, certificate and pair key are kept (0700)")
+    pairing.add_argument("--name", default="worker", help="how the machine is shown in the device list")
+    pairing.add_argument("--concurrency", type=int, default=1)
+    pairing.add_argument("--queue", type=int, default=2)
+    retiring = actions.add_parser("retire", help="Ask the control plane to retire this paired machine")
+    retiring.add_argument("--pins", required=True, metavar="FILE")
+    retiring.add_argument("--state-dir", dest="state_dir", required=True, metavar="DIR")
 
     # WHAT THE RUNTIME UNIT CALLS. It takes none of the arguments above: it needs no door, no keyring
     # and no trust material, because removing what this account owns is not about who may speak here.

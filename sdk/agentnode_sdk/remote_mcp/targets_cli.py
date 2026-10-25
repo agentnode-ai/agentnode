@@ -19,6 +19,7 @@ needs the stand operator key, the issuer and the pair-key file, so it runs as ro
   trust-status                            the publication journal, the predecessor pointer, the last cycle
   trust-import-legacy | trust-materialize-legacy   predecessor layout migration (install / rollback)
   reconcile-dispatch --invocation-hash H  settle an indeterminate dispatch from the target's journal
+  retire-devices [--store DIR]            retire dial-back targets whose device is gone/moved or that asked to be
   show                                    the register without transport secrets
 
 Every change is a signed register generation and a catalog-ledger event. Refusals exit 5.
@@ -171,6 +172,9 @@ def main(argv=None) -> int:
         sub.add_parser(name)
     s = sub.add_parser("reconcile-dispatch")
     s.add_argument("--invocation-hash", required=True)
+    s = sub.add_parser("retire-devices", help="slice 2: retire dial-back targets whose device is gone or moved, and "
+                                              "signed self-retirement requests")
+    s.add_argument("--store", default=None, help="rmcp-agent's pairing store (its retire/ requests)")
     args = p.parse_args(argv)
     if args.cmd == "attest-renew" and args.force and not args.target:
         p.error("--force renews one named --target")
@@ -280,6 +284,11 @@ def main(argv=None) -> int:
                 raise OperationFailed(exc.code, exc.detail) from exc
         elif args.cmd == "reconcile-dispatch":
             out = reconcile_dispatch(ops, args.stand, args.invocation_hash)
+        elif args.cmd == "retire-devices":
+            from agentnode_sdk.remote_mcp import retire
+            out = retire.reconcile(ops, args.gateway_dir or os.path.join(os.path.dirname(os.path.abspath(args.stand)),
+                                                                         "gwdir"),
+                                   store=args.store, trust=tls.trust("gateway"), deployment=cfg["deployment"])
         else:
             out = _safe(ops.register.load())
     except (T.TargetsRefused, OperationFailed) as exc:

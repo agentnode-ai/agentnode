@@ -485,3 +485,65 @@ def test_a_worker_device_cannot_sign_in_to_approve(stand, tmp_path):
     status, body = _call(app, "GET", WP.PAGE_PATH, headers={"host": "mcp.agentnode.net",
                                                             "cookie": "__Host-agentnode=" + sid})
     assert b"/v1/session" in body                                       # treated as nobody signed in
+
+
+# ---------------------------------------------------------------------- D11: retirement of a paired worker
+def _paired(stand):
+    material, out, state_dir = stand.begin()
+    stand.approve(out)
+    result = stand.poll(material, out)["result"]
+    target = WP.install_result(result, material, stand.pins, state_dir, out["device_code"])
+    return target, state_dir
+
+
+def _revoke_seen(stand, monkeypatch):
+    calls = []
+    monkeypatch.setattr(stand.ops, "revoke", lambda tid, **kw: calls.append(tid) or stand.reg.set_status(
+        tid, T.REVOKED, actor="t"))
+    return calls
+
+
+def test_a_withdrawn_worker_device_retires_its_target(stand, monkeypatch):
+    from agentnode_sdk.remote_mcp import retire
+    target, _ = _paired(stand)
+    calls = _revoke_seen(stand, monkeypatch)
+    assert retire.reconcile(stand.ops, stand.gw)["retired"] == []          # device present: nothing
+    stand.state.revoke_client(target["device_id"], within_account=ACCT)
+    report = retire.reconcile(stand.ops, stand.gw)
+    assert calls == [target["target_id"]] and report["retired"][0]["why"] == "device_gone"
+    assert retire.reconcile(stand.ops, stand.gw)["retired"] == []          # idempotent: already terminal
+
+
+def test_a_suspended_account_is_never_retired(stand, monkeypatch):
+    from agentnode_sdk.remote_mcp import retire
+    target, _ = _paired(stand)
+    calls = _revoke_seen(stand, monkeypatch)
+    stand.state.accounts.suspend(ACCT, "test", by="t")
+    retire.reconcile(stand.ops, stand.gw)
+    assert calls == []                                                  # reversible: refused at use, never retired
+
+
+def test_a_signed_self_retirement_withdraws_the_device_and_the_target(stand, monkeypatch):
+    from agentnode_sdk.remote_mcp import retire
+    target, state_dir = _paired(stand)
+    calls = _revoke_seen(stand, monkeypatch)
+    req = WP.retire_request(state_dir)
+    trust = stand.world.settings(stand.world.service("gateway", "g1"), {target["instance"]}).trust("gateway")
+    assert stand.store.retire_request(req, trust, stand.world.deployment)["status"] == "accepted"
+    assert stand.store.retire_request(req, trust, stand.world.deployment)["status"] == "accepted"   # replay converges
+    report = retire.reconcile(stand.ops, stand.gw, store=stand.store_dir, trust=trust, deployment=stand.world.deployment)
+    assert report["requests"][0]["outcome"] == "retired" and calls == [target["target_id"]]
+    assert all(r.get("client_id") != target["device_id"] for r in stand.state.paired_clients())
+    assert retire.reconcile(stand.ops, stand.gw, store=stand.store_dir, trust=trust,
+                            deployment=stand.world.deployment)["requests"] == []
+
+
+def test_a_forged_or_stale_retirement_request_is_refused(stand):
+    target, state_dir = _paired(stand)
+    trust = stand.world.settings(stand.world.service("gateway", "g1"), {target["instance"]}).trust("gateway")
+    req = WP.retire_request(state_dir)
+    for bad in (dict(req, device_id="0" * 16), dict(req, ts=str(int(time.time()) - 300)),
+                dict(req, deployment="elsewhere"), dict(req, extra="x")):
+        with pytest.raises(AS.Refused) as got:
+            stand.store.retire_request(bad, trust, stand.world.deployment)
+        assert got.value.code.startswith("retire_")

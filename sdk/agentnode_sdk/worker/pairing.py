@@ -313,6 +313,41 @@ def pair(pins_path, state_dir, *, name: str, concurrency: int = 1, queue: int = 
     raise PairRefused("pair_code_expired", "nobody approved the code in time")
 
 
+RETIRE_PATH = "/agent/v1/device/retire"
+
+
+def retire_request(state_dir, *, now: float | None = None) -> dict:
+    """The signed request an uninstalling worker sends to retire itself: deployment, instance, target, device, a fresh
+    request id and the time, signed with the worker key, with its certificate. Root verifies it again."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    from agentnode_sdk.remote_mcp import agent_service as _as
+
+    d = Path(state_dir)
+    target = json.loads((d / "target.json").read_text(encoding="utf-8"))
+    key = serialization.load_pem_private_key((d / "key.pem").read_bytes(), None)
+    der = x509.load_pem_x509_certificate((d / "cert.pem").read_bytes()).public_bytes(serialization.Encoding.DER)
+    req = {"deployment": target["deployment"], "instance": target["instance"], "target_id": target["target_id"],
+           "device_id": target["device_id"], "request_id": os.urandom(16).hex(),
+           "ts": str(int(now if now is not None else time.time())), "certificate": b64(der)}
+    req["proof"] = b64(key.sign(_as.retire_message(dict(req, proof="")), ec.ECDSA(hashes.SHA256())))
+    return req
+
+
+def send_retire(pins_path, state_dir, *, context=None, connect=None) -> str:
+    """Ask the control plane to retire this worker (uninstall --revoke). Returns the outcome code."""
+    from agentnode_sdk.worker import edge as E
+    from agentnode_sdk.worker import pins as _pins
+
+    pins = _pins.read_pins(pins_path)
+    url = E.control_url(pins["control_url"])
+    status, doc = _post(E.ControlUrl(host=url.host, port=url.port, path=RETIRE_PATH), retire_request(state_dir),
+                        context=context or E.outer_context(), connect=connect)
+    return "accepted" if status == 200 and doc.get("status") == "accepted" else str(doc.get("error") or status)
+
+
 __all__ = ["ACK_PATH", "PAGE_PATH", "POLL_PATH", "PROTOCOL", "PairRefused", "START_PATH", "b64", "code_hash",
            "fingerprint_of_csr", "install_result", "new_material", "pair", "poll_message", "seal", "seal_aad",
            "sign_poll", "unb64", "unseal"]
