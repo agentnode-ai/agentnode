@@ -84,7 +84,7 @@ floor = 0
 if os.path.exists(floor_path):
     try:
         st = os.stat(floor_path)
-        if st.st_uid != 0 or st.st_mode & 0o022:
+        if st.st_uid != 0 or st.st_mode & 0o077:
             raise ValueError("owner")
         floor = int(json.load(open(floor_path))["release_seq"])
     except Exception:
@@ -228,7 +228,7 @@ switch_to() {   # atomically point `current` at a release directory, and pin the
     write_pin "$1"
 }
 raise_floor() {
-    python3 -I -c 'import json,os,sys,time; p=sys.argv[1]; t=p+".tmp"; open(t,"w").write(json.dumps({"release_seq": int(sys.argv[2]), "at": time.time()})); os.chmod(t,0o644); os.replace(t,p)' "$RELFLOOR" "$SEQ"
+    python3 -I -c 'import json,os,sys,time; p=sys.argv[1]; t=p+".tmp"; fd=os.open(t,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600); os.fchmod(fd,0o600); os.write(fd,json.dumps({"release_seq": int(sys.argv[2]), "at": time.time()}).encode()); os.fsync(fd); os.close(fd); os.replace(t,p)' "$RELFLOOR" "$SEQ"
 }
 write_unit() {
     python3 -I - "$STATE/tls/target.json" "$UIDN" "$UNIT" "$ETC/pins.json" <<'PY'

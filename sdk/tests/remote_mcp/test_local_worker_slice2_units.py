@@ -235,6 +235,43 @@ def test_the_mirror_copies_only_signed_and_public_material(stand, tmp_path):
     assert not [w for w in again if w.startswith("targets/history/")]   # history is append-only
 
 
+# ---------------------------------------------------------------------- Q-LW2-0003: rmcp-control only via the relay
+def test_the_control_plane_reaches_a_paired_target_only_through_the_relay_and_judges_it_itself(stand, tmp_path):
+    """L10 / CC17: with the hub in the agent-facing service (`reverse_hub_socket`, no `reverse_listen`), the control
+    plane binds nothing, its worker for a dial-back target is the relay client, and the run gate it hands that worker
+    is its OWN reading of the gateway (`device_error`) -- not the other service's word."""
+    from agentnode_sdk.remote_mcp import server
+    from agentnode_sdk.remote_mcp.reverse_hub import RelayClient
+    target, state_dir = _paired(stand)
+    gw = stand.world.service("gateway", "g1")
+    tls = {"certificate": str(gw / "cert.pem"), "key": str(gw / "key.pem"), "anchor": str(stand.world.anchor),
+           "revocation_list": str(stand.world.revocation_list), "floor": str(tmp_path / "gw.floor"),
+           "identity_tombstones": str(state_dir / "revoked-identities.json")}
+    (stand.reg.stand / "worker.json").write_text(json.dumps({
+        "tls": tls, "deployment": stand.world.deployment, "accept": [target["instance"]],
+        "keyring": str(stand.tmp / "ring.json"), "reverse_hub_socket": str(tmp_path / "hub.sock")}))
+    said = {"code": ""}
+
+    class App:
+        lifespan_hooks: list = []
+
+    class Router:
+        register = stand.reg
+    app = App()
+    try:
+        assert server.attach_reverse_hub(app, str(stand.reg.stand), Router(),
+                                         device_error=lambda account, device: said["code"]) is None
+        assert app.lifespan_hooks == [] and str(stand.reg.stand) not in server._PROCESS_HUB
+        worker = server.target_worker_factory(str(stand.reg.stand))(stand.reg.load().target(target["target_id"]))
+        assert isinstance(worker._hub, RelayClient)
+        stand.reg.set_status(target["target_id"], T.PROBING, actor="t")
+        assert worker._may_run() == ""                                  # probing is parkable: the probe runs
+        said["code"] = "target_device_revoked"
+        assert worker._may_run() == "target_device_revoked"
+    finally:
+        server._PROCESS_ELIGIBLE.pop(str(stand.reg.stand), None)
+
+
 # ---------------------------------------------------------------------- D10: the update drain
 class _Agent:
     conversations = 3

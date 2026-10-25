@@ -339,6 +339,48 @@ def test_a_crash_after_any_step_resumes_to_exactly_one_of_everything(stand, cras
     assert not (stand.tmp / "bundles" / tid / "enrolment-secret").exists()
 
 
+@pytest.mark.parametrize("crash_at", ["device", "register_invited", "pki_entry", "pair_key", "pki_enroll",
+                                      "status_enrolled", "result", "forget_clear_copies"])
+def test_a_crash_between_a_steps_effect_and_its_mark_resumes_to_exactly_one(stand, crash_at):
+    """L10 / CC19: the harder crash -- the step's write happened, the operation's record of it did not (the mark is
+    lost). The resumed operation runs that step again; every step must find its own effect and not repeat it."""
+    material, out, state_dir = stand.begin()
+
+    class Crash(Exception):
+        pass
+    real = stand.ops._write
+    armed = {"on": True}
+
+    def write(op):
+        if armed["on"] and op.get("kind") == "pair" and crash_at in op["steps"]:
+            armed["on"] = False
+            raise Crash(crash_at)                                       # the effect stands, its mark is lost
+        return real(op)
+    stand.ops._write = write
+    stand.store.helper = None
+    stand.approve(out)
+    aid = stand.store._pending(WP.code_hash(out["device_code"]))["authorization_id"]
+    with pytest.raises(Crash):
+        stand.helper.materialize(aid)
+    assert stand.ops.resume(kinds=("pair",))
+    result = stand.helper.materialize(aid)
+    WP.install_result(result, material, stand.pins, state_dir, out["device_code"])
+    assert len([r for r in stand.state.paired_clients() if r.get("kind") == "worker-device"]) == 1
+    assert len([t for t in stand.reg.load().targets.values() if t.is_reverse]) == 1
+    _op, tid, inst = Operations.pair_ids(aid)
+    assert stand.world.issuer.inventory()["entries"]["worker/" + inst]
+    assert [pair for pair in stand.ops._keyring().pairs() if pair[1] == inst] == [("g1", inst)]
+    assert not (stand.tmp / "bundles" / tid / "pair-keys.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX modes")
+def test_the_paired_state_is_the_agents_alone(stand):
+    """CC25: every file pairing leaves on the agent is 0600 (the key, the keyring, the target, the trust copies)."""
+    _target, state_dir = _paired(stand)
+    for p in state_dir.iterdir():
+        assert p.stat().st_mode & 0o077 == 0, p.name
+
+
 def test_the_helper_answers_exactly_one_caller_and_one_operation(stand, monkeypatch):
     """L10 / CC17/CC18: uid 0 and any other uid are refused; any request but materialize is refused."""
     class Conn:

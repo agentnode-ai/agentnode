@@ -134,17 +134,18 @@ def check_artifact(doc: dict, name: str, data_path) -> dict:
 
 
 # ---------------------------------------------------------------------- the floor (root-owned, monotonic)
-def read_floor(path) -> int:
-    """The highest sequence ever installed here. Absent = 0 (first install). Unreadable, malformed, or not
-    root-owned/narrow on POSIX = `release_floor_unreadable` -- never "no floor"."""
+def read_floor(path, *, owner_uid: int = 0) -> int:
+    """The highest sequence ever installed here. Absent = 0 (first install). Unreadable, malformed, or on POSIX not
+    owned by `owner_uid` (root, unless a test says otherwise) and 0600 = `release_floor_unreadable` -- never "no
+    floor"."""
     p = Path(path)
     if not p.exists():
         return 0
     try:
         if os.name == "posix":
             st = p.stat()
-            if st.st_uid != 0 or st.st_mode & 0o022:
-                raise ReleaseRefused("release_floor_unreadable", "the floor must be root's and writable by no one else")
+            if st.st_uid != int(owner_uid) or st.st_mode & 0o077:
+                raise ReleaseRefused("release_floor_unreadable", "the floor must be root's alone (0600)")
         doc = json.loads(p.read_text(encoding="ascii"))
         seq = doc["release_seq"]
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
@@ -156,14 +157,16 @@ def read_floor(path) -> int:
         raise ReleaseRefused("release_floor_unreadable") from None
 
 
-def raise_floor(path, seq: int) -> None:
-    current = read_floor(path)
+def raise_floor(path, seq: int, *, owner_uid: int = 0) -> None:
+    current = read_floor(path, owner_uid=owner_uid)
     if seq < current:
         raise ReleaseRefused("release_downgrade", "the floor is %d" % current)
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name("." + p.name + ".tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if os.name == "posix":
+        os.fchmod(fd, 0o600)                                   # whatever the umask
     with os.fdopen(fd, "w", encoding="ascii") as fh:
         json.dump({"release_seq": int(seq), "at": time.time()}, fh)
         fh.flush()

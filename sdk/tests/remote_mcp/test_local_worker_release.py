@@ -16,6 +16,8 @@ from agentnode_sdk.worker import release as RL
 PINS = {"schema": "agentnode.worker-pins/1", "channel": "beta", "release_seq": 7,
         "control_url": "https://mcp.agentnode.net/agent/v1/slot", "anchor_sha256": "a" * 64, "operator_pub": "b" * 64,
         "gateway_deployment": "rmcp", "gateway_instance": "g1"}
+#: the account these tests run as owns their floors (production: root, the default)
+ME = os.getuid() if hasattr(os, "getuid") else 0
 
 
 def _release(tmp_path, seq=7, *, now=None, key=None, days=30, files=None):
@@ -111,15 +113,15 @@ def test_a_rollback_is_a_newer_sequence_naming_older_artifacts(tmp_path):
     old, _k, pub = _release(tmp_path, seq=7, key=key, files={"agentnode_sdk-0.25.0-py3-none-any.whl": b"v1"})
     new, _k, _p = _release(tmp_path, seq=8, key=key, files={"agentnode_sdk-0.25.0-py3-none-any.whl": b"v2"})
     floor = tmp_path / "floor.json"
-    RL.raise_floor(floor, 8)
+    RL.raise_floor(floor, 8, owner_uid=ME)
     with pytest.raises(RL.ReleaseRefused):
-        _verify(old, pub, floor=RL.read_floor(floor))
+        _verify(old, pub, floor=RL.read_floor(floor, owner_uid=ME))
     back, _k, _p = _release(tmp_path, seq=9, key=key, files={"agentnode_sdk-0.25.0-py3-none-any.whl": b"v1"})
-    doc = _verify(back, pub, floor=RL.read_floor(floor))
+    doc = _verify(back, pub, floor=RL.read_floor(floor, owner_uid=ME))
     assert next(a for a in doc["artifacts"] if a["kind"] == "wheel")["sha256"] == \
         next(a for a in _verify(old, pub)["artifacts"] if a["kind"] == "wheel")["sha256"]
     with pytest.raises(RL.ReleaseRefused):
-        RL.raise_floor(floor, 7)
+        RL.raise_floor(floor, 7, owner_uid=ME)
 
 
 def test_a_wrong_platform_is_refused(tmp_path):
@@ -144,11 +146,31 @@ def test_a_changed_artifact_is_artifact_hash_mismatch(tmp_path, change):
 
 def test_an_unsafe_or_unreadable_floor_is_refused(tmp_path):
     p = tmp_path / "floor.json"
-    assert RL.read_floor(p) == 0
+    assert RL.read_floor(p, owner_uid=ME) == 0
     p.write_text("not json")
     with pytest.raises(RL.ReleaseRefused) as got:
-        RL.read_floor(p)
+        RL.read_floor(p, owner_uid=ME)
     assert got.value.code == "release_floor_unreadable"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX owner and mode")
+def test_the_floor_is_its_owners_alone(tmp_path):
+    """CC25: the release floor is written 0600 and read only when it is 0600 and owned by the expected account."""
+    p = tmp_path / "floor.json"
+    old = os.umask(0)
+    try:
+        RL.raise_floor(p, 3, owner_uid=ME)
+    finally:
+        os.umask(old)
+    assert p.stat().st_mode & 0o777 == 0o600 and RL.read_floor(p, owner_uid=ME) == 3
+    for mode in (0o640, 0o604, 0o620):
+        os.chmod(p, mode)
+        with pytest.raises(RL.ReleaseRefused) as got:
+            RL.read_floor(p, owner_uid=ME)
+        assert got.value.code == "release_floor_unreadable"
+    os.chmod(p, 0o600)
+    with pytest.raises(RL.ReleaseRefused):
+        RL.read_floor(p, owner_uid=ME + 1)                              # another account's floor
 
 
 def test_the_public_key_pem_is_what_openssl_reads(tmp_path):
@@ -177,3 +199,29 @@ def test_the_vendored_windows_verifier_agrees_with_python(tmp_path):
     out = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
                          capture_output=True, text=True, timeout=300)
     assert out.stdout.strip().splitlines()[-1] == "True False", out.stdout + out.stderr
+
+
+def test_nothing_updates_the_agent_on_its_own():
+    """CC37 / L12: a beta update is a person running the installer with --update. Every timer or scheduled task the
+    installers create starts something that is not an install, an update or a download."""
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2] / "deploy" / "local-worker"
+    forbidden = re.compile(r"install\.sh|install-agentnode-worker|--update|pip |curl |wget |Invoke-WebRequest|"
+                           r"Start-BitsTransfer|https?://", re.I)
+    units = {}
+    for sh in sorted(root.rglob("*.sh")):
+        text = sh.read_text(encoding="utf-8")
+        for name, body in re.findall(r"cat > /etc/systemd/system/(\S+) <<'?EOF'?\n(.*?)\nEOF", text, re.S):
+            units[name] = body
+    timers = [n for n in units if n.endswith(".timer")]
+    assert timers == ["agentnode-agent-floor.timer"]
+    for timer in timers:
+        service = units[timer[:-len(".timer")] + ".service"]
+        execs = [ln for ln in service.splitlines() if ln.startswith("ExecStart")]
+        assert execs and all(" pki floor advance " in ln and not forbidden.search(ln) for ln in execs), execs
+    ps = (root / "windows" / "install-agentnode-worker.ps1").read_text(encoding="utf-8")
+    actions = re.findall(r"New-ScheduledTaskAction[^\n]*", ps)
+    assert actions and all(not forbidden.search(a) for a in actions), actions
+    assert len(re.findall(r"Register-ScheduledTask ", ps)) == 1
+    assert not list(root.rglob("*.timer")) and not list(root.rglob("*.xml"))
