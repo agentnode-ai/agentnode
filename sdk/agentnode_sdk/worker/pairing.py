@@ -262,7 +262,13 @@ def install_result(result: dict, material: dict, pins: dict, state_dir, device_c
     return target
 
 
-def pair(pins_path, state_dir, *, name: str, concurrency: int = 1, queue: int = 2, say=print, context=None,
+def _say_now(text: str) -> None:
+    """Printed AND flushed: under an installer or a service stdout is a pipe, block-buffered -- the person would never
+    see the code they must type (measured on the stand)."""
+    print(text, flush=True)
+
+
+def pair(pins_path, state_dir, *, name: str, concurrency: int = 1, queue: int = 2, say=_say_now, context=None,
          connect=None, platform: dict | None = None, wait_seconds: float = 900.0, sleep=time.sleep) -> dict:
     """The whole agent side. Returns the verified target document; raises PairRefused / pins.Untrusted by name."""
     from agentnode_sdk.worker import edge as E

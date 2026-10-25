@@ -177,7 +177,7 @@ install -d -o root -g root -m 0755 "$ETC" "$FLOORDIR" "$(dirname "$RELFLOOR")"
 install -o root -g root -m 0644 "$WORK/pins.json" "$ETC/pins.json"
 install -o root -g root -m 0644 "$WORK/release-pub.pem" "$ETC/release-pub.pem"
 
-asuser() { ( cd "$STATE" && runuser -u "$U" -- env HOME="$STATE" XDG_RUNTIME_DIR="/run/user/$UIDN" TMPDIR="$STATE/tmp" "$@" ); }
+asuser() { ( cd "$STATE" && runuser -u "$U" -- env HOME="$STATE" XDG_RUNTIME_DIR="/run/user/$UIDN" TMPDIR="$STATE/tmp" PYTHONUNBUFFERED=1 "$@" ); }
 
 # PRIVATE TEST STAND ONLY (Codex D14): AGENTNODE_STAND_HOSTS names a root-owned hosts file that maps the public name to
 # the stand's private address for the AGENT ALONE -- pairing runs in its own mount namespace with that file over
@@ -190,7 +190,8 @@ fi
 asuser_pairing() {
     if [ -n "$STAND_HOSTS" ]; then
         unshare -m sh -c 'mount --bind "$0" /etc/hosts && shift && cd "$1" && shift && exec runuser -u "$@"' \
-            "$STAND_HOSTS" x "$STATE" "$U" -- env HOME="$STATE" XDG_RUNTIME_DIR="/run/user/$UIDN" TMPDIR="$STATE/tmp" "$@"
+            "$STAND_HOSTS" x "$STATE" "$U" -- env HOME="$STATE" XDG_RUNTIME_DIR="/run/user/$UIDN" TMPDIR="$STATE/tmp" \
+            PYTHONUNBUFFERED=1 "$@"
     else
         asuser "$@"
     fi
