@@ -621,6 +621,29 @@ def test_on_this_windows_machine_the_agent_refuses_and_reports_wsl():
     assert D.private_state_problems([__file__]) != []          # restrictive ACLs not proved: refused
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="the Windows stand-in (DECISION-0001 R10)")
+def test_on_this_windows_machine_the_real_start_refuses_and_leaves_the_machine_as_it_was(stand, tmp_path, monkeypatch):
+    """C20 / CC28 / R10: the real `serve(dial=...)` -- the real container backend, no stub -- refuses `runtime-absent`
+    before any dial, writes nothing into the account's home (not even the runtime's containers.conf) and opens no
+    socket."""
+    from agentnode_sdk.worker import service
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    ring_path = tmp_path / "ring.json"
+    stand.ring.write(ring_path)
+    dialled = []
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: dialled.append(a) or (_ for _ in ()).throw(OSError()))
+    with pytest.raises(D.DialRefused) as exc:
+        service.serve("", "", None, tls=stand.wk_tls, topology=REVERSE_SESSION, keyring_path=str(ring_path),
+                      journal_at=str(tmp_path / "journal"), dial="tcps://127.0.0.1:%d" % stand.hub.port, max_runs=1,
+                      allow_loopback_dial=True)
+    assert exc.value.code == wire.RUNTIME_ABSENT
+    assert list(home.iterdir()) == [] and dialled == []
+
+
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX modes")
 def test_secret_files_broader_than_0600_refuse_the_agent(tmp_path):
     """C18 / CC27: a key or keyring readable by others, or a state directory others may write, refuses the start."""

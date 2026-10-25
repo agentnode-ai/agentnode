@@ -951,10 +951,12 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
     # makes /proc/sys read-only, podman asks crun to write a sysctl into every rootless
     # container, and the two together mean nothing starts. The installer writes this file as
     # well; doing it here too is what makes an UPGRADED host carry the fix, which the pair
-    # showed it otherwise does not.
-    _wrote = ask_the_runtime_for_no_kernel_tunables()
-    if _wrote:
-        print("  wrote %s so the runtime asks for no kernel tunable" % _wrote, flush=True)
+    # showed it otherwise does not. (A dial-back worker writes it only after it has shown it can isolate at all,
+    # below: a machine that refuses must be left as it was -- local-worker R10.)
+    if not dial:
+        _wrote = ask_the_runtime_for_no_kernel_tunables()
+        if _wrote:
+            print("  wrote %s so the runtime asks for no kernel tunable" % _wrote, flush=True)
 
     # WHICH ACCOUNT MAY SPEAK -- and only where that question has an answer. `only_uid` is
     # checked with SO_PEERCRED, which reads the account at the other end of a UNIX SOCKET. A
@@ -981,6 +983,9 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             [tls.key, keyring_path], [os.path.dirname(os.path.abspath(tls.key)), os.path.abspath(journal_at)])
         if secrets_kept:
             raise _dialback.DialRefused("secrets_not_private", "; ".join(secrets_kept))
+        _wrote = ask_the_runtime_for_no_kernel_tunables()
+        if _wrote:
+            print("  wrote %s so the runtime asks for no kernel tunable" % _wrote, flush=True)
 
     # WHAT A PREVIOUS WORKER LEFT, FIRST -- before the ceiling proof, before any namespace rebuild,
     # before anything else touches the runtime. This used to be the LAST thing the start did and it was
