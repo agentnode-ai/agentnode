@@ -170,12 +170,15 @@ def boundary_program() -> bytes:
         "u = os.uname(); env = read('/run/.containerenv')\n"
         "engine = ''\n"
         "for line in env.splitlines():\n    if line.startswith('engine='):\n        engine = line.split('=', 1)[1].strip().strip('\"')\n"
+        # podman fills .containerenv only for a privileged container; for this one the file's existence is what
+        # can be observed (the engine family), and the version stays a claim (DECISION-0003)
+        "marker = 'podman' if not env.startswith('!') else ('docker' if os.path.exists('/.dockerenv') else '')\n"
         "caps = [l.split()[1] for l in read('/proc/self/status').splitlines() if l.startswith('CapEff:')]\n"
         "try:\n    open('/agentnode-probe-root', 'w').close(); rootfs = 'writable'\n"
         "except OSError as e:\n    rootfs = 'refused'\n"
         "pids = [d for d in os.listdir('/proc') if d.isdigit()]\n"
         "pid1 = read('/proc/1/cmdline').split('\\0')[0]\n"
-        "_emit({'kernel': u.release, 'machine': u.machine, 'engine': engine,\n"
+        "_emit({'kernel': u.release, 'machine': u.machine, 'engine': engine, 'marker': marker,\n"
         "       'uid_map': read('/proc/self/uid_map').split(), 'cap_eff': caps[0] if caps else '',\n"
         "       'rootfs': rootfs, 'processes_visible': len(pids), 'pid1': pid1})\n")
 
@@ -220,8 +223,10 @@ def _reverse_observations(worker, prefix: str) -> tuple[dict, dict]:
     storage_ok = store.get("first") == "written" and store.get("past") in ("ENOSPC", "EDQUOT")
     properties = {"cpu_quota_enforced": bool(cpu_ok), "isolation_observed": bool(isolation_ok),
                   "storage_mb": JOB_STORAGE_MB if storage_ok else 0,
+                  # the engine with its version where the job can see it, else the engine family its marker file
+                  # shows; never the worker's own report (DECISION-0003)
                   "platform": {"kernel": str(seen.get("kernel") or ""), "machine": str(seen.get("machine") or ""),
-                               "runtime": str(seen.get("engine") or "")}}
+                               "runtime": str(seen.get("engine") or seen.get("marker") or "")}}
     return results, properties
 
 

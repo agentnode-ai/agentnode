@@ -494,6 +494,15 @@ def test_a_dial_back_target_is_activated_only_on_observed_properties():
     assert P.passed(rec) == []
 
 
+def test_an_unprivileged_podman_job_shows_its_engine_family_and_the_version_stays_a_claim():
+    """C12 / DECISION-0003: podman leaves .containerenv EMPTY for an unprivileged container (measured on the private
+    stand): the engine family is what the job observes; the version is only the worker's claim, kept apart."""
+    seen = dict(Canned().said["-boundary"], engine="", marker="podman")
+    rec = P.probe(_target(), Canned(**{"-boundary": seen}), _Canary())
+    assert rec["properties"]["platform"]["runtime"] == "podman" and P.passed(rec) == []
+    assert rec["properties"]["reported_platform"]["runtime_version"] == "a claim that is never used"
+
+
 @pytest.mark.parametrize("override,failed", [
     ({"-storage": {"first": "written", "past": "written"}}, "storage"),          # no ceiling: not 512
     ({"-storage": {"first": "ENOSPC", "past": "ENOSPC"}}, "storage"),            # not even 448 usable
