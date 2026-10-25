@@ -241,7 +241,7 @@ def test_a_rootfs_must_be_the_file_its_upstream_checksum_names(tmp_path):
     img.write_bytes(b"rootfs bytes")
     good = _checksum(ROCKY, b"rootfs bytes")
     assert RL.check_upstream(img, good) == __import__("hashlib").sha256(b"rootfs bytes").hexdigest()
-    for bad in (_checksum(ROCKY, b"other bytes"), _checksum("Rocky-10-WSL-Base.latest.x86_64.wsl", b"rootfs bytes"),
+    for bad in (_checksum(ROCKY, b"other bytes"), _checksum(ROCKY, b"rootfs bytez"), _checksum("Rocky-10-WSL-Base.latest.x86_64.wsl", b"rootfs bytes"),
                 good + good.splitlines()[1] + "\n", good.replace(": 12 bytes", ": 13 bytes"), ""):
         with pytest.raises(RL.ReleaseRefused) as got:
             RL.check_upstream(img, bad)
