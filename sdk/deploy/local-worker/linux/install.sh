@@ -207,9 +207,25 @@ asuser_pairing() {
     fi
 }
 
-switch_to() {   # atomically point `current` at a release directory
+write_pin() {   # the runtime pin of the release in $1 (interpreter, its artefact digest, its commit), beside the keyring
+    [ -d "$STATE/tls" ] || return 0
+    python3 -I - "$1" "$STATE/tls/runtime-pin.json" <<'PY'
+import glob, json, os, sys
+rel, out = sys.argv[1], sys.argv[2]
+art = open(glob.glob(rel + "/venv/lib/python3.12/site-packages/agentnode_sdk-*.dist-info/AGENTNODE_ARTEFACT")[0]).read().strip()
+commit = json.load(open(rel + "/manifest.json"))["git_commit"]
+ver = "%d.%d.%d" % sys.version_info[:3]
+tmp = out + ".tmp"
+open(tmp, "w").write(json.dumps({"python_version": ver, "artefact_sha256": art, "commit": commit,
+                                 "build_id": "managed-%s+%s" % (commit[:12], art[:12])}, indent=1, sort_keys=True) + "\n")
+os.replace(tmp, out)
+PY
+    chown root:"$U" "$STATE/tls/runtime-pin.json"; chmod 0640 "$STATE/tls/runtime-pin.json"
+}
+switch_to() {   # atomically point `current` at a release directory, and pin the agent to exactly that release
     ln -sfn "$1" "$OPT/current.next"
     mv -T "$OPT/current.next" "$OPT/current"
+    write_pin "$1"
 }
 raise_floor() {
     python3 -I -c 'import json,os,sys,time; p=sys.argv[1]; t=p+".tmp"; open(t,"w").write(json.dumps({"release_seq": int(sys.argv[2]), "at": time.time()})); os.chmod(t,0o644); os.replace(t,p)' "$RELFLOOR" "$SEQ"
@@ -326,9 +342,7 @@ fi
     --anchor "$STATE/tls/ca.pem" --floor-dir "$FLOORDIR" >/dev/null 2>&1 || true
 "$OPT/current/venv/bin/agentnode" pki floor advance --role worker --certificate "$STATE/tls/cert.pem" \
     --anchor "$STATE/tls/ca.pem" --revocation-list "$STATE/tls/revoked.crl" --floor-dir "$FLOORDIR" >/dev/null
-python3 -I -c 'import json,os,sys; p=sys.argv[1]; open(p,"w").write(json.dumps({"python_version": sys.argv[2], "artefact_sha256": sys.argv[3], "commit": sys.argv[4], "build_id": "managed-%s+%s" % (sys.argv[4][:12], sys.argv[3][:12])}, indent=1, sort_keys=True)+"\n")' \
-    "$STATE/tls/runtime-pin.json" "$PYV" "$SDKSHA" "$COMMIT"
-chown root:"$U" "$STATE/tls/runtime-pin.json"; chmod 0640 "$STATE/tls/runtime-pin.json"
+write_pin "$REL"                                      # pairing made tls/ just now: pin it to this release
 asuser /usr/bin/podman system migrate >/dev/null 2>&1 || true
 asuser /usr/bin/podman image exists "$IMAGE" || asuser /usr/bin/podman pull --quiet "$IMAGE" >/dev/null \
     || refuse runtime-absent "the pinned sandbox image could not be fetched"
