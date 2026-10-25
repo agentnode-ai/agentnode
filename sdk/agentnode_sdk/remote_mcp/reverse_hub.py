@@ -420,6 +420,20 @@ def device_authority(authority_error) -> Callable[[str, str], str]:
     return check
 
 
+def reverse_device_authority(rule: Callable[[str, str], str]) -> Callable[[str, str], str]:
+    """slice 2: (account, device) -> "" or a routing code from a direct device rule (`GatewayLogin.
+    reverse_device_error`, `agent_authority.Authority.reverse_device_error`) -- which knows a paired WORKER DEVICE
+    holds no RUN by design. Anything that raises fails closed."""
+    def check(account: str, device: str) -> str:
+        if not account or not device:
+            return "target_device_revoked"
+        try:
+            return str(rule(account, device) or "")
+        except Exception:                                     # noqa: BLE001
+            return "target_authority_unverifiable"
+    return check
+
+
 def eligibility(view: Callable[[], dict], authority: Callable[[str, str], str] | None,
                 kill_switch: Callable[[], str] | None) -> Callable[[str], str]:
     """target_id -> "" or the code that refuses it right now: kill switch, account/device, status."""

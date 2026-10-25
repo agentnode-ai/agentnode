@@ -1218,6 +1218,31 @@ class GatewayState:
             tokens[hash_token(token)] = record
         return token
 
+    def add_worker_device(self, account_id: str, client_name: str, operation_id: str,
+                          now: float | None = None) -> str:
+        """A WORKER DEVICE for a paired dial-back worker (local-worker slice 2): a device of `account_id` that holds
+        NO capability (`capabilities: []`, so it can open no session, call nothing and see nothing) and whose token
+        is never handed to anybody -- it exists to be listed, owned and withdrawn like any device, and withdrawing it
+        retires the worker. Idempotent per `operation_id` (the pairing authorization): a second call returns the
+        device the first made, never a second one. Returns its client id."""
+        if not _accounts.well_formed(account_id) or not operation_id:
+            raise PairingError("a worker device belongs to an account this gateway issued, for one pairing")
+        self._guard_private()
+        now = time.time() if now is None else now
+        with self._mutating_tokens() as tokens:
+            for record in tokens.values():
+                if record.get("pairing_operation_id") == str(operation_id):
+                    if record.get("kind") != "worker-device" or record.get("account_id") != str(account_id):
+                        raise PairingError("that pairing already made something else")
+                    return str(record["client_id"])
+            record = {"client_name": str(client_name or "worker")[:64], "issued_at": now,
+                      "client_id": secrets.token_hex(8), "account_id": str(account_id),
+                      "kind": "worker-device", "capabilities": [],
+                      "pairing_operation_id": str(operation_id)}
+            # the hash of a token nobody will ever hold: the record is a device, not a credential
+            tokens[hash_token(secrets.token_urlsafe(32))] = record
+            return record["client_id"]
+
     def account_of_client(self, client_id: str) -> str:
         """Which account a device belongs to, including one paired before accounts existed.
 

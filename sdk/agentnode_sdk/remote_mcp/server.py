@@ -224,17 +224,36 @@ def _relay_client(cfg: dict):
     return RelayClient(str(path))
 
 
-def attach_reverse_hub(app, stand: str, router, *, authority_error=None, kill_switch=None, allow_loopback=False):
+def attach_reverse_hub(app, stand: str, router, *, authority_error=None, kill_switch=None, allow_loopback=False,
+                       device_error=None):
     """local-worker slice 1, OFF unless the stand's worker.json names `reverse_listen` (a private
     tcps://<ip>:<port>): the hub of dial-back workers on `app`'s lifespan, and its local relay at
-    `reverse_hub_socket` for this control plane's other processes. Returns the hub, or None when not configured."""
+    `reverse_hub_socket` for this control plane's other processes. Returns the hub, or None when not configured.
+
+    slice 2: with `reverse_hub_socket` but NO `reverse_listen`, the hub lives in the separate, unprivileged agent-facing
+    service (`agent_service`) and this process reaches dial-back targets only through that relay -- but it still
+    judges every admission and every lease renewal itself, from the gateway it reads directly (`device_error`,
+    `GatewayLogin.reverse_device_error`), never from the other service's word. Returns None then."""
     from agentnode_sdk.remote_mcp import reverse_hub as R
 
     cfg, tls = _worker_base(stand)
     if not cfg.get("reverse_listen"):
+        if cfg.get("reverse_hub_socket") and device_error is not None:
+            view = R.target_view(router.register)
+            authority = R.reverse_device_authority(device_error)
+            eligible = R.eligibility(view, authority, kill_switch)
+
+            class _RelayGate(dict):
+                def get(self, target_id, default=None):
+                    return lambda: eligible(target_id)
+            _PROCESS_ELIGIBLE[stand] = _RelayGate()
+            router.reverse_authority = authority
         return None
     view = R.target_view(router.register)
-    authority = R.device_authority(authority_error) if authority_error is not None else None
+    if device_error is not None:
+        authority = R.reverse_device_authority(device_error)
+    else:
+        authority = R.device_authority(authority_error) if authority_error is not None else None
     eligible = R.eligibility(view, authority, kill_switch)
     hub = R.ReverseHub(str(cfg["reverse_listen"]), tls, targets=view, eligible=eligible,
                        max_total=int(cfg.get("reverse_max_slots") or R.DEFAULT_MAX_TOTAL),
@@ -444,7 +463,8 @@ def build_production_app(stand: str, *, resource: str, issuer: str,
 
         def kill():
             return allowance.why_it_is_stopped(gateway_dir)
-    attach_reverse_hub(app, stand, adapter.router, authority_error=gl.authority_error, kill_switch=kill)
+    attach_reverse_hub(app, stand, adapter.router, authority_error=gl.authority_error, kill_switch=kill,
+                       device_error=gl.reverse_device_error)
     return app
 
 
