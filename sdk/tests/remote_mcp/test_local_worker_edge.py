@@ -523,7 +523,7 @@ def test_a_revoked_worker_certificate_is_not_parkable(edge):
     it was answered `edge_proof_invalid`)."""
     from cryptography import x509
     serial = x509.load_pem_x509_certificate((edge.wk_dir / "cert.pem").read_bytes()).serial_number
-    edge.world.issuer.revoke(serial)
+    edge.world.issuer.revoke(format(serial, "x"))
     edge.world.tick()
     time.sleep(0.5)
     assert _raw_request(edge, _head(_proof_headers(edge))) == (403, "edge_not_parkable")
