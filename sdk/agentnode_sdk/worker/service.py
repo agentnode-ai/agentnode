@@ -652,6 +652,11 @@ class Bench:
         @contextlib.contextmanager
         def held():
             with bench._in_flight_lock:
+                if getattr(bench, "draining", False):
+                    # slice 2 (D10): an update drains -- the runs already here finish within their own bounds, no new
+                    # one starts; the control plane gets a named refusal before anything is claimed, never a queue
+                    raise wire.ProtocolError(wire.WORKER_BUSY, "this worker is draining for an update and starts no "
+                                             "new run")
                 if getattr(bench, "_running", 0) >= int(bench.max_runs):
                     raise wire.ProtocolError(wire.WORKER_BUSY, "this worker runs at most %d at once and keeps no "
                                              "queue; the control plane's scheduler holds the waiting" % bench.max_runs)
@@ -880,6 +885,57 @@ class CannotHoldItsLimits(RuntimeError):
         super().__init__(reason)
         self.reason = reason
         self.evidence = dict(evidence or {})
+
+
+#: The longest a draining worker waits for its runs: the job wall-clock ceiling plus the lease and its margin. A run
+#: still there after it is past every bound it was approved with; the lease watch has ended it already.
+DRAIN_SECONDS = 120 + 20 + 10
+
+
+def serve_dialback(agent, bench, *, status_path: str = "", stopping=None, every: float = 2.0) -> None:
+    """Run a dial-back agent until SIGTERM (or `stopping` is set); then DRAIN (local-worker slice 2, D10): no new run
+    is started (`worker-busy`, before anything is claimed) while the slots keep being dialled, so the runs already
+    here keep their lease renewals and their `result`, and finish within their own bounds -- at most DRAIN_SECONDS --
+    then the agent stops. `status_path` gets {pid, started_at, conversations, last_admitted_at, last_refusal,
+    draining, running} every `every` seconds: what an installer's health check reads, never a secret."""
+    import json as _json
+    import signal
+
+    stopping = stopping or threading.Event()
+    started = time.time()
+    try:
+        signal.signal(signal.SIGTERM, lambda *_a: stopping.set())
+    except (ValueError, AttributeError):                      # not the main thread, or no SIGTERM here
+        pass
+
+    def write_status():
+        if not status_path:
+            return
+        doc = {"pid": os.getpid(), "started_at": started, "conversations": agent.conversations,
+               "last_admitted_at": getattr(agent, "last_admitted_at", 0.0),
+               "last_refusal": getattr(agent, "last_refusal", ""), "draining": bool(getattr(bench, "draining", False)),
+               "running": int(getattr(bench, "_running", 0) or 0), "written_at": time.time()}
+        tmp = status_path + ".tmp"
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                _json.dump(doc, fh)
+            os.replace(tmp, status_path)
+        except OSError:
+            pass
+    agent.start()
+    try:
+        while not stopping.wait(every):
+            write_status()
+        bench.draining = True
+        print("  draining: no new run; %d running" % int(getattr(bench, "_running", 0) or 0), flush=True)
+        ends = time.monotonic() + DRAIN_SECONDS
+        while int(getattr(bench, "_running", 0) or 0) > 0 and time.monotonic() < ends:
+            write_status()
+            time.sleep(min(every, 1.0))
+        write_status()
+    finally:
+        agent.stop()
 
 
 def _edge_material(tls):
@@ -1193,7 +1249,8 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             print("  this worker holds its own certificate and pair key only: no signing identity, no account, "
                   "approval or client token.", flush=True)
             try:
-                agent.serve_forever()
+                serve_dialback(agent, bench, status_path=os.path.join(
+                    os.path.dirname(os.path.abspath(journal_at)), "status.json"))
             finally:
                 listener.stop_serving()
             return

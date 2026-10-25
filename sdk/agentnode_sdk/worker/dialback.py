@@ -182,6 +182,18 @@ class DialBackAgent:
         self.conversations = 0
         #: slots the control plane closed without a request (not eligible now, slots full): backed off from
         self.refused_slots = 0
+        #: slice 2 health (what an update checks): when the control plane last completed an inner handshake on one of
+        #: this agent's slots, and the name of the last refusal of a dial
+        self.last_admitted_at = 0.0
+        self.last_refusal = ""
+        try:
+            listener.on_admitted = self._admitted
+        except AttributeError:                                # pragma: no cover - a listener stand-in
+            pass
+
+    def _admitted(self) -> None:
+        self.last_admitted_at = time.time()
+        self.last_refusal = ""
 
     def start(self) -> None:
         for i in range(self.slots):
@@ -211,6 +223,7 @@ class DialBackAgent:
                 raw = self._dial((self.host, self.port), DIAL_TIMEOUT_SECONDS)
             except OSError as exc:
                 self.failed_dials += 1
+                self.last_refusal = str(getattr(exc, "code", "") or type(exc).__name__)
                 backoff = min(BACKOFF_MAX, max(BACKOFF_MIN, backoff * 2 or BACKOFF_MIN))
                 self.say("  the control plane could not be reached (%s); next try within %.1f s"
                          % (getattr(exc, "code", "") or type(exc).__name__, backoff))
