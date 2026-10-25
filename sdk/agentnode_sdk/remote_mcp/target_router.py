@@ -107,8 +107,9 @@ def _eligible(target: T.Target, entry, now: float, acks: dict, deployment: dict 
             failed.append("cpu")
         if props.get("isolation_observed") is not True:
             failed.append("isolation")
-        if not (props.get("platform") or {}).get("runtime"):
-            failed.append("platform")
+        from agentnode_sdk.remote_mcp.target_probe import reverse_platform_failures
+
+        failed.extend(reverse_platform_failures(props))           # observed engine; the version claim can only refuse
     if failed:
         raise TargetRefusal("target_unsuitable", ",".join(failed))
     if not T.trust_current(acks.get(target.target_id), now=now, deployment=deployment, previous=previous):

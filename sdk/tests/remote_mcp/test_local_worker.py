@@ -445,9 +445,10 @@ class Canned:
                      "-cpu": {"cpu_max": "100000 100000", "usage_s": 4.1, "wall_s": 4.0, "cpus_visible": 2},
                      "-cpu-control": {"cpu_max": "200000 100000", "usage_s": 7.8, "wall_s": 4.0, "cpus_visible": 2},
                      "-storage": {"first": "written", "past": "ENOSPC"},
-                     "-boundary": {"kernel": "6.12.0", "machine": "x86_64", "engine": "podman-5.6.0",
+                     "-boundary": {"kernel": "6.12.0", "machine": "x86_64", "engine": "podman-5.8.2",
                                    "uid_map": ["0", "1000", "1"], "cap_eff": "0000000000000000", "rootfs": "refused",
                                    "processes_visible": 2, "pid1": "/usr/bin/python3"}}
+        self.claim = over.pop("claim", "podman 5.8.2")        # what the worker says it runs (a CLAIM)
         self.said.update(over)
 
     def run(self, job):
@@ -462,7 +463,7 @@ class Canned:
         return ("reverse-mtls", _target().identity_uri, INST)
 
     def runtime_version(self):
-        return "a claim that is never used"
+        return self.claim
 
     def image_digest(self):
         return "sha256:" + "2" * 64
@@ -485,22 +486,90 @@ def _target(reverse=True):
 
 
 def test_a_dial_back_target_is_activated_only_on_observed_properties():
-    """C12 / CC15 / CC16: every property is what a job observed; the worker's claims are kept apart, unused."""
+    """C12 / CC15 / CC16: every granting property is what a job observed; the worker's claim is kept apart."""
     rec = P.probe(_target(), Canned(), _Canary())
     props = rec["properties"]
     assert props["storage_mb"] == 512 and props["cpu_quota_enforced"] and props["isolation_observed"]
-    assert props["platform"] == {"kernel": "6.12.0", "machine": "x86_64", "runtime": "podman-5.6.0"}
-    assert props["reported_platform"]["runtime_version"] == "a claim that is never used"
+    assert props["platform"] == {"kernel": "6.12.0", "machine": "x86_64", "runtime_engine": "podman",
+                                 "runtime_engine_source": "/run/.containerenv:engine",
+                                 "runtime_version_observed": "5.8.2"}
+    claim = props["reported_platform"]
+    assert (claim["runtime_version_raw"], claim["runtime_version"], claim["runtime_version_source"],
+            claim["runtime_version_verified"]) == ("podman 5.8.2", "5.8.2", "worker_claim", False)
     assert P.passed(rec) == []
 
 
 def test_an_unprivileged_podman_job_shows_its_engine_family_and_the_version_stays_a_claim():
-    """C12 / DECISION-0003: podman leaves .containerenv EMPTY for an unprivileged container (measured on the private
-    stand): the engine family is what the job observes; the version is only the worker's claim, kept apart."""
+    """C12 / DECISION-0004: podman leaves .containerenv EMPTY for an unprivileged container (measured on the private
+    stand): the engine family is what the job observes, the version only the worker's claim -- recorded apart and
+    never copied into the observed platform."""
     seen = dict(Canned().said["-boundary"], engine="", marker="podman")
     rec = P.probe(_target(), Canned(**{"-boundary": seen}), _Canary())
-    assert rec["properties"]["platform"]["runtime"] == "podman" and P.passed(rec) == []
-    assert rec["properties"]["reported_platform"]["runtime_version"] == "a claim that is never used"
+    platform = rec["properties"]["platform"]
+    assert platform["runtime_engine"] == "podman" and platform["runtime_engine_source"] == "/run/.containerenv:marker"
+    assert "runtime_version_observed" not in platform and "runtime_version" not in platform
+    assert rec["properties"]["reported_platform"]["runtime_version"] == "5.8.2" and P.passed(rec) == []
+
+
+MARKER_ONLY = dict(engine="", marker="podman")
+
+
+@pytest.mark.parametrize("seen,claim,ok", [
+    (MARKER_ONLY, "", False),                                   # claim absent
+    (MARKER_ONLY, "podman five", False),                        # unparsable
+    (MARKER_ONLY, "podman 5.8.2 (rootless)", False),            # nothing extracted from arbitrary text
+    (MARKER_ONLY, "podman 5.8.1", False),                       # below the floor
+    (MARKER_ONLY, "podman 5.8.2", True),
+    (MARKER_ONLY, "podman 5.9.0", True),
+    (MARKER_ONLY, "podman 5.10.0", True),                       # numeric, not string, comparison
+    (MARKER_ONLY, "podman 6.0.0", True),
+    (MARKER_ONLY, "docker 99.0.0", False),                      # observed podman, claimed docker
+    (dict(engine="", marker="docker"), "podman 5.8.2", False),  # observed docker, claimed podman
+    (dict(engine="", marker=""), "podman 5.8.2", False),        # no observed engine at all
+    (dict(engine="podman-5.8.1", marker="podman"), "podman 5.8.2", False),   # an OBSERVED version below the floor
+    (dict(engine="crun-1.0", marker="podman"), "podman 5.8.2", False),       # an engine value not recognised
+])
+def test_the_version_claim_can_only_refuse(seen, claim, ok):
+    """C12 / DECISION-0004 (Codex Q-LW-0002): the claim must parse with the closed grammar, name the OBSERVED family
+    and be >= 5.8.2; anything else fails `platform`. It establishes nothing by itself."""
+    boundary = dict(Canned().said["-boundary"], **seen)
+    rec = P.probe(_target(), Canned(**{"-boundary": boundary, "claim": claim}), _Canary())
+    assert (P.passed(rec) == []) is ok and (("platform" in P.passed(rec)) is (not ok))
+
+
+@pytest.mark.parametrize("failing", [
+    {"-egress": {"ipv4": "connected", "ipv6": "OSError", "dns": "gaierror"}},
+    {"-memory": {"allocated_mb": 1536}},
+    {"-storage": {"first": "written", "past": "written"}},
+    {"-wall": {"slept": 64}},
+    {"-cpu": {"cpu_max": "max 100000", "usage_s": 7.9, "wall_s": 4.0, "cpus_visible": 2}},
+    {"-boundary": dict(Canned().said["-boundary"], cap_eff="000001ffffffffff")},
+    {"-boundary": dict(Canned().said["-boundary"], kernel="")},
+    {"-boundary": dict(Canned().said["-boundary"], machine="")},
+])
+def test_a_perfect_claim_never_compensates_for_a_failed_observation(failing):
+    """C12 / DECISION-0004: with the claim at an arbitrarily high version, a record with any failed observation
+    still fails."""
+    rec = P.probe(_target(), Canned(**failing, claim="podman 99.99.99"), _Canary())
+    assert P.passed(rec) != []
+
+
+def test_the_router_refuses_a_target_whose_claim_names_another_family(tmp_path):
+    """C12 / DECISION-0004: the router applies the same rule to a stored record, by its RAW claim text: an observed
+    podman engine with a docker claim is `target_unsuitable` (platform) even when every other property holds."""
+    from agentnode_sdk.remote_mcp.target_router import _eligible
+
+    rec = P.probe(_target(), Canned(), _Canary(), now=time.time())
+    props = dict(rec["properties"], reported_platform=dict(rec["properties"]["reported_platform"],
+                                                            runtime_version_raw="docker 99.0.0"))
+    t2 = T.Target(**{**_target().__dict__, "attestation": dict(rec, properties=props, assurance=T.CUSTOMER_OBSERVED),
+                     "status": T.ACTIVE})
+
+    class E:
+        accepted_assurance = (T.CUSTOMER_OBSERVED,)
+    with pytest.raises(TargetRefusal) as exc:
+        _eligible(t2, E, time.time(), {}, None)
+    assert (exc.value.code, exc.value.detail) == ("target_unsuitable", "platform")
 
 
 @pytest.mark.parametrize("override,failed", [

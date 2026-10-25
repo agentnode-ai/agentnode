@@ -57,7 +57,11 @@ def both(tmp_path):
     t = st.register.load().target(LOCAL)
     a = attestation(T.CUSTOMER, t.worker)
     a["properties"].update(cpu_quota_enforced=True, isolation_observed=True,
-                           platform={"kernel": "6.12", "machine": "x86_64", "runtime": "podman-5.6"})
+                           platform={"kernel": "6.12", "machine": "x86_64", "runtime_engine": "podman",
+                                     "runtime_engine_source": "/run/.containerenv:marker"},
+                           reported_platform={"runtime_version_raw": "podman 5.8.2", "runtime_version": "5.8.2",
+                                              "runtime_version_source": "worker_claim",
+                                              "runtime_version_verified": False})
     body = {k: a[k] for k in sorted(a) if k != "record_digest"}
     a["record_digest"] = T.digest(body)
     st.register.set_attestation(LOCAL, a, actor="t")
