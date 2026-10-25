@@ -516,3 +516,14 @@ def test_a_relay_waits_as_long_as_the_request_may_take():
         with pytest.raises(WorkerUnreachable):
             w._ask("describe", {}, wait=seconds)
     assert asked == [20.0, 215.0]
+
+
+def test_a_revoked_worker_certificate_is_not_parkable(edge):
+    """Codex negative list: a revoked instance is `edge_not_parkable` (measured on the stand after a device revoke:
+    it was answered `edge_proof_invalid`)."""
+    from cryptography import x509
+    serial = x509.load_pem_x509_certificate((edge.wk_dir / "cert.pem").read_bytes()).serial_number
+    edge.world.issuer.revoke(serial)
+    edge.world.tick()
+    time.sleep(0.5)
+    assert _raw_request(edge, _head(_proof_headers(edge))) == (403, "edge_not_parkable")

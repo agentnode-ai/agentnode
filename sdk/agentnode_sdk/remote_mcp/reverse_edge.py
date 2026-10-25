@@ -317,7 +317,9 @@ class EdgeServer:
             who = _identity.check_peer(der, deployment=self.hub.tls.deployment, expected_role=_identity.WORKER,
                                        accept_instances=frozenset(known), trust=trust)
         except _identity.PeerRefused as refused:
-            raise EdgeRefusal("edge_not_parkable" if refused.check == _identity.CHECK_INSTANCE
+            # a genuine certificate of an instance that is not (or no longer) a parkable target here -- unknown, or
+            # revoked / withdrawn for good -- is not a broken proof: it is an instance that may not park
+            raise EdgeRefusal("edge_not_parkable" if refused.check in (_identity.CHECK_INSTANCE, _identity.CHECK_REVOKED)
                               else "edge_proof_invalid", refused.check) from None
         except Exception:                                      # noqa: BLE001 - trust state unreadable
             raise EdgeRefusal("edge_authority_unavailable") from None
