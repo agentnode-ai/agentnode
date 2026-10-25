@@ -170,6 +170,8 @@ class DialBackAgent:
         self.dials = 0
         self.failed_dials = 0
         self.conversations = 0
+        #: slots the control plane closed without a request (not eligible now, slots full): backed off from
+        self.refused_slots = 0
 
     def start(self) -> None:
         for i in range(self.slots):
@@ -214,6 +216,7 @@ class DialBackAgent:
                 backoff = 0.0
                 self.conversations += 1
             else:
+                self.refused_slots += 1
                 backoff = min(BACKOFF_MAX, max(BACKOFF_MIN, backoff * 2 or BACKOFF_MIN))
                 self._stopped.wait(random.uniform(0.0, backoff))
 

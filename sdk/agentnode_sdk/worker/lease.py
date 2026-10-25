@@ -57,6 +57,9 @@ COUNTER_NAME = "lease-epoch.json"
 #: revoked caller's connection is cut: the two are the same situation -- work whose
 #: principal is no longer entitled to have asked for it.
 STOP_APPEAR_SECONDS = 10.0
+#: local-worker R9: a dial-back worker ends lapsing work this much BEFORE its lease ends, so that a control plane
+#: that is gone has nothing of its running beyond the lease bound (the stop itself takes about a second).
+ABORT_MARGIN_SECONDS = 3.0
 FILE_MODE = 0o600
 
 
@@ -256,10 +259,13 @@ class Leases:
             return None
         return held
 
-    def lapsed(self) -> Held | None:
-        """A lease that existed and has run out, once, so a caller can act on the transition."""
+    def lapsed(self, margin: float = 0.0) -> Held | None:
+        """A lease that existed and has run out, once, so a caller can act on the transition.
+
+        `margin` > 0 (local-worker R9): a lease with less than `margin` seconds left counts as run out, so whatever
+        ends the work on a lapse has finished by the lease's own end instead of starting then."""
         held = self._held
-        if held is not None and not held.alive(self._clock()):
+        if held is not None and not held.alive(self._clock() + max(0.0, float(margin))):
             return held
         return None
 
@@ -268,5 +274,5 @@ class Leases:
         self._held = None
 
 
-__all__ = ["EXPIRED", "STOP_APPEAR_SECONDS", "HEARTBEAT_EVERY_SECONDS", "Held", "LEASE_SECONDS", "Leases",
+__all__ = ["ABORT_MARGIN_SECONDS", "EXPIRED", "STOP_APPEAR_SECONDS", "HEARTBEAT_EVERY_SECONDS", "Held", "LEASE_SECONDS", "Leases",
            "LeaseRefused", "NOT_THE_HOLDER", "NO_LEASE", "STALE_EPOCH"]

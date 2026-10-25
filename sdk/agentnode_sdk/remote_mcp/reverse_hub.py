@@ -43,6 +43,8 @@ DEFAULT_MAX_TOTAL = 256
 FORBIDDEN_PORTS = (8443,)
 #: Statuses whose worker may hold a parked slot (probe and activation need them; terminal/suspended never).
 PARKABLE = ("enrolled", "probing", "active")
+#: The reaper judges every parked identity's eligibility again this often (in 1-s passes).
+DRAIN_EVERY_PASSES = 2
 
 
 class SlotRefused(Exception):
@@ -181,8 +183,39 @@ class ReverseHub:
             threading.Thread(target=self._admit, args=(raw,), daemon=True).start()
 
     def _reap_loop(self) -> None:
+        passes = 0
         while not self._stopped.wait(1.0):
             self.reap()
+            passes += 1
+            if passes % DRAIN_EVERY_PASSES == 0:
+                self.drain_ineligible()
+
+    def drain_ineligible(self) -> int:
+        """Codex D4/D9: an identity whose target may not be reached now (suspended, revoked, its device or account
+        withdrawn, the kill switch on, unreadable authority) loses its parked slots without waiting for somebody to
+        ask for one. Returns how many slots were closed."""
+        with self._cond:
+            instances = [i for i, pool in self._pools.items() if pool]
+        if not instances:
+            return 0
+        try:
+            known = self._targets() or {}
+        except Exception:                                     # noqa: BLE001 - unreadable: nothing is reachable
+            known = {}
+        closed = 0
+        for instance in instances:
+            t = known.get(instance)
+            try:
+                why = "not_a_parkable_target" if t is None or t.get("status") not in PARKABLE else \
+                    self._eligible(t["target_id"])
+            except Exception:                                 # noqa: BLE001 - cannot judge: not reachable
+                why = "target_authority_unverifiable"
+            if why:
+                n = self.drain(instance)
+                if n:
+                    closed += n
+                    self.say("  reverse hub: drained %d slot(s) of %s (%s)" % (n, instance, why))
+        return closed
 
     # ------------------------------------------------------------ admission of a slot
     def _admit(self, raw) -> None:

@@ -563,7 +563,9 @@ class TlsListener:
     def _one(self, raw, idle: float | None = None) -> bool:
         """One connection, one conversation. `idle` (the dial-back agent, local-worker D1): after the handshake
         the connection is a parked slot at the control plane; it waits at most `idle` seconds for the one request
-        and is closed unused after that (replaced by a fresh one). Returns whether the handshake was admitted."""
+        and is closed unused after that (replaced by a fresh one). Returns whether the handshake was admitted --
+        and, for a slot (`idle`), whether a request then arrived: a control plane that closes a slot straight after
+        the handshake (not eligible now, slots full) is a failed dial the agent backs off from, not a conversation."""
         connection = self.admit(raw)
         if connection is None:
             return False
@@ -574,8 +576,10 @@ class TlsListener:
                 pass
             return True
         carrying: dict = {}
+        served = {"request": False}
 
         def noted(method: str, params: dict) -> None:
+            served["request"] = True
             # Which run this connection carries, if any -- so that a cut stops it (below).
             if method == "run":
                 job = params.get("job") or {}
@@ -623,7 +627,7 @@ class TlsListener:
         finally:
             self.bench.proved_caller(None)
             self.watch.remove(handle)
-        return True
+        return True if idle is None else served["request"]
 
 
 __all__ = ["Contexts", "DEFAULT_REEVALUATE_SECONDS", "DEFAULT_RELOAD_SECONDS",

@@ -726,6 +726,50 @@ def test_the_renewal_gate_alone_withholds_renewal(stand, monkeypatch):
     assert stand.code["now"] == ""
 
 
+def test_a_dial_back_worker_ends_lapsing_work_before_the_lease_ends():
+    """C13 / R9 / CC19 (measured on the private stand at 27.6 s before this): with the abort margin a lease with
+    less than 3 s left counts as run out for the watch, so the payload is gone by the lease's end; without a margin
+    (every other worker) nothing changes."""
+    now = {"t": 0.0}
+    leases = _lease.Leases(None, clock=lambda: now["t"], ttl=20.0)
+    leases.take("g1")
+    now["t"] = 16.9
+    assert leases.lapsed(_lease.ABORT_MARGIN_SECONDS) is None and leases.lapsed() is None
+    now["t"] = 17.1
+    assert leases.lapsed(_lease.ABORT_MARGIN_SECONDS) is not None and leases.lapsed() is None
+    assert leases.check("g1", 1).holder == "g1"               # new work is judged by the lease itself, unchanged
+
+    class B:
+        pass
+    bench = B()
+    bench.leases, bench.journal = leases, None
+    stopped = []
+    bench.in_flight = lambda: [("run-1", "agentnode-run-1")]
+    bench.forget_in_flight = lambda run_id: None
+    bench.worker = type("W", (), {"stop": lambda self, r, c, a: stopped.append(r) or True,
+                                  "gone": lambda self, c, patiently=True: type("G", (), {"verified": True})()})()
+    assert LeaseWatch(bench).once() == 0 and stopped == []
+    assert LeaseWatch(bench, margin=_lease.ABORT_MARGIN_SECONDS).once() == 1 and stopped == ["run-1"]
+
+
+def test_a_dial_back_worker_removes_a_run_without_the_runtimes_stop_grace(monkeypatch):
+    """R9: `podman rm -f` waits the 10-s stop grace for a SIGTERM the job's PID 1 ignores; the dial-back worker
+    removes at once (`--time 0`), every other worker's removal argv is unchanged."""
+    from agentnode_sdk.worker import Gone
+    from agentnode_sdk.worker import local as L
+
+    class Backend:
+        def check_available(self):
+            return type("A", (), {"backend": "podman", "available": True})()
+    ran = []
+    monkeypatch.setattr(L.subprocess, "run", lambda argv, **kw: ran.append(list(argv)))
+    for at_once in (False, True):
+        w = L.LocalWorker(Backend(), stop_at_once=at_once)
+        monkeypatch.setattr(w, "gone", lambda name, patiently=True: Gone(answered=True, left=("agentnode-x-1",)))
+        assert w.stop("x", "agentnode-x", 1.0)
+    assert ran == [["podman", "rm", "-f", "agentnode-x-1"], ["podman", "rm", "-f", "--time", "0", "agentnode-x-1"]]
+
+
 def test_the_lease_survives_while_renewals_are_allowed(stand, monkeypatch):
     """C13 / C15 / CC24: with concurrency 1 a run holds ONE slot; renewals use the reserved ones and the run ends
     by itself, never stopped by a lapsed lease."""
@@ -784,6 +828,24 @@ def test_an_ineligible_target_gets_no_slot_and_is_drained(stand, code):
     with pytest.raises(WorkerUnreachable) as exc:
         stand.control().confirm_reachable(2.0)
     assert classify(exc.value) == code and stand.hub.parked(INST) == 0
+
+
+def test_a_revoked_target_loses_its_parked_slots_and_its_agent_backs_off(stand):
+    """C16 / D4 / negative (measured on the private stand: a revoked target's slots stayed parked): the reaper drains
+    an identity that may not be reached now WITHOUT anybody asking for a slot; the agent's re-dials are closed
+    straight after the handshake, and it counts them as refused (and backs off), never as conversations."""
+    agent = stand.agent()
+    stand.wait_parked(D.slots_for(1))
+    served = agent.conversations
+    stand.view[INST]["status"] = "revoked"
+    end = time.time() + 6
+    while stand.hub.parked(INST) and time.time() < end:
+        time.sleep(0.1)
+    assert stand.hub.parked(INST) == 0
+    end = time.time() + 6
+    while agent.refused_slots == 0 and time.time() < end:
+        time.sleep(0.1)
+    assert agent.refused_slots >= 1 and agent.conversations == served
 
 
 def test_an_agent_without_the_reverse_feature_gets_no_work(stand):

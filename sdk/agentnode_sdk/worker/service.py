@@ -162,10 +162,12 @@ class LeaseWatch:
     there" either.
     """
 
-    def __init__(self, bench, *, every: float = 1.0, say=None) -> None:
+    def __init__(self, bench, *, every: float = 1.0, say=None, margin: float = 0.0) -> None:
         self.bench = bench
         self.every = float(every)
         self.say = say or (lambda text: None)
+        #: local-worker R9: end lapsing work this long before the lease ends (0 = at its end, as always)
+        self.margin = float(margin)
         self._stop = None
         self._thread = None
 
@@ -194,7 +196,7 @@ class LeaseWatch:
         """One pass. Returns how many runs were ended. Separate from the loop so a test can
         see the decision rather than whatever the loop has already done to it."""
         leases = self.bench.leases
-        if leases is None or leases.lapsed() is None:
+        if leases is None or (leases.lapsed(self.margin) if self.margin else leases.lapsed()) is None:
             return 0
         ended = 0
         for run_id, container in self.bench.in_flight():
@@ -971,8 +973,9 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             "a worker is started for one account. Without one, anything that can reach the "
             "socket could ask it to run code, which is the thing the socket's permissions and "
             "this check exist to prevent.")
-    # A dial-back worker applies each job's own limits to its container (DECISION-0002); no other worker does.
-    the_worker = worker or LocalWorker(ContainerBackend(), apply_job_limits=bool(dial))
+    # A dial-back worker applies each job's own limits to its container (DECISION-0002) and ends a run it must
+    # stop at once, without the runtime's stop grace (R9); no other worker does either.
+    the_worker = worker or LocalWorker(ContainerBackend(), apply_job_limits=bool(dial), stop_at_once=bool(dial))
     if dial:
         # BEFORE ANY RUNTIME WORK OR DIAL: no isolating runtime -> connect to nothing, run nothing (runtime-absent).
         from agentnode_sdk.worker import dialback as _dialback
@@ -1095,7 +1098,7 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
         # And the thing that ends work when the control plane that asked for it stops being
         # entitled to have asked. Started here rather than inside `Leases` so that a test can
         # drive one pass of it without a thread.
-        LeaseWatch(bench, say=print).start()
+        LeaseWatch(bench, say=print, margin=_lease.ABORT_MARGIN_SECONDS if dial else 0.0).start()
         # BEFORE THE DOOR OPENS. What this worker left behind last time is settled while
         # nothing new can arrive, so a gateway asking about an interrupted run gets an answer
         # rather than a record that is still being written.
