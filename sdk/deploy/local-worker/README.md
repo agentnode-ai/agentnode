@@ -51,7 +51,7 @@ journal and `result(run_id)` are the same code.
 
 | Threat | Defence |
 |---|---|
-| Reaching the customer machine inbound | Nothing listens: no socket, no port, no UPnP, no tunnel program. Measured: an external full-port scan of the agent host shows only its pre-existing ports; the agent account has 0 listeners. |
+| Reaching the customer machine inbound | Nothing listens: no socket, no port, no UPnP, no tunnel program. Measured on Linux: a full-port scan of the agent host shows only its pre-existing ports; the agent account has 0 listeners. Measured on Windows/WSL2 behind a home router's NAT (a public scan reaches the ROUTER, not the machine): the public address shows no open port, the router has no port forward and no UPnP mapping, a full TCP scan of the machine's LAN address shows only its pre-existing ports, and the Windows and WSL listener inventories show nothing of the agent (in WSL only chronyd on loopback). Not measured: a UDP scan of the LAN address. |
 | A spoofed or rebound DNS answer, an interception proxy | DNS selects an address and grants nothing. A certificate not valid for the name in the OS store is `control_tls_untrusted`; an intercepting proxy that passes outer TLS meets the inner deployment mTLS (`control_identity_mismatch` / `target_identity_mismatch`). Configured proxies are refused (`proxy_unsupported`); this beta connects directly. |
 | A browser or another site reaching the agent path | The edge refuses any `Origin` (`edge_origin_refused`), cookies, auth headers and WebSocket headers; the pairing API (JSON) refuses `Origin` and `Cookie`; the pairing page requires same-origin POSTs, its own HMAC form token and the gateway's `__Host-` cookie (HttpOnly, SameSite=Strict). |
 | Replaying a slot request | Signed time ±60 s and a nonce memory of 120 s (`edge_proof_stale`, `edge_proof_replayed`); full memory refuses rather than forgets. |
@@ -91,6 +91,10 @@ Not defended, or defended only in part; each is a known limit, not an oversight.
 * **Privacy and retention.** The control plane keeps the machine name, its key fingerprint, the device record and
   the audit log of every run (section 12); the agent keeps its journal of run ids and outcomes. Nothing else is
   collected, but none of it expires automatically in this beta.
+* **A run that overlaps an update can be lost behind NAT.** On a Windows/WSL2 machine behind a home router, one update
+  started while a 90-s run was in flight lost that run's answer after 76.6 s (`dispatch_indeterminate`: named as
+  indeterminate, never resent); a second update with the same timing kept its run. The cause is not established. Until
+  it is, update a machine when it has no run in flight.
 * **Windows needs the installing user logged on.** The WSL2 distribution runs under a scheduled task at that user's
   logon (no stored password, no service account); while nobody is logged on the agent is offline, and calls to it are
   `target_offline`.
