@@ -320,6 +320,13 @@ def pair(pins_path, state_dir, *, name: str, concurrency: int = 1, queue: int = 
 
 
 RETIRE_PATH = "/agent/v1/device/retire"
+#: the signed retirement request: its fields, and the bytes the worker key signs (the control side checks the same)
+RETIRE_KEYS = ("deployment", "instance", "target_id", "device_id", "request_id", "ts", "certificate", "proof")
+RETIRE_DOMAIN = b"agentnode-device-retire/1\n"
+
+
+def retire_message(req: dict) -> bytes:
+    return RETIRE_DOMAIN + "\n".join(str(req[k]) for k in RETIRE_KEYS[:6]).encode("ascii")
 
 
 def retire_request(state_dir, *, now: float | None = None) -> dict:
@@ -329,8 +336,6 @@ def retire_request(state_dir, *, now: float | None = None) -> dict:
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
 
-    from agentnode_sdk.remote_mcp import agent_service as _as
-
     d = Path(state_dir)
     target = json.loads((d / "target.json").read_text(encoding="utf-8"))
     key = serialization.load_pem_private_key((d / "key.pem").read_bytes(), None)
@@ -338,7 +343,7 @@ def retire_request(state_dir, *, now: float | None = None) -> dict:
     req = {"deployment": target["deployment"], "instance": target["instance"], "target_id": target["target_id"],
            "device_id": target["device_id"], "request_id": os.urandom(16).hex(),
            "ts": str(int(now if now is not None else time.time())), "certificate": b64(der)}
-    req["proof"] = b64(key.sign(_as.retire_message(dict(req, proof="")), ec.ECDSA(hashes.SHA256())))
+    req["proof"] = b64(key.sign(retire_message(dict(req, proof="")), ec.ECDSA(hashes.SHA256())))
     return req
 
 

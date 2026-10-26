@@ -312,12 +312,10 @@ class PairingStore:
         return {"status": "accepted", "request_id": req["request_id"]}
 
 
-RETIRE_KEYS = ("deployment", "instance", "target_id", "device_id", "request_id", "ts", "certificate", "proof")
-RETIRE_DOMAIN = b"agentnode-device-retire/1\n"
-
-
-def retire_message(req: dict) -> bytes:
-    return RETIRE_DOMAIN + "\n".join(str(req[k]) for k in RETIRE_KEYS[:6]).encode("ascii")
+# the request's format is the worker's (worker/pairing.py): the control side depends on the worker, never back
+RETIRE_KEYS = WP.RETIRE_KEYS
+RETIRE_DOMAIN = WP.RETIRE_DOMAIN
+retire_message = WP.retire_message
 
 
 def check_retire_request(body: dict, trust, deployment: str, *, now: float) -> dict:

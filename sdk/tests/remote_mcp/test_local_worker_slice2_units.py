@@ -366,3 +366,13 @@ def test_pairing_on_native_windows_is_refused_before_any_key_or_request(tmp_path
     assert "runtime-absent" in capsys.readouterr().out
     assert called == [] and not state.exists()
     assert W.cmd_pair(types.SimpleNamespace(pins="", state_dir="")) == 2
+
+
+def test_the_workers_key_id_is_the_gateways_format():
+    """The worker computes the operator key id itself (its start path needs nothing of the control plane's package,
+    tests/test_the_two_roles_are_separable.py); it must stay the very format the signing side writes."""
+    import os as _os
+
+    from agentnode_sdk.signing_key import compute_key_id
+    for raw in (bytes(32), bytes(range(32)), _os.urandom(32)):
+        assert PN.key_id(raw) == compute_key_id(raw)

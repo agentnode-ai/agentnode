@@ -84,6 +84,12 @@ def read_pins(path) -> dict:
     return pins
 
 
+def key_id(public_raw: bytes) -> str:
+    """`ed25519:<first 16 hex of SHA-256>` -- the operator key's id, the same format as `signing_key.compute_key_id`,
+    kept here so the worker's start path needs nothing of the control plane's package (tests/test_the_two_roles...)."""
+    return "ed25519:" + hashlib.sha256(bytes(public_raw)).hexdigest()[:16]
+
+
 def target_signed_bytes(doc: dict) -> bytes:
     return TARGET_DOMAIN + canonical({k: v for k, v in doc.items() if k != "signature"})
 
@@ -92,11 +98,9 @@ def sign_target(doc: dict, operator_private) -> dict:
     """The pairing helper's side: sign a target document with the operator key."""
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-    from agentnode_sdk.signing_key import compute_key_id
-
     body = {k: doc[k] for k in TARGET_KEYS if k != "signature"}
     pub = operator_private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-    body["signature"] = {"key_id": compute_key_id(pub), "signature": operator_private.sign(target_signed_bytes(body)).hex()}
+    body["signature"] = {"key_id": key_id(pub), "signature": operator_private.sign(target_signed_bytes(body)).hex()}
     return body
 
 
@@ -106,13 +110,12 @@ def check_target(doc: dict, pins: dict) -> dict:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
     from agentnode_sdk.pki import identity as _identity
-    from agentnode_sdk.signing_key import compute_key_id
 
     if not isinstance(doc, dict) or set(doc) != set(TARGET_KEYS) or doc["schema"] != TARGET_SCHEMA:
         raise Untrusted("target.json is not a %s document" % TARGET_SCHEMA)
     pub = bytes.fromhex(pins["operator_pub"])
     sig = doc["signature"] if isinstance(doc["signature"], dict) else {}
-    if sig.get("key_id") != compute_key_id(pub):
+    if sig.get("key_id") != key_id(pub):
         raise Untrusted("target.json is signed by another operator key")
     try:
         Ed25519PublicKey.from_public_bytes(pub).verify(bytes.fromhex(str(sig.get("signature"))), target_signed_bytes(doc))
