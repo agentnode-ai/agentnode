@@ -66,6 +66,35 @@ journal and `result(run_id)` are the same code.
 | Work run without approval, or on the wrong target | Pairing grants nothing: `prepare → human approval → submit` is unchanged, the approval is single-use (300 s) and bound to account, capability, content and the target binding including `device_id`. A foreign target is `target_unknown`; managed stays the default; an explicit local target that is offline, unsuitable, full, suspended or revoked is refused by name and never moved to managed. |
 | Code running on the host | Native Windows refuses pairing and running (`runtime-absent`). On Linux/WSL2 every run is a rootless podman job; the agent refuses before any dial without an isolating runtime, and before every start the runtime check proves the id-mapping helpers, the account, the user manager, the runtime directory, cgroup delegation and ENFORCED memory/CPU/PID limits. |
 
+### Residual risks accepted for the beta
+
+Not defended, or defended only in part; each is a known limit, not an oversight.
+
+* **Root or control-plane compromise.** Root on the control host holds the operator key, the CA and the register:
+  whoever has it can enrol, approve and route as the operator. The design keeps that key away from the
+  internet-facing `rmcp-agent`, which narrows the path to it but does not change what root can do.
+* **The operating system's trust store.** The outer TLS believes the OS WebPKI store. A CA that store trusts and that
+  mis-issues for `mcp.agentnode.net` defeats the outer layer; the inner deployment mTLS and the pinned anchor still
+  hold, so such a server reaches no slot, but it can see and refuse slot requests.
+* **Replay memory is per process.** The nonce memory of the edge lives in `rmcp-agent`'s memory. After a restart a slot
+  proof captured within the last 60 s could be presented once more. Capturing one requires breaking the outer TLS,
+  and the inner mTLS still binds the slot to the worker's key.
+* **One hub, one host.** One `rmcp-agent` process holds every parked slot (`max_total`, default 64); its restart drops
+  all slots until the agents redial (measured: seconds). No second hub, no failover.
+* **Backups and restore.** A register, CA or pairing store restored from a backup is verified on load (signatures,
+  hash links), and a register older than the pinned head is refused — but a restored copy can bring back a target or
+  identity revoked after the backup was taken. The operator must re-apply revocations made after the backup.
+* **Revocation propagation waits for every live target.** A revoke is in force at once (target revoked, identity
+  tombstoned, list published, pair key forgotten); its last step, the acknowledgement of the new trust lists by
+  every live target, stays open (`revoke.not_acknowledged`) while a paired target is offline, and completes when it
+  reconnects or is itself retired.
+* **Privacy and retention.** The control plane keeps the machine name, its key fingerprint, the device record and
+  the audit log of every run (section 12); the agent keeps its journal of run ids and outcomes. Nothing else is
+  collected, but none of it expires automatically in this beta.
+* **Windows needs the installing user logged on.** The WSL2 distribution runs under a scheduled task at that user's
+  logon (no stored password, no service account); while nobody is logged on the agent is offline, and calls to it are
+  `target_offline`.
+
 ## 3. Pairing (`agentnode-worker-pair/1`)
 
 Shape of the OAuth 2.0 device authorization grant; not a claim of RFC 8628 conformance; the agent never receives a
