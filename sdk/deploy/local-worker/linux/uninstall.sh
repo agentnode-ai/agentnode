@@ -19,7 +19,12 @@ REVOKE=no
 [ "${1:-}" = "--revoke" ] && REVOKE=yes
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 2; }
 if id "$U" >/dev/null 2>&1; then UIDN=$(id -u "$U"); else UIDN=""; fi
-asuser() { ( cd "$STATE" && runuser -u "$U" -- env HOME="$STATE" XDG_RUNTIME_DIR="/run/user/$UIDN" "$@" ); }
+# the agent's own environment only (env -i), as in install.sh: a caller's session bus (WSL's root shell, `sudo` on a
+# desktop) would send podman to a user manager that is not the agent's, and its cleanup would not reach the agent's
+# containers
+AENV="HOME=$STATE XDG_RUNTIME_DIR=/run/user/$UIDN DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UIDN/bus PATH=$PATH"
+asuser() { ( cd "$STATE" && runuser -u "$U" -- env -i $AENV "$@" ); }
+failed=""
 if [ "$REVOKE" = yes ] && [ -n "$UIDN" ] && [ -f "$STATE/tls/target.json" ]; then
     asuser /opt/agentnode-agent/current/venv/bin/agentnode worker retire --pins /etc/agentnode-agent/pins.json \
         --state-dir "$STATE/tls" || echo "  (not retired at the control plane: withdraw the device in your device list)"
@@ -34,8 +39,10 @@ rm -f /etc/systemd/system/agentnode-agent.service /etc/systemd/system/agentnode-
 rm -rf /etc/systemd/system/agentnode-agent.service.d
 systemctl daemon-reload
 if [ -n "$UIDN" ]; then
-    asuser /usr/bin/podman rm -af >/dev/null 2>&1
-    asuser /usr/bin/podman system reset -f >/dev/null 2>&1
+    # a cleanup that fails is said, never swallowed: the account and its storage still go below, but the removal is
+    # then not reported complete
+    asuser /usr/bin/podman rm -af >/dev/null || failed="$failed podman-rm"
+    asuser /usr/bin/podman system reset -f >/dev/null || failed="$failed podman-reset"
     loginctl disable-linger "$U" 2>/dev/null
     systemctl stop "user@$UIDN.service" 2>/dev/null
     pkill -u "$U" 2>/dev/null; sleep 1; pkill -9 -u "$U" 2>/dev/null
@@ -53,4 +60,5 @@ grep -q "^$U:" /etc/subuid /etc/subgid 2>/dev/null && left="$left subids"
 for p in "$STATE" /opt/agentnode-agent /etc/agentnode-agent /var/lib/agentnode-agent-floor /var/lib/agentnode-agent-release \
          /etc/systemd/system/agentnode-agent.service; do [ -e "$p" ] && left="$left $p"; done
 if [ -n "$left" ]; then echo "  NOT completely removed:$left" >&2; exit 1; fi
+if [ -n "$failed" ]; then echo "  removed, but the runtime's own cleanup failed:$failed (see above)" >&2; exit 1; fi
 echo "  removed completely: no account, no files, no units, no subordinate ids."

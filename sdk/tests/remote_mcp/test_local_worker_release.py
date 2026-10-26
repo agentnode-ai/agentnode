@@ -370,6 +370,23 @@ def test_whatever_runs_as_the_agent_runs_in_the_agents_environment_only():
     assert 'DBUS_SESSION_BUS_ADDRESS="unix:path=$RD/bus"' in chk
 
 
+def test_the_uninstaller_cleans_up_in_the_agents_environment_and_says_when_it_could_not():
+    """L13 (Codex LW2-R2-F004): the same class as the installer's -- uninstall.sh, started from a session, ran podman
+    as the agent with the caller's DBUS_SESSION_BUS_ADDRESS and threw its errors away, so a cleanup that reached the
+    wrong user manager still reported "removed completely". Every `runuser` starts from env -i with the agent's own
+    bus, and a failed podman cleanup makes the removal end non-zero, by name."""
+    import re
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[2] / "deploy" / "local-worker" / "linux" / "uninstall.sh").read_text(
+        encoding="utf-8")
+    calls = re.findall(r'runuser -u "?\$\{?U\}?"? -- (\S+ \S+)', text)
+    assert calls and all(c.startswith("env -i") for c in calls), calls
+    assert re.search(r'AENV="[^"]*DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$UIDN/bus', text)
+    cleanup = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("asuser /usr/bin/podman")]
+    assert len(cleanup) == 2 and all("2>&1" not in ln and "|| failed=" in ln for ln in cleanup), cleanup
+    assert re.search(r'if \[ -n "\$failed" \]; then [^\n]*exit 1; fi', text)
+
+
 @pytest.mark.skipif(os.name != "posix" or not __import__("shutil").which("sha256sum"), reason="POSIX shell tools")
 def test_the_wsl_step_refuses_a_changed_manifest_or_rpm_before_any_rpm_call(tmp_path):
     """CC20/CC24, executed: a manifest that is not the verified bytes, an RPM with another hash, an RPM it does not
