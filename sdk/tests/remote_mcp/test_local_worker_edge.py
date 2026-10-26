@@ -235,6 +235,34 @@ def test_a_run_crosses_the_443_path_end_to_end(edge):
     assert edge.edge.refused == {}
 
 
+def test_the_socket_that_crosses_the_internet_keeps_itself_alive(edge, monkeypatch):
+    """L15 (found on the first real WSL2 run behind a home router): the agent's end of a 443 slot is a local
+    socketpair, so keepalive set there reached nothing; the TCP connection was silent for a run's whole length and a NAT
+    dropped it after ~70 s (every longer run: dispatch_indeterminate). The dialer turns keepalive on for the TCP
+    socket itself (read back at once: after the TLS wrap the plain socket object is detached)."""
+    made, kept = [], []
+    real = D._keepalive
+
+    def connect(addr, timeout):
+        s = edge.connect()(addr, timeout)
+        made.append(s)
+        return s
+
+    def keepalive(sock):
+        real(sock)
+        idle = sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE) if hasattr(socket, "TCP_KEEPIDLE") else 30
+        kept.append((sock, sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE), idle))
+
+    monkeypatch.setattr(D, "_keepalive", keepalive)
+    inner = E.EdgeDialer(E.control_url("https://" + HOST), edge.material(), context=edge.context(),
+                         connect=connect, say=edge.said.append)(None, 10.0)
+    try:
+        assert len(made) == 1 and made[0].family in (socket.AF_INET, socket.AF_INET6)
+        assert [(s is made[0], on != 0, idle) for s, on, idle in kept] == [(True, True, 30)]
+    finally:
+        inner.close()
+
+
 def test_nginx_and_the_hub_see_only_inner_ciphertext(edge, monkeypatch):
     """L6 / CC12: what passes the edge after 101 is TLS records, never a frame in the clear -- the job's text never
     appears in the bytes the stand-in nginx moves."""

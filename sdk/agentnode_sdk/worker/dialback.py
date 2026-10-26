@@ -245,7 +245,8 @@ class DialBackAgent:
 
 
 def _keepalive(sock) -> None:
-    """Diagnostic only (the 110 s idle bound is what replaces a slot): ask the kernel to notice a dead peer."""
+    """Ask the kernel to notice a dead peer -- and, on the TCP socket of a 443 slot (`edge.EdgeDialer`), to keep a NAT
+    on the way from dropping a slot that is silent while its run lasts (the 110 s idle bound replaces idle slots)."""
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         for name, value in (("TCP_KEEPIDLE", 30), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3)):

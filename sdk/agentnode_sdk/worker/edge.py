@@ -223,8 +223,15 @@ class EdgeDialer:
         self.say = say or (lambda text: print(text, flush=True))
 
     def __call__(self, _address, timeout: float):
+        from agentnode_sdk.worker.dialback import _keepalive
+
         key, der, instance = self.material()
         raw = self._connect((self.url.host, self.url.port), timeout)
+        # Keepalive on THIS socket, the one that crosses the internet: the agent gets back one end of a local
+        # socketpair, on which a TCP option is a no-op. Without it a run's slot is silent for the job's whole length,
+        # and a NAT on the way (measured: WSL2 behind a home router) drops it after ~70 s -- every longer run ended
+        # dispatch_indeterminate.
+        _keepalive(raw)
         try:
             raw.settimeout(timeout)
             try:
