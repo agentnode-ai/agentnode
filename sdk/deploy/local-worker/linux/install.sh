@@ -188,7 +188,11 @@ install -d -o root -g root -m 0755 "$ETC" "$FLOORDIR" "$(dirname "$RELFLOOR")"
 # the pins in force are ALWAYS those of the release `current` points at: written by switch_to, never ahead of it
 install -o root -g root -m 0644 "$WORK/release-pub.pem" "$ETC/release-pub.pem"
 
-asuser() { ( cd "$STATE" && runuser -u "$U" -- env HOME="$STATE" XDG_RUNTIME_DIR="/run/user/$UIDN" TMPDIR="$STATE/tmp" PYTHONUNBUFFERED=1 "$@" ); }
+# the agent's own environment only (env -i): an installer started from a session -- WSL's root shell, `sudo` on a
+# desktop -- carries that session's DBUS_SESSION_BUS_ADDRESS, and podman would then miss the agent's user manager
+# and run without the limits it is asked for (measured in WSL2: memory.max=max)
+AENV="HOME=$STATE XDG_RUNTIME_DIR=/run/user/$UIDN DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$UIDN/bus TMPDIR=$STATE/tmp PATH=/usr/sbin:/usr/bin:/sbin:/bin PYTHONUNBUFFERED=1"
+asuser() { ( cd "$STATE" && runuser -u "$U" -- env -i $AENV "$@" ); }
 
 # PRIVATE TEST STAND ONLY (Codex D14): AGENTNODE_STAND_HOSTS names a root-owned hosts file that maps the public name to
 # the stand's private address for the AGENT ALONE -- pairing runs in its own mount namespace with that file over
@@ -201,8 +205,7 @@ fi
 asuser_pairing() {
     if [ -n "$STAND_HOSTS" ]; then
         unshare -m sh -c 'mount --bind "$0" /etc/hosts && shift && cd "$1" && shift && exec runuser -u "$@"' \
-            "$STAND_HOSTS" x "$STATE" "$U" -- env HOME="$STATE" XDG_RUNTIME_DIR="/run/user/$UIDN" TMPDIR="$STATE/tmp" \
-            PYTHONUNBUFFERED=1 "$@"
+            "$STAND_HOSTS" x "$STATE" "$U" -- env -i $AENV "$@"
     else
         asuser "$@"
     fi

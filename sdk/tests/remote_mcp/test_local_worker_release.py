@@ -334,6 +334,27 @@ def test_the_windows_installer_runs_nothing_through_the_distributions_login_shel
     assert ps.index("$Imported = $true", imp) < ps.index("Refuse wsl1_unsupported", imp)
 
 
+def test_whatever_runs_as_the_agent_runs_in_the_agents_environment_only():
+    """L14/L15 (found on the first real WSL2 run): an installer started from a session carries that session's
+    DBUS_SESSION_BUS_ADDRESS; podman, run as the agent with it, missed the agent's user manager and the probe container
+    got memory.max=max -- refused runtime-absent. Every `runuser -u $U` of the installer and the runtime check starts
+    from an empty environment (env -i) with the agent's own runtime dir and bus."""
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2] / "deploy" / "local-worker" / "linux"
+    for name in ("install.sh", "check-runtime.sh"):
+        text = (root / name).read_text(encoding="utf-8")
+        calls = re.findall(r'runuser -u "?\$\{?U\}?"? -- (\S+ \S+)', text) + re.findall(r'runuser -u "\$@"', text)
+        assert calls, name
+        for c in re.findall(r'runuser -u "?\$\{?U\}?"? -- (\S+ \S+)', text):
+            assert c.startswith("env -i"), (name, c)
+    inst = (root / "install.sh").read_text(encoding="utf-8")
+    assert re.search(r'AENV="[^"]*DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$UIDN/bus', inst)
+    assert '"$U" -- env -i $AENV' in inst
+    chk = (root / "check-runtime.sh").read_text(encoding="utf-8")
+    assert 'DBUS_SESSION_BUS_ADDRESS="unix:path=$RD/bus"' in chk
+
+
 @pytest.mark.skipif(os.name != "posix" or not __import__("shutil").which("sha256sum"), reason="POSIX shell tools")
 def test_the_wsl_step_refuses_a_changed_manifest_or_rpm_before_any_rpm_call(tmp_path):
     """CC20/CC24, executed: a manifest that is not the verified bytes, an RPM with another hash, an RPM it does not

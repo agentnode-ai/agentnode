@@ -41,8 +41,10 @@ RD=/run/user/$UIDN
 [ "$(stat -c '%U %a' "$RD")" = "$U 700" ] || refuse runtime_identity_unsafe "$RD is not $U's, 0700"
 CG=/sys/fs/cgroup/user.slice/user-$UIDN.slice/user@$UIDN.service/cgroup.controllers
 for c in cpu memory pids; do grep -qw "$c" "$CG" 2>/dev/null || refuse cgroup_controllers_missing "$c is not delegated to $U"; done
-got=$(cd /var/lib/agentnode-agent && runuser -u "$U" -- env HOME=/var/lib/agentnode-agent XDG_RUNTIME_DIR="$RD" \
-      /usr/bin/podman run --rm --network none --memory 64m --cpus 1 --pids-limit 32 "$IMAGE" \
+# only the agent's own environment: a caller's session bus (WSL's root shell, `sudo` from a desktop) would send podman
+# to a user manager that is not the agent's, and the limits would silently not apply (measured in WSL2)
+got=$(cd /var/lib/agentnode-agent && runuser -u "$U" -- env -i PATH="$PATH" HOME=/var/lib/agentnode-agent XDG_RUNTIME_DIR="$RD" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$RD/bus" /usr/bin/podman run --rm --network none --memory 64m --cpus 1 --pids-limit 32 "$IMAGE" \
       sh -c 'cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max /sys/fs/cgroup/pids.max' 2>/dev/null | tr '\n' ' ')
 [ "$got" = "67108864 100000 100000 32 " ] || refuse runtime-absent "the runtime does not enforce the limits it is asked for ($got)"
 echo "  runtime check: helpers, account, user manager, $RD, delegation and enforced limits are as required"
