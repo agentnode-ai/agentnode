@@ -316,6 +316,24 @@ def test_the_wsl_step_installs_nothing_it_has_not_rechecked():
     assert not re.search(r"\b(dnf|yum|curl|wget)\b", lin)
 
 
+def test_the_windows_installer_runs_nothing_through_the_distributions_login_shell():
+    """L15 (found on the first real WSL2 run, WSL 3.0.3): after `--` wsl.exe hands the line to the distribution's
+    login shell, which expands every $... once more -- the systemd wait became `case  in` and the install was refused
+    wsl_systemd_unavailable. Every command inside the distribution goes through --exec; and a refusal after the
+    import removes the half-made distribution again."""
+    import re
+    from pathlib import Path
+    ps = (Path(__file__).resolve().parents[2] / "deploy" / "local-worker" / "windows"
+          / "install-agentnode-worker.ps1").read_text(encoding="utf-8")
+    inside = re.findall(r'Arguments = "-d \$Distro -u root ([^"]*?) /bin/sh', ps)
+    assert inside and set(inside) == {"--exec"}, inside
+    assert not re.search(r"-u root -- ", ps)
+    refuse = ps[ps.index("function Refuse"):ps.index("\n}\n", ps.index("function Refuse"))]
+    assert "$script:Imported" in refuse and "'--unregister', $Distro" in refuse
+    imp = ps.index("Wsl @('--import'")
+    assert ps.index("$Imported = $true", imp) < ps.index("Refuse wsl1_unsupported", imp)
+
+
 @pytest.mark.skipif(os.name != "posix" or not __import__("shutil").which("sha256sum"), reason="POSIX shell tools")
 def test_the_wsl_step_refuses_a_changed_manifest_or_rpm_before_any_rpm_call(tmp_path):
     """CC20/CC24, executed: a manifest that is not the verified bytes, an RPM with another hash, an RPM it does not

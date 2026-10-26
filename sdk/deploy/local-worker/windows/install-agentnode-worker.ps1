@@ -23,7 +23,19 @@ $Floor = Join-Path $Home_ 'release-floor.json'
 $TaskName = 'AgentNode Worker'
 $ReleasePubHex = '@RELEASE_PUB_HEX@'
 $WslMin = [version]'2.0.0'
-function Refuse([string]$code, [string]$detail = '') { Write-Output ("REFUSED {0}{1}" -f $code, $(if ($detail) { ": $detail" } else { '' })); exit 2 }
+$Imported = $false; $HomeMade = $false
+function Refuse([string]$code, [string]$detail = '') {
+    Write-Output ("REFUSED {0}{1}" -f $code, $(if ($detail) { ": $detail" } else { '' }))
+    # a refusal after the import leaves nothing behind: the half-made distribution goes again, and the directory too
+    # when this run made it (an existing one keeps its release floor)
+    if ($script:Imported) {
+        Wsl @('--terminate', $Distro) | Out-Null; Wsl @('--unregister', $Distro) | Out-Null
+        $gone = if ($script:HomeMade) { $Home_ } else { Join-Path $Home_ 'wsl' }
+        if (Test-Path -LiteralPath $gone) { Remove-Item -LiteralPath $gone -Recurse -Force }
+        Write-Output "  the distribution $Distro and $gone were removed again"
+    }
+    exit 2
+}
 function Say([string]$t) { Write-Output "  $t" }
 
 # ---- the vendored Ed25519 verifier (sdk/deploy/local-worker/windows/Ed25519.ps1, embedded at release build) ----------
@@ -41,8 +53,10 @@ function Wsl([string[]]$a) {
     return [pscustomobject]@{ Code = $p.ExitCode; Out = ($o -replace "`0", ''); Err = $e }
 }
 function InDistro([string]$cmd) {   # a command inside the AgentNode distribution, as root, output as UTF-8 text
+    # --exec, never `--`: after `--` wsl.exe hands the line to the distribution's login shell, which expands every
+    # $... once more before /bin/sh sees it (measured, WSL 3.0.3: the systemd wait below became `case  in`)
     $psi = New-Object Diagnostics.ProcessStartInfo 'wsl.exe'
-    $psi.Arguments = "-d $Distro -u root -- /bin/sh -c `"$($cmd -replace '"', '\"')`""
+    $psi.Arguments = "-d $Distro -u root --exec /bin/sh -c `"$($cmd -replace '"', '\"')`""
     $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.CreateNoWindow = $true
     $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
     $p = [Diagnostics.Process]::Start($psi); $o = $p.StandardOutput.ReadToEnd(); $e = $p.StandardError.ReadToEnd(); $p.WaitForExit()
@@ -144,10 +158,12 @@ if ($list -contains $Distro) { Refuse wsl_distribution_conflict "a distribution 
 if ($Check) { Say 'all prerequisites hold; nothing was changed (-Check)'; exit 0 }
 
 # ---- 3. the private directory, the distribution from the verified image --------------------------------------------
+$HomeMade = -not (Test-Path -LiteralPath $Home_)
 New-Item -ItemType Directory -Force -Path $Home_ | Out-Null
 MakePrivate $Home_
 if (-not (AclIsPrivate $Home_)) { Refuse wsl_acl_unsafe "$Home_ is not private to this user" }
 $imp = Wsl @('--import', $Distro, (Join-Path $Home_ 'wsl'), (Join-Path $Bundle $rootfs[0].name), '--version', '2')
+$Imported = $true
 if ($imp.Code -ne 0) { Refuse wsl1_unsupported ("the WSL2 import failed: " + ($imp.Out + $imp.Err).Trim()) }
 $vv = (Wsl @('-l', '-v')).Out
 if ($vv -notmatch "$Distro\s+\S+\s+2") { Wsl @('--unregister', $Distro) | Out-Null; Refuse wsl1_unsupported 'the distribution is not WSL version 2' }
@@ -170,7 +186,7 @@ if ($r.Code -ne 0) { Refuse wsl_systemd_unavailable "the distribution could not 
 # ---- 4. the Linux installer inside the distribution (it verifies the manifest again with OpenSSL); pairing ------------
 Say 'starting the Linux installer inside the distribution; pair this machine in your browser when the code appears'
 $psi = New-Object Diagnostics.ProcessStartInfo 'wsl.exe'
-$psi.Arguments = "-d $Distro -u root -- /bin/sh /opt/agentnode-agent-bundle/install.sh --name `"$Name`" --concurrency $Concurrency --queue $Queue"
+$psi.Arguments = "-d $Distro -u root --exec /bin/sh /opt/agentnode-agent-bundle/install.sh --name `"$($Name -replace '"', '\"')`" --concurrency $Concurrency --queue $Queue"
 $psi.UseShellExecute = $false
 $p = [Diagnostics.Process]::Start($psi); $p.WaitForExit()
 if ($p.ExitCode -ne 0) { Write-Output "  the Linux installer stopped with $($p.ExitCode); see its output above"; exit $p.ExitCode }
