@@ -334,6 +334,21 @@ def test_the_windows_installer_runs_nothing_through_the_distributions_login_shel
     assert ps.index("$Imported = $true", imp) < ps.index("Refuse wsl1_unsupported", imp)
 
 
+def test_the_windows_keepalive_brings_a_stopped_distribution_back():
+    """L15 (found on the first real WSL2 run): after `wsl --terminate` the keep-alive action had ENDED, and Task
+    Scheduler's restart-on-failure never re-runs an ended action -- the worker stayed offline until the next logon.
+    The task repeats every minute (at logon and from installation on), one instance at a time."""
+    import re
+    from pathlib import Path
+    ps = (Path(__file__).resolve().parents[2] / "deploy" / "local-worker" / "windows"
+          / "install-agentnode-worker.ps1").read_text(encoding="utf-8")
+    keep = ps[ps.index("$action = New-ScheduledTaskAction"):ps.index("Register-ScheduledTask ")]
+    assert re.search(r"-RepetitionInterval \(New-TimeSpan -Minutes 1\)", keep)
+    assert "$atLogon.Repetition = $every" in keep and "$fromNow.Repetition = $every" in keep
+    assert "$trigger = @($atLogon, $fromNow)" in keep
+    assert "-MultipleInstances IgnoreNew" in keep and "-RestartCount" not in keep
+
+
 def test_whatever_runs_as_the_agent_runs_in_the_agents_environment_only():
     """L14/L15 (found on the first real WSL2 run): an installer started from a session carries that session's
     DBUS_SESSION_BUS_ADDRESS; podman, run as the agent with it, missed the agent's user manager and the probe container

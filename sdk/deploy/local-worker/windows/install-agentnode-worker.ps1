@@ -193,8 +193,14 @@ if ($p.ExitCode -ne 0) { Write-Output "  the Linux installer stopped with $($p.E
 
 # ---- 5. keep the distribution running while this user is logged on (no stored password, no Windows-side secret) ---
 $action = New-ScheduledTaskAction -Execute 'wsl.exe' -Argument "-d $Distro --exec /bin/sleep infinity"
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -Hidden
+# Every minute, at logon and from now on: when the distribution was stopped (wsl --terminate/--shutdown, a WSL update)
+# the action has ENDED, and Task Scheduler's restart-on-failure never re-runs an action that ended -- measured: the
+# worker stayed offline until the next logon. While it runs, IgnoreNew makes the repetition a no-op.
+$every = (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1)).Repetition
+$atLogon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"; $atLogon.Repetition = $every
+$fromNow = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(30); $fromNow.Repetition = $every
+$trigger = @($atLogon, $fromNow)
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -Hidden
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName
