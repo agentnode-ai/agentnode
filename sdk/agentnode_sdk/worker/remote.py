@@ -779,8 +779,18 @@ class ReverseWorker(SocketWorker):
         self._own_instance = str(own_instance)
 
     def _ask(self, method: str, params: dict, *, wait: float, **kw):
+        # restored on the way out: a job-bearing ask first asks `describe` and `take_lease` on this same thread with
+        # the quick wait, and those must not shorten the wait of the slot the job itself is then sent on (a 90-s run
+        # that had to take a lease was given up at 60 + 15 s while it finished -- Codex LW2-R2-F002)
+        outer = getattr(self._asking, "wait", None)
         self._asking.wait = float(wait)
-        return super()._ask(method, params, wait=wait, **kw)
+        try:
+            return super()._ask(method, params, wait=wait, **kw)
+        finally:
+            if outer is None:
+                del self._asking.wait
+            else:
+                self._asking.wait = outer
 
     def _open(self, budget: float | None = None):
         from agentnode_sdk.remote_mcp.reverse_hub import RelayClient, SlotRefused

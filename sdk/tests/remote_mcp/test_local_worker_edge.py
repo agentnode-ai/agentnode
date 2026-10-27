@@ -237,9 +237,10 @@ def test_a_run_crosses_the_443_path_end_to_end(edge):
 
 def test_the_socket_that_crosses_the_internet_keeps_itself_alive(edge, monkeypatch):
     """L15 (found on the first real WSL2 run behind a home router): the agent's end of a 443 slot is a local
-    socketpair, so keepalive set there reached nothing; the TCP connection was silent for a run's whole length and a NAT
-    dropped it after ~70 s (every longer run: dispatch_indeterminate). The dialer turns keepalive on for the TCP
-    socket itself (read back at once: after the TLS wrap the plain socket object is detached)."""
+    socketpair, so keepalive set there reached nothing; the TCP connection was silent for a run's whole length, which a
+    NAT may drop. The dialer turns keepalive on for the TCP socket itself (read back at once: after the TLS wrap the
+    plain socket object is detached). The ~76-s ends first attributed to the NAT were the relay wait a nested lease ask
+    overwrote (`test_a_run_that_first_takes_a_lease_is_still_awaited_for_its_own_wall_clock`)."""
     made, kept = [], []
     real = D._keepalive
 
@@ -544,6 +545,41 @@ def test_a_relay_waits_as_long_as_the_request_may_take():
         with pytest.raises(WorkerUnreachable):
             w._ask("describe", {}, wait=seconds)
     assert asked == [20.0, 215.0]
+
+
+def test_a_run_that_first_takes_a_lease_is_still_awaited_for_its_own_wall_clock():
+    """round 3 (Codex LW2-R2-F002, measured on the laptop): a run asks `describe` and `take_lease` on the SAME thread
+    before its own slot is checked out, each with the 60-s quick wait. The relay's wait was a per-thread value those
+    nested asks overwrote, so a run that had to take a lease first -- the first one after the agent started, i.e. after
+    every update -- was awaited 60 + 15 s: a 90-s job ended `dispatch_indeterminate` at 76.7 s while it finished
+    (`final-7f3d3977-windows/gate.txt`, causal (a)/(b3)). Each ask's own checkout gets its own wait."""
+    from agentnode_sdk.worker import WorkerUnreachable
+    from agentnode_sdk.worker.remote import ReverseWorker
+
+    asked = []
+
+    class Relay(R.RelayClient):
+        def checkout(self, instance, budget, *, wait=60.0):
+            asked.append(wait)
+            raise R.SlotRefused("target_offline")
+    w = ReverseWorker("reverse://" + INST, Relay("/nonexistent"), instance=INST)
+
+    # the handshake and the lease a job-bearing call asks for first, through the same `_ask` as in production; their
+    # slots are refused here, so they are taken as done
+    def describe(*, wait):
+        with pytest.raises(WorkerUnreachable):
+            w._ask("describe", {}, wait=wait)
+        w._described, w._agreed, w._leasing = {}, "1", True
+        return {}
+
+    def hold_a_lease(*, wait):
+        with pytest.raises(WorkerUnreachable):
+            w._ask("take_lease", {}, wait=wait)
+        return 1
+    w._describe, w._hold_a_lease, w._leasing = describe, hold_a_lease, True
+    with pytest.raises(WorkerUnreachable):
+        w._ask("run", {}, wait=200.0)
+    assert asked == [75.0, 75.0, 215.0], asked
 
 
 def test_a_revoked_worker_certificate_is_not_parkable(edge):

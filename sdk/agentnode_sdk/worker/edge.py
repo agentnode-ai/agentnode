@@ -229,8 +229,8 @@ class EdgeDialer:
         raw = self._connect((self.url.host, self.url.port), timeout)
         # Keepalive on THIS socket, the one that crosses the internet: the agent gets back one end of a local
         # socketpair, on which a TCP option is a no-op. Without it a run's slot is silent for the job's whole length,
-        # and a NAT on the way (measured: WSL2 behind a home router) drops it after ~70 s -- every longer run ended
-        # dispatch_indeterminate.
+        # and a NAT on the way may drop it. (The ~76-s `dispatch_indeterminate` first blamed on that was the relay
+        # wait a nested lease ask overwrote -- `remote.ReverseWorker._ask`, Codex LW2-R2-F002.)
         _keepalive(raw)
         try:
             raw.settimeout(timeout)
