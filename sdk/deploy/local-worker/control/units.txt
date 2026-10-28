@@ -1,0 +1,88 @@
+# local-worker slice 2 -- the control plane's units (templates; NOT installed or enabled by default).
+# One file, several units: split on the "### <name>" lines. Paths are the production ones; the private test stand runs
+# the same commands as transient units with its own paths.
+
+### rmcp-agent.service
+[Unit]
+Description=AgentNode: the agent-facing service (/agent/*: 443 edge, reverse hub, pairing) -- unprivileged
+After=network-online.target rmcp-agent-authority.service
+[Service]
+User=rmcp-agent
+Group=rmcp-agent
+SupplementaryGroups=nginx rmcp-pairing
+ExecStart=/opt/agentnode/venv/bin/python -m agentnode_sdk.remote_mcp.agent_service /etc/rmcp-agent/agent.json
+Environment=PYTHONPATH=/opt/agentnode/sdk PYTHONUNBUFFERED=1
+RuntimeDirectory=rmcp-agent
+RuntimeDirectoryMode=0750
+StateDirectory=rmcp-agent
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+InaccessiblePaths=-/var/lib/agentnode-mcp/stand -/var/lib/agentnode-mcp/gwdir -/etc/agentnode/ca
+ReadOnlyPaths=/var/lib/rmcp-agent-view
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+
+### rmcp-pairing.service
+[Unit]
+Description=AgentNode: root pairing helper -- materialize(authorization_id) for rmcp-agent only
+[Service]
+ExecStart=/opt/agentnode/venv/bin/python -m agentnode_sdk.remote_mcp.pairing_helper --stand /var/lib/agentnode-mcp/stand --gateway-dir /var/lib/agentnode-mcp/gwdir --store /var/lib/rmcp-agent/pairing --socket /run/rmcp-pairing/helper.sock --group rmcp-pairing --caller rmcp-agent --control-url https://mcp.agentnode.net/agent/v1/slot
+Environment=PYTHONPATH=/opt/agentnode/sdk PYTHONUNBUFFERED=1
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+
+### rmcp-agent-authority.service
+[Unit]
+Description=AgentNode: project the gateway's authority and mirror the signed register for rmcp-agent
+[Service]
+Type=oneshot
+ExecStart=/opt/agentnode/venv/bin/python -m agentnode_sdk.remote_mcp.agent_authority --gateway-dir /var/lib/agentnode-mcp/gwdir --stand /var/lib/agentnode-mcp/stand --out-dir /var/lib/rmcp-agent-view --group rmcp-agent
+Environment=PYTHONPATH=/opt/agentnode/sdk
+
+### rmcp-agent-authority.path
+[Path]
+PathChanged=/var/lib/agentnode-mcp/gwdir/tokens.json
+PathChanged=/var/lib/agentnode-mcp/gwdir/sessions.json
+PathChanged=/var/lib/agentnode-mcp/gwdir/accounts.json
+PathChanged=/var/lib/agentnode-mcp/stand/targets/head.json
+[Install]
+WantedBy=multi-user.target
+
+### rmcp-agent-authority.timer
+[Timer]
+OnBootSec=5s
+OnUnitActiveSec=10s
+AccuracySec=1s
+[Install]
+WantedBy=timers.target
+
+### rmcp-retire-devices.service
+[Unit]
+Description=AgentNode: retire dial-back targets whose device is gone or moved, and signed self-retirements
+[Service]
+Type=oneshot
+ExecStart=/opt/agentnode/venv/bin/python -m agentnode_sdk.remote_mcp.targets_cli --stand /var/lib/agentnode-mcp/stand --gateway-dir /var/lib/agentnode-mcp/gwdir retire-devices --store /var/lib/rmcp-agent/pairing
+Environment=PYTHONPATH=/opt/agentnode/sdk
+
+### rmcp-retire-devices.path
+[Path]
+PathChanged=/var/lib/agentnode-mcp/gwdir/tokens.json
+DirectoryNotEmpty=/var/lib/rmcp-agent/pairing/retire
+[Install]
+WantedBy=multi-user.target
+
+### rmcp-retire-devices.timer
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+[Install]
+WantedBy=timers.target

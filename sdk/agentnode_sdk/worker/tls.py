@@ -460,6 +460,10 @@ class TlsListener:
     """The worker's second door. Shares the worker, the nonce memory and the replay floor with
     the socket's `Bench`, so a message accepted through one door is a replay at the other."""
 
+    #: local-worker slice 2: called after a connection's handshake and identity checks passed (the dial-back
+    #: agent's health signal for an update); None: nothing is told
+    on_admitted = None
+
     def __init__(self, bench, address: str, settings: TlsSettings, say=None,
                  topology: str = _topology.SINGLE_HOST_DEVELOPMENT) -> None:
         self.bench = bench
@@ -569,6 +573,8 @@ class TlsListener:
         connection = self.admit(raw)
         if connection is None:
             return False
+        if self.on_admitted is not None:
+            self.on_admitted()
         if idle is not None and not _readable_within(connection, idle):
             try:
                 connection.close()

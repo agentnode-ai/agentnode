@@ -252,6 +252,8 @@ class Operations:
         for op in self.open_operations():
             if kinds is not None and op["kind"] not in kinds:
                 continue
+            if op["kind"] == "pair" and self.pairing_device is None:
+                continue                                      # only the pairing helper completes a pairing
             if op["kind"] in ("probe", "renew"):
                 try:
                     with self._probe_lock(op["target_id"]):
@@ -380,6 +382,153 @@ class Operations:
 
         return self._run(op, [("register_invited", register), ("pki_entry", pki_entry),
                               ("pair_key", pair_key), ("bundle", trust_files)])
+
+    # ------------------------------------------------------------ pair (local-worker slice 2)
+    #: Set by the pairing helper (root): (account, name, operation id) -> worker device id; the operator key that
+    #: signs target.json; the public control URL the target is told to dial.
+    pairing_device: Callable[[str, str, str], str] | None = None
+    pairing_signer = None
+    pairing_control = ""
+
+    @staticmethod
+    def pair_ids(authorization_id: str) -> tuple[str, str, str]:
+        """(op id, target id, instance), DETERMINISTIC per authorization: a retried or resumed pairing can only ever
+        reach the same device, target and identity, never a second one (Codex D6 as amended)."""
+        import hashlib
+
+        h = hashlib.sha256(("agentnode-pair-ids\n" + str(authorization_id)).encode("ascii", "replace")).hexdigest()
+        return "op-pair-" + h[:24], "cust-" + h[24:34], "c" + h[34:46]
+
+    def pair(self, authorization: dict) -> dict:
+        """Materialize ONE approved pairing authorization: a worker device of the account, a reverse target for it
+        (`enrolled`), the worker's certificate for ITS OWN key (the request it sent), a pair key, and the result the
+        agent collects -- the pair key sealed to the agent's transport key. Exactly once per authorization: the
+        operation, the ids and every step are deterministic and idempotent; a crash at any boundary resumes.
+        Returns the finished operation (`params["result"]` holds the sealed result, no clear secret)."""
+        if self.pairing_device is None or self.pairing_signer is None or not self.pairing_control:
+            raise OperationFailed("pair.not_configured", "this control plane has no pairing helper configuration")
+        op_id, target_id, instance = self.pair_ids(authorization["authorization_id"])
+        path = self.ops_dir / (op_id + ".json")
+        if path.exists():
+            op = json.loads(path.read_text(encoding="utf-8"))
+            if op["params"]["authorization_id"] != authorization["authorization_id"]:
+                raise OperationFailed("pair.id_collision", op_id)
+            if op["state"] == "done":
+                return op
+            if op["state"] != "open":
+                raise OperationFailed("pair.closed", op["state"])
+            return self._steps_pair(op)
+        doc = self.register.load().document
+        if target_id in doc["used_target_ids"] or \
+                "agentnode://%s/worker/%s" % (self.deployment, instance) in doc["used_identity_uris"]:
+            raise OperationFailed("pair.id_collision", target_id)
+        params = {k: authorization[k] for k in ("authorization_id", "account", "csr", "transport_key",
+                                                "device_code_hash", "name", "concurrency", "queue")}
+        params["instance"] = instance
+        op = {"op_id": op_id, "kind": "pair", "target_id": target_id, "params": params, "steps": {},
+              "state": "open", "created_at": round(self.clock(), 3), "error": ""}
+        self.ops_dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)   # the claim: exactly one
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(op, fh, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        self._note(op, "begin")
+        return self._steps_pair(op)
+
+    def _steps_pair(self, op: dict) -> dict:
+        from agentnode_sdk.worker import pairing as _pairing
+        from agentnode_sdk.worker import pins as _pins
+
+        p, tid = op["params"], op["target_id"]
+        bundle = self._bundle(tid)
+        uri = "agentnode://%s/worker/%s" % (self.deployment, p["instance"])
+
+        def device(op):
+            if not p.get("device_id"):
+                p["device_id"] = self.pairing_device(p["account"], p["name"], op["op_id"])
+
+        def register(op):
+            if self.register.load().target(tid) is None:
+                w = {"address": "reverse://" + p["instance"], "deployment": self.deployment, "instance": p["instance"],
+                     "identity_uri": uri, "topology": T.REVERSE_SESSION, "protocols": ["agentnode-worker/1"],
+                     "pair": {"gateway": self.gateway, "worker": p["instance"]}, "key_slot": "k1",
+                     "config_digest": "", "device_id": p["device_id"]}
+                self.register.add_customer({"target_id": tid, "type": T.CUSTOMER, "owner_account": p["account"],
+                                            "status": T.INVITED, "expires_at": None, "worker": w,
+                                            "limits": {"concurrency": int(p["concurrency"]), "queue": int(p["queue"])},
+                                            "attestation": None}, actor="pairing")
+
+        def pki_entry(op):
+            inv = self.issuer.inventory()["entries"].get("worker/" + p["instance"])
+            if inv is None:
+                self.issuer.add("worker", p["instance"], secret_at=bundle / "enrolment-secret",
+                                deliver_to=bundle / "cert.pem")
+
+        def pair_key(op):
+            ring = self._keyring()
+            if (self.gateway, p["instance"]) not in ring.pairs():
+                key = os.urandom(32)
+                ring.add(gateway=self.gateway, worker=p["instance"], key=key).write(self.keyring_path)
+                pairkeys.empty().add(gateway=self.gateway, worker=p["instance"], key=key).write(bundle / "pair-keys.json")
+
+        def issue(op):
+            from cryptography import x509
+            from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+            secret_file = bundle / "enrolment-secret"
+            delivered = bundle / "cert.pem"
+            if secret_file.exists():
+                pem = self.issuer.enroll(p["csr"].encode("ascii"), secret_file.read_text(encoding="ascii").strip())
+            elif delivered.exists():
+                # a crash after the issuer committed (it delivers the certificate, then forgets the spent secret) and
+                # before this step was marked: the certificate it issued is the one -- if it is for THIS request's key
+                pem = delivered.read_bytes()
+                want = x509.load_pem_x509_csr(p["csr"].encode("ascii")).public_key().public_bytes(
+                    Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+                if x509.load_pem_x509_certificate(pem).public_key().public_bytes(
+                        Encoding.DER, PublicFormat.SubjectPublicKeyInfo) != want:
+                    raise OperationFailed("pair.identity", "the delivered certificate is for another key")
+            else:
+                raise OperationFailed("pair.enrolment_lost", "neither the secret nor the issued certificate is here")
+            cert = x509.load_pem_x509_certificate(pem)
+            uris = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(
+                x509.UniformResourceIdentifier)
+            if uris != [uri]:
+                raise OperationFailed("pair.identity", "the issued certificate names another identity")
+            p["certificate"] = pem.decode("ascii")
+            p["certificate_serial"] = format(cert.serial_number, "x")
+
+        def status(op):
+            if self._target(tid).status == T.INVITED:
+                self.register.set_status(tid, T.ENROLLED, actor="pairing", why=op["op_id"])
+
+        def result(op):
+            target = _pins.sign_target({"schema": _pins.TARGET_SCHEMA, "target_id": tid, "device_id": p["device_id"],
+                                        "deployment": self.deployment, "instance": p["instance"],
+                                        "accept_gateway": self.gateway, "control": self.pairing_control,
+                                        "limits": {"concurrency": int(p["concurrency"]), "queue": int(p["queue"])},
+                                        "issued_at": round(self.clock(), 3)}, self.pairing_signer)
+            ring = (bundle / "pair-keys.json").read_bytes()
+            sealed = _pairing.seal(ring, _pairing.unb64(p["transport_key"]),
+                                   _pairing.seal_aad(tid, p["instance"], p["device_code_hash"]))
+            p["result"] = {"certificate": p["certificate"],
+                           "anchor": (self.issuer.trust_dir / "ca.pem").read_text(encoding="ascii"),
+                           "crl": _pairing.b64((self.issuer.trust_dir / _revocation.LIST_NAME).read_bytes()),
+                           "tombstones": (self.issuer.trust_dir / "revoked-identities.json").read_text(encoding="utf-8"),
+                           "target": target, "pair_key_sealed": sealed}
+
+        def forget(op):
+            # the clear copies are spent: the control keeps the pair key in its keyring, the agent got it sealed
+            for name in ("pair-keys.json", "enrolment-secret"):
+                try:
+                    os.chmod(bundle / name, 0o600)            # the secret is written 0400; Windows will not unlink that
+                    (bundle / name).unlink()
+                except FileNotFoundError:
+                    pass
+
+        return self._run(op, [("device", device), ("register_invited", register), ("pki_entry", pki_entry),
+                              ("pair_key", pair_key), ("pki_enroll", issue), ("status_enrolled", status),
+                              ("result", result), ("forget_clear_copies", forget)])
 
     # ------------------------------------------------------------ enroll
     def enroll(self, target_id: str, request_path) -> dict:

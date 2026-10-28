@@ -16,6 +16,30 @@ import argparse
 from agentnode_sdk.remote_mcp.server import build_production_app
 
 
+def read_limits_file(path):
+    """(Limits, the overridden names) from an operator's JSON object; an unknown field, or a value that is not a
+    positive number of the field's own type (an integer limit takes only an integer), refuses the start."""
+    import dataclasses
+    import json as _json
+
+    from agentnode_sdk.remote_mcp.limits import Limits
+
+    try:
+        with open(path, encoding="utf-8") as fh:
+            over = _json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise SystemExit("--limits-file cannot be read (%s)" % type(exc).__name__) from None
+    known = {f.name: f.type for f in dataclasses.fields(Limits)}
+
+    def fits(name, v):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+            return False
+        return isinstance(v, int) if known[name] in ("int", int) else True
+    if not isinstance(over, dict) or set(over) - set(known) or not all(fits(k, v) for k, v in over.items()):
+        raise SystemExit("--limits-file names an unknown limit or a value that is not a positive number of its type")
+    return Limits(**over), sorted(over)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="remote_mcp.production",
                                 description="Production remote-MCP service (no local fallback).")
@@ -32,7 +56,14 @@ def main(argv=None) -> int:
     p.add_argument("--probe-slot-socket", default=None,
                    help="the root-only Unix socket renewal probes take their run slot from "
                         "(default /run/agentnode-mcp/probe-slot.sock); a path, never a network address")
+    p.add_argument("--limits-file", default=None,
+                   help="an operator's JSON object overriding named fields of remote_mcp.limits.Limits (absent: the "
+                        "decided defaults); an unknown field or a non-number is refused at start")
     args = p.parse_args(argv)
+    limits = None
+    if args.limits_file:
+        limits, over = read_limits_file(args.limits_file)
+        print("limits overridden by %s: %s" % (args.limits_file, ", ".join(sorted(over))), flush=True)
 
     # Optional preregistered OAuth clients (client_id -> [redirect_uri,...]) from a stand file.
     # CIMD stays the primary dynamic path; this is for a named, pre-agreed client whose metadata
@@ -49,7 +80,7 @@ def main(argv=None) -> int:
         args.stand, resource=args.resource, issuer=args.issuer,
         allowed_hosts=tuple(args.allowed_hosts), gateway_dir=args.gateway_dir,
         console_url=args.console_url, allowed_origins=tuple(args.allowed_origins),
-        preregistered=prereg, probe_slot_path=args.probe_slot_socket)
+        preregistered=prereg, probe_slot_path=args.probe_slot_socket, limits=limits)
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning", lifespan="on")
     return 0

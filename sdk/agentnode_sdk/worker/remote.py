@@ -769,16 +769,41 @@ class ReverseWorker(SocketWorker):
         self._hub = hub
         self._instance = str(instance)
         self._may_run = may_run or (lambda: "")
+        import threading as _threading
+
+        #: per thread: how long the request about to be sent may take -- what a RELAY must wait for its answer
+        self._asking = _threading.local()
 
     def use_keyring(self, keyring, own_instance: str) -> None:
         self._keyring = keyring
         self._own_instance = str(own_instance)
 
-    def _open(self, budget: float | None = None):
-        from agentnode_sdk.remote_mcp.reverse_hub import SlotRefused
-
+    def _ask(self, method: str, params: dict, *, wait: float, **kw):
+        # restored on the way out: a job-bearing ask first asks `describe` and `take_lease` on this same thread with
+        # the quick wait, and those must not shorten the wait of the slot the job itself is then sent on (a 90-s run
+        # that had to take a lease was given up at 60 + 15 s while it finished -- Codex LW2-R2-F002)
+        outer = getattr(self._asking, "wait", None)
+        self._asking.wait = float(wait)
         try:
-            connection, who = self._hub.checkout(self._instance, self.connect_timeout if budget is None else budget)
+            return super()._ask(method, params, wait=wait, **kw)
+        finally:
+            if outer is None:
+                del self._asking.wait
+            else:
+                self._asking.wait = outer
+
+    def _open(self, budget: float | None = None):
+        from agentnode_sdk.remote_mcp.reverse_hub import RelayClient, SlotRefused
+
+        extra = {}
+        if isinstance(self._hub, RelayClient):
+            # slice 2: through the agent-facing service's relay the answer frame comes back over a socket the relay
+            # holds open only as long as it is told -- a run's wall clock plus margin, not the relay's 60-s default
+            # (measured: a 90-s job ended `dispatch_indeterminate` at 60 s while it finished on the worker)
+            extra["wait"] = float(getattr(self._asking, "wait", 60.0)) + 15.0
+        try:
+            connection, who = self._hub.checkout(self._instance, self.connect_timeout if budget is None else budget,
+                                                 **extra)
         except SlotRefused as refused:
             unreachable = WorkerUnreachable("the dial-back worker %s has no slot: %s" % (self._instance, refused))
             unreachable.cause = refused.code

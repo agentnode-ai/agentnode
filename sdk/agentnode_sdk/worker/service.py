@@ -652,6 +652,11 @@ class Bench:
         @contextlib.contextmanager
         def held():
             with bench._in_flight_lock:
+                if getattr(bench, "draining", False):
+                    # slice 2 (D10): an update drains -- the runs already here finish within their own bounds, no new
+                    # one starts; the control plane gets a named refusal before anything is claimed, never a queue
+                    raise wire.ProtocolError(wire.WORKER_BUSY, "this worker is draining for an update and starts no "
+                                             "new run")
                 if getattr(bench, "_running", 0) >= int(bench.max_runs):
                     raise wire.ProtocolError(wire.WORKER_BUSY, "this worker runs at most %d at once and keeps no "
                                              "queue; the control plane's scheduler holds the waiting" % bench.max_runs)
@@ -882,11 +887,80 @@ class CannotHoldItsLimits(RuntimeError):
         self.evidence = dict(evidence or {})
 
 
+#: The longest a draining worker waits for its runs: the job wall-clock ceiling plus the lease and its margin. A run
+#: still there after it is past every bound it was approved with; the lease watch has ended it already.
+DRAIN_SECONDS = 120 + 20 + 10
+
+
+def serve_dialback(agent, bench, *, status_path: str = "", stopping=None, every: float = 2.0) -> None:
+    """Run a dial-back agent until SIGTERM (or `stopping` is set); then DRAIN (local-worker slice 2, D10): no new run
+    is started (`worker-busy`, before anything is claimed) while the slots keep being dialled, so the runs already
+    here keep their lease renewals and their `result`, and finish within their own bounds -- at most DRAIN_SECONDS --
+    then the agent stops. `status_path` gets {pid, started_at, conversations, last_admitted_at, last_refusal,
+    draining, running} every `every` seconds: what an installer's health check reads, never a secret."""
+    import json as _json
+    import signal
+
+    stopping = stopping or threading.Event()
+    started = time.time()
+    try:
+        signal.signal(signal.SIGTERM, lambda *_a: stopping.set())
+    except (ValueError, AttributeError):                      # not the main thread, or no SIGTERM here
+        pass
+
+    def write_status():
+        if not status_path:
+            return
+        doc = {"pid": os.getpid(), "started_at": started, "conversations": agent.conversations,
+               "last_admitted_at": getattr(agent, "last_admitted_at", 0.0),
+               "last_refusal": getattr(agent, "last_refusal", ""), "draining": bool(getattr(bench, "draining", False)),
+               "running": int(getattr(bench, "_running", 0) or 0), "written_at": time.time()}
+        tmp = status_path + ".tmp"
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                _json.dump(doc, fh)
+            os.replace(tmp, status_path)
+        except OSError:
+            pass
+    agent.start()
+    try:
+        while not stopping.wait(every):
+            write_status()
+        bench.draining = True
+        print("  draining: no new run; %d running" % int(getattr(bench, "_running", 0) or 0), flush=True)
+        ends = time.monotonic() + DRAIN_SECONDS
+        while int(getattr(bench, "_running", 0) or 0) > 0 and time.monotonic() < ends:
+            write_status()
+            time.sleep(min(every, 1.0))
+        write_status()
+    finally:
+        agent.stop()
+
+
+def _edge_material(tls):
+    """(key, certificate DER, instance) for one 443 slot proof, read afresh each dial so a renewed certificate is
+    used at once (local-worker slice 2)."""
+    def material():
+        from cryptography import x509
+        from cryptography.hazmat.primitives.serialization import Encoding, load_pem_private_key
+
+        from agentnode_sdk.worker.tls import own_instance
+
+        with open(tls.key, "rb") as fh:
+            key = load_pem_private_key(fh.read(), password=None)
+        with open(tls.certificate, "rb") as fh:
+            der = x509.load_pem_x509_certificate(fh.read()).public_bytes(Encoding.DER)
+        return key, der, own_instance(tls)
+    return material
+
+
 def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
           tls_address: str = "", tls=None,
           topology: str = _topology.SINGLE_HOST_DEVELOPMENT, keyring_path: str = "",
           journal_at: str = "", dial: str = "", max_runs: int | None = None,
-          allow_loopback_dial: bool = False) -> None:
+          allow_loopback_dial: bool = False, pins_path: str = "", target_path: str = "",
+          edge_connect=None) -> None:
     """Start a worker on this machine and answer until something stops the process.
 
     `tls_address` and `tls` open the mutual-TLS door, TCP on loopback (`worker/tls.py`). Both or
@@ -913,7 +987,27 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
             raise ValueError("a dial-back worker runs at most its signed concurrency (max_runs >= 1)")
         from agentnode_sdk.worker import dialback as _dialback
 
-        _dialback.control_endpoint(dial, allow_loopback=allow_loopback_dial)   # refused before anything else
+        if dial.startswith("https://"):
+            # slice 2, the public 443 path: before anything else, the name, a configured proxy, and that the signed
+            # release's pins, the operator-signed target.json, the anchor on disk and these arguments all agree
+            from agentnode_sdk.worker import edge as _edge
+            from agentnode_sdk.worker import pins as _pins
+
+            try:
+                _edge.control_url(dial)
+                _edge.refuse_configured_proxy()
+            except _edge.EdgeRefused as exc:
+                raise _dialback.DialRefused(exc.code, exc.detail) from None
+            if not (pins_path and target_path):
+                raise _dialback.DialRefused("pair_material_untrusted", "the 443 path needs the installed pins and "
+                                                                       "the signed target.json")
+            try:
+                _pins.check_installed(pins_path, target_path, tls.anchor, control=dial, deployment=tls.deployment,
+                                      accept=tls.accept)
+            except _pins.Untrusted as exc:
+                raise _dialback.DialRefused(exc.code, exc.detail) from None
+        else:
+            _dialback.control_endpoint(dial, allow_loopback=allow_loopback_dial)   # refused before anything else
     elif bool(tls_address) != bool(tls):
         raise ValueError(
             "a TLS listener needs both an address and its certificate settings; one without the "
@@ -1142,15 +1236,21 @@ def serve(address: str, key_path: str, only_uid: int | None, worker=None, *,
 
             bench.max_runs = int(max_runs)
             bench.features = (_dialback.FEATURE,)
+            dialer = None
+            if dial.startswith("https://"):
+                from agentnode_sdk.worker import edge as _edge
+
+                dialer = _edge.EdgeDialer(_edge.control_url(dial), _edge_material(tls), connect=edge_connect)
             agent = _dialback.DialBackAgent(listener, dial, slots=_dialback.slots_for(int(max_runs)),
-                                            allow_loopback=allow_loopback_dial)
+                                            allow_loopback=allow_loopback_dial, dial=dialer)
             print("  listening NOWHERE: %d dial-back slot(s) to the control plane at %s:%s, as %s, at most %d "
                   "run(s) at once" % (agent.slots, agent.host, agent.port, bench.label, bench.max_runs), flush=True)
             print("  it accepts gateway instance(s): " + ", ".join(sorted(tls.accept)), flush=True)
             print("  this worker holds its own certificate and pair key only: no signing identity, no account, "
                   "approval or client token.", flush=True)
             try:
-                agent.serve_forever()
+                serve_dialback(agent, bench, status_path=os.path.join(
+                    os.path.dirname(os.path.abspath(journal_at)), "status.json"))
             finally:
                 listener.stop_serving()
             return

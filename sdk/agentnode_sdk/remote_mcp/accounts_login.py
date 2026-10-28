@@ -106,6 +106,28 @@ class GatewayLogin:
         who = dispatch.a_confirmed_session(self._svc, session_id, presented)
         return self._subject_from(who, presented)
 
+    # ---- a dial-back target's device, read live (local-worker slice 2) ---- #
+    def reverse_device_error(self, account: str, device: str) -> str:
+        """"" or the routing code for a dial-back target's (owner, device), straight from the gateway's records:
+        the device exists in that account, the account is active, and it is a paired WORKER DEVICE or a device
+        holding RUN (slice 1's invited targets). The same rule the agent-facing service applies to its projection
+        (`agent_authority.reverse_device_rule`). Anything unreadable is `target_authority_unverifiable`."""
+        from agentnode_sdk.access.dispatch import what_it_may_do
+        from agentnode_sdk.remote_mcp.agent_authority import WORKER_DEVICE, reverse_device_rule
+
+        try:
+            record = None
+            for found in self._svc.state.paired_clients():
+                if found.get("client_id") == str(device):
+                    record = {"account_id": str(found.get("account_id")
+                                                or _accounts.solo_account_for(str(device))),
+                              "kind": WORKER_DEVICE if found.get("kind") == WORKER_DEVICE else "person",
+                              "capabilities": list(what_it_may_do(found))}
+                    break
+            return reverse_device_rule(record, account, self._account_active)
+        except Exception:  # noqa: BLE001 — unreadable gateway state is not "authorized"
+            return "target_authority_unverifiable"
+
     # ---- the live, per-CALL authority re-check (fail-closed, /goal #2) ---- #
     def authority_error(self, principal) -> Optional[str]:
         """Re-derive the token's authority from the LIVE gateway on every MCP call.

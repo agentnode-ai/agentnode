@@ -116,6 +116,15 @@ def _dead(connection) -> bool:
             pass
 
 
+def spki_of(der: bytes) -> bytes:
+    """The DER SubjectPublicKeyInfo of a certificate: what the 443 edge's slot proof and the inner TLS must share."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    return x509.load_der_x509_certificate(der).public_key().public_bytes(Encoding.DER,
+                                                                           PublicFormat.SubjectPublicKeyInfo)
+
+
 def _close(connection) -> None:
     try:
         connection.close()
@@ -132,7 +141,10 @@ class ReverseHub:
                  clock: Callable[[], float] = time.monotonic) -> None:
         from agentnode_sdk.worker.tls import Contexts
 
-        self.host, self.port = listen_endpoint(address, allow_loopback=allow_loopback)
+        # slice 2: `address=None` is a hub reached ONLY through its 443 edge (`reverse_edge.EdgeServer`): it binds no
+        # TCP address of its own at all
+        self.host, self.port = (None, None) if address is None else listen_endpoint(address,
+                                                                                    allow_loopback=allow_loopback)
         self.tls = tls
         self._targets = targets
         self._eligible = eligible
@@ -141,6 +153,9 @@ class ReverseHub:
         self.clock = clock
         self._contexts = Contexts(ssl.PROTOCOL_TLS_CLIENT, tls, say=self.say)
         self._pools: dict[str, collections.deque] = collections.defaultdict(collections.deque)
+        #: slice 2: connections the 443 edge admitted that have not finished their inner handshake yet -- counted
+        #: against the same `2P` per identity and `max_total` as parked slots (Codex Q-LW2-0001 D2)
+        self._pending: collections.Counter = collections.Counter()
         self._cond = threading.Condition()
         self._socket: socket.socket | None = None
         self._stopped = threading.Event()
@@ -159,10 +174,11 @@ class ReverseHub:
         return self.host, self.port
 
     def start(self) -> None:
-        if self._socket is None:
-            self.open()
-        self._acceptor = threading.Thread(target=self._accept_loop, name="reverse-hub", daemon=True)
-        self._acceptor.start()
+        if self.host is not None:
+            if self._socket is None:
+                self.open()
+            self._acceptor = threading.Thread(target=self._accept_loop, name="reverse-hub", daemon=True)
+            self._acceptor.start()
         threading.Thread(target=self._reap_loop, name="reverse-hub-reap", daemon=True).start()
 
     def stop(self) -> None:
@@ -229,46 +245,78 @@ class ReverseHub:
         return closed
 
     # ------------------------------------------------------------ admission of a slot
-    def _admit(self, raw) -> None:
+    def reserve(self, instance: str, concurrency: int) -> bool:
+        """slice 2: hold one place of `instance` for a connection the edge is about to upgrade, or False when the
+        identity already has `2P` parked-or-pending slots or the hub `max_total`. `_admit(..., reserved=instance)`
+        gives the place back whatever happens."""
+        with self._cond:
+            mine = len(self._pools.get(instance) or ()) + self._pending[instance]
+            total = sum(len(p) for p in self._pools.values()) + sum(self._pending.values())
+            if mine >= 2 * slots_for(int(concurrency or 1)) or total >= self.max_total:
+                return False
+            self._pending[instance] += 1
+            return True
+
+    def _unreserve(self, instance: str) -> None:
+        with self._cond:
+            if self._pending[instance] > 0:
+                self._pending[instance] -= 1
+            if self._pending[instance] <= 0:
+                del self._pending[instance]
+
+    def _admit(self, raw, *, reserved: str = "", expect_spki: bytes = b"") -> None:
+        """Handshake, identity, eligibility, park. `reserved`/`expect_spki` (the 443 edge, slice 2): the place the
+        edge reserved for this connection, and the key the slot proof was signed with -- the inner certificate must
+        carry exactly that key and that instance, or nothing is parked (`edge_identity_mismatch`)."""
         from agentnode_sdk.pki import identity as _identity
 
         refused = ""
+        instance = ""
         try:
-            raw.settimeout(HANDSHAKE_SECONDS)
-            connection = self._contexts.current().wrap_socket(raw, server_side=False)
-        except (ssl.SSLError, OSError) as exc:
-            self._refuse("handshake", type(exc).__name__)
-            _close(raw)
-            return
-        try:
-            der = connection.getpeercert(binary_form=True)
-            known = self._targets()
-            who = _identity.check_peer(der, deployment=self.tls.deployment, expected_role=_identity.WORKER,
-                                       accept_instances=frozenset(known), trust=self.tls.trust(_identity.GATEWAY))
-            instance = str(who.instance)
-            t = known.get(instance)
-            if t is None or t.get("status") not in PARKABLE:
-                refused = "not_a_parkable_target"
-            elif self._eligible(t["target_id"]):
-                refused = "not_eligible"
-        except Exception as exc:                              # noqa: BLE001 - an unproven peer is never parked
-            self._refuse("identity", getattr(exc, "check", "") or type(exc).__name__)
-            _close(connection)
-            return
-        if refused:
-            self._refuse(refused, instance)
-            _close(connection)
-            return
-        connection.settimeout(None)
-        with self._cond:
-            pool = self._pools[instance]
-            total = sum(len(p) for p in self._pools.values())
-            if len(pool) >= 2 * slots_for(int(t.get("concurrency") or 1)) or total >= self.max_total:
-                self._refuse("slot_bound", instance)
+            try:
+                raw.settimeout(HANDSHAKE_SECONDS)
+                connection = self._contexts.current().wrap_socket(raw, server_side=False)
+            except (ssl.SSLError, OSError) as exc:
+                self._refuse("handshake", type(exc).__name__)
+                _close(raw)
+                return
+            try:
+                der = connection.getpeercert(binary_form=True)
+                known = self._targets()
+                who = _identity.check_peer(der, deployment=self.tls.deployment, expected_role=_identity.WORKER,
+                                           accept_instances=frozenset(known), trust=self.tls.trust(_identity.GATEWAY))
+                instance = str(who.instance)
+                t = known.get(instance)
+                if reserved and (instance != reserved or spki_of(der) != expect_spki):
+                    refused = "edge_identity_mismatch"
+                elif t is None or t.get("status") not in PARKABLE:
+                    refused = "not_a_parkable_target"
+                elif self._eligible(t["target_id"]):
+                    refused = "not_eligible"
+            except Exception as exc:                          # noqa: BLE001 - an unproven peer is never parked
+                self._refuse("identity", getattr(exc, "check", "") or type(exc).__name__)
                 _close(connection)
                 return
-            pool.append(_Slot(connection, who, der, self.clock()))
-            self._cond.notify_all()
+            if refused:
+                self._refuse(refused, instance)
+                _close(connection)
+                return
+            connection.settimeout(None)
+            with self._cond:
+                pool = self._pools[instance]
+                # a reserved connection's own place is already counted in `_pending`: it moves into the pool
+                own = 1 if reserved else 0
+                mine = len(pool) + self._pending[instance] - own
+                total = sum(len(p) for p in self._pools.values()) + sum(self._pending.values()) - own
+                if mine >= 2 * slots_for(int(t.get("concurrency") or 1)) or total >= self.max_total:
+                    self._refuse("slot_bound", instance)
+                    _close(connection)
+                    return
+                pool.append(_Slot(connection, who, der, self.clock()))
+                self._cond.notify_all()
+        finally:
+            if reserved:
+                self._unreserve(reserved)
 
     def _refuse(self, why: str, detail: str) -> None:
         self.refused[why] += 1
@@ -369,6 +417,20 @@ def device_authority(authority_error) -> Callable[[str, str], str]:
         if why is None:
             return ""
         return codes.get(str(why), "target_authority_unverifiable")
+    return check
+
+
+def reverse_device_authority(rule: Callable[[str, str], str]) -> Callable[[str, str], str]:
+    """slice 2: (account, device) -> "" or a routing code from a direct device rule (`GatewayLogin.
+    reverse_device_error`, `agent_authority.Authority.reverse_device_error`) -- which knows a paired WORKER DEVICE
+    holds no RUN by design. Anything that raises fails closed."""
+    def check(account: str, device: str) -> str:
+        if not account or not device:
+            return "target_device_revoked"
+        try:
+            return str(rule(account, device) or "")
+        except Exception:                                     # noqa: BLE001
+            return "target_authority_unverifiable"
     return check
 
 

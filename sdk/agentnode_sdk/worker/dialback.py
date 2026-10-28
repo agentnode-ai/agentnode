@@ -159,7 +159,17 @@ class DialBackAgent:
     def __init__(self, listener, control: str, *, slots: int, say=None, allow_loopback: bool = False,
                  idle: float = IDLE_SECONDS, dial=None, rate: float = MAX_DIALS_PER_SECOND) -> None:
         self.listener = listener
-        self.host, self.port = control_endpoint(control, allow_loopback=allow_loopback)
+        if str(control or "").startswith("https://"):
+            # slice 2: the public 443 path. The name is dialled through `dial` (an `edge.EdgeDialer`), which runs the
+            # outer TLS and the upgrade; the slot after it is this one, unchanged.
+            from agentnode_sdk.worker import edge as _edge
+
+            if dial is None:
+                raise DialRefused("control_address_unusable", "the 443 path is dialled through its edge dialer")
+            url = _edge.control_url(control)
+            self.host, self.port = url.host, url.port
+        else:
+            self.host, self.port = control_endpoint(control, allow_loopback=allow_loopback)
         self.slots = max(1, int(slots))
         self.idle = float(idle)
         self.say = say or (lambda text: print(text, flush=True))
@@ -172,6 +182,18 @@ class DialBackAgent:
         self.conversations = 0
         #: slots the control plane closed without a request (not eligible now, slots full): backed off from
         self.refused_slots = 0
+        #: slice 2 health (what an update checks): when the control plane last completed an inner handshake on one of
+        #: this agent's slots, and the name of the last refusal of a dial
+        self.last_admitted_at = 0.0
+        self.last_refusal = ""
+        try:
+            listener.on_admitted = self._admitted
+        except AttributeError:                                # pragma: no cover - a listener stand-in
+            pass
+
+    def _admitted(self) -> None:
+        self.last_admitted_at = time.time()
+        self.last_refusal = ""
 
     def start(self) -> None:
         for i in range(self.slots):
@@ -201,9 +223,10 @@ class DialBackAgent:
                 raw = self._dial((self.host, self.port), DIAL_TIMEOUT_SECONDS)
             except OSError as exc:
                 self.failed_dials += 1
+                self.last_refusal = str(getattr(exc, "code", "") or type(exc).__name__)
                 backoff = min(BACKOFF_MAX, max(BACKOFF_MIN, backoff * 2 or BACKOFF_MIN))
                 self.say("  the control plane could not be reached (%s); next try within %.1f s"
-                         % (type(exc).__name__, backoff))
+                         % (getattr(exc, "code", "") or type(exc).__name__, backoff))
                 self._stopped.wait(random.uniform(0.0, backoff))   # full jitter
                 continue
             _keepalive(raw)
@@ -222,7 +245,8 @@ class DialBackAgent:
 
 
 def _keepalive(sock) -> None:
-    """Diagnostic only (the 110 s idle bound is what replaces a slot): ask the kernel to notice a dead peer."""
+    """Ask the kernel to notice a dead peer -- and, on the TCP socket of a 443 slot (`edge.EdgeDialer`), to keep a NAT
+    on the way from dropping a slot that is silent while its run lasts (the 110 s idle bound replaces idle slots)."""
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         for name, value in (("TCP_KEEPIDLE", 30), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3)):
