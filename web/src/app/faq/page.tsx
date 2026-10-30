@@ -132,7 +132,7 @@ const faqCategories: FaqCategory[] = [
       },
       {
         q: "What do verified, trusted, and curated mean?",
-        a: "They are trust levels: unverified (metadata validated only), verified (security-scanned, publisher confirmed), trusted (proven reliable over time), and curated (reviewed by AgentNode). Package versions are also scored into verification tiers.",
+        a: "They are publisher trust levels: unverified (new account; its packages cannot be installed yet), verified (confirmed email and a skill that passed the automatic content check on upload, or confirmed by AgentNode), trusted (proven reliable over time), and curated (reviewed by AgentNode). Package versions are also scored into verification tiers.",
         links: [{ href: "/security", label: "Security model" }],
       },
       {
