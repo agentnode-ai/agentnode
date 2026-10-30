@@ -188,8 +188,7 @@ async def send_daily_admin_digest():
                     len(waiting),
                 )
             else:
-                # Say it plainly: "sent" was logged for months while the mail
-                # server rejected every admin address.
+                # The old log said "sent" whatever send_email returned.
                 logger.error(
                     "Daily admin digest NOT delivered to %d of %d admin(s); "
                     "%d version(s) waiting > 24h go unnoticed",

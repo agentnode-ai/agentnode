@@ -1,6 +1,7 @@
 """The daily admin digest names what waits in review, and says whether it
-arrived. A count alone and an unconditional "sent" log let a new publisher's
-skill wait 16 days unseen while the mail server rejected the admin address."""
+arrived. A count alone (about 40 quarantined versions, most of them old) let a
+new publisher's skill wait 16 days unseen, and the log said "sent" whatever
+the mail server answered."""
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
