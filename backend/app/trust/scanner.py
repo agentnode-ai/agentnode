@@ -225,6 +225,18 @@ async def run_security_scan(version_id: UUID) -> None:
                     raw_findings.extend(_extract_and_scan(artifact_bytes))
                     # Also extract code files for AI scan
                     artifact_code_files = _extract_code_files(artifact_bytes)
+                    # A skill is text only, so its text is what gets scanned.
+                    # Informational findings stay in the verification log.
+                    pkg_result = await session.execute(
+                        select(Package).where(Package.id == pv.package_id)
+                    )
+                    pkg = pkg_result.scalar_one_or_none()
+                    if pkg and pkg.package_type == "skill":
+                        from app.trust.skill_scan import scan_skill_files
+
+                        for f in scan_skill_files(_extract_text_files(artifact_bytes)):
+                            if f["severity"] in ("medium", "high"):
+                                raw_findings.append({**f, "category": "skill"})
                 except Exception:
                     logger.exception(
                         f"Failed to download/scan artifact for {version_id}"
@@ -296,7 +308,7 @@ async def run_security_scan(version_id: UUID) -> None:
             filtered: list[dict] = []
             for finding in raw_findings:
                 cat = finding.pop("category")
-                if cat == "secret":
+                if cat in ("secret", "skill"):
                     filtered.append(finding)
                 elif cat == "env_access":
                     filtered.append(finding)
@@ -389,6 +401,23 @@ async def run_security_scan(version_id: UUID) -> None:
 
                 await recalculate_latest_version_id(session, pv.package_id)
 
+                # A publisher the platform verified automatically loses that
+                # grant when one of their versions is quarantined for security.
+                if not pkg:
+                    pkg = (
+                        await session.execute(
+                            select(Package).where(Package.id == pv.package_id)
+                        )
+                    ).scalar_one_or_none()
+                if pkg:
+                    from app.publishers.auto_trust import withdraw_auto_verification
+
+                    await withdraw_auto_verification(
+                        session,
+                        pkg.publisher_id,
+                        f"security scan quarantined {pkg.slug}@{pv.version_number}",
+                    )
+
             await session.commit()
             logger.info(
                 f"Security scan for {version_id}: {len(filtered)} finding(s) (static: {len(filtered) - len(ai_findings)}, ai: {len(ai_findings)})"
@@ -425,6 +454,36 @@ async def run_security_scan(version_id: UUID) -> None:
 
     except Exception:
         logger.exception(f"Security scan failed for version {version_id}")
+
+
+def _extract_text_files(artifact_bytes: bytes) -> dict[str, str]:
+    """Extract a skill's UTF-8 text files as {path inside the skill: content}."""
+    from app.trust.skill_scan import TEXT_EXTENSIONS
+
+    texts: dict[str, str] = {}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(artifact_bytes), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if not member.isfile() or not member.name.lower().endswith(
+                    TEXT_EXTENSIONS
+                ):
+                    continue
+                if os.path.normpath(member.name).startswith("..") or os.path.isabs(
+                    member.name
+                ):
+                    continue
+                f = tar.extractfile(member)
+                if not f:
+                    continue
+                try:
+                    content = f.read().decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                parts = member.name.split("/", 1)
+                texts[parts[1] if len(parts) > 1 else parts[0]] = content
+    except Exception:
+        logger.warning("Failed to extract text files from artifact")
+    return texts
 
 
 def _extract_code_files(artifact_bytes: bytes) -> dict[str, str]:

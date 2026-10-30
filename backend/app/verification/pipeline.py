@@ -39,6 +39,10 @@ AUTO_CLEARABLE_REASONS: frozenset[str] = frozenset(
 )
 _AUTO_CLEAR_PREFIX = "Auto-quarantined: verification failed"
 
+# A skill held because its content check found something a human should read.
+# Deliberately not auto-clearable: only an admin releases it.
+SKILL_CONTENT_REVIEW_REASON = "skill_content_review"
+
 # Triggers that MUST NOT auto-clear quarantine — e.g. an owner-initiated
 # re-verify must not undo a quarantine the admin imposed. (P1-V1)
 _NON_AUTO_CLEARING_TRIGGERS: frozenset[str] = frozenset(
@@ -247,6 +251,7 @@ def _run_verification_sync(
     """
     from app.verification.sandbox import VerificationSandbox
     from app.verification.steps import (
+        collect_skill_text_files,
         step_import,
         step_install,
         step_skill_check,
@@ -329,11 +334,37 @@ def _run_verification_sync(
                 result["error_summary"] = "Skill files missing or unreadable"
                 return result
             result["install_status"] = "passed"
-            result["import_status"] = "passed"
-            result["import_log"] = "Prompt-only skill: no code to import."
             result["smoke_status"] = "skipped"
             result["smoke_reason"] = "prompt_only"
             result["tests_status"] = "not_present"
+
+            # The skill's text is all it is, so the content check stands in for
+            # import: high fails verification, medium keeps the version in review.
+            from app.trust.skill_scan import scan_skill_files, summarize
+
+            findings = scan_skill_files(collect_skill_text_files(sandbox))
+            high, medium, low = summarize(findings)
+            result["skill_findings"] = findings
+            result["skill_review_required"] = medium > 0
+            report = [
+                f"Skill content check: {high} high, {medium} medium, {low} informational finding(s)."
+            ] + [f"[{f['severity']}] {f['description']}" for f in findings]
+            result["import_log"] = "\n".join(report)
+            if medium:
+                result["warnings_count"] = medium
+                result["warnings_summary"] = "; ".join(
+                    f["description"] for f in findings if f["severity"] == "medium"
+                )[:2000]
+            if high:
+                result["import_status"] = "failed"
+                result["error_summary"] = (
+                    f"Skill content check found {high} high-risk finding(s): "
+                    + "; ".join(
+                        f["description"] for f in findings if f["severity"] == "high"
+                    )
+                )[:1000]
+            else:
+                result["import_status"] = "passed"
             return result
 
         # Step 1: Install
@@ -1150,6 +1181,23 @@ async def run_verification(
                         f"Auto-quarantined {version_id}: {step_results['error_summary']}"
                     )
 
+                # A skill whose content check wants a human look goes to the
+                # review queue even when its publisher is already established.
+                if (
+                    final_status == "passed"
+                    and step_results.get("skill_review_required")
+                    and pv.quarantine_status == "none"
+                    and triggered_by == "publish"
+                ):
+                    pv.quarantine_status = "quarantined"
+                    pv.quarantined_at = datetime.now(timezone.utc)
+                    pv.quarantine_reason = SKILL_CONTENT_REVIEW_REASON
+                    logger.warning(
+                        "Held %s for review: skill content check: %s",
+                        version_id,
+                        step_results.get("warnings_summary"),
+                    )
+
                 # Auto-clear quarantine on verification pass — but ONLY for
                 # verification-related quarantine reasons (auto-quarantine from
                 # failed verification or new-publisher review).  Admin-imposed
@@ -1168,6 +1216,19 @@ async def run_verification(
                         reason in AUTO_CLEARABLE_REASONS
                         or reason.startswith(f"{_AUTO_CLEAR_PREFIX} (")
                     )
+                    blocked_by = (
+                        None
+                        if is_auto_clearable
+                        else f"reason '{reason}' is not verification-related"
+                    )
+                    if is_auto_clearable and step_results.get("skill_review_required"):
+                        logger.info(
+                            "Quarantine NOT auto-cleared for %s: "
+                            "the skill content check asks for a human review",
+                            version_id,
+                        )
+                        is_auto_clearable = False
+                        blocked_by = "skill content check needs review"
                     if (
                         is_auto_clearable
                         and triggered_by in _NON_AUTO_CLEARING_TRIGGERS
@@ -1179,6 +1240,7 @@ async def run_verification(
                             triggered_by,
                         )
                         is_auto_clearable = False
+                        blocked_by = f"triggered_by={triggered_by}"
                     if is_auto_clearable and await _has_open_scanner_findings(
                         session, version_id
                     ):
@@ -1188,6 +1250,7 @@ async def run_verification(
                             version_id,
                         )
                         is_auto_clearable = False
+                        blocked_by = "open scanner findings"
                     if is_auto_clearable:
                         pv.quarantine_status = "cleared"
                         pv.quarantine_reason = None
@@ -1231,11 +1294,61 @@ async def run_verification(
                             )
                     else:
                         logger.info(
-                            f"Quarantine NOT auto-cleared for {version_id}: "
-                            f"reason '{reason}' is not verification-related"
+                            f"Quarantine NOT auto-cleared for {version_id}: {blocked_by}"
                         )
 
                 await session.commit()
+
+                # Publisher trust follows a skill's checked text: a clean skill
+                # earns 'verified', high-risk text withdraws an automatic grant.
+                # Its own transaction, so a failure here never loses the result.
+                if pkg_pre and triggered_by == "publish":
+                    try:
+                        from app.publishers.auto_trust import (
+                            maybe_auto_verify,
+                            withdraw_auto_verification,
+                        )
+
+                        if final_status == "passed" and pv.quarantine_status in (
+                            "none",
+                            "cleared",
+                        ):
+                            if await maybe_auto_verify(
+                                session, pkg_pre.publisher_id, version_id, step_results
+                            ):
+                                from sqlalchemy.orm import selectinload
+                                from app.packages.service import build_meili_document
+                                from app.shared.meili import sync_package_to_meilisearch
+
+                                pkg3 = (
+                                    await session.execute(
+                                        select(Package)
+                                        .options(selectinload(Package.publisher))
+                                        .where(Package.id == pv.package_id)
+                                    )
+                                ).scalar_one_or_none()
+                                if pkg3 and pkg3.latest_version_id == pv.id:
+                                    await sync_package_to_meilisearch(
+                                        build_meili_document(
+                                            pkg3, pv, pv.manifest_raw or {}
+                                        )
+                                    )
+                        elif (
+                            final_status == "failed"
+                            and step_results.get("verification_mode") == "prompt_only"
+                            and step_results.get("import_status") == "failed"
+                        ):
+                            await withdraw_auto_verification(
+                                session,
+                                pkg_pre.publisher_id,
+                                f"skill content check failed for version {version_id}",
+                            )
+                        await session.commit()
+                    except Exception:
+                        await session.rollback()
+                        logger.exception(
+                            "Automatic publisher trust update failed for %s", version_id
+                        )
 
                 # P1-V2: persist an admin audit log entry on admin-triggered
                 # reverifies so the `admin_audit_logs` table has both the
