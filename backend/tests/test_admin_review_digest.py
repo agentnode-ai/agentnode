@@ -2,9 +2,8 @@
 arrived. A count alone and an unconditional "sent" log let a new publisher's
 skill wait 16 days unseen while the mail server rejected the admin address."""
 
-import logging
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -119,9 +118,13 @@ async def _seed(session_factory):
 
 
 async def _run_digest(session_factory, delivered: bool):
+    """Returns (sender mock, logger mock). The app's "agentnode" loggers do not
+    propagate to pytest's caplog, so the cron logger itself is observed."""
     sender = AsyncMock(return_value=delivered)
+    log = MagicMock()
     with (
         patch("app.tasks.cron.async_session_factory", session_factory),
+        patch("app.tasks.cron.logger", log),
         patch(
             "app.shared.email.get_admin_emails",
             AsyncMock(return_value=["admin@example.com"]),
@@ -131,29 +134,34 @@ async def _run_digest(session_factory, delivered: bool):
         from app.tasks.cron import send_daily_admin_digest
 
         await send_daily_admin_digest()
-    return sender
+    return sender, log
+
+
+def _logged(call) -> str:
+    fmt, *args = call.args
+    return fmt % tuple(args)
 
 
 @pytest.mark.asyncio
-async def test_digest_lists_only_versions_waiting_more_than_a_day(
-    session_factory, caplog
-):
+async def test_digest_lists_only_versions_waiting_more_than_a_day(session_factory):
     await _seed(session_factory)
-    with caplog.at_level(logging.INFO, logger="agentnode.cron"):
-        sender = await _run_digest(session_factory, delivered=True)
+    sender, log = await _run_digest(session_factory, delivered=True)
     stats = sender.await_args.args[1]
     assert stats["quarantined"] == 2
     assert [w["slug"] for w in stats["waiting"]] == ["stuck-skill"]
     assert stats["waiting"][0]["days"] == 16
-    assert "delivered to 1 admin(s); 1 version(s) waiting > 24h" in caplog.text
+    log.error.assert_not_called()
+    assert (
+        _logged(log.info.call_args)
+        == "Daily admin digest delivered to 1 admin(s); 1 version(s) waiting > 24h"
+    )
 
 
 @pytest.mark.asyncio
-async def test_undelivered_digest_is_logged_as_an_error(session_factory, caplog):
+async def test_undelivered_digest_is_logged_as_an_error(session_factory):
     await _seed(session_factory)
-    with caplog.at_level(logging.INFO, logger="agentnode.cron"):
-        await _run_digest(session_factory, delivered=False)
-    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert errors
-    assert "NOT delivered to 1 of 1 admin(s)" in errors[0].getMessage()
-    assert "delivered to 1 admin(s)" not in caplog.text
+    _, log = await _run_digest(session_factory, delivered=False)
+    log.info.assert_not_called()
+    assert _logged(log.error.call_args).startswith(
+        "Daily admin digest NOT delivered to 1 of 1 admin(s); 1 version(s) waiting > 24h"
+    )
