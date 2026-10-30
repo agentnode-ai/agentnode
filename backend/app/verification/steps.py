@@ -247,6 +247,51 @@ def step_install(sandbox: VerificationSandbox) -> tuple[bool, str]:
     return ok, pip_log
 
 
+def step_skill_check(
+    sandbox: VerificationSandbox, templates: list[str]
+) -> tuple[bool, str]:
+    """Step 1 for prompt-only skills (package_type=skill, runtime=none).
+
+    A skill ships no Python package, so there is nothing to pip-install or
+    import. Check what it does ship instead: SKILL.md and every declared prompt
+    template must exist inside the package, be non-empty and be UTF-8 text.
+    """
+    skill_root = None
+    for root, _dirs, files in os.walk(sandbox.work_dir):
+        if "agentnode.yaml" in files:
+            skill_root = os.path.realpath(root)
+            break
+    if skill_root is None:
+        return False, "Prompt-only skill: agentnode.yaml not found in the artifact"
+
+    required = ["SKILL.md"] + [t for t in templates if t and t != "SKILL.md"]
+    lines = ["Prompt-only skill: no Python install or import required."]
+    ok = True
+    for rel in required:
+        path = os.path.realpath(os.path.join(skill_root, rel))
+        if not path.startswith(skill_root + os.sep):
+            lines.append(f"FAIL {rel}: path escapes the package")
+            ok = False
+            continue
+        if not os.path.isfile(path):
+            lines.append(f"FAIL {rel}: file not found")
+            ok = False
+            continue
+        try:
+            with open(path, "rb") as fh:
+                text = fh.read().decode("utf-8")
+        except UnicodeDecodeError:
+            lines.append(f"FAIL {rel}: not valid UTF-8 text")
+            ok = False
+            continue
+        if not text.strip():
+            lines.append(f"FAIL {rel}: file is empty")
+            ok = False
+            continue
+        lines.append(f"OK   {rel} ({len(text)} characters)")
+    return ok, "\n".join(lines)
+
+
 def step_import(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[bool, str]:
     """Step 2: Verify all declared tool entrypoints are importable and callable.
 

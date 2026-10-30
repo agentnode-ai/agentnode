@@ -237,15 +237,19 @@ def _run_verification_sync(
     manual_test_input: dict | None = None,
     system_requirements: list[str] | None = None,
     has_explicit_cases: bool = False,
+    prompt_templates: list[str] | None = None,
 ) -> dict:
     """Run all verification steps synchronously (called in thread pool).
 
     Returns a dict with all step results using status strings, not booleans.
+    prompt_templates is not None only for prompt-only skills, which get a
+    file check instead of install/import/smoke/tests.
     """
     from app.verification.sandbox import VerificationSandbox
     from app.verification.steps import (
         step_import,
         step_install,
+        step_skill_check,
         step_smoke,
         step_tests,
         run_stability_check,
@@ -310,6 +314,27 @@ def _run_verification_sync(
                 "import"
             ),  # import is the primary enforced path
         }
+
+        # Prompt-only skill: no code, so no venv, pip, import or smoke. The
+        # file check stands in for install; the other steps do not apply.
+        if prompt_templates is not None:
+            t0 = time.monotonic()
+            ok, log = step_skill_check(sandbox, prompt_templates)
+            result["install_duration_ms"] = int((time.monotonic() - t0) * 1000)
+            result["installer"] = "none"
+            result["verification_mode"] = "prompt_only"
+            result["install_log"] = log
+            if not ok:
+                result["install_status"] = "failed"
+                result["error_summary"] = "Skill files missing or unreadable"
+                return result
+            result["install_status"] = "passed"
+            result["import_status"] = "passed"
+            result["import_log"] = "Prompt-only skill: no code to import."
+            result["smoke_status"] = "skipped"
+            result["smoke_reason"] = "prompt_only"
+            result["tests_status"] = "not_present"
+            return result
 
         # Step 1: Install
         t0 = time.monotonic()
@@ -881,6 +906,22 @@ async def run_verification(
                 )
                 manual_test_input = real_cases[0]["input"] if real_cases else None
 
+                # Prompt-only skills (the validator only admits skills with
+                # runtime=none) ship SKILL.md and templates, never a Python package.
+                prompt_templates = None
+                if pkg_pre and pkg_pre.package_type == "skill":
+                    caps_section = manifest.get("capabilities", {})
+                    prompts = (
+                        caps_section.get("prompts", [])
+                        if isinstance(caps_section, dict)
+                        else []
+                    )
+                    prompt_templates = [
+                        p["template"]
+                        for p in prompts
+                        if isinstance(p, dict) and isinstance(p.get("template"), str)
+                    ]
+
                 # Run verification in thread pool (subprocess.run blocks)
                 import functools
 
@@ -903,6 +944,7 @@ async def run_verification(
                             manual_test_input=manual_test_input,
                             system_requirements=normalized.system_requirements or None,
                             has_explicit_cases=normalized.has_explicit_cases,
+                            prompt_templates=prompt_templates,
                         ),
                     ),
                     timeout=settings.VERIFICATION_TIMEOUT,
