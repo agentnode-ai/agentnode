@@ -695,3 +695,136 @@ async def test_no_auto_quarantine_on_admin_reverify(session_factory, session):
         assert pv.verification_status == "failed"
         # quarantine_status should remain "none" — no auto-quarantine on admin re-verify
         assert pv.quarantine_status == "none"
+
+
+def _skill_artifact() -> bytes:
+    import io
+    import tarfile
+
+    files = {
+        "demo-skill/agentnode.yaml": b"package_type: skill\nruntime: none\n",
+        "demo-skill/SKILL.md": b"# Demo skill\nFollow these steps.\n",
+    }
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+async def _seed_skill(session: AsyncSession, artifact: bytes):
+    """A prompt-only skill exactly as the validator admits it: runtime=none,
+    one prompt capability with template SKILL.md, no tool and no entrypoint."""
+    user = User(
+        id=uuid4(),
+        email=f"skill-{uuid4().hex[:8]}@example.com",
+        username=f"skilluser-{uuid4().hex[:8]}",
+        password_hash="x",
+    )
+    session.add(user)
+    await session.flush()
+    publisher = Publisher(
+        id=uuid4(),
+        user_id=user.id,
+        display_name="Skill Publisher",
+        slug=f"skill-pub-{uuid4().hex[:8]}",
+    )
+    session.add(publisher)
+    await session.flush()
+    pkg = Package(
+        id=uuid4(),
+        publisher_id=publisher.id,
+        slug=f"demo-skill-{uuid4().hex[:8]}",
+        name="Demo Skill",
+        package_type="skill",
+        summary="A prompt-only skill",
+    )
+    session.add(pkg)
+    await session.flush()
+    pv = PackageVersion(
+        id=uuid4(),
+        package_id=pkg.id,
+        version_number="1.0.0",
+        manifest_raw={
+            "package_type": "skill",
+            "runtime": "none",
+            "capabilities": {
+                "prompts": [
+                    {
+                        "name": "main",
+                        "capability_id": "demo_skill.prompt",
+                        "template": "SKILL.md",
+                    }
+                ]
+            },
+            "permissions": {},
+        },
+        runtime="none",
+        artifact_object_key="artifacts/demo-skill.tar.gz",
+        artifact_hash_sha256=hashlib.sha256(artifact).hexdigest(),
+        artifact_size_bytes=len(artifact),
+        quarantine_status="none",
+        verification_status="pending",
+    )
+    session.add(pv)
+    await session.flush()
+    session.add(
+        Capability(
+            id=uuid4(),
+            package_version_id=pv.id,
+            capability_type="prompt",
+            capability_id="pdf_extraction",
+            name="main",
+        )
+    )
+    await session.commit()
+    return pv.id
+
+
+@pytest.mark.asyncio
+async def test_prompt_only_skill_passes_on_publish_and_is_not_quarantined(
+    session_factory, session
+):
+    """Regression (2026-10 incident): a SKILL.md-only skill used to be run
+    through `pip install .`, fail, and be auto-quarantined on publish."""
+    artifact = _skill_artifact()
+    version_id = await _seed_skill(session, artifact)
+
+    patches = _pipeline_patches(session_factory, artifact_bytes=artifact)
+    patches["no_venv"] = patch(
+        "app.verification.sandbox.VerificationSandbox.create_venv",
+        side_effect=AssertionError("prompt-only skill must not create a venv"),
+    )
+    patches["no_pip"] = patch(
+        "app.verification.sandbox.VerificationSandbox.pip_install",
+        side_effect=AssertionError("prompt-only skill must not be pip-installed"),
+    )
+    with _PatchStack(patches) as mocks:
+        from app.verification.pipeline import run_verification
+
+        await run_verification(version_id, triggered_by="publish")
+
+    mocks["no_pip"].assert_not_called()
+    mocks["send_email"].assert_not_called()
+    async with session_factory() as s:
+        pv = (
+            await s.execute(
+                select(PackageVersion).where(PackageVersion.id == version_id)
+            )
+        ).scalar_one()
+        assert pv.verification_status == "passed"
+        assert pv.quarantine_status == "none"
+
+        vr = (
+            await s.execute(
+                select(VerificationResult).where(
+                    VerificationResult.package_version_id == version_id
+                )
+            )
+        ).scalar_one()
+        assert vr.status == "passed"
+        assert vr.verification_mode == "prompt_only"
+        assert vr.smoke_status == "skipped"
+        assert vr.score_breakdown["explanation"].startswith("Prompt-only skill:")

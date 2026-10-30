@@ -102,11 +102,17 @@ def compute_score_result(vr) -> ScoreResult:
 
     breakdown: dict[str, StepScore] = {}
     score = 0
+    prompt_only = getattr(vr, "verification_mode", None) == "prompt_only"
 
     # ── Basis (0-70): Functionality ──
 
     # Install (15 pts)
-    if vr.install_status == "passed":
+    if prompt_only and vr.install_status == "passed":
+        breakdown["install"] = StepScore(
+            15, 15, "Prompt-only skill: SKILL.md and templates present"
+        )
+        score += 15
+    elif vr.install_status == "passed":
         install_ms = getattr(vr, "install_duration_ms", None)
         reason = (
             f"Installed in {install_ms / 1000:.1f}s"
@@ -119,7 +125,10 @@ def compute_score_result(vr) -> ScoreResult:
         breakdown["install"] = StepScore(0, 15, "Installation failed")
 
     # Import (15 pts)
-    if vr.import_status == "passed":
+    if prompt_only and vr.import_status == "passed":
+        breakdown["import"] = StepScore(15, 15, "No code to import (prompt-only)")
+        score += 15
+    elif vr.import_status == "passed":
         breakdown["import"] = StepScore(15, 15, "All tools imported successfully")
         score += 15
     else:
@@ -275,6 +284,9 @@ def _compute_smoke_points(vr) -> tuple[int, str]:
     """
     if vr.smoke_status == "passed":
         return 25, "Returned valid result"
+
+    if vr.smoke_status == "skipped" and vr.smoke_reason == "prompt_only":
+        return 0, "Not applicable: prompt-only skill runs no code"
 
     tests_passed = vr.tests_status == "passed" and not vr.tests_auto_generated
 
@@ -471,6 +483,11 @@ def _determinism_reason(vr, det_points: int) -> str:
 def _build_explanation(score: int, tier: str, vr) -> str:
     """Build a human-readable explanation one-liner."""
     parts = []
+
+    if getattr(vr, "verification_mode", None) == "prompt_only":
+        if vr.install_status == "passed":
+            return "Prompt-only skill: SKILL.md and templates are present and readable; it runs no code."
+        return "Prompt-only skill: SKILL.md or a declared template is missing or unreadable."
 
     if vr.install_status == "passed" and vr.import_status == "passed":
         parts.append("Package installs and imports correctly")
