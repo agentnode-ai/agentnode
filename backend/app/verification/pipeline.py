@@ -1299,6 +1299,57 @@ async def run_verification(
 
                 await session.commit()
 
+                # Publisher trust follows a skill's checked text: a clean skill
+                # earns 'verified', high-risk text withdraws an automatic grant.
+                # Its own transaction, so a failure here never loses the result.
+                if pkg_pre and triggered_by == "publish":
+                    try:
+                        from app.publishers.auto_trust import (
+                            maybe_auto_verify,
+                            withdraw_auto_verification,
+                        )
+
+                        if final_status == "passed" and pv.quarantine_status in (
+                            "none",
+                            "cleared",
+                        ):
+                            if await maybe_auto_verify(
+                                session, pkg_pre.publisher_id, version_id, step_results
+                            ):
+                                from sqlalchemy.orm import selectinload
+                                from app.packages.service import build_meili_document
+                                from app.shared.meili import sync_package_to_meilisearch
+
+                                pkg3 = (
+                                    await session.execute(
+                                        select(Package)
+                                        .options(selectinload(Package.publisher))
+                                        .where(Package.id == pv.package_id)
+                                    )
+                                ).scalar_one_or_none()
+                                if pkg3 and pkg3.latest_version_id == pv.id:
+                                    await sync_package_to_meilisearch(
+                                        build_meili_document(
+                                            pkg3, pv, pv.manifest_raw or {}
+                                        )
+                                    )
+                        elif (
+                            final_status == "failed"
+                            and step_results.get("verification_mode") == "prompt_only"
+                            and step_results.get("import_status") == "failed"
+                        ):
+                            await withdraw_auto_verification(
+                                session,
+                                pkg_pre.publisher_id,
+                                f"skill content check failed for version {version_id}",
+                            )
+                        await session.commit()
+                    except Exception:
+                        await session.rollback()
+                        logger.exception(
+                            "Automatic publisher trust update failed for %s", version_id
+                        )
+
                 # P1-V2: persist an admin audit log entry on admin-triggered
                 # reverifies so the `admin_audit_logs` table has both the
                 # trigger AND the outcome side-by-side. The trigger-side row

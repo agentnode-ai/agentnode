@@ -401,6 +401,23 @@ async def run_security_scan(version_id: UUID) -> None:
 
                 await recalculate_latest_version_id(session, pv.package_id)
 
+                # A publisher the platform verified automatically loses that
+                # grant when one of their versions is quarantined for security.
+                if not pkg:
+                    pkg = (
+                        await session.execute(
+                            select(Package).where(Package.id == pv.package_id)
+                        )
+                    ).scalar_one_or_none()
+                if pkg:
+                    from app.publishers.auto_trust import withdraw_auto_verification
+
+                    await withdraw_auto_verification(
+                        session,
+                        pkg.publisher_id,
+                        f"security scan quarantined {pkg.slug}@{pv.version_number}",
+                    )
+
             await session.commit()
             logger.info(
                 f"Security scan for {version_id}: {len(filtered)} finding(s) (static: {len(filtered) - len(ai_findings)}, ai: {len(ai_findings)})"
