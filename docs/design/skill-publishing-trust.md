@@ -12,8 +12,8 @@ to publish a skill and have it installable quickly, without the founder approvin
 - Publisher trust is set only by an admin (`PUT /v1/admin/publishers/{slug}/trust`). There is no path to `verified`,
   yet the SDK installs nothing below `verified`. A new publisher can therefore publish nothing anyone can install.
 - The website says "Publish → get verified" and lists `unverified` as "manual" install; the SDK refuses it outright.
-- The daily admin digest is logged as "sent" while the mail server rejects the admin address on every run, so a
-  stuck review queue is never noticed.
+- The daily admin digest reaches the admin, but it carries only a count of quarantined versions (about 40, most of
+  them months old), so one new publisher's skill waiting for review does not stand out.
 
 ## Principle
 
@@ -36,12 +36,13 @@ manual review. Code packages keep their existing gates (verification, static/AI 
    grant is withdrawn. Admin-set levels are never touched by the automation. `trusted` and `curated` stay manual.
 3. **Honest pages.** Skills get their own verification card (content check, files, no code) instead of the code
    score; the developer page and FAQ describe the real path to `verified` and the real install behaviour.
-4. **Admin queue alert that arrives.** The digest names each version waiting in review with its age and reason, and
-   logs per recipient whether delivery succeeded instead of always logging "sent".
+4. **Admin queue alert that names the queue.** The digest lists each version waiting in review with its age and
+   reason, and logs whether delivery succeeded instead of always logging "sent".
 
 Not in scope here: an SDK release (step 2 makes clean skills installable server-side), the AI scanner provider (prod
 has no `ANTHROPIC_API_KEY`, so the deterministic check must stand on its own), the noisy code scanner
-(`os.environ` = high), the server's drift from `main`, and the mailbox for the admin address (an ops action).
+(`os.environ` = high), the server's drift from `main`, and mail to the system publisher's address
+`system@agentnode.net`, which the mail server rejects (no mailbox).
 
 ## Limits, said plainly
 
