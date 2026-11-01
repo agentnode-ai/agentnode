@@ -66,6 +66,10 @@ def test_valid_skill_passes_without_pip():
     assert result["installer"] == "none"
     assert result["error_summary"] is None
     assert "OK   SKILL.md" in result["install_log"]
+    assert result["skill_review_required"] is False
+    assert result["import_log"].startswith(
+        "Skill content check: 0 high, 0 medium, 0 informational"
+    )
     venv.assert_not_called()
     pip.assert_not_called()
 
@@ -185,7 +189,7 @@ def test_score_for_a_passing_skill_is_honest():
         breakdown["install"]["reason"]
         == "Prompt-only skill: SKILL.md and templates present"
     )
-    assert breakdown["import"]["reason"] == "No code to import (prompt-only)"
+    assert breakdown["import"]["reason"] == "Skill content check passed"
     assert breakdown["smoke"]["points"] == 0
     assert (
         breakdown["smoke"]["reason"] == "Not applicable: prompt-only skill runs no code"

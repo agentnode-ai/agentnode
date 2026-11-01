@@ -31,6 +31,9 @@ class Publisher(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
         default="unverified",
     )
+    # Set when the platform promoted the publisher to 'verified' itself
+    # (app/publishers/auto_trust.py); cleared by any admin-set trust level.
+    trust_auto_granted_at = Column(TIMESTAMP(timezone=True), nullable=True)
     is_system_publisher = Column(Boolean, nullable=False, default=False)
     is_suspended = Column(Boolean, nullable=False, default=False)
     suspension_reason = Column(Text, nullable=True)

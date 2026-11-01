@@ -137,20 +137,65 @@ async def send_daily_admin_digest():
                 )
             ).scalar() or 0
 
+            # Versions waiting in quarantine for more than a day, oldest first:
+            # a count alone let a new publisher's skill wait 16 days unseen.
+            waiting_rows = (
+                await session.execute(
+                    select(
+                        Package.slug,
+                        PackageVersion.version_number,
+                        PackageVersion.quarantine_reason,
+                        PackageVersion.quarantined_at,
+                    )
+                    .join(Package, Package.id == PackageVersion.package_id)
+                    .where(
+                        PackageVersion.quarantine_status == "quarantined",
+                        PackageVersion.quarantined_at <= yesterday,
+                    )
+                    .order_by(PackageVersion.quarantined_at.asc())
+                )
+            ).all()
+
+        waiting = [
+            {
+                "slug": r.slug,
+                "version": r.version_number,
+                "reason": r.quarantine_reason or "-",
+                "days": max(1, (now - r.quarantined_at).days),
+            }
+            for r in waiting_rows
+        ]
         stats = {
             "new_users": new_users,
             "new_packages": new_packages,
             "open_reports": open_reports,
             "quarantined": quarantined,
             "downloads_24h": downloads_24h,
+            "waiting": waiting,
         }
 
         # Only send if there's something to report
         if new_users or new_packages or open_reports or quarantined:
             admin_emails = await get_admin_emails()
+            delivered = 0
             for email in admin_emails:
-                await send_admin_daily_digest(email, stats)
-            logger.info(f"Daily admin digest sent to {len(admin_emails)} admin(s)")
+                if await send_admin_daily_digest(email, stats):
+                    delivered += 1
+            if delivered == len(admin_emails) and admin_emails:
+                logger.info(
+                    "Daily admin digest delivered to %d admin(s); %d version(s) waiting > 24h",
+                    delivered,
+                    len(waiting),
+                )
+            else:
+                # The old log said "sent" whatever send_email returned.
+                logger.error(
+                    "Daily admin digest NOT delivered to %d of %d admin(s); "
+                    "%d version(s) waiting > 24h go unnoticed",
+                    len(admin_emails) - delivered,
+                    len(admin_emails),
+                    len(waiting),
+                )
         else:
             logger.debug("Daily admin digest: nothing to report, skipping")
 

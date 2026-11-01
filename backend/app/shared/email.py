@@ -789,6 +789,32 @@ async def send_weekly_publisher_digest(
 
 
 # 26. Daily admin digest
+_WAITING_SHOWN = 20
+
+
+def _waiting_section(waiting: list[dict]) -> str:
+    """Versions waiting in quarantine for more than a day, oldest first.
+    Slugs and reasons come from publishers, so every value is escaped."""
+    if not waiting:
+        return ""
+    rows = "".join(
+        f'<tr><td style="color:#fff;">{_esc(w["slug"])}@{_esc(w["version"])}</td>'
+        f"<td>{_esc(str(w['reason'])[:120])}</td>"
+        f'<td style="text-align:right; color:#fff; font-weight:600;">{int(w["days"])}d</td></tr>'
+        for w in waiting[:_WAITING_SHOWN]
+    )
+    more = (
+        f'<p style="font-size:13px; color:#a3a3a3;">and {len(waiting) - _WAITING_SHOWN} more</p>'
+        if len(waiting) > _WAITING_SHOWN
+        else ""
+    )
+    return f"""
+      <h2 style="margin-top:24px;">Waiting in review for more than a day: {len(waiting)}</h2>
+      <table style="width:100%; font-size:13px; color:#a3a3a3;">{rows}</table>
+      {more}
+    """
+
+
 async def send_admin_daily_digest(to: str, stats: dict) -> bool:
     if not await check_email_pref(to, "admin_daily_digest"):
         return True
@@ -801,6 +827,7 @@ async def send_admin_daily_digest(to: str, stats: dict) -> bool:
         <tr><td>Quarantined versions</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get("quarantined", 0)}</td></tr>
         <tr><td>Total downloads (24h)</td><td style="text-align:right; color:#fff; font-weight:600;">{stats.get("downloads_24h", 0):,}</td></tr>
       </table>
+      {_waiting_section(stats.get("waiting") or [])}
       <p style="text-align:center; margin: 24px 0;">
         <a href="{settings.FRONTEND_URL}/admin" class="btn">Open Admin Panel</a>
       </p>

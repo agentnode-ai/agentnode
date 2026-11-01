@@ -329,6 +329,8 @@ async def set_trust_level(
     pub = await _get_publisher(session, slug)
     old_level = pub.trust_level
     pub.trust_level = body.trust_level
+    # An admin decision is final: the automation never withdraws it.
+    pub.trust_auto_granted_at = None
     await _audit(
         session,
         request,
