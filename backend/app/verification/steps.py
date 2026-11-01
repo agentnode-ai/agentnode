@@ -292,6 +292,32 @@ def step_skill_check(
     return ok, "\n".join(lines)
 
 
+def collect_skill_text_files(sandbox: VerificationSandbox) -> dict[str, str]:
+    """Every UTF-8 text file of the skill, keyed by its path inside the skill."""
+    from app.trust.skill_scan import TEXT_EXTENSIONS
+
+    skill_root = None
+    for root, _dirs, files in os.walk(sandbox.work_dir):
+        if "agentnode.yaml" in files:
+            skill_root = root
+            break
+    if skill_root is None:
+        return {}
+    texts: dict[str, str] = {}
+    for root, _dirs, files in os.walk(skill_root):
+        for name in files:
+            if not name.lower().endswith(TEXT_EXTENSIONS):
+                continue
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, skill_root).replace(os.sep, "/")
+            try:
+                with open(full, "rb") as fh:
+                    texts[rel] = fh.read().decode("utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+    return texts
+
+
 def step_import(sandbox: VerificationSandbox, tools: list[dict]) -> tuple[bool, str]:
     """Step 2: Verify all declared tool entrypoints are importable and callable.
 

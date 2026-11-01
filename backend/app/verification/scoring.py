@@ -126,8 +126,12 @@ def compute_score_result(vr) -> ScoreResult:
 
     # Import (15 pts)
     if prompt_only and vr.import_status == "passed":
-        breakdown["import"] = StepScore(15, 15, "No code to import (prompt-only)")
+        breakdown["import"] = StepScore(15, 15, "Skill content check passed")
         score += 15
+    elif prompt_only and vr.import_status == "failed":
+        breakdown["import"] = StepScore(
+            0, 15, "Skill content check found high-risk text"
+        )
     elif vr.import_status == "passed":
         breakdown["import"] = StepScore(15, 15, "All tools imported successfully")
         score += 15
@@ -485,9 +489,16 @@ def _build_explanation(score: int, tier: str, vr) -> str:
     parts = []
 
     if getattr(vr, "verification_mode", None) == "prompt_only":
-        if vr.install_status == "passed":
-            return "Prompt-only skill: SKILL.md and templates are present and readable; it runs no code."
-        return "Prompt-only skill: SKILL.md or a declared template is missing or unreadable."
+        if vr.install_status != "passed":
+            return "Prompt-only skill: SKILL.md or a declared template is missing or unreadable."
+        if vr.import_status != "passed":
+            return "Prompt-only skill: the content check found high-risk text; see the verification log."
+        if vr.warnings_count:
+            return (
+                "Prompt-only skill: files present and readable; the content check flagged "
+                "text for a human review. It runs no code."
+            )
+        return "Prompt-only skill: files present and readable, content check passed. It runs no code."
 
     if vr.install_status == "passed" and vr.import_status == "passed":
         parts.append("Package installs and imports correctly")
