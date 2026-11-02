@@ -191,6 +191,125 @@ export default function VerificationMainPanel({
     );
   }
 
+  const ownerControls = isOwner && !isPending && (
+    <div className="mt-3 border-t border-border pt-3">
+      {reverifyError && (
+        <p className="mb-2 text-xs text-red-400">{reverifyError}</p>
+      )}
+      {reverifyMessage && (
+        <p className="mb-2 text-xs text-green-400">{reverifyMessage}</p>
+      )}
+      <button
+        onClick={handleReverify}
+        disabled={reverifyLoading}
+        className="rounded border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-background transition-colors disabled:opacity-50"
+      >
+        {reverifyLoading ? "Requesting..." : "Request Re-Verification"}
+      </button>
+    </div>
+  );
+
+  // A prompt-only skill runs no code, so the code score (smoke, contract,
+  // determinism, Python version) says nothing about it. Show what is checked.
+  if (verification.verification_mode === "prompt_only") {
+    const filesStep = verification.steps.find((s) => s.name === "install");
+    const contentStep = verification.steps.find((s) => s.name === "import");
+    const filesOk = filesStep?.status === "passed";
+    const contentOk = contentStep?.status === "passed";
+    const skillBreakdown = verification.score_breakdown;
+    const skillExplanation =
+      skillBreakdown && isNewFormat(skillBreakdown) ? skillBreakdown.explanation : null;
+    const needsReview = !isFailed && !!skillExplanation && skillExplanation.includes("human review");
+    const checks: { label: string; detail: string; state: "ok" | "fail" | "review" | "skip" }[] = [
+      {
+        label: "Files",
+        detail: filesOk
+          ? "SKILL.md and every declared template are present and readable"
+          : "SKILL.md or a declared template is missing or unreadable",
+        state: filesOk ? "ok" : "fail",
+      },
+      {
+        label: "Content check",
+        detail: !filesOk
+          ? "Not run"
+          : !contentOk
+            ? "High-risk text found"
+            : needsReview
+              ? "Flagged for a human review"
+              : "No hidden characters, secrets or harmful instructions found",
+        state: !filesOk ? "skip" : !contentOk ? "fail" : needsReview ? "review" : "ok",
+      },
+      {
+        label: "Code",
+        detail: "None — a skill is instructions only; nothing is installed or executed",
+        state: "ok",
+      },
+    ];
+    const skillBorder = isFailed
+      ? "border-red-500/20"
+      : needsReview
+        ? "border-yellow-500/20"
+        : "border-green-500/20";
+    return (
+      <section className={`rounded-xl border ${skillBorder} bg-card p-4 sm:p-6`}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-foreground">Skill check</h2>
+          <span
+            className={`text-sm font-medium ${
+              isFailed ? "text-red-400" : needsReview ? "text-yellow-400" : "text-green-400"
+            }`}
+          >
+            {isFailed ? "✖ Failed" : needsReview ? "○ In review" : "✔ Checked"}
+          </span>
+        </div>
+        <ul className="space-y-2">
+          {checks.map((c) => (
+            <li key={c.label} className="flex items-start gap-2 text-xs">
+              <span
+                className={
+                  c.state === "ok"
+                    ? "text-green-400"
+                    : c.state === "fail"
+                      ? "text-red-400"
+                      : c.state === "review"
+                        ? "text-yellow-400"
+                        : "text-zinc-500"
+                }
+              >
+                {c.state === "ok" ? "✔" : c.state === "fail" ? "✖" : c.state === "review" ? "○" : "—"}
+              </span>
+              <span>
+                <span className="font-medium text-foreground">{c.label}</span>
+                <span className="text-muted"> — {c.detail}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+        {isFailed && verification.error_summary && (
+          <div className="rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 mt-3">
+            <p className="text-xs font-medium text-red-300">
+              Reason: {verification.error_summary}
+            </p>
+            {isOwner && (
+              <p className="mt-1 text-[11px] text-zinc-500">
+                Publish a new version with the text fixed to resolve this.
+              </p>
+            )}
+          </div>
+        )}
+        <p className="mt-3 text-[11px] text-zinc-500">
+          Links in a skill point to content outside AgentNode, which is not part of this check.
+        </p>
+        {verification.last_verified_at && (
+          <p className="mt-2 text-[11px] text-zinc-500">
+            Last checked {timeAgoShort(verification.last_verified_at)}
+          </p>
+        )}
+        {ownerControls}
+      </section>
+    );
+  }
+
   const borderColor = isVerified
     ? "border-green-500/20"
     : isFailed
@@ -417,23 +536,7 @@ export default function VerificationMainPanel({
       )}
 
       {/* Owner re-verify button */}
-      {isOwner && !isPending && (
-        <div className="mt-3 border-t border-border pt-3">
-          {reverifyError && (
-            <p className="mb-2 text-xs text-red-400">{reverifyError}</p>
-          )}
-          {reverifyMessage && (
-            <p className="mb-2 text-xs text-green-400">{reverifyMessage}</p>
-          )}
-          <button
-            onClick={handleReverify}
-            disabled={reverifyLoading}
-            className="rounded border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-background transition-colors disabled:opacity-50"
-          >
-            {reverifyLoading ? "Requesting..." : "Request Re-Verification"}
-          </button>
-        </div>
-      )}
+      {ownerControls}
     </section>
   );
 }

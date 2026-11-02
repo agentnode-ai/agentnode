@@ -630,15 +630,23 @@ result = runtime.run(
                   <td className="py-3 pr-6">
                     <span className="font-medium text-zinc-400">unverified</span>
                   </td>
-                  <td className="py-3 pr-4 text-center">&#x2718; manual</td>
-                  <td className="py-3 pr-4 text-center">&#x2718; manual</td>
-                  <td className="py-3 text-center">&#x2718; manual</td>
+                  <td className="py-3 pr-4 text-center">&#x2718; blocked</td>
+                  <td className="py-3 pr-4 text-center">&#x2718; blocked</td>
+                  <td className="py-3 text-center">&#x2718; blocked</td>
                 </tr>
               </tbody>
             </table>
           </div>
 
-          <p className="mt-8 text-center text-sm text-muted">
+          <p className="mx-auto mt-8 max-w-2xl text-center text-sm text-muted">
+            <span className="text-foreground font-medium">How you get verified:</span>{" "}
+            confirm your account email and publish a skill. Every skill&apos;s text is checked
+            automatically on upload; when the check is clean, the skill goes live and your
+            publisher account becomes <span className="text-primary">verified</span> &mdash; no
+            GitHub account, website or manual approval needed. Text the check cannot clear waits
+            for a short human review. Trusted and curated are granted by AgentNode over time.
+          </p>
+          <p className="mt-4 text-center text-sm text-muted">
             <span className="text-foreground font-medium">Publish &rarr; get verified &rarr; agents discover and install your skill.</span>{" "}
             No marketing needed — agents find you by capability.
           </p>
