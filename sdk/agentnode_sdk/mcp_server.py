@@ -8,15 +8,33 @@ from __future__ import annotations
 import re
 
 import mcp.types as types
-from mcp.server.fastmcp import FastMCP
-from mcp.shared.exceptions import McpError
 
 from agentnode_sdk.installer import read_lockfile
 from agentnode_sdk.runtime import _resolve_under, _ASSET_MIME
 
-_PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
+# mcp 1.x and 2.x differ where this module touches them: the server class (FastMCP in
+# 1.x, removed in 2.x) and the error type (McpError(ErrorData) vs MCPError(code, message)).
+# Everything below the binding -- prompt/resource building -- is the same for both.
+try:
+    from mcp.server.fastmcp import FastMCP
+except ModuleNotFoundError:  # mcp 2.x
+    FastMCP = None
 
-mcp_app = FastMCP("agentnode")
+MCP_V1 = FastMCP is not None
+
+if MCP_V1:
+    from mcp.shared.exceptions import McpError
+else:
+    from mcp.shared.exceptions import MCPError as McpError
+
+
+def _mcp_error(code: int, message: str) -> Exception:
+    if MCP_V1:
+        return McpError(types.ErrorData(code=code, message=message))
+    return McpError(code, message)
+
+
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 
 
 def _build_prompt_list() -> list[types.Prompt]:
@@ -79,40 +97,28 @@ def _build_prompt_list() -> list[types.Prompt]:
 def _render_prompt(namespaced_name: str, arguments: dict[str, str] | None) -> types.GetPromptResult:
     """Render a skill prompt by namespaced name."""
     if "/" not in namespaced_name:
-        raise McpError(
-            types.ErrorData(code=-32602, message=f"Invalid prompt name: {namespaced_name}. Expected format: slug/prompt-name")
-        )
+        raise _mcp_error(-32602, f"Invalid prompt name: {namespaced_name}. Expected format: slug/prompt-name")
 
     slug, prompt_name = namespaced_name.split("/", 1)
     if not slug or not prompt_name:
-        raise McpError(
-            types.ErrorData(code=-32602, message=f"Invalid prompt name: {namespaced_name}. Expected format: slug/prompt-name")
-        )
+        raise _mcp_error(-32602, f"Invalid prompt name: {namespaced_name}. Expected format: slug/prompt-name")
 
     lockfile = read_lockfile()
     pkg = lockfile.get("packages", {}).get(slug)
     if not pkg:
-        raise McpError(
-            types.ErrorData(code=-32602, message=f"Skill '{slug}' is not installed")
-        )
+        raise _mcp_error(-32602, f"Skill '{slug}' is not installed")
     if pkg.get("package_type") != "skill":
-        raise McpError(
-            types.ErrorData(code=-32602, message=f"Package '{slug}' is not a skill")
-        )
+        raise _mcp_error(-32602, f"Package '{slug}' is not a skill")
 
     from agentnode_sdk.skill import load_skill
     try:
         ctx = load_skill(slug)
     except Exception as exc:
-        raise McpError(
-            types.ErrorData(code=-32603, message=f"Failed to load skill '{slug}': {exc}")
-        )
+        raise _mcp_error(-32603, f"Failed to load skill '{slug}': {exc}")
 
     if prompt_name not in ctx.prompts:
         available = ", ".join(ctx.prompts)
-        raise McpError(
-            types.ErrorData(code=-32602, message=f"Prompt '{prompt_name}' not found in '{slug}'. Available: {available}")
-        )
+        raise _mcp_error(-32602, f"Prompt '{prompt_name}' not found in '{slug}'. Available: {available}")
 
     text = ctx.render_prompt(prompt_name, **(arguments or {}))
 
@@ -159,29 +165,64 @@ def _read_resource(uri: str) -> str:
     rt._minimum_trust_level = "verified"
     content = rt.read_resource(str(uri))
     if content is None:
-        raise McpError(
-            types.ErrorData(code=-32602, message=f"Resource not found: {uri}")
-        )
+        raise _mcp_error(-32602, f"Resource not found: {uri}")
     return content
 
 
-# Register handlers on the low-level server
+# Bind the handlers to the installed mcp's server.
 
-@mcp_app._mcp_server.list_prompts()
-async def handle_list_prompts() -> list[types.Prompt]:
-    return _build_prompt_list()
+if MCP_V1:
+    mcp_app = FastMCP("agentnode")
+
+    @mcp_app._mcp_server.list_prompts()
+    async def handle_list_prompts() -> list[types.Prompt]:
+        return _build_prompt_list()
+
+    @mcp_app._mcp_server.get_prompt()
+    async def handle_get_prompt(name: str, arguments: dict[str, str] | None) -> types.GetPromptResult:
+        return _render_prompt(name, arguments)
+
+    @mcp_app._mcp_server.list_resources()
+    async def handle_list_resources() -> list[types.Resource]:
+        return _build_resource_list()
+
+    @mcp_app._mcp_server.read_resource()
+    async def handle_read_resource(uri) -> str:
+        return _read_resource(str(uri))
+
+else:
+    from mcp.server.lowlevel import Server
+
+    async def _on_list_prompts(ctx, params) -> types.ListPromptsResult:
+        return types.ListPromptsResult(prompts=_build_prompt_list())
+
+    async def _on_get_prompt(ctx, params) -> types.GetPromptResult:
+        return _render_prompt(params.name, params.arguments)
+
+    async def _on_list_resources(ctx, params) -> types.ListResourcesResult:
+        return types.ListResourcesResult(resources=_build_resource_list())
+
+    async def _on_read_resource(ctx, params) -> types.ReadResourceResult:
+        uri = str(params.uri)
+        return types.ReadResourceResult(contents=[
+            types.TextResourceContents(uri=uri, mimeType="text/plain", text=_read_resource(uri)),
+        ])
+
+    mcp_app = Server(
+        "agentnode",
+        on_list_prompts=_on_list_prompts,
+        on_get_prompt=_on_get_prompt,
+        on_list_resources=_on_list_resources,
+        on_read_resource=_on_read_resource,
+    )
 
 
-@mcp_app._mcp_server.get_prompt()
-async def handle_get_prompt(name: str, arguments: dict[str, str] | None) -> types.GetPromptResult:
-    return _render_prompt(name, arguments)
+async def run_stdio() -> None:
+    """Serve the installed skills over stdio with whichever mcp major version is installed."""
+    if MCP_V1:
+        await mcp_app.run_stdio_async()
+        return
+    from mcp.server.stdio import stdio_server
 
-
-@mcp_app._mcp_server.list_resources()
-async def handle_list_resources() -> list[types.Resource]:
-    return _build_resource_list()
-
-
-@mcp_app._mcp_server.read_resource()
-async def handle_read_resource(uri) -> str:
-    return _read_resource(str(uri))
+    async with stdio_server() as (read_stream, write_stream):
+        await mcp_app.run(read_stream, write_stream, mcp_app.create_initialization_options())
