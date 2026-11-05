@@ -194,9 +194,13 @@ def test_the_marker_would_catch_an_import(tmp_path):
     (pkg / "bypass_marker_pack" / "__init__.py").write_text("")
     (pkg / "bypass_marker_pack" / "tool.py").write_text(MARKER_MODULE)
     marker = tmp_path / "m.txt"
+    import os
+
+    # The full environment: a stripped one (no SystemDrive) makes Windows write its shell
+    # caches under a literal "%SystemDrive%" directory in the working directory.
     subprocess.run([sys.executable, "-c", "import bypass_marker_pack.tool"], check=True,
-                   env={"PYTHONPATH": str(pkg), "SMOKE_MARKER": str(marker),
-                        "SYSTEMROOT": __import__("os").environ.get("SYSTEMROOT", "")})
+                   cwd=str(tmp_path),
+                   env=dict(os.environ, PYTHONPATH=str(pkg), SMOKE_MARKER=str(marker)))
     assert marker.read_text() == "imported"
 
 
