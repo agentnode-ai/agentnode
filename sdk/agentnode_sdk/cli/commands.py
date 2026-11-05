@@ -910,6 +910,12 @@ def cmd_run(
             print(json.dumps(result.to_dict(), default=str))
             return 0 if result.success else 1
 
+        if not result.success:
+            # A run that did not happen must not look like one that did (task #9: on Windows
+            # with no container runtime this printed "None" and exited 0).
+            _print_run_failure(result)
+            return 1
+
         output = result.result if hasattr(result, "result") else result
         if raw:
             print(json.dumps(output, default=str))
@@ -925,6 +931,24 @@ def cmd_run(
     except Exception as e:
         print(f"Run failed: {e}", file=sys.stderr)
         return 1
+
+
+def _print_run_failure(result) -> None:
+    """Why the run failed, on stderr. A missing sandbox gets the structured refusal that
+    `agentnode sandbox doctor` shows -- the same classifier, so the steps match this platform."""
+    print(f"Run failed: {result.error or 'the tool did not run'}", file=sys.stderr)
+    if result.mode_used != "sandbox_unavailable":
+        return
+    try:
+        from agentnode_sdk.sandbox import policy
+        from agentnode_sdk.sandbox.refusal import classify
+
+        refusal = classify(policy.get_default_backend().check_available())
+    except Exception:  # noqa: BLE001 - the one-line reason above already stands
+        return
+    if refusal is not None:
+        print("", file=sys.stderr)
+        print(refusal.render(), file=sys.stderr)
 
 
 def _print_guard_block(slug: str, tool_name: str | None, result) -> None:

@@ -72,7 +72,8 @@ client = AgentNodeClient()
 # Find and install the best PDF tool
 client.resolve_and_install(["pdf_extraction"])
 
-# Run with automatic subprocess isolation (all trust levels)
+# Run it. Only AgentNode-curated packs run directly on this machine; every other pack runs
+# in a container sandbox (Docker or Podman) or is refused -- see "Sandbox and platforms".
 result = run_tool("pdf-reader-pack", file_path="report.pdf")
 print(result.result["pages"])
 ```
@@ -159,6 +160,25 @@ pip install agentnode-langchain
 # (agentnode-mcp is deprecated: use `agentnode serve` from agentnode-sdk)
 ```
 
+### Sandbox and platforms
+
+Packs that are not AgentNode-curated run only inside a container sandbox, so they need
+**Docker or Podman**. Without one, such a pack is refused with an explanation and nothing runs on
+your machine. Check what this machine has, and what to do about it on your platform:
+
+```bash
+agentnode sandbox doctor
+```
+
+| Platform | Status |
+|----------|--------|
+| Linux | tested end to end in CI |
+| Windows (Docker Desktop, or inside WSL2) | same code path, not yet tested on Windows (the refusal without a runtime is) |
+| macOS (Docker Desktop) | same code path, not yet tested on macOS |
+
+Setup per platform: [docs/sandbox/setup-local.md](docs/sandbox/setup-local.md) · what is tested
+and how: [docs/sandbox/availability.md](docs/sandbox/availability.md).
+
 ## MCP Integration
 
 Use AgentNode packs as tools in **Claude Code**, **Cursor**, and any MCP-compatible client:
@@ -196,7 +216,7 @@ Automate publishing from CI/CD:
 | **Bandit scanning** | Static analysis for security vulnerabilities |
 | **Typosquatting detection** | Prevents name confusion attacks |
 | **Permission manifests** | See network, filesystem, code execution access before install |
-| **Subprocess isolation** | Unverified tools run in isolated child processes with env filtering |
+| **Container sandbox** | Packs that are not AgentNode-curated run in a sealed container (Docker or Podman) or not at all -- there is no host fallback |
 | **Auto-quarantine** | Failed packages never reach the registry |
 
 ## Architecture
