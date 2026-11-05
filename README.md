@@ -156,7 +156,7 @@ pip install agentnode-sdk
 
 # Framework adapters
 pip install agentnode-langchain
-pip install agentnode-mcp
+# (agentnode-mcp is deprecated: use `agentnode serve` from agentnode-sdk)
 ```
 
 ## MCP Integration
@@ -164,12 +164,17 @@ pip install agentnode-mcp
 Use AgentNode packs as tools in **Claude Code**, **Cursor**, and any MCP-compatible client:
 
 ```bash
-# Expose a pack as MCP tools
-agentnode-mcp --pack pdf-reader-pack
+# Installed skills (prompts/resources), installed pack tools and the platform tools
+# (agentnode_search, agentnode_resolve, agentnode_explain, agentnode_capabilities)
+agentnode serve
 
-# Expose the full platform (search, resolve, explain)
-agentnode-mcp-platform --api-url https://api.agentnode.net
+# Only some packs as tools
+agentnode serve --packs pdf-reader-pack
 ```
+
+Every pack tool runs through the same policy, guard and sandbox checks as `agentnode run`.
+The older `agentnode-mcp` / `agentnode-mcp-platform` adapter is deprecated; see
+[adapter-mcp/README.md](adapter-mcp/README.md) for the migration.
 
 ## GitHub Action
 

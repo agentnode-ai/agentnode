@@ -169,10 +169,46 @@ def _read_resource(uri: str) -> str:
     return content
 
 
+# Tools: installed pack tools (run through runner.run_tool) and the platform tools.
+# `agentnode serve --packs a,b` limits the pack tools, like `agentnode-mcp --packs`.
+
+_PACKS: set[str] | None = None
+
+
+def _tool_list() -> list[types.Tool]:
+    from agentnode_sdk import mcp_tools
+
+    return [types.Tool(name=t["name"], description=t["description"], inputSchema=t["inputSchema"])
+            for t in mcp_tools.list_tools(_PACKS)]
+
+
+async def _run_tool(name: str, arguments: dict | None) -> types.CallToolResult:
+    import asyncio
+
+    from agentnode_sdk import mcp_tools
+
+    try:
+        out = await asyncio.to_thread(mcp_tools.call_tool, name, arguments, _PACKS)
+    except mcp_tools.UnknownTool:
+        raise _mcp_error(-32602, f"Unknown tool: {name}")
+    return types.CallToolResult(content=[types.TextContent(type="text", text=out.text)],
+                                isError=out.is_error)
+
+
 # Bind the handlers to the installed mcp's server.
 
 if MCP_V1:
     mcp_app = FastMCP("agentnode")
+
+    @mcp_app._mcp_server.list_tools()
+    async def handle_list_tools() -> list[types.Tool]:
+        return _tool_list()
+
+    # No schema validation here: arguments are coerced like adapter-mcp did, and run_tool
+    # validates the tool input itself.
+    @mcp_app._mcp_server.call_tool(validate_input=False)
+    async def handle_call_tool(name: str, arguments: dict) -> types.CallToolResult:
+        return await _run_tool(name, arguments)
 
     @mcp_app._mcp_server.list_prompts()
     async def handle_list_prompts() -> list[types.Prompt]:
@@ -208,8 +244,16 @@ else:
             types.TextResourceContents(uri=uri, mimeType="text/plain", text=_read_resource(uri)),
         ])
 
+    async def _on_list_tools(ctx, params) -> types.ListToolsResult:
+        return types.ListToolsResult(tools=_tool_list())
+
+    async def _on_call_tool(ctx, params) -> types.CallToolResult:
+        return await _run_tool(params.name, params.arguments)
+
     mcp_app = Server(
         "agentnode",
+        on_list_tools=_on_list_tools,
+        on_call_tool=_on_call_tool,
         on_list_prompts=_on_list_prompts,
         on_get_prompt=_on_get_prompt,
         on_list_resources=_on_list_resources,
@@ -218,7 +262,11 @@ else:
 
 
 async def run_stdio() -> None:
-    """Serve the installed skills over stdio with whichever mcp major version is installed."""
+    """Serve installed skills (prompts/resources) and tools over stdio with whichever mcp major
+    version is installed. stdin is the protocol channel: nothing may prompt on it."""
+    import os
+
+    os.environ["AGENTNODE_NON_INTERACTIVE"] = "1"
     if MCP_V1:
         await mcp_app.run_stdio_async()
         return

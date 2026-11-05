@@ -237,7 +237,9 @@ def main(argv: list[str] | None = None) -> int:
     lock_verify_p.add_argument("--online", action="store_true", help="Verify publisher key status against the registry")
 
     # serve
-    sub.add_parser("serve", help="Start MCP server (stdio)")
+    serve_p = sub.add_parser("serve", help="Start MCP server (stdio)")
+    serve_p.add_argument("--packs", default="",
+                         help="Comma-separated pack slugs to expose as tools (default: all installed)")
 
     # Sandbox runtime image — explicit pull only (no auto-pull). Full guided
     # setup/repair UX is Sprint B.
@@ -718,7 +720,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if args.command == "serve":
             from agentnode_sdk.cli.serve import cmd_serve
-            return cmd_serve()
+            return cmd_serve(packs=getattr(args, "packs", ""))
         parser.print_help()
         return 1
     except KeyboardInterrupt:

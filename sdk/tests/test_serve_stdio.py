@@ -116,3 +116,53 @@ def test_serve_lists_and_renders_skills_over_stdio(env):
         assert "Sample content." in read["result"]["contents"][0]["text"], read
     finally:
         s.close()
+
+
+def _content_text(reply) -> str:
+    res = reply.get("result") or {}
+    return " ".join(c.get("text", "") for c in res.get("content") or [] if isinstance(c, dict))
+
+
+def test_serve_lists_and_runs_pack_tools_over_stdio(env, tmp_path):
+    """Pack tools through `agentnode serve` (task #5c): a curated MCP pack runs and
+    answers; an unverified Python pack with no sandbox available is refused as an
+    MCP error; an unknown tool fails. The server process gets no container runtime."""
+    from agentnode_sdk import installer
+    from agentnode_sdk.lock_integrity import seal_entry
+
+    add_server = SDK_ROOT / "tests" / "capability" / "fixtures" / "deterministic_add_server.py"
+    lock = Path(env["AGENTNODE_LOCKFILE"])
+    installer.update_lockfile("smoke-add-mcp", seal_entry({
+        "version": "1.0.0", "package_type": "mcp", "runtime": "mcp", "trust_level": "curated",
+        "mcp_command": [sys.executable, str(add_server)], "artifact_hash": "",
+        "permissions": {}, "tools": [{"name": "add", "action_type": "compute"}],
+    }), path=lock)
+    installer.update_lockfile("unisolated-pack", seal_entry({
+        "version": "1.0.0", "package_type": "toolpack", "runtime": "python",
+        "trust_level": "unverified", "entrypoint": "unisolated_pack.tool",
+        "artifact_hash": "", "permissions": {},
+        "tools": [{"name": "run", "entrypoint": "unisolated_pack.tool:run"}],
+    }), path=lock)
+    run_env = dict(env, PATH=str(Path(sys.executable).parent))   # no docker/podman reachable
+    s = _Serve(run_env)
+    try:
+        s.send("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
+                              "clientInfo": {"name": "smoke-client", "version": "1"}})
+        s.send("notifications/initialized", notify=True)
+
+        names = [t["name"] for t in s.send("tools/list", {})["result"]["tools"]]
+        for n in ("smoke-add-mcp", "unisolated-pack", "agentnode_search", "agentnode_resolve",
+                  "agentnode_explain", "agentnode_capabilities"):
+            assert n in names, (n, names)
+
+        ok = s.send("tools/call", {"name": "smoke-add-mcp", "arguments": {"a": 2, "b": 40}})
+        assert ok.get("result", {}).get("isError") is False, ok
+        assert "42" in _content_text(ok), ok
+
+        refused = s.send("tools/call", {"name": "unisolated-pack", "arguments": {}})
+        assert "error" in refused or refused["result"].get("isError") is True, refused
+
+        unknown = s.send("tools/call", {"name": "no-such-tool", "arguments": {}})
+        assert "error" in unknown or unknown["result"].get("isError") is True, unknown
+    finally:
+        s.close()
