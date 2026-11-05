@@ -22,6 +22,7 @@ class CapabilityInfo(BaseModel):
     capability_id: str
     capability_type: str
     entrypoint: str | None = None
+    input_schema: dict | None = None
 
 
 class PermissionsInfo(BaseModel):
@@ -39,8 +40,13 @@ class McpServerInfo(BaseModel):
     command: list[str]
     transport: str = "stdio"
     npm_package: str | None = None
+    pypi_package: str | None = None
     source_repo: str | None = None
     env_keys: list[str] = []
+    # Optional pre-install descriptor {manager, package, version}; absent = metadata-only.
+    install: dict | None = None
+    # Optional publisher-declared egress allowlist; absent = none sealed.
+    allowed_domains: list[str] | None = None
 
 
 class InstallMetadataResponse(BaseModel):

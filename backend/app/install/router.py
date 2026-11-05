@@ -110,6 +110,7 @@ async def get_install_metadata(
             capability_id=c.capability_id,
             capability_type=c.capability_type,
             entrypoint=c.entrypoint,
+            input_schema=c.input_schema if isinstance(c.input_schema, dict) else None,
         )
         for c in pv.capabilities
     ]
@@ -151,8 +152,11 @@ async def get_install_metadata(
                 command=mcp_raw.get("command", []),
                 transport=mcp_raw.get("transport", "stdio"),
                 npm_package=mcp_raw.get("npm_package"),
+                pypi_package=mcp_raw.get("pypi_package"),
                 source_repo=mcp_raw.get("source_repo"),
                 env_keys=mcp_raw.get("env_keys", []),
+                install=mcp_raw.get("install"),
+                allowed_domains=mcp_raw.get("allowed_domains"),
             )
 
     # Check if this is a community-seeded package

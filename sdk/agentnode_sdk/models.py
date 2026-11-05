@@ -110,6 +110,7 @@ class CapabilityInfo:
     capability_id: str
     capability_type: str
     entrypoint: str | None = None
+    input_schema: dict | None = None
 
 
 @dataclass

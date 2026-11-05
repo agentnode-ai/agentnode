@@ -635,6 +635,28 @@ def _validate_mcp_server(
         elif not all(_ENV_KEY_RE.match(k) for k in env_keys):
             errors.append("mcp_server.env_keys: each key must match ^[A-Z0-9_]{1,100}$")
 
+    pypi = mcp.get("pypi_package")
+    if pypi is not None and not isinstance(pypi, str):
+        errors.append("mcp_server.pypi_package must be a string")
+
+    # The SDK seals these at install (pre-install volume, egress allowlist). Same rules as the
+    # server-authoritative mirror in app.mcp.mcp_policy, so what is published is installable.
+    from app.mcp.mcp_policy import (
+        canonicalize_allowed_domains,
+        validate_install_descriptor,
+    )
+
+    if "install" in mcp and mcp["install"] is not None:
+        try:
+            validate_install_descriptor(mcp["install"])
+        except ValueError as e:
+            errors.append(f"mcp_server.{e}")
+    if "allowed_domains" in mcp and mcp["allowed_domains"] is not None:
+        try:
+            canonicalize_allowed_domains(mcp["allowed_domains"])
+        except ValueError as e:
+            errors.append(f"mcp_server.allowed_domains invalid: {e}")
+
 
 def _validate_agent(agent: dict, errors: list[str], warnings: list[str]) -> None:
     """Validate the agent: section (required for package_type=agent)."""

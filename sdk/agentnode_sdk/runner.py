@@ -196,6 +196,13 @@ def run_tool(
                 success=False, error=str(e), mode_used="sandbox_unavailable"
             )
 
+    # An MCP run without a tool name runs the first tool the lockfile records (as run_mcp
+    # would). Resolve it HERE so policy and guard judge the tool that actually runs.
+    if not tool_name and entry.get("runtime") == "mcp":
+        _tools = entry.get("tools") or []
+        if _tools and isinstance(_tools[0], dict) and _tools[0].get("name"):
+            tool_name = _tools[0]["name"]
+
     # Pre-execution policy check
     decision = check_run(slug, tool_name, kwargs, entry, interactive=_resolve_interactive())
     audit_decision(
