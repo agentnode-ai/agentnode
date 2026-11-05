@@ -432,14 +432,28 @@ class AuthorizationServer:
             code_challenge=norm["code_challenge"], resource=norm["resource"],
             principal_id=principal_id, scopes=scopes, device_id=device_id,
             expires_at=self._clock() + self.code_ttl)
+        return self._back_to_client(norm, ("code", code))
+
+    def deny(self, params: dict[str, str]) -> tuple[int, list, bytes]:
+        """The person declined (RFC 6749 4.1.2.1): send the client back to its VALIDATED
+        redirect_uri with ``error=access_denied`` and its unchanged state, so a client waiting
+        on its callback learns of the refusal. Nothing is minted. A request that does not
+        validate is answered with its own error and never redirected."""
+        norm, err = self.validate(params)
+        if err is not None:
+            return err
+        return self._back_to_client(norm, ("error", "access_denied"))
+
+    @staticmethod
+    def _back_to_client(norm: dict, first: tuple[str, str]) -> tuple[int, list, bytes]:
         # Keep the registered redirect_uri's query BYTE-FOR-BYTE (urlsplit does not decode it) and
-        # append ONLY the form-encoded `code` and the UNCHANGED `state` (echoed only if the client
-        # sent one, including an empty one). We do NOT re-encode the existing query through
-        # parse_qsl()+urlencode(), which would canonicalize %20/+/%2B/%2F, drop empties, reorder
-        # and fold duplicate ordinary params. A state with &,=,+,%,#,space or Unicode is itself
-        # form-encoded here, so it round-trips exactly; exactly one server-generated code is added.
+        # append ONLY the form-encoded result (`code` or `error`) and the UNCHANGED `state` (echoed
+        # only if the client sent one, including an empty one). We do NOT re-encode the existing
+        # query through parse_qsl()+urlencode(), which would canonicalize %20/+/%2B/%2F, drop
+        # empties, reorder and fold duplicate ordinary params. A state with &,=,+,%,#,space or
+        # Unicode is itself form-encoded here, so it round-trips exactly.
         parts = urlsplit(norm["redirect_uri"])
-        added = [("code", code)]
+        added = [first]
         if "state" in norm:
             added.append(("state", norm["state"]))
         addition = urlencode(added)
