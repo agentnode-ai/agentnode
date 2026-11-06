@@ -207,3 +207,56 @@ def test_abort_rollback_evidence_and_cost_cap_are_there():
     assert len(plan["rollback"]) > 80
     assert plan["evidence_dir"].endswith("crosshost-r4")
     assert plan["cost_cap_eur_per_month"] == 20
+
+
+# ---- the one exception: the run of 2026-11-06 ----------------------------------------------------- #
+#
+# The Chef decided to rebuild both r16 machines AT ONCE for the run of 2026-11-06 (the frozen
+# evidence of earlier runs is on H: and a second console pass is to be avoided). That run must not
+# fail because of the order, and NO other run may use it: the standard order C1 -> V1 -> C2 -> V2
+# stays, and each machine is still validated on its own before anything is installed.
+
+EXCEPTION_RUN = "2026-11-06"
+STANDARD_ORDER = ["C1", "V1", "C2", "V2"]
+
+
+def _exception() -> dict:
+    found = _plan().get("exceptions")
+    assert isinstance(found, list) and len(found) == 1, "exactly one recorded exception"
+    return found[0]
+
+
+def test_the_run_of_2026_11_06_may_rebuild_both_machines_at_once_and_only_that_run():
+    e = _exception()
+    assert e["id"] == "E1"
+    assert e["run"] == EXCEPTION_RUN
+    assert e["decided_by"] == "chef"
+    assert e["covers"] == ["C1", "C2"], "the exception is about the two rebuilds and nothing else"
+    assert e["allows"] == "C1 and C2 at the same time"
+    why = e["why"].lower()
+    assert "h:" in why and "second console pass" in why
+
+
+def test_the_standard_order_stays_for_every_other_run():
+    e = _exception()
+    assert e["standard_order"] == STANDARD_ORDER
+    ids = [s["id"] for s in _plan()["steps"]]
+    assert [i for i in ids if i in STANDARD_ORDER] == STANDARD_ORDER
+
+
+def test_even_under_the_exception_each_machine_is_validated_on_its_own_before_any_install():
+    e = _exception()
+    assert e["still_required"] == ["V1", "V2"]
+    steps = _plan()["steps"]
+    first_install = min(i for i, s in enumerate(steps) if s["phase"] == "install")
+    for vid in ("V1", "V2"):
+        assert next(i for i, s in enumerate(steps) if s["id"] == vid) < first_install
+
+
+def test_the_order_abort_and_c2_name_the_exception_so_this_run_does_not_fail_on_it():
+    plan = _plan()
+    order_abort = [a for a in plan["abort_conditions"] if "before the worker is rebuilt" in a]
+    assert len(order_abort) == 1
+    assert "except the run of 2026-11-06 under exception E1" in order_abort[0]
+    c2 = next(s for s in plan["steps"] if s["id"] == "C2")
+    assert "only after V1 passed" in c2["what"] and "exception E1" in c2["what"]

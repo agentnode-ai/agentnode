@@ -59,6 +59,7 @@ deliberately not named here by address. Reaching any other machine is an abort c
                  "X7-G-EXHAUSTION-ON-THE-WORKER-LEAVES-THE-CONTROL-PLANE-HONEST", "X8-R16-TWO-REAL-MACHINES",
                  "X9-NO-RESULT-WAS-REPEATED-INTO-EXISTENCE", "X10-THE-RECORD-DOES-NOT-OVERCLAIM"]
   },
+  "exceptions": [{"id": "E1", "run": "2026-11-06", "decided_by": "chef", "covers": ["C1", "C2"], "allows": "C1 and C2 at the same time", "why": "the frozen evidence of the earlier runs is kept on H:, so nothing on the machines is needed, and a second console pass is to be avoided", "standard_order": ["C1", "V1", "C2", "V2"], "still_required": ["V1", "V2"]}],
   "history": [{"profile": "remote-worker-cross-host-r3", "sha256": "3aaee465933f2a777d8fed46b17ab4874970209b7d929de7a8d17b7e7bc02a10", "role": "historical frozen state, unchanged"}],
   "new_profile": {
     "name": "remote-worker-cross-host-r4",
@@ -71,7 +72,7 @@ deliberately not named here by address. Reaching any other machine is an abort c
   "steps": [
     {"id": "C1", "phase": "chef-rebuild", "who": "chef", "machine": "control", "what": "rebuild agentnode-control-r16 in place, image Rocky Linux 10; server type, private network and firewalls unchanged; report done"},
     {"id": "V1", "phase": "validate-machine", "who": "mitarbeiter", "machine": "control", "what": "control plane on its own: new SSH host key shown to and confirmed by the Chef (never accepted silently), hostname agentnode-control-r16, private address 10.0.0.4, nothing of AgentNode present; baseline transcript"},
-    {"id": "C2", "phase": "chef-rebuild", "who": "chef", "machine": "worker", "what": "rebuild agentnode-worker-r16 in place, image Rocky Linux 10; server type, private network and firewalls unchanged; report done -- only after V1 passed"},
+    {"id": "C2", "phase": "chef-rebuild", "who": "chef", "machine": "worker", "what": "rebuild agentnode-worker-r16 in place, image Rocky Linux 10; server type, private network and firewalls unchanged; report done -- only after V1 passed (standard order; the run of 2026-11-06 rebuilds both at once under exception E1)"},
     {"id": "V2", "phase": "validate-machine", "who": "mitarbeiter", "machine": "worker", "what": "worker on its own: new SSH host key confirmed by the Chef, hostname agentnode-worker-r16, private address 10.0.0.2, nothing of AgentNode and no podman left from earlier runs; baseline transcript"},
     {"id": "M4", "phase": "install", "who": "mitarbeiter", "machine": "control", "what": "install phase 1 on the control plane from its own artefact: new deployment, new identities, new pair key; enabled, not started"},
     {"id": "M5", "phase": "install", "who": "mitarbeiter", "machine": "worker", "what": "install on the worker from its own artefact, three passes with the enrolment handover; rootless podman as the worker account"},
@@ -107,7 +108,7 @@ deliberately not named here by address. Reaching any other machine is an abort c
     "a host key differs and the Chef has not confirmed the new one",
     "any address other than the two targets would be reached",
     "anything would create a new paid resource or exceed the cost cap",
-    "the single-machine validation of the control plane has not passed before the worker is rebuilt",
+    "the single-machine validation of the control plane has not passed before the worker is rebuilt -- except the run of 2026-11-06 under exception E1, where both are rebuilt at once and V1 and V2 still each pass on their own before any install",
     "r4 has not passed its freeze (P4), or its criteria differ from the r2 catalog's, when the first criterion step would start",
     "a step would need a credential that is not already provided for it"
   ],
@@ -120,6 +121,12 @@ deliberately not named here by address. Reaching any other machine is an abort c
 ## Chef steps -- at the server provider (C1, C2)
 
 One machine after the other: the control plane first, the worker only after V1 has passed.
+
+**Exception E1, for the run of 2026-11-06 only.** On the Chef's explicit decision both r16
+machines are rebuilt at the same time: the frozen evidence of the earlier runs is kept on H:, and a
+second console pass is to be avoided. Nothing else changes -- V1 and V2 still each validate their
+machine on its own (identity, role, host key confirmed by the Chef) before anything of AgentNode is
+installed. Every later run keeps the standard order C1 -> V1 -> C2 -> V2.
 
 1. Open the server in the provider console, then **Rebuild**.
 2. Image **Rocky Linux 10** (the machines ran Rocky Linux 10.2, kernel `6.12.0-211.*.el10_2`,
