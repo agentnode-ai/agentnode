@@ -43,11 +43,9 @@ quietly. The privilege questions have no such guard and have to be asked again.
 ## Not claimed anywhere
 
 This arrangement is not production-ready, not multi-tenant, and not escape-proof between the
-control plane and the worker. And relocating the worker to its own machine is not something the
-shipped code can do: `from_address` speaks unix sockets and refuses every other scheme in as many
-words. What exists is the seam — no product code names a host, an account or a path — so when a
-remote transport is written it is a configuration value that changes and not the product. The seam
-existing is not the move being possible, and the deployment says which one it is.
+control plane and the worker. Neither is the separate-worker-host arrangement described below: its
+two-machine measurement has never passed, so nothing on this page may be read as saying a second
+machine has removed any of the risks above.
 
 ## What is not on this list
 
@@ -59,9 +57,35 @@ is smaller than it says.
 
 ## Moving the worker to its own machine
 
-This topology is what it is until the worker is somewhere else, and that is **not** something
-this deployment can be configured into. The gateway reaches its worker over a unix socket, which
-cannot cross a machine, and the transport that would is not written: adding it is a change to the
-product, not to a deployment. What has been built is the seam beneath it -- no behaviour, no data
-and no record depends on where the other end is -- so the transport is the only thing to add.
-Until it exists, everything above stays true.
+This topology is what it is until the worker is somewhere else. Getting it there was a change to
+the product, not to this deployment, and that change has been written; it is a different
+arrangement with its own install, not a setting in this one.
+
+**What is implemented** (in the code, and tested on one host):
+
+* a declared topology, `separate-worker-host`, that permits exactly one address class -- a
+  remote address over mutual TLS (`remote-tcps`) -- and refuses a unix socket or an in-process
+  worker under it, so there is no fallback to this arrangement
+  ([`worker/topology.py`](../agentnode_sdk/worker/topology.py),
+  [`tests/test_the_worker_may_be_on_another_host.py`](../tests/test_the_worker_may_be_on_another_host.py));
+* the transport itself: `from_address` hands a `tcps://` address to `TlsWorker`, which speaks
+  mutual TLS, checks that the worker is the identity the gateway expects (an impostor is never
+  sent the job), can use one key per pair, and refuses rather than downgrades when the
+  certificate settings are missing ([`worker/remote.py`](../agentnode_sdk/worker/remote.py),
+  [`tests/test_mtls_transport.py`](../tests/test_mtls_transport.py),
+  [`tests/test_one_key_per_pair.py`](../tests/test_one_key_per_pair.py));
+* two roles that do not reach each other's start path, and one artefact per role with its own
+  install, upgrade, rollback and diagnose scripts
+  ([`tests/test_the_two_roles_are_separable.py`](../tests/test_the_two_roles_are_separable.py),
+  [`separate-worker-host/README.md`](separate-worker-host/README.md)).
+
+**What has not been shown.** The two-machine measurement has never passed: the procedure was run
+on two real hosts and every attempt ended in BLOCK or WARN, the last acceptance run on rebuilt
+machines blocking on five of its ten criteria. The separate-worker-host README says so and a test
+holds that sentence in place. Until a run passes and is independently reviewed, a worker on its own
+machine is a procedure, not a property -- the arrangement is still not production-ready and not
+multi-tenant, and the privilege model above is re-assessed on the worker host rather than carried
+across to it.
+
+**What stays true here.** On this topology the gateway reaches its worker over a unix socket on
+the same kernel, and everything above applies to it unchanged.
