@@ -4020,11 +4020,11 @@ class GatewayService:
                 bytes_out=len(record.stdout or "") + len(record.stderr or ""),
                 worker_topology=self.worker.topology,
                 # What it was admitted under, not what is configured now.
-                allowance_sha256=(record.admitted_under
-                                  or self.allowance_for(record.owner_account_id).digest()),
-                allowance_admitted_under=(
-                    record.admitted_under_values
-                    or self.allowance_for(record.owner_account_id).as_dict()))
+                allowance_sha256=record.admitted_under or self.allowance_for(
+                    record.owner_account_id).digest(),
+                allowance_admitted_under=(record.admitted_under_values
+                                          or self.allowance_for(
+                                              record.owner_account_id).as_dict()))
         except meter.AlreadyRecorded:
             # This run is already in the log. Reached when a stop closed it on the way out and its
             # own thread came back a moment later, which is a race both halves of are correct:
