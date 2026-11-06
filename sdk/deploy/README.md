@@ -54,11 +54,15 @@ sudo chmod 0640 /etc/agentnode/worker.key
 This is the only place anything names where the worker is. Nothing else in the product names a
 socket, a path, an account or a host.
 
-**It does not follow that the worker can be moved to another machine by editing this.** The
-address is handed to a transport that speaks unix sockets and refuses every other scheme, so a
-worker elsewhere needs a transport this build does not have, and writing one is a change to the
-product rather than to a deployment. What this arrangement establishes is that it would be the
-only thing to add.
+**It does not follow that the worker can be moved to another machine by editing this.** On this
+topology the address is a unix socket (or loopback mutual TLS, below) on the same kernel. A worker
+on its own machine is a different arrangement: moving it was a change to the product rather than
+to a deployment, and that change -- a network transport -- has been written: the
+`separate-worker-host` declaration permits only a remote address over mutual TLS, reached by
+`TlsWorker` (`worker/topology.py`,
+`worker/remote.py`), with its own install in [`separate-worker-host/`](separate-worker-host/README.md).
+Its two-machine measurement has never passed, so that arrangement is a procedure and not an
+established property, and the risks in [`RISKS.md`](RISKS.md) still apply.
 
 ```jsonc
 // /var/lib/agentnode/state/config.json

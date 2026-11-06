@@ -6,13 +6,14 @@ being bought yet; the alpha is built on one host as a closed development environ
 be true NOW is that no BEHAVIOUR of the product depends on the worker being here, so that the move
 is a transport away rather than a rewrite.
 
-Read that precisely, because a looser reading of it was wrong and a review caught it. This build
-speaks unix sockets and nothing else: `from_address` refuses every other scheme in as many words.
-So a worker on another machine is NOT something this build can be configured into -- it needs a
-transport that does not exist yet, and adding one is a change to the product, not to a
-deployment. What IS established is narrower and is the part that was expensive: the vocabulary,
-the data and the failure modes do not depend on co-location, so the transport is the only thing
-missing rather than one of many.
+Read that precisely, because a looser reading of it was wrong and a review caught it. Moving the
+worker to another machine was a change to the product, not to a deployment, and that change has
+been written: under the `separate-worker-host` declaration `from_address` permits exactly one
+address class, a remote address over mutual TLS, and hands it to `TlsWorker` (`worker/topology.py`,
+`worker/remote.py`); a unix socket or an in-process worker is refused there, so there is no
+fallback. It is a separate arrangement with its own install (`deploy/separate-worker-host/`), not a
+setting of the single-host one. What made that addition the only thing to write is the part that
+was expensive: the vocabulary, the data and the failure modes do not depend on co-location.
 
 So this module is a vocabulary and nothing else. Five questions, every one of them answerable by
 something on another machine:
@@ -45,11 +46,11 @@ inside the sandbox, which is on the worker's side of this line. See `gateway/cha
 Nothing here isolates anything. On one host the control plane and the code it sends still share a
 kernel, and a vocabulary does not change that.
 
-Nor does it establish that the worker can be moved. `SocketWorker` reaches a unix socket, which
-is on this machine by construction, and there is no transport here that crosses a network. The
-move needs one to be written. Nothing in this build has been exercised against a worker on
-another host, and no claim here should be read as saying otherwise: what the seam establishes is
-that such a transport would be the only thing to add, not that adding it is configuration.
+Nor does it establish that the worker HAS been moved. `SocketWorker` reaches a unix socket, which
+is on this machine by construction; `TlsWorker` is what crosses a network, and it has been tested
+on one host only. The two-machine measurement of the separate-worker-host arrangement has never
+passed -- every attempt on two real hosts ended in BLOCK or WARN -- so a worker on its own machine
+is a procedure, not an established property, and no claim here should be read as saying otherwise.
 """
 from __future__ import annotations
 

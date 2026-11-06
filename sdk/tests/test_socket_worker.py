@@ -1563,18 +1563,22 @@ class TestNothingClaimsTheWorkerCanAlreadyBeMoved:
 
     def test_and_what_is_missing_is_named(self):
         """Not merely the absence of the wrong claim: the right one has to be present, or
-        removing a sentence would satisfy this and leave a reader knowing nothing."""
+        removing a sentence would satisfy this and leave a reader knowing nothing.
+
+        CORRECTED in task #25. This used to require the docstring to say the TRANSPORT is
+        missing. It has since been written (`separate-worker-host`, `TlsWorker`), so that demand
+        had become a test holding a false sentence in place. What is still missing is the
+        two-machine measurement, and that is what has to be named now -- beside the transport
+        that exists, so neither half can be dropped without this noticing."""
         from agentnode_sdk import worker
         import inspect
 
         said = " ".join((inspect.getdoc(worker) or "").split()).lower()
         assert "transport" in said
         assert "unix socket" in said or "unix sockets" in said
-        for phrase in ("does not have", "does not exist", "needs a transport"):
-            if phrase in said:
-                break
-        else:
-            raise AssertionError("it does not say the transport is missing: " + said[:400])
+        assert "tlsworker" in said, "it does not name the transport that exists: " + said[:400]
+        assert "has never passed" in said, (
+            "it does not say the two-machine measurement is missing: " + said[:400])
 
     def test_and_the_transport_really_does_refuse_everything_else(self):
         """The claim is checked against the code rather than against another sentence."""
