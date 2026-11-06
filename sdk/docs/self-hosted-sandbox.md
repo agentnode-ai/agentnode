@@ -56,10 +56,18 @@ run it again — the gateway will ask you to.
 ### 4. Start it
 
 ```
-agentnode gateway start
+AGENTNODE_ALLOW_UNPINNED=1 agentnode gateway start
 ```
 
 It listens on `127.0.0.1:8099`. That is the safe default: nothing else can reach it yet.
+
+**Why the `AGENTNODE_ALLOW_UNPINNED=1`.** A gateway refuses to start without a *runtime pin* -- a
+record of which interpreter, which build and which commit it was installed from, so it can notice
+if it is ever running from something else. AgentNode's own managed service writes that pin when it
+deploys (`deploy/deploy-pinned.sh`); an installation from `pip` has nothing to write it with. For
+this self-hosted beta you therefore start it unpinned, and say so on every start. The gateway
+prints *"No runtime pin, and starting anyway because somebody said so"* each time, so the choice
+stays visible in its log. Without the setting it answers *"Not started"* and explains the same.
 
 ### 5. Make it reachable from your laptop
 
@@ -89,6 +97,11 @@ agentnode gateway pair
 It prints a code like `KQ7M-3PXA-9TDF`, good for fifteen minutes and for exactly one use. Read it
 out or type it in. Do not paste it into a chat — anyone who sees it before you use it can take your
 place.
+
+Until step 3 has passed, `agentnode gateway pair` issues no code: it answers *"No code issued"*,
+because pairing someone to a gateway that will refuse their work only wastes their time. On a
+machine with no container runtime at all, `agentnode gateway status` says it is *"Not protecting
+anything yet"* and runs nothing.
 
 ### Day to day
 

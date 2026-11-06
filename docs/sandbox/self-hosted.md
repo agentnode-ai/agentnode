@@ -6,6 +6,13 @@
 > review the design before it is built. **There are deliberately no installation commands here**,
 > because inventing commands for software that does not exist is how documentation starts lying.
 
+> **What exists today, beside this design:** a self-hosted **gateway** you can install and run as a
+> beta -- `agentnode gateway ...` on a Linux machine with Docker or Podman, and `agentnode remote ...`
+> on your laptop to connect, test and run files there. Installation guide:
+> [Running your own sandbox](../../sdk/docs/self-hosted-sandbox.md). What is still only designed
+> here: packs installed with `agentnode install` and run with `agentnode run` are not sent to such a
+> server -- they run in the local container sandbox or are refused.
+
 *For operators and platform teams.*
 
 ## What the machine has to be

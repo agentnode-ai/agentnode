@@ -96,22 +96,102 @@ def _cli(args, env, timeout=60):
                           capture_output=True, text=True, timeout=timeout)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN (task #10): how a pip self-hoster gets a runtime pin is a decision, not a doc fix -- "
-    "deploy/deploy-pinned.sh is the managed service's tool and is not in the wheel. Strict: when "
-    "it is decided and documented this passes, the xfail fails, and the marker must go."))
-def test_following_the_guide_does_not_dead_end_at_start(tmp_path):
-    """Steps 2 and 4 of the guide, for real: what `start` requires must be in the guide."""
+def _env(tmp_path, **extra):
     env = dict(os.environ, PYTHONPATH=str(SDK), HOME=str(tmp_path), USERPROFILE=str(tmp_path),
-               AGENTNODE_CONFIG=str(tmp_path / "config.json"))
-    env.pop("AGENTNODE_ALLOW_UNPINNED", None)
+               AGENTNODE_CONFIG=str(tmp_path / "config.json"), **extra)
+    if "AGENTNODE_ALLOW_UNPINNED" not in extra:
+        env.pop("AGENTNODE_ALLOW_UNPINNED", None)
+    return env
+
+
+def _initialised(tmp_path, env):
     gw = tmp_path / "gw"
     init = _cli(["gateway", "init", "--dir", str(gw)], env)
     assert init.returncode == 0, init.stdout + init.stderr
-    start = _cli(["gateway", "start", "--dir", str(gw), "--port", "0"], env, timeout=30)
+    return gw
+
+
+# ---- the managed path keeps its pin requirement --------------------------------------------- #
+
+
+def test_without_a_pin_and_without_saying_so_start_still_refuses(tmp_path):
+    """The managed service's rule is unchanged: no pin, no explicit choice -> not started."""
+    env = _env(tmp_path)
+    start = _cli(["gateway", "start", "--dir", str(_initialised(tmp_path, env)), "--port", "0"],
+                 env, timeout=30)
     said = start.stdout + start.stderr
-    if start.returncode != 0 and "runtime pin" in said:
-        guide = _guide().lower()
-        assert "runtime pin" in guide, (
-            "`agentnode gateway start` refuses without a runtime pin, and the guide never says "
-            "how a pip installation gets one:\n" + said)
+    assert start.returncode != 0 and "Not started" in said and "runtime pin" in said, said
+    assert "deploy-pinned.sh" in said                      # how the managed service gets one
+    # ... and a pip self-hoster is told their way, not only a script they do not have.
+    assert "self-hosted" in said and "AGENTNODE_ALLOW_UNPINNED=1" in said, said
+    assert "made before pinning existed" not in said, said
+
+
+# ---- the self-hosted beta path: explicit, said out loud, documented -------------------------- #
+
+
+def test_the_guide_documents_the_runtime_pin_and_the_beta_switch():
+    guide = _guide()
+    assert "runtime pin" in guide.lower()
+    assert "AGENTNODE_ALLOW_UNPINNED=1 agentnode gateway start" in guide
+    assert "deploy-pinned.sh" in guide                    # and that the managed path pins
+
+
+def test_the_beta_switch_starts_it_and_says_so(tmp_path):
+    """The documented beta start, for real: it serves on loopback and says it is unpinned."""
+    import socket
+    import time
+    import urllib.request
+
+    env = _env(tmp_path, AGENTNODE_ALLOW_UNPINNED="1")
+    gw = _initialised(tmp_path, env)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    proc = subprocess.Popen([sys.executable, "-m", "agentnode_sdk.cli", "gateway", "start",
+                             "--dir", str(gw), "--port", str(port)], env=env, cwd=str(SDK),
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        deadline, up = time.monotonic() + 30, False
+        while time.monotonic() < deadline and not up:
+            try:
+                up = urllib.request.urlopen("http://127.0.0.1:%d/v1/hello" % port, timeout=2).status == 200
+            except OSError:
+                time.sleep(0.3)
+        assert up, "the gateway did not come up with the beta switch"
+    finally:
+        proc.terminate()
+        said = proc.communicate(timeout=20)[0]
+    assert "starting anyway because somebody said so" in said, said
+
+
+# ---- a machine without a usable runtime gets a clear refusal, as the guide says --------------- #
+
+
+def test_without_a_runtime_nothing_is_offered_and_the_guide_says_so(tmp_path):
+    from agentnode_sdk.sandbox.container_backend import ContainerBackend
+
+    if ContainerBackend().check_available().available:
+        pytest.skip("this machine has a container runtime; the refusal is the case without one")
+    env = _env(tmp_path, AGENTNODE_ALLOW_UNPINNED="1")
+    gw = _initialised(tmp_path, env)
+    doctor = _cli(["gateway", "doctor", "--dir", str(gw)], env)
+    assert doctor.returncode != 0 and "no container runtime" in doctor.stdout + doctor.stderr
+    status = _cli(["gateway", "status", "--dir", str(gw)], env)
+    assert "Not protecting anything yet" in status.stdout + status.stderr
+    pair = _cli(["gateway", "pair", "--dir", str(gw)], env)
+    assert "No code issued" in pair.stdout + pair.stderr        # no invitation to a dead end
+    guide = _guide()
+    assert "will refuse every job" in guide
+    assert "issues no code" in guide
+
+
+# ---- the older page no longer says nothing can be installed --------------------------------- #
+
+
+def test_the_design_page_points_to_the_guide():
+    page = (SDK.parent / "docs" / "sandbox" / "self-hosted.md").read_text(encoding="utf-8")
+    assert "../../sdk/docs/self-hosted-sandbox.md" in page
+    assert "agentnode remote" in page
+    # what is still not built stays said: installed packs are not sent to a gateway
+    assert "agentnode run" in page
