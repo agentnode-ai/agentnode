@@ -340,6 +340,13 @@ def main(argv: list[str] | None = None) -> int:
     gw_limits.add_argument("--max-output-bytes", dest="max_output_bytes", type=int,
                            default=None,
                            help="The most output it keeps from one run. 0 = no limit")
+    # Additive: one customer's own account ceilings instead of the gateway-wide ones.
+    gw_limits.add_argument("--account", dest="limits_account", default=None,
+                           help="Set the --account-* ceilings for THIS customer only (see "
+                                "`agentnode gateway accounts`); others keep the gateway-wide ones")
+    gw_limits.add_argument("--reset", dest="limits_reset", action="store_true",
+                           help="With --account: remove that customer's own ceilings, so the "
+                                "gateway-wide ones apply to them again")
 
     gw_keeps = gw_sub.add_parser(
         "keeps", help="What this gateway keeps, for how long, and what expiring costs")

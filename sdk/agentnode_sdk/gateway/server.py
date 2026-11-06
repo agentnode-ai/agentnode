@@ -2534,6 +2534,18 @@ class GatewayService:
 
         return read_allowance(self.state.root)
 
+    def allowance_for(self, account_id: str = ""):
+        """What applies to THIS customer: the gateway-wide ceilings with the account's own in place.
+
+        THE ONE SOURCE for the check before a start (`within_its_allowance`), the binding booking
+        (`reserve`) and what a run records it was admitted under. Two readers would be two
+        answers, and the more permissive one would decide. Read on every admission, never held,
+        and strictly: an unreadable per-account file raises like an unreadable allowance.
+        """
+        from agentnode_sdk.gateway.allowance import for_account, read_account_ceilings
+
+        return for_account(self.allowance(), account_id, read_account_ceilings(self.state.root))
+
     @property
     def use(self):
         """What each client has used lately, durably."""
@@ -2628,7 +2640,7 @@ class GatewayService:
         """
         from agentnode_sdk.gateway.protocol import is_terminal
 
-        allowed = self.allowance()
+        allowed = self.allowance_for(account_id)
         granted = allowed.digest()
         if not client_id:
             # Nothing to count against. Admission refuses an unpaired caller elsewhere; this is
@@ -3059,7 +3071,8 @@ class GatewayService:
             # From here the run carries what it was admitted under. A limit changed while it is
             # going must not rewrite what this run is recorded as having been allowed.
             record.admitted_under = granted_digest
-            record.admitted_under_values = dict(self.allowance().as_dict())
+            record.admitted_under_values = dict(
+                self.allowance_for(record.owner_account_id).as_dict())
             # Where it ran and what that was configured as, taken now rather than at the end:
             # a worker replaced mid-flight must not rewrite what a finished run was measured on.
             record.worker_topology = self.worker.topology
@@ -4007,9 +4020,11 @@ class GatewayService:
                 bytes_out=len(record.stdout or "") + len(record.stderr or ""),
                 worker_topology=self.worker.topology,
                 # What it was admitted under, not what is configured now.
-                allowance_sha256=record.admitted_under or self.allowance().digest(),
-                allowance_admitted_under=(record.admitted_under_values
-                                          or self.allowance().as_dict()))
+                allowance_sha256=(record.admitted_under
+                                  or self.allowance_for(record.owner_account_id).digest()),
+                allowance_admitted_under=(
+                    record.admitted_under_values
+                    or self.allowance_for(record.owner_account_id).as_dict()))
         except meter.AlreadyRecorded:
             # This run is already in the log. Reached when a stop closed it on the way out and its
             # own thread came back a moment later, which is a race both halves of are correct:
@@ -4087,7 +4102,12 @@ class GatewayService:
         """
         from agentnode_sdk.gateway.protocol import is_terminal
 
-        allowed = self.allowance()
+        allowed = self.allowance_for(account_id)
+        # What the run is recorded as admitted under is what it was BOOKED under. The early check
+        # read the same function, but a file changed between the two would otherwise leave a run
+        # recording one set of ceilings and charged under another.
+        record.admitted_under = allowed.digest()
+        record.admitted_under_values = dict(allowed.as_dict())
         if not client_id:
             with self._lock:
                 self.runs[run_id] = record

@@ -1522,6 +1522,8 @@ def cmd_limits(args) -> int:
               "account_seconds_per_window", "machine_concurrent_runs", "queue_depth",
               "requests_per_minute",
               "account_requests_per_minute", "max_artifact_bytes", "max_output_bytes")}
+    if getattr(args, "limits_account", None) or getattr(args, "limits_reset", False):
+        return _limits_for_one_account(root, args, asked)
     if all(value is None for value in asked.values()):
         print()
         print(f"  {bold('What one device may use')}")
@@ -1562,9 +1564,11 @@ def cmd_limits(args) -> int:
         print("  Both apply and the tighter one decides. A per-device ceiling alone is one a")
         print("  customer raises by pairing another machine, which is not a ceiling.")
         print()
+        _show_per_account_ceilings(root)
         print("  To change one:")
         print("    agentnode gateway limits --runs-per-window 200")
         print("    agentnode gateway limits --account-runs-per-window 500")
+        print("    agentnode gateway limits --account <id> --account-runs-per-window 50")
         return 0
     changed = Allowance(**{**now.as_dict(),
                            **{k: int(v) for k, v in asked.items() if v is not None}})
@@ -1577,6 +1581,77 @@ def cmd_limits(args) -> int:
     # AT THE MOMENT IT IS SET, not only when somebody later looks. This is where an operator
     # who typed one digit too many is still looking at their own command.
     _say_if_it_is_more_than_the_machine_has(changed.machine_concurrent_runs)
+    return 0
+
+
+def _show_per_account_ceilings(root) -> None:
+    from agentnode_sdk.gateway.allowance import read_account_ceilings
+
+    own = read_account_ceilings(root)
+    if not own:
+        return
+    print(f"  {bold('Customers with ceilings of their own')} (instead of the ones above)")
+    for account_id in sorted(own):
+        for name, value in sorted(own[account_id].items()):
+            print(f"    {account_id:<20} {name:<28}: {value if value else 'no limit'}")
+    print()
+
+
+def _limits_for_one_account(root, args, asked: dict) -> int:
+    """`--account <id>`: that customer's own account ceilings, or `--reset` to drop them."""
+    from agentnode_sdk.gateway.allowance import ACCOUNT_FIELDS, write_account_ceilings
+    from agentnode_sdk.gateway.identity import GatewayState
+
+    account_id = getattr(args, "limits_account", None) or ""
+    if not account_id:
+        print("  --reset needs --account <id>: it removes one customer's own ceilings.",
+              file=sys.stderr)
+        return 2
+    others = sorted(k for k, v in asked.items() if v is not None and k not in ACCOUNT_FIELDS)
+    if others:
+        print("  Not changed. With --account only the customer's own ceilings can be set ("
+              + ", ".join("--" + f.replace("_", "-") for f in ACCOUNT_FIELDS) + "); "
+              + ", ".join(others) + " belong to a device or to the machine.", file=sys.stderr)
+        return 2
+    from agentnode_sdk.gateway import accounts as _accounts
+
+    # The same rule `agentnode gateway accounts` uses: a customer exists when a paired device
+    # belongs to it or the gateway has a record of it. `accounts.get` alone answers for ANY
+    # well-formed id, so a typo would set a ceiling nobody is held to.
+    state = GatewayState(str(root), version="cli")
+    try:
+        held = {str(e.get("account_id")
+                    or _accounts.solo_account_for(str(e.get("client_id") or "")))
+                for e in state.paired_clients()}
+        known = _accounts.well_formed(account_id) and (
+            account_id in held or state.accounts.recorded(account_id))
+    finally:
+        state.close()
+    if not known:
+        print(f"  Not changed. There is no customer {account_id!r} on this gateway; "
+              "`agentnode gateway accounts` lists them.", file=sys.stderr)
+        return 2
+    if getattr(args, "limits_reset", False):
+        write_account_ceilings(root, account_id, None)
+        print(f"\n  {bold('Reset.')} {account_id} is held to the gateway-wide ceilings again, "
+              "from the next job.")
+        return 0
+    values = {k: int(v) for k, v in asked.items() if v is not None}
+    if not values:
+        print("  Nothing to set: give at least one of "
+              + ", ".join("--" + f.replace("_", "-") for f in ACCOUNT_FIELDS) + ".",
+              file=sys.stderr)
+        return 2
+    try:
+        write_account_ceilings(root, account_id, values)
+    except ValueError as exc:
+        print(f"  Not changed. {exc}", file=sys.stderr)
+        return 2
+    print(f"\n  {bold('Set.')} For {account_id} only, from the next job; runs already going are "
+          "not affected.")
+    for name, value in sorted(values.items()):
+        print(f"    {name:<28}: {value if value else 'no limit'}")
+    print("  Every other customer keeps the gateway-wide ceilings.")
     return 0
 
 

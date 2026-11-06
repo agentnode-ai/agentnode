@@ -1090,7 +1090,7 @@ def _what_would_happen(service, principal, params, *, approved_by=None, will_run
     """
     from agentnode_sdk.worker import what_it_does_not_establish
 
-    allowed = service.allowance()
+    allowed = service.allowance_for(principal.account_id)
     runs, seconds = service.use.so_far(principal.client_id)
     asked_for = int(params.get("wall_clock_s") or 60)
     network = params.get("network") or "none"
@@ -1685,7 +1685,7 @@ def _usage(service, principal, params):
     the ceiling and refused anyway, with nothing in the answer to explain it. The account's
     ceilings were already published here; its use was not.
     """
-    allowed = service.allowance()
+    allowed = service.allowance_for(principal.account_id)
     runs, seconds = service.use.so_far(principal.client_id)
     account_runs, account_seconds = (
         service.use.so_far(principal.account_id) if principal.account_id else (0, 0.0))

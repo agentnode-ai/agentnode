@@ -275,6 +275,97 @@ def write_allowance(root: str | os.PathLike[str], allowance: Allowance) -> Path:
     return path
 
 
+# ------------------------------------------------------------------------------- per account
+#
+# The account ceilings above are ONE value for every customer. An operator who wants one customer
+# -- a trial, say -- held to less than another had no way to say so. This file names, per account,
+# the account ceilings that replace the gateway-wide ones for that account only. An account it
+# does not name keeps the gateway-wide values; a gateway without the file behaves as before.
+#
+# Only the account scope can be set per account. A device ceiling is a property of a credential and
+# the machine ceiling one of the machine; neither belongs to a customer.
+
+ACCOUNT_CEILINGS_NAME = "account-ceilings.json"
+ACCOUNT_FIELDS = ("account_concurrent_runs", "account_runs_per_window",
+                  "account_seconds_per_window")
+
+
+def _account_values_problem(values) -> str:
+    """Why these per-account values cannot be applied, or "" when they can."""
+    if not isinstance(values, dict):
+        return "is not an object of ceilings"
+    unknown = sorted(set(values) - set(ACCOUNT_FIELDS))
+    if unknown:
+        return "names " + ", ".join(repr(u) for u in unknown) + (
+            ", which is not a ceiling one account can carry (only " + ", ".join(ACCOUNT_FIELDS)
+            + ")")
+    for name, value in values.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return "gives %s as %r, which is not a whole number of zero or more" % (name, value)
+    return ""
+
+
+def read_account_ceilings(root: str | os.PathLike[str]) -> dict:
+    """{account_id: {field: value}}. Absent is {}; present and unreadable RAISES.
+
+    Read exactly like the allowance: a ceiling that reads as configured and is not applied is the
+    one failure an operator cannot see, so anything this build cannot apply stops the gateway
+    taking work rather than being skipped.
+    """
+    path = Path(root) / ACCOUNT_CEILINGS_NAME
+    if not path.exists():
+        return {}
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise CannotReadTheCeilings(
+            "this gateway cannot read the per-account limits in " + str(path) + " ("
+            + str(exc)[:120] + "). It will not take work until it can.") from exc
+    if not isinstance(body, dict):
+        raise CannotReadTheCeilings(
+            "the per-account limits in " + str(path) + " are not an object. It will not take "
+            "work until that is fixed.")
+    for account_id, values in body.items():
+        problem = _account_values_problem(values)
+        if problem:
+            raise CannotReadTheCeilings(
+                "the per-account limits in " + str(path) + " for " + repr(account_id) + " "
+                + problem + ". It will not take work until that is fixed.")
+    return {str(k): dict(v) for k, v in body.items()}
+
+
+def write_account_ceilings(root: str | os.PathLike[str], account_id: str,
+                           values: dict | None) -> Path:
+    """Set one account's own ceilings (replacing what it had), or remove them with None."""
+    if values is not None:
+        problem = _account_values_problem(values)
+        if problem:
+            raise ValueError("these ceilings for %r %s" % (account_id, problem))
+    path = Path(root) / ACCOUNT_CEILINGS_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _ACCOUNT_CEILINGS_WRITE:
+        body = read_account_ceilings(root)
+        if values is None:
+            body.pop(str(account_id), None)
+        else:
+            body[str(account_id)] = {k: int(v) for k, v in values.items()}
+        _atomically(path, json.dumps(body, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+_ACCOUNT_CEILINGS_WRITE = threading.Lock()
+
+
+def for_account(allowance: Allowance, account_id: str, ceilings: dict) -> Allowance:
+    """The ceilings that apply to this account: the gateway-wide ones, with its own in place."""
+    own = ceilings.get(str(account_id or "")) if account_id else None
+    if not own:
+        return allowance
+    from dataclasses import replace
+
+    return replace(allowance, **{k: int(v) for k, v in own.items()})
+
+
 # ------------------------------------------------------------------------------- the stop
 
 def stop_everything(root: str | os.PathLike[str], reason: str, by: str = "") -> Path:
