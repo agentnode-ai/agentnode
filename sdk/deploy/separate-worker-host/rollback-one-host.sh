@@ -17,14 +17,21 @@
 #
 # ONE CASE REVERSES STEPS 2 AND 3, and it is not an exception to the rule above so much as a
 # consequence of it. Rolling the worker back to a build from before the refusal codes were
-# fixed needs --control-plane-already-rolled-back, and that flag is an ASSERTION that the
-# control plane is already on the same generation. An assertion made before it is true is a
-# lie, so in that case the order is:
+# fixed needs the control plane on the same generation, and the worker checks that itself from
+# a statement the control plane SIGNS after its own rollback -- not from an operator's word
+# (that was `--control-plane-already-rolled-back`, and it is refused now). The order is:
 #
 #   1. stop admission (unchanged);
-#   2. roll the CONTROL PLANE back first;
-#   3. then the worker, with the flag;
-#   4. re-measure before reopening (unchanged, and see below).
+#   2. on the worker:        rollback-one-host.sh <keep> --challenge <acceptance run id>
+#      which only writes a single-use challenge and changes nothing else;
+#   3. roll the CONTROL PLANE back first, and have it answer:
+#      on the control plane: rollback-one-host.sh <keep> --sign-for <that challenge file>
+#      which rolls the control plane back and, once the running process named the kept build,
+#      signs what it now runs with the gateway's key;
+#   4. on the worker:        rollback-one-host.sh <keep> --control-plane-statement <that file>
+#      which verifies it (CA, gateway identity, signature, this worker, this challenge, this
+#      run, this keep's build and generation, freshness), uses the challenge up, and goes on;
+#   5. re-measure before reopening (unchanged, and see below).
 #
 # The reason step 2 normally puts the worker first -- get incompatible execution code out
 # while the gateway is fail-closed -- is satisfied either way here, because admission is
@@ -45,19 +52,30 @@ set -uo pipefail
 KEEP="${1:-}"
 PREFIX=/opt/agentnode
 
-# An assertion the operator makes, not a bypass this script can verify. It says: the control
-# plane has ALREADY been rolled back to the same generation as the keep named here, so the two
-# will agree about what a refusal is called. Without it the worker-side refusal-code check
-# below forbids the very remedy its own message recommends, which is a fault -- a guard that
-# makes its advice impossible to follow is a guard that will be worked around.
-#
-# It deliberately does NOT relax the lease-counter check, which runs first and is unsafe in
-# both directions no matter what the other host is running, so nothing here can excuse it.
-PAIRED=""
-[ "${2:-}" = "--control-plane-already-rolled-back" ] && PAIRED=yes
-
+# WHAT THE SECOND ARGUMENT MAY BE (see the order above). The waiver of the worker-side
+# refusal-code check below is set ONLY from a statement that verified, never from a word on the
+# command line. It deliberately does NOT relax the lease-counter check, which runs first and is
+# unsafe in both directions no matter what the other host is running.
 step() { printf '\n=== %s\n' "$*"; }
 died() { printf '\n!!! FAILED: %s\n' "$*"; exit 1; }
+
+PAIRED=""
+MODE="${2:-}"
+MODE_ARG="${3:-}"
+case "$MODE" in
+  ""|--challenge|--sign-for|--control-plane-statement) ;;
+  "--control-plane-already-rolled-back")
+    died "--control-plane-already-rolled-back is no longer accepted: it was an assertion this
+  script could not check. The worker checks the control plane's own signed statement instead:
+
+      on the worker:         rollback-one-host.sh <keep> --challenge <acceptance run id>
+      on the control plane:  rollback-one-host.sh <keep> --sign-for <the challenge file>
+      on the worker:         rollback-one-host.sh <keep> --control-plane-statement <the statement>" ;;
+  *) died "unknown option: $MODE" ;;
+esac
+if [ -n "$MODE" ] && [ -z "$MODE_ARG" ]; then
+  died "$MODE needs a value"
+fi
 
 #: See upgrade-one-host.sh: a gateway took 71 seconds on the pair between being started and
 #: printing which build it is. Waited for, not slept through.
@@ -92,6 +110,51 @@ systemctl list-unit-files "$UNIT.service" --no-legend 2>/dev/null | grep -q . \
   || died "$KEEP is from a $UNIT host and this machine does not run one. A rollback artefact
   from the OTHER machine must not be applied here."
 step "this host runs $UNIT; rolling back to $KEEP"
+
+# ---------------------------------------------------------------------------------------------
+# THE PAIRED-ROLLBACK EVIDENCE (see the order at the top). Everything here runs with the code
+# installed NOW -- the newer build, which has it -- and before anything is stopped.
+PY="$PREFIX/venv/bin/python"
+case "$MODE" in
+  --challenge)
+    [ "$UNIT" = "agentnode-worker" ] || died "--challenge is the worker's half. On the control
+  plane the answer is: rollback-one-host.sh <keep> --sign-for <the worker's challenge file>"
+    step "a single-use challenge for the control plane (nothing is stopped or changed)"
+    if ! "$PY" -m agentnode_sdk.worker.rollback_proof challenge --keep "$KEEP" \
+           --run-id "$MODE_ARG" --out "$KEEP/rollback-challenge.json" | sed 's/^/   /'; then
+      died "no challenge was issued"
+    fi
+    printf '\n=== Copy %s to the control plane and run there:\n' "$KEEP/rollback-challenge.json"
+    printf '===   rollback-one-host.sh <its keep> --sign-for <that file>\n'
+    printf '=== then bring its control-plane-statement.json back here. Nothing here was stopped.\n'
+    exit 0 ;;
+  --control-plane-statement)
+    [ "$UNIT" = "agentnode-worker" ] || died "--control-plane-statement is checked by the worker"
+    step "the control plane's signed statement"
+    if ! "$PY" -m agentnode_sdk.worker.rollback_proof verify --keep "$KEEP" \
+           --statement "$MODE_ARG" | sed 's/^/   /'; then
+      died "the control plane's statement did not verify, so nothing is waived and nothing was
+  stopped. Issue a new challenge (--challenge) and have the control plane answer it after its
+  own rollback."
+    fi
+    PAIRED=yes ;;
+  --sign-for)
+    [ "$UNIT" = "agentnode-gateway" ] || died "--sign-for is the control plane's half"
+    [ -f "$MODE_ARG" ] || died "no such challenge file: $MODE_ARG"
+    # The signing code is copied out of the CURRENT installation now, because the build being
+    # restored may be one that does not have it; the statement is signed only after that build
+    # is confirmed running (step 7). The copy stays in the keep, as the record of what signed.
+    SIGN_SITE="$(ls -d "$PREFIX"/venv/lib/python3*/site-packages 2>/dev/null | head -1)"
+    [ -f "$SIGN_SITE/agentnode_sdk/worker/rollback_proof.py" ] || died "the build installed now
+  cannot sign a statement, so the worker could not be rolled back with this control plane"
+    NEW_CODE="$KEEP/signing-code-$(date -u +%s)"
+    mkdir "$NEW_CODE" || died "could not make $NEW_CODE"
+    cp -a "$SIGN_SITE/agentnode_sdk" "$NEW_CODE/" || died "could not keep the signing code aside"
+    GW_TLS="$("$PY" -c 'import json,sys; t=json.load(open(sys.argv[1]))["worker_tls"]; print(t["certificate"]); print(t["key"])' /var/lib/agentnode/state/config.json 2>/dev/null)"
+    GW_CERT="$(printf '%s\n' "$GW_TLS" | sed -n 1p)"; GW_KEY="$(printf '%s\n' "$GW_TLS" | sed -n 2p)"
+    [ -f "$GW_CERT" ] && [ -f "$GW_KEY" ] || died "the gateway's certificate and key are not where
+  its config says, so it cannot sign" ;;
+esac
 
 # ---------------------------------------------------------------------------------------------
 # ONE ROLLBACK THIS MUST REFUSE, and it is one this repair itself created.
@@ -181,12 +244,15 @@ if [ "$UNIT" = "agentnode-worker" ] && [ -z "$PAIRED" ]; then
   PLANE back with it, to a build from before the same change, so that the two agree about
   what a refusal is called:
 
-      on the control plane:  rollback-one-host.sh <a keep from the same generation>
-      then here:             rollback-one-host.sh $KEEP --control-plane-already-rolled-back
+      here:                  rollback-one-host.sh $KEEP --challenge <acceptance run id>
+      on the control plane:  rollback-one-host.sh <a keep from the same generation> \\
+                                 --sign-for <that challenge file>
+      then here:             rollback-one-host.sh $KEEP --control-plane-statement <its statement>
 
-  That last flag is how you say you have done it. This script cannot see the other machine,
-  so it cannot check; it is your assertion and it is recorded in this output. Without it this
-  check would forbid the very remedy it just recommended.
+  The statement is signed by the gateway after its own rollback was confirmed, and this worker
+  checks it itself: this deployment's CA, an accepted gateway, the signature, this worker, this
+  challenge, this run, this keep's build and generation, and its age. It is used up once it
+  has waived this check.
 
   Rolling the control plane back on its own is safe and is not refused: an older gateway
   still understands a correctly named refusal from a newer worker."
@@ -194,12 +260,11 @@ if [ "$UNIT" = "agentnode-worker" ] && [ -z "$PAIRED" ]; then
 fi
 
 if [ -n "$PAIRED" ] && [ "$UNIT" = "agentnode-worker" ]; then
-  step "the refusal-code check was waived by --control-plane-already-rolled-back"
-  printf '   You have asserted that the control plane is already on a build of the same\n'
-  printf '   generation as this keep. Nothing here verified that; it cannot see the other\n'
-  printf '   machine. If it is not true, this pair will stop recovering from a lapsed lease:\n'
-  printf '   the worker will refuse with "internal" and the gateway will never re-take the\n'
-  printf '   lease. The lease-counter check, which ran before this, is NOT waived.\n'
+  step "the refusal-code check was waived by the control plane's verified statement"
+  printf '   The gateway signed, after its own rollback, that it runs the same refusal-code\n'
+  printf '   generation as this keep; this worker checked the signature, the identities, the\n'
+  printf '   challenge, the run, the build and the age, and used the challenge up.\n'
+  printf '   The lease-counter check, which ran before this, is NOT waived.\n'
 fi
 
 step "1. what is running now, before it is replaced"
@@ -281,6 +346,21 @@ fi
 [ "$SAID_IT_IS" = "$WAS_BUILD_ID" ] || died "$UNIT is serving $SAID_IT_IS and the kept build
   was $WAS_BUILD_ID. The rollback put files back and the running process is not them."
 echo "   $UNIT is up and says it is $SAID_IT_IS, which is the build that was kept"
+
+if [ "$MODE" = "--sign-for" ]; then
+  # Only now: the running process has named the kept build. The generation is read from the
+  # ERRORS table that is installed here now; the build is the one the process announced.
+  step "7. the statement the worker needs"
+  STATEMENT_OUT="$KEEP/control-plane-statement.json"
+  if ! PYTHONPATH="$NEW_CODE" "$PY" -m agentnode_sdk.worker.rollback_proof sign \
+         --challenge "$MODE_ARG" --certificate "$GW_CERT" --key "$GW_KEY" --site "$SITE" \
+         --build "$SAID_IT_IS" --out "$STATEMENT_OUT" | sed 's/^/   /'; then
+    died "the control plane is rolled back but could not sign its statement, so the worker
+  cannot use it. The gateway's rollback itself stands."
+  fi
+  printf '   copy %s to the worker and run there:\n' "$STATEMENT_OUT"
+  printf '     rollback-one-host.sh <its keep> --control-plane-statement <that file>\n'
+fi
 
 printf '\n=== %s is back on the kept build. The other host was NOT touched.\n' "$UNIT"
 printf '=== Re-measure before admission is reopened. A rollback that was not measured after is\n'
