@@ -24,14 +24,16 @@ deliberately not named here by address. Reaching any other machine is an abort c
 
 ## Criteria, their origin, and the profile the run is judged against
 
-* **Criteria:** X1-X10, **unchanged**, from the current frozen profile `remote-worker-cross-host-r3`
+* **Acceptance catalog (decided for this rebuild):** X1-X10, **unchanged**, from
+  `remote-worker-cross-host-r2` (`a1e_review/crosshost-final/remote-worker-cross-host-r2.json`,
+  sha256 `5fc1cc507413df18a6fbf22f5c09df63d6443f1409a7cc92b57eef2f3738e56d`). r2 is not edited.
+* **Historical frozen state:** `remote-worker-cross-host-r3`
   (`a1e_review/crosshost-r3/frozen/remote-worker-cross-host-r3.json`, sha256
-  `3aaee465933f2a777d8fed46b17ab4874970209b7d929de7a8d17b7e7bc02a10`, frozen 2026-10-02T17:15:58Z).
-  r3 itself is not edited.
-* **History only:** r3 carried the criteria over verbatim from `remote-worker-cross-host-r2`. r2 is
-  named for that origin and for nothing else; it is not a current reference.
+  `3aaee465933f2a777d8fed46b17ab4874970209b7d929de7a8d17b7e7bc02a10`, frozen 2026-10-02T17:15:58Z)
+  carried the same ten criteria over verbatim and renewed only its bindings. It stays unchanged and
+  is named as history, not as the catalog.
 * **The profile the run is judged against: `remote-worker-cross-host-r4`, which does not exist yet.**
-  It is created after both rebuilds, carries X1-X10 verbatim from r3, names r3 (with its sha256) as
+  It is created after both rebuilds, carries X1-X10 verbatim from the r2 catalog, names r3 (with its sha256) as
   what it supersedes, and binds exactly the two targets above and the build actually tested. It is
   validated, filed in the evidence folder and **frozen prospectively before any criterion runs**.
   Its sha256 is whatever the frozen file turns out to be; nobody writes it down in advance.
@@ -49,19 +51,19 @@ deliberately not named here by address. Reaching any other machine is an abort c
   },
   "build_up_procedure": {"profile": "remote-worker-r1", "sha256": "e480c2f02382bad9432706561a49add218f4f9f03cb9a368b83804fcf2108d3a"},
   "acceptance_criteria": {
-    "origin_profile": "remote-worker-cross-host-r3",
-    "origin_sha256": "3aaee465933f2a777d8fed46b17ab4874970209b7d929de7a8d17b7e7bc02a10",
+    "catalog_profile": "remote-worker-cross-host-r2",
+    "catalog_sha256": "5fc1cc507413df18a6fbf22f5c09df63d6443f1409a7cc92b57eef2f3738e56d",
     "criteria": ["X1-A-WORK-CROSSES-THE-KERNEL-BOUNDARY", "X2-B-THE-WORKER-PORT-IS-PRIVATE-AND-THAT-IS-MEASURED-NEGATIVELY",
                  "X3-C-A-REAL-NETWORK-BREAK-DURING-A-JOB", "X4-D-BOTH-SIDES-SURVIVE-A-RESTART",
                  "X5-E-INSTALL-UPGRADE-ROLLBACK-ON-TWO-HOSTS", "X6-F-WHAT-IS-NOT-ON-THE-WORKER-DISK",
                  "X7-G-EXHAUSTION-ON-THE-WORKER-LEAVES-THE-CONTROL-PLANE-HONEST", "X8-R16-TWO-REAL-MACHINES",
                  "X9-NO-RESULT-WAS-REPEATED-INTO-EXISTENCE", "X10-THE-RECORD-DOES-NOT-OVERCLAIM"]
   },
-  "history": [{"profile": "remote-worker-cross-host-r2", "sha256": "5fc1cc507413df18a6fbf22f5c09df63d6443f1409a7cc92b57eef2f3738e56d", "role": "historical origin only"}],
+  "history": [{"profile": "remote-worker-cross-host-r3", "sha256": "3aaee465933f2a777d8fed46b17ab4874970209b7d929de7a8d17b7e7bc02a10", "role": "historical frozen state, unchanged"}],
   "new_profile": {
     "name": "remote-worker-cross-host-r4",
     "supersedes": {"profile": "remote-worker-cross-host-r3", "sha256": "3aaee465933f2a777d8fed46b17ab4874970209b7d929de7a8d17b7e7bc02a10"},
-    "criteria": "X1-X10 verbatim from the origin profile",
+    "criteria": "X1-X10 verbatim from the r2 catalog",
     "binds": {"control": "2.28.194.41", "worker": "128.140.87.58",
               "build": "the head commit, wheel digest and both role artefact digests of the build actually installed in M4/M5, read from that build"},
     "filed_at": "crosshost-r4/frozen/remote-worker-cross-host-r4.json"
@@ -73,8 +75,8 @@ deliberately not named here by address. Reaching any other machine is an abort c
     {"id": "V2", "phase": "validate-machine", "who": "mitarbeiter", "machine": "worker", "what": "worker on its own: new SSH host key confirmed by the Chef, hostname agentnode-worker-r16, private address 10.0.0.2, nothing of AgentNode and no podman left from earlier runs; baseline transcript"},
     {"id": "M4", "phase": "install", "who": "mitarbeiter", "machine": "control", "what": "install phase 1 on the control plane from its own artefact: new deployment, new identities, new pair key; enabled, not started"},
     {"id": "M5", "phase": "install", "who": "mitarbeiter", "machine": "worker", "what": "install on the worker from its own artefact, three passes with the enrolment handover; rootless podman as the worker account"},
-    {"id": "P1", "phase": "profile-create", "who": "mitarbeiter", "machine": "none", "what": "create remote-worker-cross-host-r4: X1-X10 verbatim from r3, supersedes r3 with its sha256, binds 2.28.194.41, 128.140.87.58 and the build installed in M4/M5"},
-    {"id": "P2", "phase": "profile-validate", "who": "mitarbeiter", "machine": "none", "what": "check r4 mechanically: criteria byte-equal to r3's, r3 file digest unchanged, both targets and the installed build bound, no result inherited"},
+    {"id": "P1", "phase": "profile-create", "who": "mitarbeiter", "machine": "none", "what": "create remote-worker-cross-host-r4: X1-X10 verbatim from the r2 catalog, supersedes r3 with its sha256, binds 2.28.194.41, 128.140.87.58 and the build installed in M4/M5"},
+    {"id": "P2", "phase": "profile-validate", "who": "mitarbeiter", "machine": "none", "what": "check r4 mechanically: criteria byte-equal to r2's, r2 and r3 file digests unchanged, both targets and the installed build bound, no result inherited"},
     {"id": "P3", "phase": "profile-file", "who": "mitarbeiter", "machine": "none", "what": "file r4 in the evidence folder under crosshost-r4/frozen/"},
     {"id": "P4", "phase": "profile-freeze", "who": "mitarbeiter", "machine": "none", "what": "freeze r4 prospectively: FREEZE.txt with its sha256 and the evidence chain head, before any criterion runs; r4 is never edited afterwards"},
     {"id": "M6", "phase": "criterion", "who": "mitarbeiter", "machine": "both", "what": "start the worker, then install --verify on the control plane: measure the worker, check mutual TLS and the expected worker identity, only then start"},
@@ -106,7 +108,7 @@ deliberately not named here by address. Reaching any other machine is an abort c
     "any address other than the two targets would be reached",
     "anything would create a new paid resource or exceed the cost cap",
     "the single-machine validation of the control plane has not passed before the worker is rebuilt",
-    "r4 has not passed its freeze (P4), or its criteria differ from r3's, when the first criterion step would start",
+    "r4 has not passed its freeze (P4), or its criteria differ from the r2 catalog's, when the first criterion step would start",
     "a step would need a credential that is not already provided for it"
   ],
   "rollback": "Before M4 nothing of AgentNode exists on the machines, so nothing is rolled back: the stand stays rebuilt and idle. From M4 on, a failed step stops the run; both machines are parked as in M15 (services stopped and disabled, identities and pair key removed, 8443 private only) and the attempt is filed, red, in the evidence folder. A frozen r4 is never edited: a mistake in it means a new profile, not a correction. Product rollback inside the run is part of the test (M11), not a recovery.",

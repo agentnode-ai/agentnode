@@ -6,8 +6,9 @@ The request carries a JSON block; this file holds it to the decisions made for i
 
 * exactly two targets: control plane 2.28.194.41, worker 128.140.87.58 -- no other public address
   anywhere in the document;
-* the acceptance criteria are X1-X10 of `remote-worker-cross-host-r3`, unchanged, with r3's full
-  sha256; r2 is history only;
+* the acceptance catalog is `remote-worker-cross-host-r2` (X1-X10, unchanged, with r2's full
+  sha256) -- decided for this rebuild; r3, which carried the same criteria over verbatim, is named
+  only as the historical frozen state and stays unchanged;
 * the profile the run is judged against is `remote-worker-cross-host-r4`, created AFTER the
   rebuild, bound to both targets and the build actually tested, validated, filed and frozen BEFORE
   any criterion runs -- and no r4 hash is written down in advance;
@@ -15,8 +16,8 @@ The request carries a JSON block; this file holds it to the decisions made for i
   is used; each rebuild is followed by a single-machine validation before the next rebuild;
 * the rebuild is a Chef step; abort conditions, rollback, evidence folder and the cost cap are there.
 
-Where the frozen r3 profile is on this machine, it is read too: its criteria must equal the ones
-named here and its digest must still be the one named here.
+Where the r2 and r3 profiles are on this machine they are read too: their criteria must equal the
+ones named here and their digests must still be the ones named here.
 """
 from __future__ import annotations
 
@@ -36,6 +37,9 @@ REQUEST = REPO / "docs" / "testing" / "crosshost-rebuild-request.md"
 R3_FILE = Path(os.environ.get("AGENTNODE_R3_PROFILE")
                or r"H:\Claude Projekte\agentnode-Tests\a1e_review\crosshost-r3\frozen"
                   r"\remote-worker-cross-host-r3.json")
+R2_FILE = Path(os.environ.get("AGENTNODE_R2_PROFILE")
+               or r"H:\Claude Projekte\agentnode-Tests\a1e_review\crosshost-final"
+                  r"\remote-worker-cross-host-r2.json")
 
 CONTROL, WORKER = "2.28.194.41", "128.140.87.58"
 R3 = "remote-worker-cross-host-r3"
@@ -93,17 +97,24 @@ def test_no_other_public_address_appears_anywhere():
 # ---- the catalog ---------------------------------------------------------------------------------- #
 
 
-def test_the_criteria_come_unchanged_from_r3_with_its_full_hash():
+def test_the_acceptance_catalog_is_r2_unchanged_with_its_full_hash():
     c = _plan()["acceptance_criteria"]
-    assert c["origin_profile"] == R3 and c["origin_sha256"] == R3_SHA
+    assert c["catalog_profile"] == R2 and c["catalog_sha256"] == R2_SHA
     assert c["criteria"] == X
 
 
-def test_r2_is_history_and_never_the_current_reference():
+def test_r3_is_the_historical_frozen_state_and_never_the_catalog():
     plan = _plan()
-    assert plan["acceptance_criteria"]["origin_profile"] != R2
-    assert plan["history"] == [{"profile": R2, "sha256": R2_SHA, "role": "historical origin only"}]
-    assert R2 not in json.dumps({k: v for k, v in plan.items() if k != "history"})
+    assert plan["acceptance_criteria"]["catalog_profile"] != R3
+    assert plan["history"] == [{"profile": R3, "sha256": R3_SHA,
+                                "role": "historical frozen state, unchanged"}]
+
+
+@pytest.mark.skipif(not R2_FILE.is_file(), reason="the r2 profile is not on this machine")
+def test_the_r2_catalog_is_unchanged_and_says_the_same():
+    raw = R2_FILE.read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == R2_SHA, "the r2 catalog has changed"
+    assert [c["id"] for c in json.loads(raw)["criteria"]] == X
 
 
 @pytest.mark.skipif(not R3_FILE.is_file(), reason="the frozen r3 profile is not on this machine")
