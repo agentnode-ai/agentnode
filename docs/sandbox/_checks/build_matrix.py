@@ -188,9 +188,20 @@ ENVIRONMENTS = [
     ("Phone or tablet", "no local execution at all", PLANNED,
      "there is no mobile client and no remote backend in the code "
      "(`wired_in.remote_backend_exists` is false), so a phone has nowhere to send work to", "none", "wired_in.remote_backend_exists"),
-    ("Your own sandbox server", "self-hosted gateway", PLANNED,
-     "no remote backend class exists (`wired_in.sandbox_backend_implementations` is "
-     "ContainerBackend and NoSandboxBackend only)", "none", "wired_in.remote_backend_exists"),
+    # Derived from the gateway's own commands, not from a backend class: the gateway is a separate
+    # pair of commands, and `agentnode run` does not send packs to it (no remote SandboxBackend).
+    # Not "tested": its tests here run the gateway with a stand-in for the container runtime, and
+    # the whole journey on a real runtime has no recorded run in _facts/test-evidence.json.
+    ("Your own sandbox server", "self-hosted gateway (beta)", AVAILABLE_UNTESTED,
+     "`agentnode gateway` serves a sandbox from a Linux machine of your own that has Docker or "
+     "Podman, and `agentnode remote` connects to it, tests it and runs files there "
+     f"({len(FACTS['wired_in'].get('self_hosted_gateway_commands') or [])} gateway and "
+     f"{len(FACTS['wired_in'].get('self_hosted_client_commands') or [])} client commands); set up "
+     "with [the guide](../../sdk/docs/self-hosted-sandbox.md). Its tests here run the gateway with a "
+     "stand-in for the program that creates the sealed workspace, and no run of the whole journey "
+     "on a real one is recorded here. Packs run with `agentnode run` are not sent to it "
+     f"(`wired_in.remote_backend_exists` is {FACTS['wired_in']['remote_backend_exists']})",
+     "none", "wired_in.self_hosted_gateway_commands"),
     ("AgentNode Sandbox (managed)", "managed service", PLANNED,
      "no managed backend, no service, no billing (`wired_in.managed_backend_exists` is false)",
      "none", "wired_in.managed_backend_exists"),
@@ -213,13 +224,15 @@ CAPABILITIES = [
      "asserts the refusal; also observed by hand on Windows", "runtime_absent_refusal", "sandbox_runtime.refuses_without_runtime"),
     ("A sandboxed program reaching only the sites its install sealed", AVAILABLE_TESTED,
      "the `egress` mode joins an internal network with no route out except a proxy that allows "
-     "exactly the sealed names; two run paths call it "
+     "exactly the sealed names; "
+     f"{len(FACTS['sandbox_runtime']['egress_live_callers'])} modules call it "
      f"({', '.join('`' + c + '`' for c in FACTS['sandbox_runtime']['egress_live_callers'])}), and "
      "the end-to-end test runs the bypass matrix from inside the container. Reached only where an "
      "install sealed an allowlist and consent was recorded — everything else is refused, not opened",
      "linux_egress_topology", "sandbox_runtime.egress_live_callers"),
     ("Secrets reaching an MCP or tool pack by name only", AVAILABLE_UNTESTED,
-     "the same two run paths pass consented names rather than values "
+     f"{len(FACTS['sandbox_runtime']['secret_passthrough_live_callers'])} run paths pass "
+     "consented names rather than values "
      f"({', '.join('`' + c + '`' for c in FACTS['sandbox_runtime']['secret_passthrough_live_callers'])}), "
      "behind the refusals listed in `sandbox_runtime.credentialed_run_refusals`. **The value still "
      "reaches the container** — name-only keeps it off the command line and out of the logs, not "
@@ -230,11 +243,12 @@ CAPABILITIES = [
     ("Conformance suite for a backend", PLANNED,
      f"`wired_in.conformance_suite_exists` is {FACTS['wired_in']['conformance_suite_exists']}",
      "code_only", "wired_in.conformance_suite_exists"),
-    ("The EM-3 selection contract", PLANNED,
-     "on this branch the module is "
-     + ("present but imported by nothing" if FACTS["wired_in"]["em3_contract_module_exists"]
-        else "not present on main; it is under review in pull request #115")
-     + ", so it decides nothing yet", "none", "wired_in.em3_contract_importers"),
+    ("The EM-3 selection contract", AVAILABLE_UNTESTED,
+     "`sandbox/contract.py` is imported by "
+     + ", ".join("`" + m + "`" for m in FACTS["wired_in"]["em3_contract_importers"])
+     + ": the run path takes its network through `sandbox/composition.py`, and the gateway builds "
+     "its policies from it, where a lower-precedence scope can only narrow. No run of it is "
+     "recorded here", "none", "wired_in.em3_contract_importers"),
 ]
 
 
@@ -381,7 +395,9 @@ expectation is reasonable — and it is still not a test.
 prepared and has not been run. Until it has, no page in this documentation says the setup is easy;
 it says what the steps are and lets you judge.
 """
-    OUT.write_text(md, encoding="utf-8")
+    # LF on every platform; write_text on Windows would write CRLF and break the drift check.
+    with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(md)
     print(f"  wrote {OUT.name}: {len(ENVIRONMENTS)} environments, {len(CAPABILITIES)} capabilities")
     return 0
 

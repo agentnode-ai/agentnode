@@ -29,9 +29,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SANDBOX_DOCS = ROOT / "docs" / "sandbox"
 
-#: PARKED (task #20, T-0081): these reproduce today's stale generator and expect the fix. Strict, so
-#: each one fails loudly the moment it passes and its marker has to be removed with the fix.
-OPEN_20 = pytest.mark.xfail(strict=True, reason="task #20 open: generator/availability.md not repaired yet")
 
 
 def _tree(tmp: Path) -> Path:
@@ -66,14 +63,12 @@ def _row(docs: Path, name: str) -> str:
     raise AssertionError("no row %r in availability.md" % name)
 
 
-@OPEN_20
 def test_the_generator_runs_on_the_current_code(generated):
     _docs, extract, build = generated
     assert extract.returncode == 0, extract.stdout + extract.stderr
     assert build.returncode == 0, build.stdout + build.stderr
 
 
-@OPEN_20
 def test_the_facts_are_the_same_on_every_platform(generated):
     docs, *_ = generated
     raw = (docs / "_facts" / "code-facts.json").read_bytes()
@@ -84,7 +79,6 @@ def test_the_facts_are_the_same_on_every_platform(generated):
     assert b"\r" not in (docs / "availability.md").read_bytes()
 
 
-@OPEN_20
 def test_the_self_hosted_gateway_row_says_what_is_there(generated):
     docs, *_ = generated
     row = _row(docs, "Your own sandbox server")
@@ -98,7 +92,6 @@ def test_the_self_hosted_gateway_row_says_what_is_there(generated):
     assert facts["wired_in"]["remote_backend_exists"] is False
 
 
-@OPEN_20
 def test_the_em3_contract_row_is_no_longer_planned(generated):
     docs, *_ = generated
     row = _row(docs, "The EM-3 selection contract")
@@ -119,7 +112,6 @@ def test_no_new_row_claims_tested_without_a_recorded_run(generated):
                       "**A sandboxed program reaching only the sites its install sealed**"], tested
 
 
-@OPEN_20
 def test_a_second_run_changes_nothing(generated):
     docs, *_ = generated
     before = {p: (docs / p).read_bytes() for p in ("_facts/code-facts.json", "availability.md")}
@@ -129,7 +121,6 @@ def test_a_second_run_changes_nothing(generated):
     assert after == before
 
 
-@OPEN_20
 def test_the_committed_files_are_what_the_generator_writes(generated):
     docs, *_ = generated
     for rel in ("_facts/code-facts.json", "availability.md"):
@@ -137,7 +128,6 @@ def test_the_committed_files_are_what_the_generator_writes(generated):
             "%s in the repository is not what the generator writes from the current code" % rel)
 
 
-@OPEN_20
 def test_the_documentation_check_passes(tmp_path):
     docs = _tree(tmp_path)
     check = _run(docs, "check_docs.py")
