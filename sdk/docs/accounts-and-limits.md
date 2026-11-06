@@ -74,10 +74,28 @@ agentnode gateway limits --requests-per-minute 120        # a burst is not the s
 agentnode gateway limits --max-artifact-bytes 5242880     # the largest job accepted
 ```
 
+**One customer's own ceilings, and a one-off allowance.** The account ceilings above can be set
+for one customer instead of all of them, and a customer can be given a number of runs IN TOTAL
+that never refills -- not when the window moves on, not after a restart:
+
+```
+agentnode gateway limits --account <id> --account-runs-per-window 50   # this customer only
+agentnode gateway limits --account <id> --account-lifetime-runs 20     # 20 runs, ever
+agentnode gateway limits --account <id> --trial                        # the PROVISIONAL trial size
+agentnode gateway limits --account <id> --reset-lifetime               # give THIS customer theirs back
+agentnode gateway limits --account <id> --reset                        # back to the gateway-wide ceilings
+```
+
+When the one-off allowance is used up the customer is refused with `over_a_ceiling` (which:
+`account_lifetime_runs`) and told the way on -- a sandbox of their own -- rather than to wait for a
+window that will never clear. `usage` shows `account_lifetime_runs_used` beside the ceiling.
+The `--trial` size is a placeholder until the real size is decided; the command says so.
+
 | | bounds | enforced by |
 | --- | --- | --- |
 | `concurrent_runs`, `account_concurrent_runs` | how many at once | the gateway, under one lock with the record insertion |
 | `runs_per_window`, `account_runs_per_window` | how many in a window | the gateway, claimed and judged in one transaction |
+| `account_lifetime_runs` | how many in total, ever (never refills) | the gateway, in the same transaction as the window ceilings; reset only per named account |
 | `seconds_per_window`, `account_seconds_per_window` | sandbox time in a window | the same |
 | `requests_per_minute`, `account_requests_per_minute` | rate, on **every** operation | the gateway |
 | `max_artifact_bytes` | the size of a job | the gateway, before the bytes go anywhere |

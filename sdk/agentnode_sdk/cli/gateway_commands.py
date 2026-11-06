@@ -1519,10 +1519,13 @@ def cmd_limits(args) -> int:
     asked = {name: getattr(args, name, None) for name in
              ("concurrent_runs", "runs_per_window", "seconds_per_window",
               "account_concurrent_runs", "account_runs_per_window",
-              "account_seconds_per_window", "machine_concurrent_runs", "queue_depth",
+              "account_seconds_per_window", "account_lifetime_runs",
+              "machine_concurrent_runs", "queue_depth",
               "requests_per_minute",
               "account_requests_per_minute", "max_artifact_bytes", "max_output_bytes")}
-    if getattr(args, "limits_account", None) or getattr(args, "limits_reset", False):
+    if (getattr(args, "limits_account", None) or getattr(args, "limits_reset", False)
+            or getattr(args, "limits_trial", False)
+            or getattr(args, "limits_reset_lifetime", False)):
         return _limits_for_one_account(root, args, asked)
     if all(value is None for value in asked.values()):
         print()
@@ -1533,7 +1536,7 @@ def cmd_limits(args) -> int:
         print()
         print(f"  {bold('What one CUSTOMER may use, across every device they have')}")
         for name in ("account_concurrent_runs", "account_runs_per_window",
-                     "account_seconds_per_window"):
+                     "account_seconds_per_window", "account_lifetime_runs"):
             value = now.as_dict()[name]
             print(f"    {name:<28}: {value if value else 'no limit'}")
         print()
@@ -1604,8 +1607,8 @@ def _limits_for_one_account(root, args, asked: dict) -> int:
 
     account_id = getattr(args, "limits_account", None) or ""
     if not account_id:
-        print("  --reset needs --account <id>: it removes one customer's own ceilings.",
-              file=sys.stderr)
+        print("  --reset, --trial and --reset-lifetime need --account <id>: each is about one "
+              "customer.", file=sys.stderr)
         return 2
     others = sorted(k for k, v in asked.items() if v is not None and k not in ACCOUNT_FIELDS)
     if others:
@@ -1631,6 +1634,26 @@ def _limits_for_one_account(root, args, asked: dict) -> int:
         print(f"  Not changed. There is no customer {account_id!r} on this gateway; "
               "`agentnode gateway accounts` lists them.", file=sys.stderr)
         return 2
+    if getattr(args, "limits_reset_lifetime", False):
+        # Task #12: exactly this customer's one-off counter, and nothing else.
+        from agentnode_sdk.gateway.allowance import USE_NAME, Use, lifetime_key
+
+        Use(root / USE_NAME).forget_everything_about(lifetime_key(account_id))
+        print()
+        print(f"  {bold('Reset.')} {account_id} has its whole one-off allowance back. No other "
+              "customer's was touched.")
+        return 0
+    if getattr(args, "limits_trial", False):
+        from agentnode_sdk.gateway.allowance import PROVISIONAL_TRIAL_LIFETIME_RUNS
+
+        size = asked.get("account_lifetime_runs")
+        provisional = size is None
+        asked = dict(asked, account_lifetime_runs=(PROVISIONAL_TRIAL_LIFETIME_RUNS
+                                                    if provisional else size))
+        if provisional:
+            print(f"  The trial size {PROVISIONAL_TRIAL_LIFETIME_RUNS} is PROVISIONAL -- a "
+                  "placeholder until the real size is decided (task #15). Give "
+                  "--account-lifetime-runs N to set one now.")
     if getattr(args, "limits_reset", False):
         write_account_ceilings(root, account_id, None)
         print(f"\n  {bold('Reset.')} {account_id} is held to the gateway-wide ceilings again, "

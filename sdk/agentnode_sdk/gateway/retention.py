@@ -640,6 +640,9 @@ def delete_account(state, account_id: str, because: str = "the customer asked") 
     for key in [wanted, *devices]:
         went["counters"] += int(bool(use.forget_everything_about(key)))
         went["counters"] += int(bool(rate.forget(key)))
+    # The one-off allowance's counter (task #12), which time never forgets -- so this is the only
+    # place it goes.
+    went["counters"] += int(bool(use.forget_everything_about(allowance.lifetime_key(wanted))))
 
     # 3. The audit. Lines name the account and the device and nothing else about a person, and
     #    both of those identify them, so both go.

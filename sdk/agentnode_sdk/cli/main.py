@@ -347,6 +347,17 @@ def main(argv: list[str] | None = None) -> int:
     gw_limits.add_argument("--reset", dest="limits_reset", action="store_true",
                            help="With --account: remove that customer's own ceilings, so the "
                                 "gateway-wide ones apply to them again")
+    # Task #12, additive: a one-off allowance that never refills.
+    gw_limits.add_argument("--account-lifetime-runs", dest="account_lifetime_runs", type=int,
+                           default=None,
+                           help="How many runs one customer may start IN TOTAL, ever; it does not "
+                                "refill. 0 = no such limit")
+    gw_limits.add_argument("--trial", dest="limits_trial", action="store_true",
+                           help="With --account: give that customer a one-off allowance of the "
+                                "PROVISIONAL trial size (not decided yet)")
+    gw_limits.add_argument("--reset-lifetime", dest="limits_reset_lifetime", action="store_true",
+                           help="With --account: give that customer their whole one-off "
+                                "allowance back. Only that customer")
 
     gw_keeps = gw_sub.add_parser(
         "keeps", help="What this gateway keeps, for how long, and what expiring costs")

@@ -1689,8 +1689,14 @@ def _usage(service, principal, params):
     runs, seconds = service.use.so_far(principal.client_id)
     account_runs, account_seconds = (
         service.use.so_far(principal.account_id) if principal.account_id else (0, 0.0))
+    # The one-off allowance (task #12): the same counter the booking writes, never forgotten.
+    from agentnode_sdk.gateway.allowance import lifetime_key
+
+    lifetime_used = (service.use.so_far(lifetime_key(principal.account_id))[0]
+                     if principal.account_id else 0)
     return {"runs": int(runs), "seconds": int(seconds),
             "account_runs": int(account_runs), "account_seconds": int(account_seconds),
+            "account_lifetime_runs_used": int(lifetime_used),
             "ceilings": allowed.as_dict(), "clears_at": None}
 
 
@@ -1974,8 +1980,11 @@ def _translate(exc: Exception) -> Refused:
     if isinstance(exc, QueueIsFull):
         return Refused("over_a_ceiling", str(exc), exc.remedy)
     if isinstance(exc, OverTheCeiling):
+        # A ceiling that carries its own way on (a one-off allowance, task #12) says that one:
+        # "wait until the window clears" is wrong advice for something that never clears.
         return Refused("over_a_ceiling", str(exc),
-                       "Wait until the window clears, or ask for a higher ceiling.")
+                       getattr(exc, "what_to_do", "")
+                       or "Wait until the window clears, or ask for a higher ceiling.")
     if isinstance(exc, ProtocolError):
         return Refused("malformed", str(exc), "Correct the request and send it again.")
     # THE GATEWAY'S OWN FAULT, named before the generic branch for the reason `name_the_refusal`

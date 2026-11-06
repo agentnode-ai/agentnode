@@ -92,12 +92,46 @@ class Stopped(Exception):
 class OverTheCeiling(Exception):
     """A paired client has reached one of its limits. Carries which, and when it lifts."""
 
-    def __init__(self, which: str, message: str, lifts_at: float = 0.0) -> None:
+    def __init__(self, which: str, message: str, lifts_at: float = 0.0,
+                 what_to_do: str = "") -> None:
         super().__init__(CEILING_SAYS + " (" + which + "): " + message)
         #: Which ceiling, by name, so a client can tell one from another and from every other
         #: kind of refusal.
         self.which = which
         self.lifts_at = lifts_at
+        #: The way on, when it is not "wait for the window": a one-off allowance never clears,
+        #: so the generic advice would be wrong for it. Empty means the generic advice applies.
+        self.what_to_do = what_to_do
+
+
+# ------------------------------------------------------------------------------- one-off
+#
+# Task #12. A lifetime ceiling on the account scope: `account_lifetime_runs` runs in total, ever.
+# It is counted in the same record and the same transaction as every window ceiling, under its
+# own key, and that key is the one thing in the record that time never forgets -- so the window
+# moving on, a restart, or a later day refills nothing. Only an operator resets it, for one named
+# account (`agentnode gateway limits --account <id> --reset-lifetime`), and deleting the customer
+# deletes it.
+
+#: The counter's key in the use record. Prefixed so it can never collide with a device or an
+#: account key, and so `_forget` can tell it apart.
+LIFETIME_PREFIX = "lifetime:"
+
+#: PROVISIONAL -- a placeholder, not a decision. What `agentnode gateway limits --account <id>
+#: --trial` sets when no size is given. The real size of a trial is task #15's to decide (with the
+#: prices); until then this number stands in for it and is said to be provisional wherever it is
+#: shown. Change it there, not here by assumption.
+PROVISIONAL_TRIAL_LIFETIME_RUNS = 10
+
+#: What a customer is told when their one-off allowance is used up. ONE sentence, used by every
+#: place that turns the refusal into words, so the reason cannot differ between doors.
+ONE_OFF_WHAT_TO_DO = (
+    "This allowance was one-off and does not refill. To keep going, run your own sandbox "
+    "(`agentnode gateway`, see the self-hosted guide) or ask whoever runs this sandbox.")
+
+
+def lifetime_key(account_id: str) -> str:
+    return LIFETIME_PREFIX + str(account_id)
 
 
 @dataclass(frozen=True)
@@ -129,6 +163,10 @@ class Allowance:
     account_concurrent_runs: int = 0
     account_runs_per_window: int = 0
     account_seconds_per_window: int = 0
+    #: Task #12: how many runs this customer may start IN TOTAL, ever. Never refilled by a window
+    #: or a restart. Zero means no such ceiling, like everything here -- so nothing changes for a
+    #: gateway or an account that does not set one.
+    account_lifetime_runs: int = 0
 
     # ---------------------------------------------------------------- the machine
     #
@@ -259,6 +297,7 @@ def read_allowance(root: str | os.PathLike[str]) -> Allowance:
         account_concurrent_runs=int(body.get("account_concurrent_runs") or 0),
         account_runs_per_window=int(body.get("account_runs_per_window") or 0),
         account_seconds_per_window=int(body.get("account_seconds_per_window") or 0),
+        account_lifetime_runs=int(body.get("account_lifetime_runs") or 0),
         machine_concurrent_runs=int(body.get("machine_concurrent_runs") or 0),
         queue_depth=int(body.get("queue_depth") or 0),
         requests_per_minute=int(body.get("requests_per_minute") or 0),
@@ -287,7 +326,7 @@ def write_allowance(root: str | os.PathLike[str], allowance: Allowance) -> Path:
 
 ACCOUNT_CEILINGS_NAME = "account-ceilings.json"
 ACCOUNT_FIELDS = ("account_concurrent_runs", "account_runs_per_window",
-                  "account_seconds_per_window")
+                  "account_seconds_per_window", "account_lifetime_runs")
 
 
 def _account_values_problem(values) -> str:
@@ -517,6 +556,12 @@ class Use:
     def _forget(self, body: dict, now: float) -> dict:
         kept = {}
         for client, runs in body.items():
+            if str(client).startswith(LIFETIME_PREFIX):
+                # A one-off allowance's counter is never forgotten by time (task #12): that is
+                # the whole difference between it and a window.
+                if runs:
+                    kept[str(client)] = runs
+                continue
             fresh = [r for r in runs if float(r.get("at", 0)) > now - self.window]
             if fresh:
                 kept[str(client)] = fresh
@@ -574,11 +619,22 @@ class Use:
             raise ValueError("the same counter cannot be claimed twice for one run")
         with self._lock, ProcessLock(self.path):
             body = self._forget(self._load(), at)
+
+            def already(key) -> bool:
+                # A one-off counter is never forgotten, so the same run claimed twice -- a
+                # resubmission -- would be charged twice forever. Once there, it is not again.
+                return (str(key).startswith(LIFETIME_PREFIX)
+                        and any(e.get("run_id") == str(run_id) for e in body.get(str(key), [])))
+
             for key, judge in scopes:
+                if already(key):
+                    continue
                 mine = body.get(str(key), [])
                 judge(len(mine), sum(float(e.get("seconds", 0.0)) for e in mine),
                       min((float(e.get("at", at)) for e in mine), default=at))
             for key, _judge in scopes:
+                if already(key):
+                    continue
                 body.setdefault(str(key), []).append(
                     {"run_id": str(run_id), "at": at, "seconds": 0.0})
             _atomically(self.path, json.dumps(body, sort_keys=True))
