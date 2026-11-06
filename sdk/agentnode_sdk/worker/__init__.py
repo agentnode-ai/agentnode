@@ -48,9 +48,10 @@ kernel, and a vocabulary does not change that.
 
 Nor does it establish that the worker HAS been moved. `SocketWorker` reaches a unix socket, which
 is on this machine by construction; `TlsWorker` is what crosses a network, and it has been tested
-on one host only. The two-machine measurement of the separate-worker-host arrangement has never
-passed -- every attempt on two real hosts ended in BLOCK or WARN -- so a worker on its own machine
-is a procedure, not an established property, and no claim here should be read as saying otherwise.
+on one host only. For the separate-worker-host arrangement, run remote-worker-cross-host-r3 passed
+X1-X10 on 2026-10-02 for build df821f65; the current build has not been accepted by r4, so for this
+build a worker on its own machine is a procedure, not an established property, and no claim here
+should be read as saying otherwise.
 """
 from __future__ import annotations
 

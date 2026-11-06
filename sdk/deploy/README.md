@@ -61,8 +61,11 @@ to a deployment, and that change -- a network transport -- has been written: the
 `separate-worker-host` declaration permits only a remote address over mutual TLS, reached by
 `TlsWorker` (`worker/topology.py`,
 `worker/remote.py`), with its own install in [`separate-worker-host/`](separate-worker-host/README.md).
-Its two-machine measurement has never passed, so that arrangement is a procedure and not an
-established property, and the risks in [`RISKS.md`](RISKS.md) still apply.
+Run `remote-worker-cross-host-r3` passed X1-X10 on 2026-10-02 for build df821f65, and its
+independent review passed. The current build has not been accepted by r4 on two freshly rebuilt
+machines, and that earlier result is not a result for it -- so for the current build that
+arrangement is a procedure and not an established property, and the risks in
+[`RISKS.md`](RISKS.md) still apply.
 
 ```jsonc
 // /var/lib/agentnode/state/config.json

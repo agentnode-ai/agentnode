@@ -43,9 +43,10 @@ quietly. The privilege questions have no such guard and have to be asked again.
 ## Not claimed anywhere
 
 This arrangement is not production-ready, not multi-tenant, and not escape-proof between the
-control plane and the worker. Neither is the separate-worker-host arrangement described below: its
-two-machine measurement has never passed, so nothing on this page may be read as saying a second
-machine has removed any of the risks above.
+control plane and the worker. Neither is the separate-worker-host arrangement described below:
+run `remote-worker-cross-host-r3` passed X1-X10 on 2026-10-02 for build df821f65, and the current
+build has not been accepted by r4, so nothing on this page may be read as saying a second machine
+has removed any of the risks above for the build in this repository.
 
 ## What is not on this list
 
@@ -79,11 +80,14 @@ arrangement with its own install, not a setting in this one.
   ([`tests/test_the_two_roles_are_separable.py`](../tests/test_the_two_roles_are_separable.py),
   [`separate-worker-host/README.md`](separate-worker-host/README.md)).
 
-**What has not been shown.** The two-machine measurement has never passed: the procedure was run
-on two real hosts and every attempt ended in BLOCK or WARN, the last acceptance run on rebuilt
-machines blocking on five of its ten criteria. The separate-worker-host README says so and a test
-holds that sentence in place. Until a run passes and is independently reviewed, a worker on its own
-machine is a procedure, not a property -- the arrangement is still not production-ready and not
+**What has been shown, and for which build.** Run `remote-worker-cross-host-r3` passed X1-X10 on
+2026-10-02 for build df821f65, on two freshly rebuilt machines, and its independent review passed.
+The attempts before it (2026-09-30, BLOCK or WARN, the last blocking on five of ten criteria) are
+superseded history. **What has not been shown:** the current build has not been accepted by r4.
+It differs from df821f65 (among other things the P13 rollback evidence, task #28), so r3's result
+is not a result for it. The separate-worker-host README says so and a test holds that wording in
+place. Until r4 passes and is independently reviewed, a worker on its own machine is, for this
+build, a procedure, not a property -- the arrangement is still not production-ready and not
 multi-tenant, and the privilege model above is re-assessed on the worker host rather than carried
 across to it.
 

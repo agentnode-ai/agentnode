@@ -62,7 +62,9 @@ def test_the_page_names_what_is_implemented_and_where():
 def test_the_page_keeps_saying_what_has_not_been_shown():
     """Naming the transport must not turn into a claim that the move is done."""
     flowed = _flowed()
-    assert "has never passed" in flowed            # the two-machine measurement
+    from tests import two_machine_claim as claim
+
+    assert not claim.problems(RISKS.read_text(encoding="utf-8"))   # r3 passed; the current build not
     assert "not production-ready" in flowed and "not multi-tenant" in flowed
     for a, b in (("the worker ", "has been moved"), ("is now ", "production-ready"),
                  ("is now ", "isolated"), ("two-machine measurement ", "passed")):

@@ -1577,8 +1577,11 @@ class TestNothingClaimsTheWorkerCanAlreadyBeMoved:
         assert "transport" in said
         assert "unix socket" in said or "unix sockets" in said
         assert "tlsworker" in said, "it does not name the transport that exists: " + said[:400]
-        assert "has never passed" in said, (
-            "it does not say the two-machine measurement is missing: " + said[:400])
+        from tests import two_machine_claim as claim
+
+        assert not claim.problems(inspect.getdoc(worker) or ""), (
+            "it does not separate r3's result from the current build: "
+            + str(claim.problems(inspect.getdoc(worker) or "")))
 
     def test_and_the_transport_really_does_refuse_everything_else(self):
         """The claim is checked against the code rather than against another sentence."""

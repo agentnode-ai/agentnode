@@ -70,7 +70,9 @@ def test_both_name_the_transport_and_what_has_not_been_shown():
     for where, said in (("worker/__init__.py", _docstring()), ("deploy/README.md", _readme())):
         assert "mutual tls" in said and "separate-worker-host" in said, where
         assert "tlsworker" in said, where
-        assert "has never passed" in said, where          # the two-machine measurement
+        from tests import two_machine_claim as claim
+
+        assert not claim.problems(said), (where, claim.problems(said))   # r3 vs the current build
         assert "change to the product" in said, where     # what the move is, as everywhere else
 
 
