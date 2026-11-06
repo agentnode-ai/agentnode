@@ -395,6 +395,24 @@ def write_account_ceilings(root: str | os.PathLike[str], account_id: str,
 _ACCOUNT_CEILINGS_WRITE = threading.Lock()
 
 
+def forget_account_ceilings(root: str | os.PathLike[str], account_id: str) -> bool:
+    """Remove exactly this account's own ceilings. True if it had any. What deleting it implies.
+
+    Task #26. Read strictly first: a damaged file RAISES (`CannotReadTheCeilings`) rather than
+    being rewritten from nothing, which would drop every OTHER customer's ceilings with it. The
+    write is atomic, so a failure leaves the file as it was, never half-written; nothing is written
+    at all when the account had no entry.
+    """
+    path = Path(root) / ACCOUNT_CEILINGS_NAME
+    with _ACCOUNT_CEILINGS_WRITE:
+        body = read_account_ceilings(root)
+        if str(account_id) not in body:
+            return False
+        del body[str(account_id)]
+        _atomically(path, json.dumps(body, indent=2, sort_keys=True) + "\n")
+    return True
+
+
 def for_account(allowance: Allowance, account_id: str, ceilings: dict) -> Allowance:
     """The ceilings that apply to this account: the gateway-wide ones, with its own in place."""
     own = ceilings.get(str(account_id or "")) if account_id else None

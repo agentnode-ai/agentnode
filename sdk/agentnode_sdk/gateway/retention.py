@@ -635,14 +635,30 @@ def delete_account(state, account_id: str, because: str = "the customer asked") 
             went["devices"] += 1
 
     # 2. Counters, which are keyed by account and by device.
+    #    A damaged record used to make this RAISE, halfway through a deletion whose devices were
+    #    already revoked -- the one step that broke off instead of saying what it could not do
+    #    (task #26). Named now, like every other step, and the deletion goes on.
     use = allowance.Use(root / allowance.USE_NAME)
     rate = admission.RateLimit(root / admission.RATE_NAME)
-    for key in [wanted, *devices]:
-        went["counters"] += int(bool(use.forget_everything_about(key)))
-        went["counters"] += int(bool(rate.forget(key)))
-    # The one-off allowance's counter (task #12), which time never forgets -- so this is the only
-    # place it goes.
-    went["counters"] += int(bool(use.forget_everything_about(allowance.lifetime_key(wanted))))
+    try:
+        for key in [wanted, *devices]:
+            went["counters"] += int(bool(use.forget_everything_about(key)))
+            went["counters"] += int(bool(rate.forget(key)))
+        # The one-off allowance's counter (task #12), which time never forgets -- so this is the
+        # only place it goes.
+        went["counters"] += int(bool(use.forget_everything_about(allowance.lifetime_key(wanted))))
+    except (OSError, ValueError) as exc:
+        went["problems"].append("this account's counters could not all be removed: %s"
+                                % str(exc)[:160])
+
+    # 2b. The customer's own ceilings (task #11). Exactly this account's entry; a damaged file is
+    #     named and left as it is rather than rewritten, which would drop everybody else's.
+    went["account_ceilings"] = 0
+    try:
+        went["account_ceilings"] = int(allowance.forget_account_ceilings(root, wanted))
+    except (OSError, ValueError) as exc:
+        went["problems"].append("this account's own ceilings are still in %s: %s"
+                                % (allowance.ACCOUNT_CEILINGS_NAME, str(exc)[:160]))
 
     # 3. The audit. Lines name the account and the device and nothing else about a person, and
     #    both of those identify them, so both go.
