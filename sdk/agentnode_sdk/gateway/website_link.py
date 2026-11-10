@@ -58,6 +58,7 @@ TOO_LONG = "too_long"
 REPLAYED = "replayed"
 BAD_SUBJECT = "bad_subject"
 SUSPENDED = "suspended"
+TOO_MANY = "too_many_open"
 
 _CLAIMS = {"v", "iss", "aud", "sub", "iat", "exp", "nonce"}
 _SUBJECT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -78,6 +79,8 @@ class LinkResult:
     account_id: str
     pairing_code: str
     created: bool
+    #: when the invitation stops working, as the joining store set it
+    expires_at: int = 0
 
 
 def _b64e(raw: bytes) -> str:
@@ -174,8 +177,17 @@ def _subject_key(sub: str) -> str:
     return hashlib.sha256(("%s|%s" % (ISSUER, sub)).encode()).hexdigest()
 
 
-def redeem_grant(state, token, now: float | None = None) -> LinkResult:
-    """Check a grant and hand back an invitation into the website user's one account."""
+def redeem_grant(state, token, now: float | None = None, joining=None) -> LinkResult:
+    """Check a grant and hand back an invitation into the website user's one account.
+
+    The invitation is a JOINING invitation (`gateway/joining.py`), the store made for "an
+    invitation into an account that already exists" -- several may be live and each belongs to one
+    account. It used to be `state.start_pairing(for_account=...)`, the operator's ONE live code:
+    every website link then silently replaced whatever code the operator had just handed
+    somebody, and the operator's next `gateway pair` silently killed a website user's invitation
+    (#36). `joining` is the gateway's own store; without one, the store in this gateway's
+    directory is used.
+    """
     claims = _verify(state, token)
     at = time.time() if now is None else float(now)
     if claims["iss"] != ISSUER:
@@ -220,8 +232,16 @@ def redeem_grant(state, token, now: float | None = None) -> LinkResult:
         if created:
             links[key] = account_id
             atomically(links_path, json.dumps(links, indent=2, sort_keys=True) + "\n")
-    code = state.start_pairing(now=at, for_account=account_id)
-    return LinkResult(account_id=account_id, pairing_code=code, created=created)
+    if joining is None:
+        from agentnode_sdk.gateway.joining import Joining
+        joining = Joining(state.root)
+    from agentnode_sdk.gateway.joining import TooManyOutstanding
+    try:
+        offered = joining.offer(account_id, label="website link")
+    except TooManyOutstanding as too_many:
+        raise LinkRefused(TOO_MANY, str(too_many)) from too_many
+    return LinkResult(account_id=account_id, pairing_code=offered["code"], created=created,
+                      expires_at=int(offered["expires_at"]))
 
 
 __all__ = ["LinkRefused", "LinkResult", "issue_grant", "redeem_grant", "trust_website_key",

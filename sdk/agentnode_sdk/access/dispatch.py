@@ -143,7 +143,11 @@ NOBODY = Principal(token="", device_id="", client_id="")
 #: -- including the ones a model reads -- and would make them addressable at `/v1/op/`, where the
 #: dispatcher would demand the credential they exist to obtain. Keeping them out of the contract
 #: is what makes "no tool can pair itself" true by construction rather than by a filter.
-BOOTSTRAP = ("hello", "pair", "open_session")
+#:
+#: `link_website_user` (#36) is the fourth: a device holding a grant the website signed for its
+#: signed-in user. It hands out no credential -- only a joining invitation into that user's one
+#: account, which the device then redeems through `pair` like any other.
+BOOTSTRAP = ("hello", "pair", "open_session", "link_website_user")
 
 
 def before_anyone(operation: str, params: dict, *, service, via: str = "") -> dict:
@@ -272,7 +276,37 @@ def _open_session(service, params: dict) -> dict:
             "gateway": paired["gateway"], "fingerprint": paired["fingerprint"]}
 
 
-_BOOTSTRAP = {"hello": _hello, "pair": _pair, "open_session": _open_session}
+def _link_website_user(service, params: dict) -> dict:
+    """Redeem a website link grant for an invitation into that website user's one account (#36).
+
+    Every check belongs to the grant and is applied by `website_link.redeem_grant`: the signature
+    under a website key the operator trusted, issuer, audience, time window, nonce single-use and
+    the suspension of the account. This adds nothing to them and decides nothing: the account comes
+    from the gateway's own map of website users, never from the request.
+
+    What goes back is what a stranger at this door may know: a code to use once, when it stops
+    working, whether this was the user's first link, and which gateway this is. Not the account.
+    """
+    from agentnode_sdk.gateway import website_link
+
+    service.require_private_state()
+    grant = params.get("grant", "")
+    if not isinstance(grant, str) or not grant:
+        raise Refused("not_authenticated", "There is no link grant in this request.",
+                      "Start the link from the website while signed in.")
+    try:
+        link = website_link.redeem_grant(service.state, grant, joining=service.joining)
+    except website_link.LinkRefused as refused:
+        raise Refused("not_authenticated", "This link was not accepted: %s" % refused,
+                      "Start the link again from the website; a link works once and only for "
+                      "a few minutes.") from refused
+    identity = service.state.identity
+    return {"code": link.pairing_code, "expires_at": link.expires_at, "new_account": link.created,
+            "gateway": identity.as_dict(), "fingerprint": identity.fingerprint}
+
+
+_BOOTSTRAP = {"hello": _hello, "pair": _pair, "open_session": _open_session,
+              "link_website_user": _link_website_user}
 
 
 def identify(service, token: str, proof=None, via: str = "") -> Principal:

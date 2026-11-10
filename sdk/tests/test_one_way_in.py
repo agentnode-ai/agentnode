@@ -50,7 +50,9 @@ def audit_lines(service):
 class TestThereAreExactlyTwo:
 
     def test_the_list_is_the_list(self):
-        assert dispatch.BOOTSTRAP == ("hello", "pair", "open_session")
+        # `link_website_user` (#36) added on purpose: it hands out no credential, only a joining
+        # invitation into the account the website-signed grant maps to.
+        assert dispatch.BOOTSTRAP == ("hello", "pair", "open_session", "link_website_user")
 
     @pytest.mark.parametrize("operation",
                              [op.name for op in contract.OPERATIONS] + ["", "anything", "submit "])
@@ -78,7 +80,10 @@ class TestThereAreExactlyTwo:
         # It is here because a health address is the one thing most likely to be left reachable
         # by accident, so it was built to be safe when it is. Metrics are deliberately NOT an
         # address; they name accounts and reach the operator through the command line.
-        assert anonymous == {"/v1/health", "/v1/hello", "/v1/pair", "/v1/session",
+        #
+        # `/v1/link` (#36): a website-signed grant for an invitation into one account. No
+        # credential is handed out there; the invitation is redeemed at `/v1/pair`.
+        assert anonymous == {"/v1/health", "/v1/hello", "/v1/pair", "/v1/session", "/v1/link",
                              "/console/setup", "/console/confirm"}
 
     def test_and_every_route_is_one_of_the_four_kinds(self):

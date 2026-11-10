@@ -51,8 +51,11 @@ def _grant(gateway, key, user="u-alice", **kw):
 
 
 def _device(gateway, link, name="laptop"):
-    token = gateway.state.redeem_pairing(link.pairing_code, client_name=name)
-    return dispatch.identify(gateway, token)
+    # Through the ordinary pairing door: a link invitation is a joining invitation (#36), which
+    # `pair` tries before the operator's code.
+    paired = dispatch.before_anyone("pair", {"code": link.pairing_code, "client_name": name},
+                                    service=gateway)
+    return dispatch.identify(gateway, paired["token"])
 
 
 # ---- the handover, end to end ------------------------------------------------------------------ #

@@ -4847,6 +4847,17 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send(403, refusal(refused.because))
             return self._send(200, answer)
 
+        if self.path == "/v1/link":
+            # A website link grant (#36), redeemed for a joining invitation into that website
+            # user's one account. Through the dispatcher's one way in for strangers, like /v1/pair;
+            # the grant's own checks live in website_link and nothing is decided here.
+            try:
+                answer = _dispatch.before_anyone("link_website_user", body, service=self.service,
+                                                 via="older_door")
+            except _dispatch.Refused as refused:
+                return self._send(403, refusal(refused.because))
+            return self._send(200, answer)
+
         if self.path == "/v1/jobs":
             # A TRANSLATOR. It reads the older shape off the wire, hands the request to the
             # dispatcher, and renders what comes back in the envelope this door has always used.
