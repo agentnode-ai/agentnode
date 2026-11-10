@@ -74,9 +74,16 @@ happen before the worker is up. Two phases on one side, three stops on the other
 ```
 1. control plane   ./install.sh            builds everything local, then stops
 2. worker          ./install.sh   (x3)     stopping twice for the enrolment handover
-3. worker          systemctl start agentnode-worker
+3. worker          (nothing to run)        the third pass starts the worker itself
 4. control plane   ./install.sh --verify   reaches the worker, and only then starts
 ```
+
+**Step 3 is not a command, and that is deliberate.** The third pass runs the same preflight the
+unit runs before every start, and only if it passes does it enable and start the worker — then it
+waits until the worker is actually listening on its address, not merely `active`, and fails the
+install if it never does. A worker that is not serving is therefore an install that failed, never a
+step someone forgot. Do not start or restart it by hand before step 4; the control plane's
+`--verify` is what measures it.
 
 **1 — the control plane.** `AGENTNODE_DEPLOYMENT` is required; every identity is named inside a
 deployment and there is no default.
@@ -97,7 +104,8 @@ other host on the same network; that needs the worker's identity, and step 4 is 
 established. Said here rather than left to be assumed.
 
 **2 — the worker host**, three passes: it stops for the one-shot enrolment secret, then for the
-certificate, then finishes.
+certificate, and the third pass starts the worker once the preflight accepts the configuration
+(that is step 3 above).
 
 ```sh
 sudo AGENTNODE_WHEEL=$PWD/wheel/agentnode_sdk-<v>-py3-none-any.whl \
