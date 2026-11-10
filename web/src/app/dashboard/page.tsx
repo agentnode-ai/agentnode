@@ -168,6 +168,9 @@ export default function DashboardPage() {
       .then(r => r.json())
       .then(f => setReviewsEnabled(!!f.manual_reviews_enabled))
       .catch(() => {});
+    // Load once on mount: loadUser and the other loaders are re-created on every render, so listing them
+    // would re-run this effect after each state update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function clearMessages() {
@@ -185,7 +188,7 @@ export default function DashboardPage() {
       const data = await res.json();
       setUser(data);
       if (data.publisher?.slug) {
-        loadMyPackages(data.publisher.slug);
+        loadMyPackages();
         loadReviews();
       }
     } catch {
@@ -400,7 +403,7 @@ export default function DashboardPage() {
     router.push("/auth/login");
   }
 
-  async function loadMyPackages(_publisherSlug: string) {
+  async function loadMyPackages() {
     setLoadingPackages(true);
     try {
       // Owner-scoped list — includes under-review (quarantined) packages that
@@ -756,7 +759,7 @@ export default function DashboardPage() {
                 });
                 setEditingPublisher(true);
                 // Also load packages on first view
-                if (myPackages.length === 0) loadMyPackages(user.publisher!.slug);
+                if (myPackages.length === 0) loadMyPackages();
               }}
               className="text-xs text-primary hover:underline"
             >
