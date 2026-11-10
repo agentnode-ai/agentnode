@@ -187,7 +187,7 @@ export default function HomePage() {
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-20">
           <div className="mx-auto max-w-3xl text-center">
             <h2 className="mb-4 text-2xl font-bold text-foreground sm:text-3xl">
-              Small models. Right tools. No cloud bill.
+              Small models. Right tools. Your own machine.
             </h2>
             <p className="mb-12 text-lg leading-relaxed text-muted">
               AgentNode is the open-source alternative to overpriced AI stacks.
