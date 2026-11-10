@@ -1511,6 +1511,11 @@ import asyncio, json, sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+# The official client's result models are camelCase in mcp 1.x (serverInfo, protocolVersion, isError)
+# and snake_case in mcp 2.x (server_info, protocol_version, is_error); pyproject allows both majors.
+def field(obj, snake, camel):
+    return getattr(obj, snake) if hasattr(obj, snake) else getattr(obj, camel)
+
 async def drive(tree):
     params = StdioServerParameters(command=sys.executable, args=[tree + "/entry.py"], cwd=tree)
     async with stdio_client(params) as (read, write):
@@ -1522,10 +1527,11 @@ async def drive(tree):
                            "year": 1843},
                 "style": "apa"})
             bad = await session.call_tool("citation_extraction", {"source": {"type": "nope"}})
-            return {"server": init.serverInfo.name, "protocol": init.protocolVersion,
+            return {"server": field(init, "server_info", "serverInfo").name,
+                    "protocol": field(init, "protocol_version", "protocolVersion"),
                     "tools": [t.name for t in tools.tools],
-                    "good": [good.isError, good.content[0].text],
-                    "bad": [bad.isError, bad.content[0].text]}
+                    "good": [field(good, "is_error", "isError"), good.content[0].text],
+                    "bad": [field(bad, "is_error", "isError"), bad.content[0].text]}
 
 print(json.dumps(asyncio.run(drive(sys.argv[1]))))
 """
