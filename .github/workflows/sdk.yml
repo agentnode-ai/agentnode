@@ -45,7 +45,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        # Task #13: a pull request runs the SDK suite once, on the newest supported Python, for
+        # fast feedback; a push to main still runs every supported version, so nothing is tested
+        # less often on main. sdk/tests/test_ci_pr_lane.py holds both lists.
+        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.10", "3.11", "3.12"]') }}
     defaults:
       run:
         working-directory: sdk
@@ -92,6 +95,8 @@ jobs:
           node-version: 20
       - run: npm ci
       - run: npm run lint
+      # Task #13: the web unit tests (vitest) existed and no workflow ran them.
+      - run: npm test
       - run: npm run build
 
   # Always-run aggregator: the ONLY required check for the sdk/web/adapter track. Reports
