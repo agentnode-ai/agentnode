@@ -212,7 +212,8 @@ jobs:
             "tests/test_agent_sandbox_e2e.py" \
             "tests/test_egress_e2e.py" \
             "tests/test_agent_session_container.py::test_container_isolation_real" \
-            "tests/test_r1_runtime_remediation.py::TestMemoryCeiling" \
+            "tests/test_r1_runtime_remediation.py::TestMemoryCeiling::test_real_container_cannot_exceed_the_ceiling" \
+            "tests/test_r1_runtime_remediation.py::TestMemoryCeiling::test_real_container_below_the_ceiling_still_runs" \
             2>&1 | tee container-present.txt
           if grep -q "SKIPPED" container-present.txt; then
             echo "a container test skipped: this job exists so that none of them can"; exit 1
