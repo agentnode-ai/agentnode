@@ -695,6 +695,9 @@ def cmd_status(args) -> int:
 
     print()
     print(f"  {bold('Sandbox gateway')} {dim(state.identity.gateway_id[:12])}")
+    # Whole, because the website's "Connect a gateway" page signs its link for exactly this id (#37).
+    # Not a secret: /v1/hello tells anybody who can reach the port.
+    print(f"  Link id (for the website): {state.identity.gateway_id}")
     _say_protected(readiness, available, live)
     print()
     print(f"  Connected clients: {len(clients)}")

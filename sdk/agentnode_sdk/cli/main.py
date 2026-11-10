@@ -464,6 +464,9 @@ def main(argv: list[str] | None = None) -> int:
     rm_connect.add_argument("--code", default="",
                             help="The one-time code, when you were given an address and a code "
                                  "rather than an invitation")
+    rm_connect.add_argument("--link", default="",
+                            help="A link grant from the website's 'Connect a gateway' page, given "
+                                 "with the gateway's address instead of a code")
     rm_connect.add_argument("--as", dest="as_name", default="", help="A name to remember it by")
     rm_sub.add_parser("list", help="Which sandboxes you can send work to")
     rm_use = rm_sub.add_parser("use", help="Choose the one used by default")

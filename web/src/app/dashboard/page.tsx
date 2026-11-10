@@ -1366,6 +1366,20 @@ export default function DashboardPage() {
         </Link>
       </section>
 
+      {/* Connect a gateway (#37) */}
+      <section className="mb-8 rounded-lg border border-border bg-card p-6">
+        <h2 className="mb-2 text-lg font-semibold text-foreground">Connect a gateway</h2>
+        <p className="text-sm text-muted mb-3">
+          Connect a device to your own sandbox gateway under this account, with a link that works once.
+        </p>
+        <Link
+          href="/dashboard/gateway"
+          className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary/90"
+        >
+          Connect a gateway
+        </Link>
+      </section>
+
       {/* Support */}
       <section className="mb-8 rounded-lg border border-border bg-card p-6">
         <h2 className="mb-2 text-lg font-semibold text-foreground">Support</h2>
