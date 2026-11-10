@@ -158,3 +158,64 @@ jobs:
       - run: backend-venv/bin/pip install pytest pytest-asyncio httpx
       - run: cd sdk && ../sdk-venv/bin/pip install -e ".[dev]"
       - run: python scripts/smoke.py
+
+  # The container boundary AT THE HEAD (#31, slice 3 step 1). Before this job, 13 container
+  # E2E tests ran only in sdk-lanes.yml, which checks out a frozen commit -- so at the current
+  # code they ran nowhere (docs/testing/slice3/INVENTORY.md, section 2). The runtime and the
+  # image are pinned and VERIFIED exactly as sdk-lanes and em3c-gateway do it, the three E2E
+  # flags are set, and pytest's exit code is not trusted alone: it exits 0 when a test SKIPS,
+  # and these tests skip themselves without a runtime, so the step demands all thirteen passed
+  # and fails on any skip.
+  container-present:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk
+    env:
+      DOCKER_SERVER_VERSION: "28.0.4"
+      DOCKER_APT_VERSION: "5:28.0.4-1~ubuntu.24.04~noble"
+      SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+      - name: Select and VERIFY the pinned container runtime
+        run: |
+          set -eu
+          got="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo none)"
+          echo "runner provides docker server: ${got}; pin is ${DOCKER_SERVER_VERSION}"
+          if [ "${got}" != "${DOCKER_SERVER_VERSION}" ]; then
+            sudo install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            sudo chmod a+r /etc/apt/keyrings/docker.gpg
+            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+            sudo apt-get update
+            sudo apt-get install -y --allow-downgrades "docker-ce=${DOCKER_APT_VERSION}" "docker-ce-cli=${DOCKER_APT_VERSION}"
+            sudo systemctl start docker
+            got="$(docker version --format '{{.Server.Version}}')"
+          fi
+          test "${got}" = "${DOCKER_SERVER_VERSION}"
+          docker info --format '{{.OSType}}/{{.Architecture}}'
+      - name: Pull the pinned sandbox image by digest
+        run: docker pull "${SANDBOX_IMAGE}"
+      - run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
+      - name: The thirteen container-boundary tests, for real, at the head
+        env:
+          AGENTNODE_SANDBOX_E2E: "1"
+          AGENTNODE_AGENT_SANDBOX_E2E: "1"
+          AGENTNODE_EGRESS_E2E: "1"
+        run: |
+          set -o pipefail
+          python -m pytest -p no:randomly -v -rs \
+            "tests/test_sandbox_e2e.py" \
+            "tests/test_agent_sandbox_e2e.py" \
+            "tests/test_egress_e2e.py" \
+            "tests/test_agent_session_container.py::test_container_isolation_real" \
+            "tests/test_r1_runtime_remediation.py::TestMemoryCeiling" \
+            2>&1 | tee container-present.txt
+          if grep -q "SKIPPED" container-present.txt; then
+            echo "a container test skipped: this job exists so that none of them can"; exit 1
+          fi
+          grep -qE "(^|[^0-9])13 passed" container-present.txt || {
+            echo "not all thirteen passed"; exit 1; }

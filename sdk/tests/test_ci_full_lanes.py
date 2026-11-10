@@ -59,8 +59,79 @@ def test_the_full_check_skips_nothing():
         "backend-test",
         "web",
         "smoke",
+        "container-present",
     }
     assert expected <= set(jobs), sorted(expected - set(jobs))
+
+
+# ---- the container boundary at the head (#31, slice 3 step 1) ---------------------------------- #
+
+#: the 13 container-boundary tests that, before #31, ran nowhere at the head -- only in sdk-lanes.yml,
+#: which checks out a frozen commit (docs/testing/slice3/INVENTORY.md, section 2)
+CONTAINER_SELECTIONS = [
+    "tests/test_sandbox_e2e.py",
+    "tests/test_agent_sandbox_e2e.py",
+    "tests/test_egress_e2e.py",
+    "tests/test_agent_session_container.py::test_container_isolation_real",
+    "tests/test_r1_runtime_remediation.py::TestMemoryCeiling",
+]
+CONTAINER_TESTS = 13
+
+
+def _container_job() -> dict:
+    return _load("full-checks.yml")["jobs"]["container-present"]
+
+
+def test_the_container_job_checks_out_the_head_not_a_frozen_commit():
+    job = _container_job()
+    for step in job["steps"]:
+        if str(step.get("uses", "")).startswith("actions/checkout"):
+            assert "ref" not in (step.get("with") or {}), "the container job must test the head"
+
+
+def test_the_container_job_pins_and_verifies_the_runtime_and_the_image():
+    job = _container_job()
+    assert job["runs-on"] == "ubuntu-24.04"
+    env = job.get("env", {})
+    assert env.get("DOCKER_SERVER_VERSION") and env.get("DOCKER_APT_VERSION")
+    import re
+    stdlib = (Path(__file__).resolve().parents[1] / "agentnode_sdk" / "capability" / "_sandbox_stdlib.py")
+    pinned = re.search(r'SANDBOX_IMAGE = "([^"]+)"', stdlib.read_text(encoding="utf-8")).group(1)
+    assert env.get("SANDBOX_IMAGE") == pinned, "the job must pull the image the code pins"
+    runs = "\n".join(_runs(job))
+    assert 'test "${got}" = "${DOCKER_SERVER_VERSION}"' in runs, "the runtime pin is not verified"
+    assert 'docker pull "${SANDBOX_IMAGE}"' in runs
+    assert "-c tests/lanes/constraints.txt" in runs
+
+
+def test_the_container_job_runs_the_thirteen_with_all_three_flags_and_refuses_a_skip():
+    job = _container_job()
+    steps = [s for s in job["steps"] if "pytest" in str(s.get("run", ""))]
+    assert len(steps) == 1, "one step runs the container tests"
+    step = steps[0]
+    env = {**job.get("env", {}), **step.get("env", {})}
+    for flag in ("AGENTNODE_SANDBOX_E2E", "AGENTNODE_AGENT_SANDBOX_E2E", "AGENTNODE_EGRESS_E2E"):
+        assert env.get(flag) == "1", flag
+    run = step["run"]
+    for selection in CONTAINER_SELECTIONS:
+        assert '"%s"' % selection in run, selection
+    assert "set -o pipefail" in run
+    assert "-rs" in run, "skips must be reported so the guard can see them"
+    assert "[^0-9])%d passed" % CONTAINER_TESTS in run, "the guard must demand exactly the thirteen"
+    assert "SKIPPED" in run and "exit 1" in run, "a skip must fail the job"
+
+
+def test_every_gated_container_test_runs_at_the_head_somewhere():
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    tool = root / "docs" / "testing" / "slice3" / "gated_e2e_coverage.py"
+    log = root / "docs" / "testing" / "slice3" / "gated-files-without-flags-at-3fb6da18.txt"
+    done = subprocess.run([sys.executable, str(tool), str(log)], capture_output=True, text=True,
+                          timeout=120)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip().splitlines()[-1].endswith("run nowhere at head: 0"), done.stdout
 
 
 def test_the_sdk_runs_whole_on_every_supported_python():
