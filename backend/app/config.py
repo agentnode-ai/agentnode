@@ -70,6 +70,11 @@ class Settings(BaseSettings):
 
     # JWT
     JWT_SECRET: str = "change-me-in-production"
+    # Task #8: the website's Ed25519 key for gateway link grants (app/auth/gateway_link.py).
+    # base64url of the 32-byte seed and the id a gateway trusts it under; empty = not configured,
+    # and /v1/auth/gateway-link then answers 503 instead of signing anything.
+    GATEWAY_LINK_SIGNING_KEY: str = ""
+    GATEWAY_LINK_KEY_ID: str = ""
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 30
