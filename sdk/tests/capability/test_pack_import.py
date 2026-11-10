@@ -1539,7 +1539,10 @@ print(json.dumps(asyncio.run(drive(sys.argv[1]))))
 
 def test_official_python_mcp_client_drives_the_generated_shim(tmp_path):
     # In its own process: importing the mcp client here would load jsonschema into the test
-    # session, which other suites (test_guard_schema) assert never happens.
+    # session, which other suites (test_guard_schema) assert never happens. What this test can
+    # promise is that IT loads neither: other tests in the same session (test_mcp_server,
+    # test_serve_stdio) import mcp in-process, so the session-wide state is not this test's to judge.
+    loaded_before = {m for m in ("mcp", "jsonschema") if m in sys.modules}
     imp = _import(STARTER / "citation-manager-pack")
     tree = tmp_path / "tree"
     tree_pack.safe_extract(imp.tar_bytes, tree)
@@ -1556,4 +1559,5 @@ def test_official_python_mcp_client_drives_the_generated_shim(tmp_path):
     assert out["good"][0] is False and "Lovelace" in out["good"][1]
     assert out["bad"][0] is True and out["bad"][1].startswith("ValueError")
     assert "Traceback" not in out["bad"][1]
-    assert "mcp" not in sys.modules and "jsonschema" not in sys.modules
+    loaded_now = {m for m in ("mcp", "jsonschema") if m in sys.modules}
+    assert loaded_now <= loaded_before, "this test loaded %s into the session" % sorted(loaded_now - loaded_before)
