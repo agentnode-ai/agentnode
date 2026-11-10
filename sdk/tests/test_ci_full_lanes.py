@@ -73,7 +73,10 @@ CONTAINER_SELECTIONS = [
     "tests/test_agent_sandbox_e2e.py",
     "tests/test_egress_e2e.py",
     "tests/test_agent_session_container.py::test_container_isolation_real",
-    "tests/test_r1_runtime_remediation.py::TestMemoryCeiling",
+    # the two real-container tests of TestMemoryCeiling, not the whole class: run 42835406652 selected
+    # the class, which also holds seven ungated unit tests, so the job ran 20 and the exact-13 guard failed
+    "tests/test_r1_runtime_remediation.py::TestMemoryCeiling::test_real_container_cannot_exceed_the_ceiling",
+    "tests/test_r1_runtime_remediation.py::TestMemoryCeiling::test_real_container_below_the_ceiling_still_runs",
 ]
 CONTAINER_TESTS = 13
 
@@ -113,8 +116,13 @@ def test_the_container_job_runs_the_thirteen_with_all_three_flags_and_refuses_a_
     for flag in ("AGENTNODE_SANDBOX_E2E", "AGENTNODE_AGENT_SANDBOX_E2E", "AGENTNODE_EGRESS_E2E"):
         assert env.get(flag) == "1", flag
     run = step["run"]
-    for selection in CONTAINER_SELECTIONS:
-        assert '"%s"' % selection in run, selection
+    import re
+    selected = re.findall(r'"(tests/[^"]+)"', run)
+    assert selected == CONTAINER_SELECTIONS, "exactly these selections, nothing more: %s" % selected
+    for selection in selected:
+        # a node inside a file is a single test, never a whole class that may hold ungated tests
+        parts = selection.split("::")
+        assert len(parts) == 1 or parts[-1].startswith("test_"), "a class is selected: %s" % selection
     assert "set -o pipefail" in run
     assert "-rs" in run, "skips must be reported so the guard can see them"
     assert "[^0-9])%d passed" % CONTAINER_TESTS in run, "the guard must demand exactly the thirteen"
