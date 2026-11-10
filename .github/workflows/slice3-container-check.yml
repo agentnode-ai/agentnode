@@ -1,0 +1,17 @@
+name: Slice 3 container check (one-off, ci/slice3-container-job only)
+
+# #31, slice 3 step 1. GitHub dispatches only workflows that are on the default branch, and
+# nightly.yml is not there yet, so this caller runs the full check -- including the
+# container-present job -- once, on a push to exactly this branch. It calls full-checks.yml
+# and nothing else, with read-only rights. sdk/tests/test_ci_slice3_trigger.py holds it to that.
+
+on:
+  push:
+    branches: [ci/slice3-container-job]
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    uses: ./.github/workflows/full-checks.yml
