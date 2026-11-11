@@ -35,6 +35,22 @@ ABSENT_RUNTIME = "agentnode-conformance-absent-runtime"
 SUPERSEDED_TIMEOUT_RC = -1
 TIMEOUT_MARKER = "[sandbox timed out after"
 
+
+def __getattr__(name):
+    """`TIMEOUT_RC` (0.24.1) is not brought back, and asking for it says why (task #67).
+
+    0.24.1 reported a timeout as exit code -1. Now a stopped run has no exit code and its reason is
+    `Outcome.reason == TIMED_OUT`. An alias would let `rc == TIMEOUT_RC` import and then never match
+    -- a timeout silently passing for an ordinary ending -- so the old name fails, with the way on.
+    """
+    if name == "TIMEOUT_RC":
+        raise AttributeError(
+            "agentnode_sdk.conformance.runner.TIMEOUT_RC was removed in 0.25.0: a timeout no longer "
+            "has an exit code. Test Outcome.reason == agentnode_sdk.gateway.protocol.TIMED_OUT on the "
+            "Outcome that run_process returns (its exit code is None for a stopped run). The old "
+            "number survives only as SUPERSEDED_TIMEOUT_RC, for reading old reports.")
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
+
 #: 128 + SIGKILL: what a container runtime reports when the kernel stops a process for
 #: exceeding its memory ceiling.
 OOM_KILLED_RC = 137
