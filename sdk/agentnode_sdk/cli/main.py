@@ -168,6 +168,8 @@ def main(argv: list[str] | None = None) -> int:
     # validate
     validate_parser = sub.add_parser("validate", help="Validate package before publishing")
     validate_parser.add_argument("path", nargs="?", default=".", help="Package directory (default: current)")
+    validate_parser.add_argument("--manifest", default=None, help="Manifest file (.yaml/.yml/.json; default: <path>/agentnode.yaml)")
+    validate_parser.add_argument("--json", action="store_true", dest="json_output", help="Print one JSON document on stdout")
 
     # verify-local
     verify_parser = sub.add_parser("verify-local", help="Run verification pipeline locally")
@@ -180,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
     publish_parser.add_argument("--skip-validate", action="store_true", help="Continue despite validation errors")
     publish_parser.add_argument("--token", default=None, help="API key (default: AGENTNODE_API_KEY env)")
     publish_parser.add_argument("--yes", "-y", action="store_true", help="Skip the confirmation prompt (required for non-interactive/CI publish)")
+    publish_parser.add_argument("--manifest", default=None, help="Manifest file (.yaml/.yml/.json; default: <path>/agentnode.yaml); packed as agentnode.yaml")
+    publish_parser.add_argument("--json", action="store_true", dest="json_output", help="Print one JSON document on stdout")
 
     # record-cases
     record_parser = sub.add_parser("record-cases", help="Record VCR cassettes for API verification cases")
@@ -683,12 +687,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "init":
             return commands.cmd_init(name=args.name, template_type=args.template_type)
         if args.command == "validate":
-            return commands.cmd_validate(args.path)
+            return commands.cmd_validate(args.path, manifest=args.manifest, json_output=args.json_output)
         if args.command == "verify-local":
             return commands.cmd_verify_local(args.path)
         if args.command == "publish":
             from agentnode_sdk.cli.publish import cmd_publish
-            return cmd_publish(args.path, dry_run=args.dry_run, skip_validate=args.skip_validate, token=args.token, yes=args.yes)
+            return cmd_publish(args.path, dry_run=args.dry_run, skip_validate=args.skip_validate, token=args.token, yes=args.yes,
+                               manifest=args.manifest, json_output=args.json_output)
         if args.command == "record-cases":
             return commands.cmd_record_cases(args.path, strict=args.strict)
         if args.command == "inspect":

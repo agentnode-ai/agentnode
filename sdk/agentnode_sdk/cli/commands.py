@@ -2603,16 +2603,41 @@ def _step_line(label: str, ok: bool, detail: str = "") -> None:
     print(line)
 
 
-def cmd_validate(path_str: str) -> int:
-    """Validate a package directory before publishing."""
+def cmd_validate(path_str: str, *, manifest: str | None = None, json_output: bool = False) -> int:
+    """Validate a package directory before publishing.
+
+    ``--manifest <file>``: the manifest (.yaml/.yml/.json, anywhere) instead of ``<path>/agentnode.yaml``.
+    ``--json``: exactly one JSON document on stdout; the human report goes to stderr; same exit code.
+    """
+    if not json_output:
+        return _validate_report(path_str, manifest)[0]
+    import contextlib
+
+    with contextlib.redirect_stdout(sys.stderr):
+        rc, result = _validate_report(path_str, manifest)
+    doc = {"command": "validate", "status": "valid" if rc == 0 else "invalid",
+           "manifest": manifest or str(Path(path_str) / "agentnode.yaml")}
+    if result is None:
+        doc["message"] = f"'{path_str}' is not a directory"
+    else:
+        doc.update(package_id=result.package_id, version=result.version, package_type=result.package_type,
+                   max_tier=result.max_tier,
+                   checks=[{"label": c.label, "passed": c.passed, "detail": c.detail} for c in result.checks],
+                   errors=[c.label for c in result.checks if not c.passed], warnings=list(result.warnings))
+    print(json.dumps(doc))
+    return rc
+
+
+def _validate_report(path_str: str, manifest: str | None = None):
+    """The human validation report (unchanged); returns (exit code, ValidateResult or None)."""
     from agentnode_sdk.cli.validate import validate_package_dir
 
     pkg_path = Path(path_str).resolve()
     if not pkg_path.is_dir():
         print(f"  Error: '{path_str}' is not a directory")
-        return 1
+        return 1, None
 
-    result = validate_package_dir(pkg_path)
+    result = validate_package_dir(pkg_path, Path(manifest).resolve() if manifest else None)
 
     print()
     header = "AgentNode Package Validation"
@@ -2692,7 +2717,7 @@ def cmd_validate(path_str: str) -> int:
         print(dim("  Add verification.cases to become Gold-eligible. See: agentnode.net/docs/publishing"))
     print()
 
-    return 1 if result.has_errors else 0
+    return (1 if result.has_errors else 0), result
 
 
 # ---------------------------------------------------------------------------

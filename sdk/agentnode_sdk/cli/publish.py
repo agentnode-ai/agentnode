@@ -50,20 +50,22 @@ def _should_exclude(entry: tarfile.TarInfo) -> bool:
     return False
 
 
-def _skill_allowed_files(pkg_path: Path) -> set[str] | None:
+def _skill_allowed_files(pkg_path: Path, manifest: dict | None = None) -> set[str] | None:
     """Compute the set of allowed relative paths for a skill package.
 
     Returns None if the package is not a skill (caller should skip filtering).
+    ``manifest``: an already loaded manifest (``--manifest``); otherwise ``<pkg>/agentnode.yaml`` is read.
     """
-    manifest_path = pkg_path / "agentnode.yaml"
-    if not manifest_path.is_file():
-        return None
+    if manifest is None:
+        manifest_path = pkg_path / "agentnode.yaml"
+        if not manifest_path.is_file():
+            return None
 
-    try:
-        import yaml
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+        try:
+            import yaml
+            manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
 
     if not isinstance(manifest, dict):
         return None
@@ -84,14 +86,40 @@ def _skill_allowed_files(pkg_path: Path) -> set[str] | None:
     return allowed
 
 
-def _build_artifact(pkg_path: Path, arcname: str) -> tuple[bytes, int]:
+def load_manifest_file(manifest_path: Path) -> dict:
+    """Read a manifest given with ``--manifest``: ``.json`` as JSON, ``.yaml``/``.yml`` as YAML. Raises on error."""
+    text = manifest_path.read_text(encoding="utf-8")
+    if manifest_path.suffix.lower() == ".json":
+        return json.loads(text)
+    import yaml
+    return yaml.safe_load(text)
+
+
+def _build_artifact(pkg_path: Path, arcname: str, manifest_path: Path | None = None) -> tuple[bytes, int]:
     """Build a tar.gz artifact from a package directory.
 
     Returns (artifact_bytes, file_count).
     Excludes symlinks, absolute paths, and path traversal entries.
     For skill packages, only declared files with allowed extensions are included.
+
+    ``manifest_path`` (``--manifest``) other than ``<pkg>/agentnode.yaml``: the registry reads
+    ``agentnode.yaml`` from the artifact (skill verification, the skill file allow-list, the cassette check),
+    so the given manifest is packed AS ``<arcname>/agentnode.yaml`` -- a YAML file with its own bytes, a JSON
+    file as YAML -- and the original file is not packed a second time.
     """
-    skill_allowed = _skill_allowed_files(pkg_path)
+    replacement: bytes | None = None
+    given: Path | None = None
+    if manifest_path is not None and Path(manifest_path).resolve() != (pkg_path / "agentnode.yaml").resolve():
+        given = Path(manifest_path).resolve()
+        loaded = load_manifest_file(given)
+        if given.suffix.lower() == ".json":
+            import yaml
+            replacement = yaml.safe_dump(loaded, sort_keys=False, allow_unicode=True).encode("utf-8")
+        else:
+            replacement = given.read_bytes()
+        skill_allowed = _skill_allowed_files(pkg_path, loaded if isinstance(loaded, dict) else {})
+    else:
+        skill_allowed = _skill_allowed_files(pkg_path)
     skipped_skill_files: list[str] = []
 
     buf = io.BytesIO()
@@ -99,9 +127,17 @@ def _build_artifact(pkg_path: Path, arcname: str) -> tuple[bytes, int]:
     large_files: list[str] = []
 
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        if replacement is not None:
+            info = tarfile.TarInfo(name=f"{arcname}/agentnode.yaml")
+            info.size = len(replacement)
+            info.mode = 0o644
+            tar.addfile(info, io.BytesIO(replacement))
+            file_count += 1
         for item in sorted(pkg_path.rglob("*")):
             if item.is_symlink():
                 continue
+            if given is not None and item.resolve() == given:
+                continue                        # packed above as agentnode.yaml
             rel = item.relative_to(pkg_path)
             rel_posix = rel.as_posix()
             entry_name = f"{arcname}/{rel_posix}"
@@ -351,43 +387,106 @@ def cmd_publish(
     skip_validate: bool = False,
     token: str | None = None,
     yes: bool = False,
+    manifest: str | None = None,
+    json_output: bool = False,
 ) -> int:
-    """Publish a package to the AgentNode registry."""
-    from agentnode_sdk.cli.validate import validate_package_dir
+    """Publish a package to the AgentNode registry.
+
+    ``manifest`` (``--manifest``): the manifest file (.yaml/.yml/.json, anywhere) instead of
+    ``<path>/agentnode.yaml``; it is packed as ``agentnode.yaml``. ``json_output`` (``--json``): exactly one
+    JSON document on stdout, the human text on stderr, the same exit code.
+    """
+    st: dict = {}
+    if not json_output:
+        return _publish(path_str, dry_run=dry_run, skip_validate=skip_validate, token=token, yes=yes,
+                        manifest_file=manifest, st=st)
+    import contextlib
+
+    with contextlib.redirect_stdout(sys.stderr):
+        rc = _publish(path_str, dry_run=dry_run, skip_validate=skip_validate, token=token, yes=yes,
+                      manifest_file=manifest, st=st)
+    status = st.get("status") or ("error" if rc else "published")
+    if status == "published":
+        doc = {"command": "publish", "status": "published", "slug": st.get("slug"), "version": st.get("version"),
+               "package_id": st.get("package_id"), "quarantined": st.get("quarantined", False),
+               "warnings": st.get("warnings", [])}
+    else:
+        doc = {"command": "publish", "status": status}
+        for key in ("package_id", "version", "slug", "files", "errors", "message", "http_status", "code", "details"):
+            if key in st:
+                doc[key] = st[key]
+    print(json.dumps(doc))
+    return rc
+
+
+def _publish(
+    path_str: str,
+    *,
+    dry_run: bool,
+    skip_validate: bool,
+    token: str | None,
+    yes: bool,
+    manifest_file: str | None,
+    st: dict,
+) -> int:
+    """The publish flow; ``st`` collects what --json reports. Without --manifest it prints exactly as before."""
+    from agentnode_sdk.cli.validate import MANIFEST_SUFFIXES, validate_package_dir
+
+    def fail(message: str, status: str = "error") -> int:
+        st.update(status=status, message=message)
+        return 1
 
     pkg_path = Path(path_str).resolve()
     if not pkg_path.is_dir():
         print(f"  Error: '{path_str}' is not a directory.", file=sys.stderr)
-        return 1
+        return fail(f"'{path_str}' is not a directory")
 
-    manifest_path = pkg_path / "agentnode.yaml"
-    if not manifest_path.exists():
-        print("  Error: agentnode.yaml not found.", file=sys.stderr)
-        return 1
+    given: Path | None = None
+    if manifest_file is None:
+        manifest_path = pkg_path / "agentnode.yaml"
+        if not manifest_path.exists():
+            print("  Error: agentnode.yaml not found.", file=sys.stderr)
+            return fail("agentnode.yaml not found")
+    else:
+        manifest_path = given = Path(manifest_file).resolve()
+        own = pkg_path / "agentnode.yaml"
+        if not given.is_file():
+            print(f"  Error: manifest '{manifest_file}' not found.", file=sys.stderr)
+            return fail(f"manifest '{manifest_file}' not found")
+        if given.suffix.lower() not in MANIFEST_SUFFIXES:
+            print(f"  Error: unsupported manifest format '{given.suffix}' (use .yaml, .yml or .json).", file=sys.stderr)
+            return fail(f"unsupported manifest format '{given.suffix}'")
+        if own.exists() and own.resolve() != given:
+            msg = (f"{own} exists beside --manifest {manifest_file}; the registry reads agentnode.yaml, "
+                   "so publishing would be ambiguous. Remove one of them.")
+            print(f"  Error: {msg}", file=sys.stderr)
+            return fail(msg)
+    name = manifest_path.name
 
     try:
-        import yaml
+        import yaml  # noqa: F401  (the artifact and the default manifest need it)
     except ImportError:
         print("  Error: pyyaml is required. Install it with: pip install pyyaml", file=sys.stderr)
-        return 1
+        return fail("pyyaml is required")
 
     try:
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        manifest = load_manifest_file(manifest_path)
     except Exception as e:
-        print(f"  Error: Failed to parse agentnode.yaml: {e}", file=sys.stderr)
-        return 1
+        print(f"  Error: Failed to parse {name}: {e}", file=sys.stderr)
+        return fail(f"failed to parse {name}: {e}")
 
     if not isinstance(manifest, dict):
-        print("  Error: agentnode.yaml root must be a mapping.", file=sys.stderr)
-        return 1
+        print(f"  Error: {name} root must be a mapping.", file=sys.stderr)
+        return fail(f"{name} root must be a mapping")
 
     pkg_id = manifest.get("package_id", "")
     version = manifest.get("version", "")
     pkg_type = manifest.get("package_type", "")
+    st.update(package_id=pkg_id, version=version)
 
     if not pkg_id or not version:
-        print("  Error: package_id and version are required in agentnode.yaml.", file=sys.stderr)
-        return 1
+        print(f"  Error: package_id and version are required in {name}.", file=sys.stderr)
+        return fail(f"package_id and version are required in {name}")
 
     # MCP listings go through the dedicated submit flow (registry re-verification
     # + ownership), not the toolpack/skill/agent publish path. Route the user
@@ -401,7 +500,7 @@ def cmd_publish(
         print("      agentnode mcp submit .        # submit for the catalog")
         print()
         print("  (`publish` is for toolpacks, skills, and agents.)")
-        return 1
+        return fail("an MCP server listing is submitted with `agentnode mcp submit`, not published")
 
     print()
     print(section("  AgentNode Publish"))
@@ -410,9 +509,10 @@ def cmd_publish(
         print(kv("Type", pkg_type))
     print()
 
-    result = validate_package_dir(pkg_path)
+    result = validate_package_dir(pkg_path, given)
     passed = sum(1 for c in result.checks if c.passed)
     failed = sum(1 for c in result.checks if not c.passed)
+    st["errors"] = [c.label for c in result.checks if not c.passed]
 
     if failed == 0:
         print(f"  Validation    {passed} checks passed")
@@ -428,12 +528,14 @@ def cmd_publish(
                 print(f"  [FAIL] {check.label}{detail}")
         print()
         print("  Fix validation errors or use --skip-validate to continue.")
+        st["status"] = "invalid"
         return 1
 
     if result.has_errors and skip_validate:
         print(f"  Warning: {failed} validation error(s) ignored (--skip-validate)")
 
-    artifact_bytes, file_count = _build_artifact(pkg_path, pkg_id)
+    artifact_bytes, file_count = _build_artifact(pkg_path, pkg_id, given)
+    st["files"] = file_count
     artifact_kb = len(artifact_bytes) / 1024
     if artifact_kb >= 1024:
         size_str = f"{artifact_kb / 1024:.1f} MB"
@@ -444,8 +546,10 @@ def cmd_publish(
 
     if dry_run:
         print(dim("  Dry run — not publishing."))
-        print(dim(f"  To publish: agentnode publish {path_str}"))
+        again = f"agentnode publish {path_str}" + (f" --manifest {manifest_file}" if manifest_file else "")
+        print(dim(f"  To publish: {again}"))
         print()
+        st.update(status="dry_run", slug=pkg_id)
         return 0
 
     api_key = token or os.environ.get("AGENTNODE_API_KEY", "")
@@ -460,7 +564,7 @@ def cmd_publish(
             f"    agentnode publish {path_str} --token <key>\n",
             file=sys.stderr,
         )
-        return 1
+        return fail("no AgentNode API key configured (AGENTNODE_API_KEY or --token)")
 
     # Publish confirm gate — publish is an external, hard-to-undo action.
     # Detect interactivity robustly (CI/pipes have a non-TTY stdin even without
@@ -473,6 +577,7 @@ def cmd_publish(
         # interactive decline = clean cancel (0); non-interactive without --yes
         # = refusal (1). When yes=True the gate always proceeds, so we never land
         # here in that case.
+        st["status"] = "cancelled" if interactive else "refused"
         return 0 if interactive else 1
 
     try:
@@ -491,13 +596,14 @@ def cmd_publish(
         resp = _post_publish(manifest_json, artifact_bytes, api_key)
     except Exception as e:
         print(f"  Error: Connection failed: {e}", file=sys.stderr)
-        return 1
+        return fail(f"connection failed: {type(e).__name__}")
 
     if resp.get("_error"):
         status = resp["status"]
         code = resp["code"]
         message = resp["message"]
         details = resp.get("details", [])
+        st.update(status="error", http_status=status, code=code, message=message, details=list(details or []))
 
         if status == 409:
             print(f"\n  Error: Version {version} already exists for {pkg_id}.")
@@ -537,6 +643,7 @@ def cmd_publish(
     # For a quarantined result, the reason is shown on its own line; don't also
     # repeat it in the generic warnings loop.
     display_warnings = [] if quarantined else warnings_list
+    st.update(status="published", slug=slug, version=ver, quarantined=quarantined, warnings=list(warnings_list))
 
     print(f"  Published {slug}@{ver}")
     print()

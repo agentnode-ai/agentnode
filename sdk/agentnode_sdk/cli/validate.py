@@ -43,32 +43,56 @@ class ValidateResult:
         return any(not c.passed for c in self.checks)
 
 
-def validate_package_dir(path: Path) -> ValidateResult:
-    """Validate an agentnode package directory offline."""
+MANIFEST_SUFFIXES = (".yaml", ".yml", ".json")
+
+
+def validate_package_dir(path: Path, manifest_path: Path | None = None) -> ValidateResult:
+    """Validate an agentnode package directory offline.
+
+    ``manifest_path`` (``--manifest``) names the manifest file: ``.yaml``, ``.yml`` or ``.json``, anywhere.
+    Without it the manifest is ``<path>/agentnode.yaml``, exactly as before.
+    """
     result = ValidateResult()
 
-    manifest_path = path / "agentnode.yaml"
+    if manifest_path is None:
+        manifest_path = path / "agentnode.yaml"
+    label = manifest_path.name
     if not manifest_path.exists():
-        result.checks.append(CheckResult(False, "agentnode.yaml", "File not found"))
+        result.checks.append(CheckResult(False, label, "File not found"))
         return result
-    result.checks.append(CheckResult(True, "agentnode.yaml", "Found"))
+    suffix = manifest_path.suffix.lower()
+    if suffix not in MANIFEST_SUFFIXES:
+        result.checks.append(CheckResult(
+            False, label, f"Unsupported manifest format '{suffix}' (use .yaml, .yml or .json)"))
+        return result
+    result.checks.append(CheckResult(True, label, "Found"))
 
-    try:
-        import yaml
-    except ImportError:
-        result.checks.append(CheckResult(False, "YAML parser", "pyyaml not installed"))
-        return result
+    parse_label = "JSON parse" if suffix == ".json" else "YAML parse"
+    if suffix == ".json":
+        import json
 
-    try:
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        result.checks.append(CheckResult(False, "YAML parse", str(e)[:80]))
-        return result
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            result.checks.append(CheckResult(False, parse_label, str(e)[:80]))
+            return result
+    else:
+        try:
+            import yaml
+        except ImportError:
+            result.checks.append(CheckResult(False, "YAML parser", "pyyaml not installed"))
+            return result
+
+        try:
+            manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            result.checks.append(CheckResult(False, parse_label, str(e)[:80]))
+            return result
 
     if not isinstance(manifest, dict):
-        result.checks.append(CheckResult(False, "YAML parse", "Root must be a mapping"))
+        result.checks.append(CheckResult(False, parse_label, "Root must be a mapping"))
         return result
-    result.checks.append(CheckResult(True, "YAML parse", "Valid"))
+    result.checks.append(CheckResult(True, parse_label, "Valid"))
 
     _check_required_fields(manifest, result)
 
