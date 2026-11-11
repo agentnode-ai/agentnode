@@ -25,6 +25,9 @@ CLI and the behaviour tests of 0.24.1 were run against this tree.
 - **Conformance checks say `not_checked`** where a boundary cannot be measured on the host, instead of
   a pass or a fail.
 - `agentnode_sdk.conformance.runner.TIMEOUT_RC` is now `SUPERSEDED_TIMEOUT_RC`; there is no alias.
+  A timeout no longer has an exit code: test `Outcome.reason == agentnode_sdk.gateway.protocol.TIMED_OUT`
+  instead of comparing the code with -1. An alias would import and then never match, so a timeout would
+  pass for an ordinary ending. Reading `runner.TIMEOUT_RC` raises an `AttributeError` that says this.
 
 ### Added in draft PR #194 (not merged)
 
