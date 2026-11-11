@@ -250,7 +250,6 @@
     "egress_live_callers": [
       "runtimes/mcp_runner.py",
       "runtimes/python_runner.py",
-      "sandbox/egress_verify.py",
       "worker/local.py"
     ],
     "hardening_flags": [

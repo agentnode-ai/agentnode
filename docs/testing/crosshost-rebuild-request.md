@@ -1,6 +1,7 @@
 # Cross-host test stand: rebuild request and acceptance plan
 
-Status: **prepared, not started.** Nothing in this file has been done on a server. It supersedes,
+Status: **r4 has run under this request and did not accept the current build (BLOCK X10); the next
+run, r5, has not started** and waits for the owner to rebuild both machines. It supersedes,
 for the next acceptance run, the earlier request in the review bundle
 (`agentnode-Tests/a1e_review/crosshost-repair-2/REBUILD-REQUEST.md`). Checked by
 `sdk/tests/test_crosshost_rebuild_request.py`.
@@ -32,7 +33,7 @@ deliberately not named here by address. Reaching any other machine is an abort c
   `3aaee465933f2a777d8fed46b17ab4874970209b7d929de7a8d17b7e7bc02a10`, frozen 2026-10-02T17:15:58Z)
   carried the same ten criteria over verbatim and renewed only its bindings. It stays unchanged and
   is named as history, not as the catalog.
-* **The profile the run is judged against: `remote-worker-cross-host-r4`, which does not exist yet.**
+* **The profile the run is judged against: `remote-worker-cross-host-r4`, which r4 has since been run against.**
   It is created after both rebuilds, carries X1-X10 verbatim from the r2 catalog, names r3 (with its sha256) as
   what it supersedes, and binds exactly the two targets above and the build actually tested. It is
   validated, filed in the evidence folder and **frozen prospectively before any criterion runs**.

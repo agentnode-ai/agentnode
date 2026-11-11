@@ -14,8 +14,8 @@ for the code in this repository this directory is still a procedure and not a cl
 
 That wording is a ratchet, and `tests/test_the_two_roles_are_separable.py` holds it in place: the
 test requires the sentence above verbatim, requires both facts (`tests/two_machine_claim.py`) and
-forbids every way of carrying r3's result over to the current build. It changes when r4 passes its
-independent review for the build it names, and not before.
+forbids every way of carrying r3's result over to the current build. It changes when a run after r4
+(r4 blocked on X10) passes its independent review for the build it names, and not before.
 
 **What came before r3.** The procedure was run across two real hosts on 2026-09-30, and every one of
 those attempts ended in BLOCK or WARN: seven rounds of a repair arc, then an acceptance run on

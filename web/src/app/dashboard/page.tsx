@@ -1374,6 +1374,7 @@ export default function DashboardPage() {
         <h2 className="mb-2 text-lg font-semibold text-foreground">Connect a gateway</h2>
         <p className="text-sm text-muted mb-3">
           Connect a device to your own sandbox gateway under this account, with a link that works once.
+          Needs AgentNode SDK 0.25 (next release).
         </p>
         <Link
           href="/dashboard/gateway"

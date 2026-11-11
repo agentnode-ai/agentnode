@@ -86,7 +86,8 @@ The attempts before it (2026-09-30, BLOCK or WARN, the last blocking on five of 
 superseded history. **What has not been shown:** the current build has not been accepted by r4.
 It differs from df821f65 (among other things the P13 rollback evidence, task #28), so r3's result
 is not a result for it. The separate-worker-host README says so and a test holds that wording in
-place. Until r4 passes and is independently reviewed, a worker on its own machine is, for this
+place. r4 did not accept it (BLOCK X10). Until a later run (r5) passes and is independently reviewed, a
+worker on its own machine is, for this
 build, a procedure, not a property -- the arrangement is still not production-ready and not
 multi-tenant, and the privilege model above is re-assessed on the worker host rather than carried
 across to it.

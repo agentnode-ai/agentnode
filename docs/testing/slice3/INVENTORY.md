@@ -1,6 +1,13 @@
 # Test strategy, slice 3: what the obsolete SDK lanes and the old CLI tests cover, and the exact change list
 
 Prepared for #31, without removing anything (#34). Measured at `3fb6da18` on `work/fundament-2026-11`.
+
+> **Status in this branch (draft PR #194 integration candidate):** step A.1 and A.3 are done. The
+> `container-present` job is in `.github/workflows/full-checks.yml`, held by `sdk/tests/test_ci_full_lanes.py`;
+> run 42841967896 (byte-identical job files) passed all 13 tests. It runs on nightly and release, not
+> on pull requests. G1 below is closed by #31 step 1 and #41. Step A.4 (re-running
+> `gated_e2e_coverage.py` for a zero result) and the deletion steps are still open. The measurement
+> below is kept as it was at `3fb6da18`.
 The plan (`PLAN-2026-11.md`, section 2) says: drop the `sdk-lanes` (they test a frozen state) and the
 tests of the deprecated CLI. This file says what that would lose, where each piece is covered at the
 current head, and what has to be added BEFORE anything is deleted.
@@ -85,9 +92,11 @@ report those tests as run nowhere; with the file restored, the numbers above aga
 
 ### What must NOT be deleted with `sdk-lanes.yml`
 
-`sdk/tests/lanes/` is used by six other workflows and three tests:
+`sdk/tests/lanes/` is used by seven other workflows and four tests (counted again in the integration
+candidate):
 
-- `constraints.txt` — `em3c-two-roles.yml`, `em3c-windows.yml`, `sdk-conformance.yml`, `a9-podman.yml`;
+- `constraints.txt` — `em3c-two-roles.yml`, `em3c-windows.yml`, `sdk-conformance.yml`, `a9-podman.yml`,
+  `em3c-gateway.yml`, `full-checks.yml` (the `container-present` job), held by `tests/test_ci_full_lanes.py`;
 - `eg8_counter_check.py` — `eg8-rebinding.yml`; `npm_e2e_pins.json` — `tests/test_sandbox_e2e.py`;
 - `freeze_inventory.py`, `FROZEN_INVENTORY.json`, `conftest_report.py` — `tests/test_frozen_inventory_controls.py`
   (and named in `tests/test_optional_providers_skip_cleanly.py` and `docs/sandbox/_facts/test-evidence.json`).

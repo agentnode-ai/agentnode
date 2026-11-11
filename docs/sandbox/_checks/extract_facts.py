@@ -152,12 +152,36 @@ def _callers_of(needle: str) -> list:
         # path: counting it here would let the instrument answer the question it exists to ask.
         if rel.startswith(("tests/", "conformance/")) or rel == "sandbox/egress.py":
             continue
-        for line in py.read_text(encoding="utf-8").splitlines():
+        # Only CODE counts: strings (docstrings included) and comments are blanked first. A docstring
+        # that merely names the function is not a caller -- sandbox/egress_verify.py was counted as
+        # one for exactly that reason (task #57).
+        for line in _code_only_lines(py.read_text(encoding="utf-8")):
             s = line.strip()
-            if needle in s and not s.startswith("#") and "def " not in s:
+            if needle in s and "def " not in s:
                 hits.append(rel)
                 break
     return hits
+
+
+def _code_only_lines(text: str) -> list:
+    import io
+    import tokenize
+
+    lines = [list(line) for line in text.splitlines()]
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type in (tokenize.STRING, tokenize.COMMENT):
+                (r0, c0), (r1, c1) = tok.start, tok.end
+                for r in range(r0, r1 + 1):
+                    if r - 1 >= len(lines):
+                        break
+                    row = lines[r - 1]
+                    a = c0 if r == r0 else 0
+                    b = c1 if r == r1 else len(row)
+                    row[a:b] = " " * (b - a)
+    except (tokenize.TokenError, IndentationError):
+        pass
+    return ["".join(row) for row in lines]
 
 
 def _memory_swap_bound(cb: str) -> bool:

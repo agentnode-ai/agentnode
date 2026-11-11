@@ -107,7 +107,8 @@ export default function GatewayLinkPage() {
       <h1 className="mb-2 text-2xl font-semibold text-foreground">Connect a gateway</h1>
       <p className="mb-6 text-sm text-muted">
         Connect a device to your sandbox gateway under this account. The website makes a link that
-        works once and only for a few minutes; you run one command on the device.
+        works once and for two minutes; you run one command on the device. The command needs
+        AgentNode SDK 0.25, the next release -- it is not on PyPI yet.
       </p>
 
       <form onSubmit={createLink} className="mb-6 rounded-lg border border-border bg-card p-6" noValidate>
