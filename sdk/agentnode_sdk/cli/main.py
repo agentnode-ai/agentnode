@@ -237,7 +237,9 @@ def main(argv: list[str] | None = None) -> int:
     lock_verify_p.add_argument("--online", action="store_true", help="Verify publisher key status against the registry")
 
     # serve
-    sub.add_parser("serve", help="Start MCP server (stdio)")
+    serve_p = sub.add_parser("serve", help="Start MCP server (stdio)")
+    serve_p.add_argument("--packs", default="",
+                         help="Comma-separated pack slugs to expose as tools (default: all installed)")
 
     # Sandbox runtime image — explicit pull only (no auto-pull). Full guided
     # setup/repair UX is Sprint B.
@@ -338,6 +340,24 @@ def main(argv: list[str] | None = None) -> int:
     gw_limits.add_argument("--max-output-bytes", dest="max_output_bytes", type=int,
                            default=None,
                            help="The most output it keeps from one run. 0 = no limit")
+    # Additive: one customer's own account ceilings instead of the gateway-wide ones.
+    gw_limits.add_argument("--account", dest="limits_account", default=None,
+                           help="Set the --account-* ceilings for THIS customer only (see "
+                                "`agentnode gateway accounts`); others keep the gateway-wide ones")
+    gw_limits.add_argument("--reset", dest="limits_reset", action="store_true",
+                           help="With --account: remove that customer's own ceilings, so the "
+                                "gateway-wide ones apply to them again")
+    # Task #12, additive: a one-off allowance that never refills.
+    gw_limits.add_argument("--account-lifetime-runs", dest="account_lifetime_runs", type=int,
+                           default=None,
+                           help="How many runs one customer may start IN TOTAL, ever; it does not "
+                                "refill. 0 = no such limit")
+    gw_limits.add_argument("--trial", dest="limits_trial", action="store_true",
+                           help="With --account: give that customer a one-off allowance of the "
+                                "PROVISIONAL trial size (not decided yet)")
+    gw_limits.add_argument("--reset-lifetime", dest="limits_reset_lifetime", action="store_true",
+                           help="With --account: give that customer their whole one-off "
+                                "allowance back. Only that customer")
 
     gw_keeps = gw_sub.add_parser(
         "keeps", help="What this gateway keeps, for how long, and what expiring costs")
@@ -444,6 +464,9 @@ def main(argv: list[str] | None = None) -> int:
     rm_connect.add_argument("--code", default="",
                             help="The one-time code, when you were given an address and a code "
                                  "rather than an invitation")
+    rm_connect.add_argument("--link", default="",
+                            help="A link grant from the website's 'Connect a gateway' page, given "
+                                 "with the gateway's address instead of a code")
     rm_connect.add_argument("--as", dest="as_name", default="", help="A name to remember it by")
     rm_sub.add_parser("list", help="Which sandboxes you can send work to")
     rm_use = rm_sub.add_parser("use", help="Choose the one used by default")
@@ -718,7 +741,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if args.command == "serve":
             from agentnode_sdk.cli.serve import cmd_serve
-            return cmd_serve()
+            return cmd_serve(packs=getattr(args, "packs", ""))
         parser.print_help()
         return 1
     except KeyboardInterrupt:

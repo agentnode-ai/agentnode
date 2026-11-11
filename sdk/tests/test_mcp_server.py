@@ -199,26 +199,26 @@ class TestGetPrompt:
 
     def test_unknown_prompt_raises(self, tmp_path):
         from agentnode_sdk.mcp_server import _render_prompt
-        from mcp.shared.exceptions import McpError
+        from agentnode_sdk.mcp_server import McpError
         _create_skill(tmp_path)
         with pytest.raises(McpError, match="not found"):
             _render_prompt("test-skill/nonexistent", None)
 
     def test_unknown_skill_raises(self, tmp_path):
         from agentnode_sdk.mcp_server import _render_prompt
-        from mcp.shared.exceptions import McpError
+        from agentnode_sdk.mcp_server import McpError
         with pytest.raises(McpError, match="not installed"):
             _render_prompt("nonexistent/main", None)
 
     def test_invalid_name_format_raises(self, tmp_path):
         from agentnode_sdk.mcp_server import _render_prompt
-        from mcp.shared.exceptions import McpError
+        from agentnode_sdk.mcp_server import McpError
         with pytest.raises(McpError, match="Invalid prompt name"):
             _render_prompt("no-slash", None)
 
     def test_non_skill_package_raises(self, tmp_path):
         from agentnode_sdk.mcp_server import _render_prompt
-        from mcp.shared.exceptions import McpError
+        from agentnode_sdk.mcp_server import McpError
         update_lockfile("my-tool", {
             "version": "1.0.0",
             "package_type": "toolpack",
@@ -244,7 +244,7 @@ class TestListResources:
         from agentnode_sdk.mcp_server import _build_resource_list
         _create_skill(tmp_path)
         resources = _build_resource_list()
-        assert resources[0].mimeType == "text/markdown"
+        assert (getattr(resources[0], "mime_type", None) or resources[0].mimeType) == "text/markdown"
 
     def test_empty_when_no_skills(self, tmp_path):
         from agentnode_sdk.mcp_server import _build_resource_list
@@ -274,26 +274,26 @@ class TestReadResource:
 
     def test_unknown_uri_raises(self, tmp_path):
         from agentnode_sdk.mcp_server import _read_resource
-        from mcp.shared.exceptions import McpError
+        from agentnode_sdk.mcp_server import McpError
         with pytest.raises(McpError, match="not found"):
             _read_resource("https://example.com/foo")
 
     def test_file_uri_raises(self, tmp_path):
         from agentnode_sdk.mcp_server import _read_resource
-        from mcp.shared.exceptions import McpError
+        from agentnode_sdk.mcp_server import McpError
         with pytest.raises(McpError, match="not found"):
             _read_resource("file:///etc/passwd")
 
     def test_nonexistent_asset_raises(self, tmp_path):
         from agentnode_sdk.mcp_server import _read_resource
-        from mcp.shared.exceptions import McpError
+        from agentnode_sdk.mcp_server import McpError
         _create_skill(tmp_path)
         with pytest.raises(McpError, match="not found"):
             _read_resource("agentnode://skills/test-skill/assets/nonexistent")
 
     def test_path_traversal_blocked(self, tmp_path):
         from agentnode_sdk.mcp_server import _read_resource
-        from mcp.shared.exceptions import McpError
+        from agentnode_sdk.mcp_server import McpError
         _create_skill(tmp_path)
         secret = tmp_path / "secret.txt"
         secret.write_text("TOP SECRET")

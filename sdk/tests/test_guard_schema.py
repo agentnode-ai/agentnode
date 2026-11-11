@@ -344,9 +344,33 @@ class TestDenyOverridesPrompt:
 
 class TestNoExternalDependency:
     def test_no_jsonschema_import(self):
-        import agentnode_sdk.guard as guard_mod
+        # The promise is that the guard itself never pulls in jsonschema. Asking this session's
+        # sys.modules cannot answer that: the guard is already imported by the time this runs, and
+        # other suites (tests/remote_mcp, test_mcp_server) import mcp, which loads jsonschema. So the
+        # guard is imported in a fresh interpreter and only what IT loaded is judged.
+        import os
+        import subprocess
         import sys
-        assert "jsonschema" not in sys.modules
+
+        probe = (
+            "import sys\n"
+            "assert 'agentnode_sdk.guard' not in sys.modules\n"
+            "import agentnode_sdk.guard\n"
+            "print('jsonschema' in sys.modules)\n"
+        )
+        sdk_root = Path(__file__).resolve().parents[1]
+        done = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=str(sdk_root),
+            env={**os.environ, "PYTHONPATH": str(sdk_root)},
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip() == "False", (
+            "the guard loaded jsonschema: %r" % done.stdout
+        )
 
 
 # ---------------------------------------------------------------------------

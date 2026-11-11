@@ -1,5 +1,22 @@
 # agentnode-mcp
 
+> **Deprecated — use `agentnode serve` instead.** This package stays available and unchanged, but it is no
+> longer the recommended way to use AgentNode over MCP. It imports a pack's Python code into its own process
+> and calls it directly, outside the sandbox, guard and host-trust policy. `agentnode serve` (in
+> `agentnode-sdk`) offers the same tools and runs every pack tool through the same checks as `agentnode run`.
+>
+> | Before | Now |
+> |---|---|
+> | `agentnode-mcp --packs a,b` | `agentnode serve --packs a,b` |
+> | `agentnode-mcp --all` | `agentnode serve` |
+> | `agentnode-mcp-platform [--api-url URL] [--api-key KEY]` | `agentnode serve` (the four platform tools are included; set `AGENTNODE_API_URL` / `AGENTNODE_API_KEY`) |
+> | client config `"command": "agentnode-mcp", "args": ["--all"]` | `"command": "agentnode", "args": ["serve"]` |
+>
+> Tool names stay the same (`<slug>` or `<slug>/<tool>`, `agentnode_search`, `agentnode_resolve`,
+> `agentnode_explain`, `agentnode_capabilities`). What changes on purpose: a pack that is not curated runs
+> only in the container sandbox (or is refused when none is available), a tool that needs a confirmation is
+> refused instead of run, and a failed call is reported as an MCP tool error (`isError`).
+
 MCP server adapter for [AgentNode](https://agentnode.net) — expose AgentNode packs as MCP tools for **OpenClaw**, **Claude Code**, **Cursor**, and any MCP-compatible client.
 
 ## Installation

@@ -33,6 +33,7 @@ Thumbs.db
 
 # Test
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 

@@ -398,8 +398,13 @@ def test_declined_consent_issues_no_code(tmp_path):
             confirm = re.search(r'name="confirm" value="([^"]+)"', r.text).group(1)
             r2 = await c.post("/authorize", data=dict(params, confirm=confirm, decision="deny"),
                               headers=cookie)
-            assert r2.status_code == 200 and "declined" in r2.text.lower()
-            assert "location" not in r2.headers
+            # Task #6: the client is told (RFC 6749 4.1.2.1) instead of waiting on its callback --
+            # back to its validated redirect_uri with error=access_denied, and still no code.
+            assert r2.status_code == 302, r2.text
+            loc = r2.headers["location"]
+            assert loc.startswith(params["redirect_uri"])
+            q = parse_qs(urlsplit(loc).query)
+            assert q["error"] == ["access_denied"] and "code" not in q
 
     run(go())
 

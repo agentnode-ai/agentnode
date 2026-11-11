@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased (0.25.0) — not on PyPI
+
+Nothing in this section is released. `agentnode_sdk.__version__` says 0.25.0, and the newest release on
+PyPI is 0.24.1. The list is still incomplete: it names the breaking changes since 0.24.1 and the work of
+draft PR #194. The full notes are written at the release.
+
+### Breaking changes since 0.24.1
+
+These are already on `main`. They were measured against the published 0.24.1 wheel: the public API, the
+CLI and the behaviour tests of 0.24.1 were run against this tree.
+
+- **Python 3.13 and newer are no longer supported.** `requires-python` is now `>=3.10,<3.13`. An
+  installer on Python 3.13 or 3.14 is not offered this release and stays on 0.24.1.
+- **Network permissions are a contract.** `permissions.network_level` must be one of:
+  - `none`;
+  - `unrestricted`;
+  - `restricted`, which needs a non-empty `allowed_domains`.
+
+  A pack declaring `full`, an unknown value, or `restricted` without domains is refused and nothing
+  runs. 0.24.1 ran such packs with network access.
+- **A network meant to have no route out must show that it is internal.** If the container runtime
+  does not report it, the run is refused rather than started.
+- **Conformance checks say `not_checked`** where a boundary cannot be measured on the host, instead of
+  a pass or a fail.
+- `agentnode_sdk.conformance.runner.TIMEOUT_RC` is now `SUPERSEDED_TIMEOUT_RC`; there is no alias.
+
+### Added in draft PR #194 (not merged)
+
+- **Remote MCP:** `agentnode serve` serves on mcp 1.x and 2.x (`mcp>=1.0.0,<3`), offers the pack
+  tools and the platform tools, and `--packs` limits what is exposed. A tool error is a failure
+  result.
+- **Website to gateway identity link.** The website signs a single-use link, valid for two minutes.
+  The gateway redeems it with `POST /v1/link`; on the device this is
+  `agentnode remote connect ... --link`. It is inactive until the website's signing key is set.
+- **Per-account ceilings** on a gateway (`--account-runs-per-window`, `--account-lifetime-runs`,
+  `--trial`). Deleting an account clears its ceilings, and an account export carries them.
+- **Self-hosted gateway as a documented beta path.** The gateway refuses to start unpinned unless
+  `AGENTNODE_ALLOW_UNPINNED` is set.
+- **A paired worker rollback needs the control plane's signed statement** (P13). An operator's
+  assertion is no longer enough.
+- **The CLI:** a failed run says why and exits 1, and a dashboard API key is sent as `X-API-Key`.
+
+### Fixed in draft PR #194 (not merged)
+
+- **An edge refusal closes in order,** so its answer reaches a client whose request the edge left
+  unread. Before, the connection could end in a reset.
+
+### Not yet true
+
+- **A worker on its own machine** was accepted by cross-host run r3 for an earlier build (df821f65).
+  The current build was **not** accepted by r4. r5 has not run.
+
 ## 0.24.1 — the sandbox does what it said
 
 Three defects in the local sandbox runtime, found by the backend conformance suite (EM-3B)

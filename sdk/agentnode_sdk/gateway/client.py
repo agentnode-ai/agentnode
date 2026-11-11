@@ -176,6 +176,19 @@ def hello(base_url: str, pin: str = "") -> dict[str, Any]:
     return body
 
 
+def redeem_link(base_url: str, grant: str, pin: str = "") -> dict[str, Any]:
+    """Exchange a website link grant for a joining invitation (#36, #37). No credential yet.
+
+    The grant was signed by the website for its signed-in user and names this gateway; the gateway
+    checks it and answers with a one-time code into that user's one account, which `pair` then
+    redeems like any other. `pin` goes in before the grant goes out, as for `pair`.
+    """
+    status, body = _post(base_url.rstrip("/") + "/v1/link", {"grant": grant}, pin=pin)
+    if status != 200 or not isinstance(body.get("code"), str) or not body.get("code"):
+        raise GatewayClientError(body.get("error") or f"the gateway answered {status}")
+    return body
+
+
 def pair(base_url: str, code: str, client_name: str = "",
          certificate_sha256: str = "") -> GatewayConnection:
     """Exchange a pairing code for a token. The code is spent either way.

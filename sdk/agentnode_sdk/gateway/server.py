@@ -325,6 +325,10 @@ def name_the_refusal(exc: Exception) -> tuple:
             "Nothing will run until whoever runs it starts it again. You can still ask what "
             "happened to runs you already submitted.")
     if isinstance(exc, OverTheCeiling):
+        if getattr(exc, "what_to_do", ""):
+            # the ceiling's own way on (a one-off allowance, task #12), the same sentence the
+            # dispatcher gives
+            return "over_a_ceiling", exc.what_to_do
         return "over_a_ceiling", (
             "Wait until the window clears, or ask whoever runs this sandbox for a higher "
             "ceiling. Nothing was started and nothing was counted.")
@@ -2534,6 +2538,18 @@ class GatewayService:
 
         return read_allowance(self.state.root)
 
+    def allowance_for(self, account_id: str = ""):
+        """What applies to THIS customer: the gateway-wide ceilings with the account's own in place.
+
+        THE ONE SOURCE for the check before a start (`within_its_allowance`), the binding booking
+        (`reserve`) and what a run records it was admitted under. Two readers would be two
+        answers, and the more permissive one would decide. Read on every admission, never held,
+        and strictly: an unreadable per-account file raises like an unreadable allowance.
+        """
+        from agentnode_sdk.gateway.allowance import for_account, read_account_ceilings
+
+        return for_account(self.allowance(), account_id, read_account_ceilings(self.state.root))
+
     @property
     def use(self):
         """What each client has used lately, durably."""
@@ -2628,7 +2644,7 @@ class GatewayService:
         """
         from agentnode_sdk.gateway.protocol import is_terminal
 
-        allowed = self.allowance()
+        allowed = self.allowance_for(account_id)
         granted = allowed.digest()
         if not client_id:
             # Nothing to count against. Admission refuses an unpaired caller elsewhere; this is
@@ -2641,7 +2657,35 @@ class GatewayService:
             runs, seconds = self.use.so_far(key)
             self._judge_window(ceilings, runs, seconds, self.use.oldest(key), asking_for,
                                whose=whose)
+        lifetime = self._lifetime_scope(allowed, account_id)
+        if lifetime is not None:
+            key, judge = lifetime
+            runs, seconds = self.use.so_far(key)
+            judge(runs, seconds, 0.0)
         return granted
+
+    def _lifetime_scope(self, allowed, account_id: str):
+        """(key, judge) for this account's one-off allowance, or None. One definition, two callers.
+
+        Task #12. `within_its_allowance` looks with it and `reserve` books with it, through the same
+        counter (`allowance.lifetime_key`) and the same ceiling (`allowance_for`), so the look and the
+        booking cannot disagree. The refusal names the way on, because waiting does not help.
+        """
+        from agentnode_sdk.gateway.allowance import ONE_OFF_WHAT_TO_DO, lifetime_key
+
+        ceiling = int(getattr(allowed, "account_lifetime_runs", 0) or 0)
+        if not account_id or not ceiling:
+            return None
+
+        def judge(runs: int, seconds: float, oldest: float) -> None:
+            if runs >= ceiling:
+                raise OverTheCeiling(
+                    "account_lifetime_runs",
+                    "this account has started %d of the %d runs of its one-off allowance, and it "
+                    "does not refill." % (runs, ceiling),
+                    what_to_do=ONE_OFF_WHAT_TO_DO)
+
+        return lifetime_key(account_id), judge
 
     def _window_scopes(self, allowed, client_id: str, account_id: str):
         """The scopes a run is counted against, each with the ceilings that apply to it.
@@ -3059,7 +3103,8 @@ class GatewayService:
             # From here the run carries what it was admitted under. A limit changed while it is
             # going must not rewrite what this run is recorded as having been allowed.
             record.admitted_under = granted_digest
-            record.admitted_under_values = dict(self.allowance().as_dict())
+            record.admitted_under_values = dict(
+                self.allowance_for(record.owner_account_id).as_dict())
             # Where it ran and what that was configured as, taken now rather than at the end:
             # a worker replaced mid-flight must not rewrite what a finished run was measured on.
             record.worker_topology = self.worker.topology
@@ -4007,9 +4052,11 @@ class GatewayService:
                 bytes_out=len(record.stdout or "") + len(record.stderr or ""),
                 worker_topology=self.worker.topology,
                 # What it was admitted under, not what is configured now.
-                allowance_sha256=record.admitted_under or self.allowance().digest(),
+                allowance_sha256=record.admitted_under or self.allowance_for(
+                    record.owner_account_id).digest(),
                 allowance_admitted_under=(record.admitted_under_values
-                                          or self.allowance().as_dict()))
+                                          or self.allowance_for(
+                                              record.owner_account_id).as_dict()))
         except meter.AlreadyRecorded:
             # This run is already in the log. Reached when a stop closed it on the way out and its
             # own thread came back a moment later, which is a race both halves of are correct:
@@ -4087,7 +4134,12 @@ class GatewayService:
         """
         from agentnode_sdk.gateway.protocol import is_terminal
 
-        allowed = self.allowance()
+        allowed = self.allowance_for(account_id)
+        # What the run is recorded as admitted under is what it was BOOKED under. The early check
+        # read the same function, but a file changed between the two would otherwise leave a run
+        # recording one set of ceilings and charged under another.
+        record.admitted_under = allowed.digest()
+        record.admitted_under_values = dict(allowed.as_dict())
         if not client_id:
             with self._lock:
                 self.runs[run_id] = record
@@ -4118,11 +4170,18 @@ class GatewayService:
                         "account_concurrent_runs",
                         "this account already has %d runs going and may have %d at once. Wait "
                         "for one to finish." % (going, allowed.account_concurrent_runs))
-            if scopes:
-                # Raises before anything is written if any scope is over a window ceiling.
-                self.use.claim_every(
-                    [(key, judging(ceilings, whose)) for whose, key, ceilings in scopes],
-                    run_id)
+            claims = [(key, judging(ceilings, whose)) for whose, key, ceilings in scopes]
+            lifetime = self._lifetime_scope(allowed, account_id)
+            if lifetime is not None:
+                # The one-off allowance is booked in the SAME transaction as every window: a run
+                # refused by a window must not have spent a lifetime run, and the reverse.
+                if not scopes:
+                    # what `note_every` would have recorded, kept in this one transaction
+                    claims += [(k, lambda *_a: None) for k in (client_id, account_id) if k]
+                claims.append(lifetime)
+            if claims:
+                # Raises before anything is written if any scope is over its ceiling.
+                self.use.claim_every(claims, run_id)
             else:
                 self.use.note_every([k for k in (client_id, account_id) if k], run_id)
             # Taken in the same breath as it was checked.
@@ -4785,6 +4844,17 @@ class _Handler(BaseHTTPRequestHandler):
                 # The shape this door has always used for a pairing that did not work. The
                 # console tells expired, already-used and mistyped apart from the sentence, so
                 # the sentence is passed through rather than generalised away.
+                return self._send(403, refusal(refused.because))
+            return self._send(200, answer)
+
+        if self.path == "/v1/link":
+            # A website link grant (#36), redeemed for a joining invitation into that website
+            # user's one account. Through the dispatcher's one way in for strangers, like /v1/pair;
+            # the grant's own checks live in website_link and nothing is decided here.
+            try:
+                answer = _dispatch.before_anyone("link_website_user", body, service=self.service,
+                                                 via="older_door")
+            except _dispatch.Refused as refused:
                 return self._send(403, refusal(refused.because))
             return self._send(200, answer)
 

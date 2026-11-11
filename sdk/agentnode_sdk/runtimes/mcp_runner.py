@@ -789,6 +789,23 @@ def run_mcp(
         result = server.call_tool(name, kwargs, timeout=timeout)
         elapsed = (time.monotonic() - t0) * 1000
 
+        # MCP reports a failed tool call as a normal result with isError: true (only
+        # protocol faults are JSON-RPC errors). That is a failure, not an answer.
+        if isinstance(result, dict) and result.get("isError") is True:
+            texts = [
+                c.get("text", "") for c in (result.get("content") or [])
+                if isinstance(c, dict) and c.get("type") == "text"
+            ]
+            _audit_mcp_call(slug, name, success=False, duration_ms=elapsed,
+                            error_class="ToolError")
+            return RunToolResult(
+                success=False,
+                result=result,
+                error="MCP tool error: " + ("; ".join(t for t in texts if t) or "isError"),
+                mode_used="mcp",
+                duration_ms=round(elapsed, 1),
+            )
+
         _audit_mcp_call(slug, name, success=True, duration_ms=elapsed)
 
         return RunToolResult(

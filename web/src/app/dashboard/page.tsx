@@ -168,6 +168,9 @@ export default function DashboardPage() {
       .then(r => r.json())
       .then(f => setReviewsEnabled(!!f.manual_reviews_enabled))
       .catch(() => {});
+    // Load once on mount: loadUser and the other loaders are re-created on every render, so listing them
+    // would re-run this effect after each state update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function clearMessages() {
@@ -185,7 +188,7 @@ export default function DashboardPage() {
       const data = await res.json();
       setUser(data);
       if (data.publisher?.slug) {
-        loadMyPackages(data.publisher.slug);
+        loadMyPackages();
         loadReviews();
       }
     } catch {
@@ -400,7 +403,7 @@ export default function DashboardPage() {
     router.push("/auth/login");
   }
 
-  async function loadMyPackages(_publisherSlug: string) {
+  async function loadMyPackages() {
     setLoadingPackages(true);
     try {
       // Owner-scoped list — includes under-review (quarantined) packages that
@@ -756,7 +759,7 @@ export default function DashboardPage() {
                 });
                 setEditingPublisher(true);
                 // Also load packages on first view
-                if (myPackages.length === 0) loadMyPackages(user.publisher!.slug);
+                if (myPackages.length === 0) loadMyPackages();
               }}
               className="text-xs text-primary hover:underline"
             >
@@ -1363,6 +1366,21 @@ export default function DashboardPage() {
           className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary/90"
         >
           Manage Credentials
+        </Link>
+      </section>
+
+      {/* Connect a gateway (#37) */}
+      <section className="mb-8 rounded-lg border border-border bg-card p-6">
+        <h2 className="mb-2 text-lg font-semibold text-foreground">Connect a gateway</h2>
+        <p className="text-sm text-muted mb-3">
+          Connect a device to your own sandbox gateway under this account, with a link that works once.
+          Needs AgentNode SDK 0.25 (next release).
+        </p>
+        <Link
+          href="/dashboard/gateway"
+          className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary/90"
+        >
+          Connect a gateway
         </Link>
       </section>
 

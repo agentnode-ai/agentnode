@@ -1,6 +1,6 @@
 {
   "lockfile_version": "0.1",
-  "updated_at": "2026-04-21T15:30:00.205033+00:00",
+  "updated_at": "2026-11-10T08:40:13.345555+00:00",
   "packages": {
     "word-counter-pack": {
       "version": "1.0.0",
@@ -30,7 +30,12 @@
       "prompts": [],
       "resources": [],
       "connector": null,
-      "agent": null
+      "agent": null,
+      "_integrity": {
+        "algorithm": "sha256",
+        "canonical_version": 1,
+        "hash": "b10593334f3543341015f2336d17a9725bd34c928ecca59f25f1ae1d6a964720"
+      }
     },
     "text-translator-pack": {
       "version": "1.0.0",
@@ -55,7 +60,12 @@
       "prompts": [],
       "resources": [],
       "connector": null,
-      "agent": null
+      "agent": null,
+      "_integrity": {
+        "algorithm": "sha256",
+        "canonical_version": 1,
+        "hash": "3b173a300056c797550aed67f28810804193092c6a75b75c140d06a8cdfa1e3f"
+      }
     },
     "csv-analyzer-pack": {
       "version": "1.0.0",
@@ -80,7 +90,17 @@
       "prompts": [],
       "resources": [],
       "connector": null,
-      "agent": null
+      "agent": null,
+      "_integrity": {
+        "algorithm": "sha256",
+        "canonical_version": 1,
+        "hash": "bc2baf73bd01b1579df581e84d1b54f853cb0801c04b356edf38ba626f038817"
+      }
     }
+  },
+  "structure_digest": {
+    "algorithm": "sha256",
+    "canonicalization_version": 1,
+    "hash": "393ed2f7f4a5166d4ea1bbed6855fc16f1221cb794db6581a0ef23be766405ad"
   }
 }

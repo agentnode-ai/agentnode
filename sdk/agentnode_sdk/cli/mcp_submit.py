@@ -13,6 +13,7 @@ from pathlib import Path
 import httpx
 import yaml
 
+from agentnode_sdk.cli.api_auth import auth_headers
 from agentnode_sdk.cli.mcp_verify import verify_manifest
 
 
@@ -117,7 +118,7 @@ def cmd_mcp_submit(
                 "manifest": manifest,
                 "verification_report": report_dict,
             },
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers=auth_headers(api_key),
             timeout=30,
         )
     except Exception as e:

@@ -1,0 +1,33 @@
+name: Release checks
+
+# Before a release: everything, then the manual acceptance of the website (task #30,
+# PLAN-2026-11.md section 2: "release = everything + manual acceptance of the website").
+#
+# This lane decides nothing and publishes nothing. Publishing stays where it is
+# (publish-sdk.yml and friends, on a published GitHub release); this is the check that is
+# expected to be green before somebody publishes one.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    uses: ./.github/workflows/full-checks.yml
+
+  # Runs only after the full check passed. The environment is where the manual approval lives:
+  # with required reviewers configured on it (repository settings), this job waits for a person
+  # who has looked at the website and approves. Without reviewers it does not wait -- that is a
+  # repository setting, not something a workflow file can enforce.
+  website-acceptance:
+    needs: full
+    runs-on: ubuntu-latest
+    environment: release-website-acceptance
+    steps:
+      - name: Record the manual website acceptance
+        run: |
+          echo "Full checks passed for ${GITHUB_REF_NAME} (${GITHUB_SHA})."
+          echo "Website acceptance approved in environment 'release-website-acceptance'."

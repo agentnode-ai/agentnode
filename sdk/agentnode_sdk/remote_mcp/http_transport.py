@@ -714,8 +714,9 @@ class RemoteMCPApp:
             return await self._secure_page(send, 403, "<h1>Could not confirm</h1>"
                                            "<p>Your session or confirmation was not valid.</p>")
         if form.get("decision") != "allow" or not subject.permitted:
-            return await self._secure_page(send, 200, "<h1>Request declined</h1>"
-                                           "<p>No authorization was granted.</p>")
+            # Declined: the client is told so (error=access_denied to its validated redirect_uri)
+            # instead of waiting on its callback; nothing is minted.
+            return await self._triple(send, await self._off_loop(self.authz.deny, form))
         # authz.authorize re-validates everything (client, exact redirect_uri, PKCE, resource)
         # before issuing, so the consent form's embedded fields are never trusted on their own.
         return await self._triple(send, await self._off_loop(

@@ -58,6 +58,8 @@ ENFORCED_BY_THE_GATEWAY = (
     # runtime list because the gateway decides them: the container runtime has no idea how many
     # OTHER customers this machine is already serving.
     "machine_concurrent_runs", "queue_depth",
+    # Task #12: the one-off allowance, which never refills. Hit below.
+    "account_lifetime_runs",
 )
 
 ENFORCED_BY_THE_RUNTIME = ("cpu", "memory_mb", "processes", "disk_mb", "wall_clock_s")
@@ -80,6 +82,16 @@ class TestEveryCeilingThisGatewayEnforcesIsHitAndRefuses:
         with pytest.raises(dispatch.Refused) as refused:
             _a_run_by(gateway, who)
         assert refused.value.refusal == "over_a_ceiling"
+
+    def test_a_one_off_ceiling(self, gateway):
+        """Task #12: hit for real, like every other ceiling in this list."""
+        who = _a_customer(gateway, "alice")
+        write_allowance(gateway.state.root, Allowance(account_lifetime_runs=1))
+        _a_run_by(gateway, who)
+        with pytest.raises(dispatch.Refused) as refused:
+            _a_run_by(gateway, who)
+        assert refused.value.refusal == "over_a_ceiling"
+        assert "account_lifetime_runs" in refused.value.because
 
     @pytest.mark.parametrize("ceiling", ["seconds_per_window", "account_seconds_per_window"])
     def test_a_seconds_ceiling(self, gateway, ceiling):

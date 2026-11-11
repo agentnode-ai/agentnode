@@ -65,6 +65,47 @@ const paths: PathCard[] = [
   },
 ];
 
+interface Way {
+  title: string;
+  status: "available" | "next-release" | "not-accepted";
+  badge: string;
+  body: string;
+  command?: string;
+  link?: PathLink;
+}
+
+const GUIDES = "https://github.com/agentnode-ai/agentnode/blob/main";
+
+// Task #7. Each status is the one docs/sandbox/availability.md derives from the code: only what a
+// visitor can use today is offered as usable, and the hosted sandbox is not offered at all until
+// its two-machine acceptance has passed.
+const ways: Way[] = [
+  {
+    title: "On your own computer",
+    status: "available",
+    badge: "Available today",
+    body:
+      "Install the SDK and run tools locally; with Docker or Podman they run in a container sandbox. Tested on a Linux PC. Windows and macOS: available, but not tested here yet.",
+    command: "pip install agentnode-sdk",
+    link: { href: "/docs/sandbox", label: "Execution sandbox" },
+  },
+  {
+    title: "On your own server",
+    status: "next-release",
+    badge: "Next release",
+    body:
+      "Run the sandbox on a Linux machine you control and send work to it from your laptop. It is in the SDK on main (0.25) and not yet on PyPI — the current release does not include it. Not tested here yet.",
+    link: { href: `${GUIDES}/sdk/docs/self-hosted-sandbox.md`, label: "Self-hosted guide" },
+  },
+  {
+    title: "Hosted cloud sandbox",
+    status: "not-accepted",
+    badge: "Not yet accepted",
+    body:
+      "A sandbox run by us. Its acceptance on two separate machines is still open, so it is not offered yet and nothing here should be read as a promise of it.",
+  },
+];
+
 const policies: { name: string; tag: string | null; body: string }[] = [
   { name: "safe", tag: "default", body: "Auto-installs only verified-or-higher packages." },
   { name: "strict", tag: null, body: "Auto-installs only trusted or curated packages — the tightest bar." },
@@ -117,6 +158,44 @@ export default function GettingStartedPage() {
                 </Link>
               ))}
             </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Where your code runs -- statuses as docs/sandbox/availability.md derives them (task #7) */}
+      <h2 className="mb-4 mt-14 text-2xl font-bold text-foreground">
+        Where your code runs
+      </h2>
+      <p className="mb-6 text-sm leading-relaxed text-muted">
+        Three ways, and how far each one is today. Nothing here is described as
+        further along than it has been shown to be.
+      </p>
+      <div className="grid gap-4 sm:grid-cols-3">
+        {ways.map((w) => (
+          <div
+            key={w.title}
+            data-way=""
+            data-status={w.status}
+            className="rounded-xl border border-border bg-card p-6"
+          >
+            <h3 className="mb-1 text-base font-semibold text-foreground">{w.title}</h3>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-primary">
+              {w.badge}
+            </p>
+            <p className="mb-3 text-sm leading-relaxed text-muted">{w.body}</p>
+            {w.command ? (
+              <pre className="mb-3 overflow-x-auto rounded-lg bg-[#0d1117] px-3 py-2 text-xs text-gray-300">
+                <code>{w.command}</code>
+              </pre>
+            ) : null}
+            {w.link ? (
+              <a
+                href={w.link.href}
+                className="text-sm text-primary transition-colors hover:text-foreground"
+              >
+                {w.link.label} &rarr;
+              </a>
+            ) : null}
           </div>
         ))}
       </div>

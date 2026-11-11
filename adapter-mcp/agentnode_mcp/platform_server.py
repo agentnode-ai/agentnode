@@ -1,5 +1,9 @@
 """MCP server that exposes AgentNode platform capabilities as MCP tools.
 
+DEPRECATED: use `agentnode serve` (agentnode-sdk), which offers the same four platform tools
+(agentnode_search/resolve/explain/capabilities). Kept unchanged for existing users; see
+adapter-mcp/README.md for the migration.
+
 Unlike the pack server (server.py) which wraps installed packs,
 this server exposes AgentNode's own features:
   - agentnode_search: Search the AgentNode registry

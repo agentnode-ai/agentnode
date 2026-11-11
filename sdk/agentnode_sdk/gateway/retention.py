@@ -635,11 +635,30 @@ def delete_account(state, account_id: str, because: str = "the customer asked") 
             went["devices"] += 1
 
     # 2. Counters, which are keyed by account and by device.
+    #    A damaged record used to make this RAISE, halfway through a deletion whose devices were
+    #    already revoked -- the one step that broke off instead of saying what it could not do
+    #    (task #26). Named now, like every other step, and the deletion goes on.
     use = allowance.Use(root / allowance.USE_NAME)
     rate = admission.RateLimit(root / admission.RATE_NAME)
-    for key in [wanted, *devices]:
-        went["counters"] += int(bool(use.forget_everything_about(key)))
-        went["counters"] += int(bool(rate.forget(key)))
+    try:
+        for key in [wanted, *devices]:
+            went["counters"] += int(bool(use.forget_everything_about(key)))
+            went["counters"] += int(bool(rate.forget(key)))
+        # The one-off allowance's counter (task #12), which time never forgets -- so this is the
+        # only place it goes.
+        went["counters"] += int(bool(use.forget_everything_about(allowance.lifetime_key(wanted))))
+    except (OSError, ValueError) as exc:
+        went["problems"].append("this account's counters could not all be removed: %s"
+                                % str(exc)[:160])
+
+    # 2b. The customer's own ceilings (task #11). Exactly this account's entry; a damaged file is
+    #     named and left as it is rather than rewritten, which would drop everybody else's.
+    went["account_ceilings"] = 0
+    try:
+        went["account_ceilings"] = int(allowance.forget_account_ceilings(root, wanted))
+    except (OSError, ValueError) as exc:
+        went["problems"].append("this account's own ceilings are still in %s: %s"
+                                % (allowance.ACCOUNT_CEILINGS_NAME, str(exc)[:160]))
 
     # 3. The audit. Lines name the account and the device and nothing else about a person, and
     #    both of those identify them, so both go.
@@ -825,7 +844,64 @@ def exports_of(root: str | os.PathLike[str], account_id: str = "") -> list:
     return out
 
 
-def export_account(state, account_id: str) -> dict:
+#: How a section is written when the file it comes from exists and cannot be read. Never a number:
+#: a damaged ledger read as zero would tell a customer they had used nothing.
+_UNREADABLE = "could not be read"
+
+
+def _what_applies_and_what_was_used(root: Path, wanted: str, now: float) -> tuple[dict, dict,
+                                                                                    dict, list]:
+    """The account's limits, its window use and its one-off use, from ONE read of each file at
+    ONE moment (task #27). Returns (limits, window, one_off, unreadable_files).
+
+    The use record is read once and both counts come from that read, so an export can never show
+    a window from one moment beside a lifetime count from another. The per-account ceilings are
+    read once and the effective ones computed exactly as admission computes them
+    (`allowance.for_account`, which `GatewayService.allowance_for` uses).
+    """
+    from agentnode_sdk.gateway import allowance
+
+    unreadable: list = []
+    try:
+        gateway_wide = allowance.read_allowance(root)
+    except allowance.CannotReadTheCeilings:
+        gateway_wide = None
+        unreadable.append(allowance.ALLOWANCE_NAME)
+    try:
+        ceilings = allowance.read_account_ceilings(root)
+    except allowance.CannotReadTheCeilings:
+        ceilings = None
+        unreadable.append(allowance.ACCOUNT_CEILINGS_NAME)
+
+    if gateway_wide is None or ceilings is None:
+        broken = allowance.ACCOUNT_CEILINGS_NAME if ceilings is None else allowance.ALLOWANCE_NAME
+        limits = {"state": _UNREADABLE, "file": broken}
+        lifetime_limit = _UNREADABLE
+    else:
+        own = {k: int(v) for k, v in (ceilings.get(wanted) or {}).items()}
+        effective = allowance.for_account(gateway_wide, wanted, ceilings).as_dict()
+        limits = {"source": "own" if own else "gateway-wide", "own": own,
+                  "effective": {k: int(effective[k]) for k in allowance.ACCOUNT_FIELDS}}
+        lifetime_limit = limits["effective"]["account_lifetime_runs"] or None
+
+    use = allowance.Use(root / allowance.USE_NAME)
+    try:
+        body = use.snapshot()
+    except allowance.CannotReadWhatWasUsed:
+        body = None
+        unreadable.append(allowance.USE_NAME)
+    if body is None:
+        window = {"state": _UNREADABLE, "file": allowance.USE_NAME}
+        lifetime_used = _UNREADABLE
+    else:
+        fresh = use._forget(body, now).get(wanted, [])
+        window = {"runs": len(fresh), "seconds": sum(float(r.get("seconds", 0.0)) for r in fresh)}
+        lifetime_used = len(body.get(allowance.lifetime_key(wanted)) or [])
+    one_off = {"runs_used": lifetime_used, "limit": lifetime_limit, "refills": False}
+    return limits, window, one_off, unreadable
+
+
+def export_account(state, account_id: str, now: float | None = None) -> dict:
     """Everything this gateway holds about one customer, as plain JSON.
 
     Three rules, and each is the answer to a way this could go wrong:
@@ -839,7 +915,7 @@ def export_account(state, account_id: str) -> dict:
       database file, because "you can have your data" means nothing if it needs our code to open.
     """
     from agentnode_sdk.gateway import accounts as _accounts
-    from agentnode_sdk.gateway import allowance, meter
+    from agentnode_sdk.gateway import meter
     from agentnode_sdk.gateway.redaction import scrub_everything
 
     state = _the_state(state)
@@ -868,16 +944,24 @@ def export_account(state, account_id: str) -> dict:
         if str(line.get("account")) == wanted:
             lines.append(line)
 
-    use = allowance.Use(root / allowance.USE_NAME)
-    runs, seconds = use.so_far(wanted)
+    at = time.time() if now is None else float(now)
+    limits, window, one_off, unreadable = _what_applies_and_what_was_used(root, wanted, at)
 
+    # The same rule as `agentnode gateway export`: an account is here if something is paired under
+    # it or the accounts record names it. Neither means there is no customer of that name, and an
+    # export of nobody would be an empty shell that looks like somebody's data.
     try:
+        recorded = state.accounts.recorded(wanted)
         account = state.accounts.get(wanted).as_dict()
-    except (_accounts.NoSuchAccount, _accounts.AccountsUnreadable):
-        account = {"account_id": wanted, "state": "could not be read"}
+    except _accounts.AccountsUnreadable:
+        recorded = None
+        account = {"account_id": wanted, "state": _UNREADABLE}
+    if not devices and recorded is not True:
+        raise _accounts.NoSuchAccount(wanted)
 
     return scrub_everything({
         "about": "everything AgentNode holds about one account on this gateway",
+        "as_of": round(at, 3),
         # What an export CANNOT do, said in the export itself rather than in a document the
         # person holding it will not have. A copy taken before a deletion is still a copy.
         "what_this_copy_means": (
@@ -889,7 +973,10 @@ def export_account(state, account_id: str) -> dict:
                      "name": str(d.get("client_name") or ""),
                      "paired_at": d.get("issued_at")}
                     for d in devices],
-        "what_has_been_used_in_the_current_window": {"runs": runs, "seconds": seconds},
+        "limits_that_apply": limits,
+        "what_has_been_used_in_the_current_window": window,
+        "one_off_allowance": one_off,
+        "files_that_could_not_be_read": sorted(unreadable),
         "metered_use": [line for line in meter.read(root)
                         if not meter.is_a_tombstone(line)
                         and (str(line.get("account_id") or "") == wanted

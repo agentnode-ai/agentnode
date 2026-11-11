@@ -81,8 +81,17 @@ def cmd_connect(args) -> int:
 
     given = str(args.url).strip()
     code = str(getattr(args, "code", "") or "")
+    link = str(getattr(args, "link", "") or "").strip()
     expect = ""
     named_gateway = ""
+    if link and (code or given.startswith(PREFIX)):
+        # Said before anything is contacted: two ways in at once means one of them is a mistake,
+        # and guessing which would spend a single-use grant or code on the wrong attempt.
+        print()
+        print(f"  {bold('Give either a link or a code, not both.')}")
+        print("  A link from the website:   agentnode remote connect <address> --link <grant>")
+        print("  A code from the operator:  agentnode remote connect <address> --code ABCD-EFGH-IJKL")
+        return 2
     if given.startswith(PREFIX):
         from agentnode_sdk.gateway.invitation import details as what_it_carries
 
@@ -109,7 +118,7 @@ def cmd_connect(args) -> int:
             print()
             print("  Ask for another:  agentnode gateway pair")
             return 2
-    elif not code:
+    elif not code and not link:
         print()
         print("  Paste the invitation you were given, or pass the address and --code:")
         print("    agentnode remote connect agentnode-invite-1....")
@@ -147,6 +156,26 @@ def cmd_connect(args) -> int:
         print(f"  Could not reach a sandbox gateway at {url}: {exc}")
         print("  Check the address, and that it is running.")
         return 1
+
+    if link:
+        # The website's grant becomes a one-time code into the signed-in user's own account
+        # (#36). Nothing here chooses the account: the grant names the user, the gateway maps it.
+        try:
+            linked = gc.redeem_link(url, link, pin=expect)
+        except gc.GatewayClientError as exc:
+            print()
+            print(f"  {bold('That link was not accepted.')} {exc}")
+            print("  Nothing was saved. Make a new link on the website and run the command it "
+                  "shows within a few minutes.")
+            return 1
+        asked = str((hello.get("gateway") or {}).get("gateway_id", ""))
+        answered = str((linked.get("gateway") or {}).get("gateway_id", ""))
+        if asked and answered != asked:
+            print()
+            print(f"  {bold('The invitation did not come from the gateway that was asked.')}")
+            print("  Nothing was paired.")
+            return 1
+        code = str(linked["code"])
 
     try:
         connection = gc.pair(url, code, client_name=getattr(args, "as_name", "") or "",

@@ -98,6 +98,11 @@ REGISTER = (
           "Redeeming an invitation: how somebody comes to have a credential, so it cannot "
           "require one. It has its own single-use claim, its own expiry and its own attempt "
           "budget, none of which the dispatcher would add."),
+    Route("/v1/link", BEFORE_ANYONE_IS_ANYBODY,
+          "Redeeming a grant the website signed for its signed-in user (#36). Gives no "
+          "credential: only a joining invitation into that user's one account, which is then "
+          "redeemed at /v1/pair. The grant's signature, audience, time window and single use "
+          "are its own checks, in website_link, and the account comes from the gateway's map."),
 
     Route("/v1/jobs", TRANSLATES,
           "The older submit. Parses with the wire format's own reader -- the parser owns the "

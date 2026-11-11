@@ -409,10 +409,25 @@ MODELS: list[ModelConfig] = [
 # Skip logic
 # ---------------------------------------------------------------------------
 
+#: The optional package each provider's client needs (task #17). None of them is declared in
+#: pyproject.toml, so a machine with the key and without the package must SKIP, not fail -- the
+#: same rule R5 Route B already applied to Anthropic, now for every provider.
+_PROVIDER_PACKAGE = {"anthropic": "anthropic", "gemini": "google.genai", "openai": "openai"}
+
+
+def _package_available(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):          # e.g. "google.genai" without "google"
+        return False
+
+
 def _model_available(m: ModelConfig) -> bool:
-    """Check if a model can be tested (has credentials)."""
+    """Check if a model can be tested: its client package AND its credentials."""
     if m.provider == "anthropic":
         return _have_anthropic()
+    if not _package_available(_PROVIDER_PACKAGE.get(m.provider, m.provider)):
+        return False
     if m.tier == "compat" and not m.env_key:
         # Ollama: only available if explicitly configured
         return bool(os.environ.get(m.env_base_url))
@@ -421,7 +436,10 @@ def _model_available(m: ModelConfig) -> bool:
 
 def _skip_reason(m: ModelConfig) -> str:
     if m.provider == "anthropic":
-        return "No Anthropic API key (env or OAuth)"
+        return "No Anthropic API key (env or OAuth), or the 'anthropic' package is not installed"
+    package = _PROVIDER_PACKAGE.get(m.provider, m.provider)
+    if not _package_available(package):
+        return f"optional package '{package}' not available (not installed)"
     if m.tier == "compat" and not m.env_key:
         return f"{m.env_base_url} not set"
     return f"{m.env_key} not set"

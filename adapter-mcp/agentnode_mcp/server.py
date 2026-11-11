@@ -1,5 +1,9 @@
 """MCP server that exposes installed AgentNode packs as MCP tools.
 
+DEPRECATED: use `agentnode serve` (agentnode-sdk). This adapter imports pack code into its own
+process, outside the sandbox/guard/host-trust checks; `agentnode serve` runs every pack tool through
+`runner.run_tool`. Kept unchanged for existing users; see adapter-mcp/README.md for the migration.
+
 Supports ANP v0.1 (single run() per pack) and v0.2 (per-tool entrypoints).
 
 This allows any MCP-compatible client (OpenClaw, Claude Code, Cursor, etc.)

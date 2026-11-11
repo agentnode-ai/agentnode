@@ -344,20 +344,21 @@ class TestTheGuardDoesNotForbidItsOwnAdvice:
     too -- the advice could not be taken. A guard that makes its own recommendation impossible
     is one that will be worked around instead of followed.
 
-    The waiver is an ASSERTION by the operator, not a verification: this script cannot see the
-    other machine. So it is named for what it asserts, it is recorded in the output, and it
-    says plainly what happens if the assertion is false.
+    The waiver used to be an ASSERTION by the operator (--control-plane-already-rolled-back).
+    Since task #28 (P13) it is a statement the gateway signs after its own rollback and the
+    worker verifies itself; the old flag is refused (tests/test_p13_control_plane_statement.py).
     """
 
     def test_the_flag_exists_and_is_named_for_what_it_asserts(self):
         assert "--control-plane-already-rolled-back" in BACK
 
     def test_the_refusal_tells_you_about_it(self):
-        assert "--control-plane-already-rolled-back" in ROLLBACK
-        assert "how you say you have done it" in ROLLBACK
+        assert "--challenge" in ROLLBACK and "--control-plane-statement" in ROLLBACK
+        assert "--sign-for" in ROLLBACK
 
-    def test_it_admits_it_cannot_check(self):
-        assert "cannot see the other" in ROLLBACK
+    def test_it_checks_instead_of_being_told(self):
+        assert "cannot see the other" not in ROLLBACK
+        assert "rollback_proof verify" in ROLLBACK
 
     def test_it_waives_the_refusal_code_check_and_only_that_one(self):
         assert '[ -z "$PAIRED" ]' in BACK

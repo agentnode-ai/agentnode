@@ -282,8 +282,11 @@ class TestTheArtefacts:
         assert "FROM THE CONTROL PLANE'S PRIVATE" in said
 
     def test_the_readme_does_not_claim_the_measurement(self):
+        from tests import two_machine_claim as claim
+
         said = (DEPLOY / "README.md").read_text(encoding="utf-8")
-        assert "**Nothing here has been run across two machines.**" in said
+        assert "**Measured on two machines once, for an earlier build -- not for this one.**" in said
+        assert not claim.problems(said), claim.problems(said)
         for claim in ("proves isolation", "isolated from each other",
                       "has been measured on two machines"):
             assert claim not in said

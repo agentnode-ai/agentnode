@@ -1,0 +1,30 @@
+file                             n  class                                        function                                 runs with the flag at head in
+test_sandbox_e2e                 1  -                                            test_toolpack_build_and_run_real         NOWHERE at head (sdk-lanes: frozen 2de83e79 only)
+test_sandbox_e2e                 1  -                                            test_run_failclosed_when_volume_removed  NOWHERE at head (sdk-lanes: frozen 2de83e79 only)
+test_sandbox_e2e                 1  -                                            test_mcp_starts_in_container_real        NOWHERE at head (sdk-lanes: frozen 2de83e79 only)
+test_sandbox_e2e                 1  -                                            test_mcp_preinstall_cache_lands_only_in_private_tmp NOWHERE at head (sdk-lanes: frozen 2de83e79 only)
+test_sandbox_e2e                 1  -                                            test_mcp_preinstall_fails_closed_on_an_unusable_cache_path NOWHERE at head (sdk-lanes: frozen 2de83e79 only)
+test_sandbox_e2e                 1  -                                            test_npm_mcp_starts_in_container_real    NOWHERE at head (sdk-lanes: frozen 2de83e79 only)
+test_sandbox_e2e                 1  -                                            test_npm_preinstall_cache_lands_only_in_private_tmp NOWHERE at head (sdk-lanes: frozen 2de83e79 only)
+test_sandbox_e2e                 1  -                                            test_npm_preinstall_fails_closed_on_an_unusable_cache_path NOWHERE at head (sdk-lanes: frozen 2de83e79 only)
+test_agent_sandbox_e2e           1  -                                            test_agent_sandbox_e2e                   NOWHERE at head (sdk-lanes: frozen 2de83e79 only)
+test_egress_e2e                  1  -                                            test_egress_e2e_matrix                   NOWHERE at head (sdk-lanes: frozen 2de83e79 only)
+test_agent_session_container     1  -                                            test_container_isolation_real            NOWHERE at head (sdk-lanes: frozen 2de83e79 only)
+test_r1_runtime_remediation      1  TestMemoryCeiling                            test_real_container_cannot_exceed_the_ceiling NOWHERE at head (sdk-lanes: frozen 2de83e79 only)
+test_r1_runtime_remediation      1  TestMemoryCeiling                            test_real_container_below_the_ceiling_still_runs NOWHERE at head (sdk-lanes: frozen 2de83e79 only)
+test_r1_runtime_remediation      1  TestTheResistantPayloadForReal               test_real_timeout_ends_a_payload_that_ignores_it sdk-conformance.yml
+test_cancel_consistency          1  TestARealContainer                           test_cancelling_a_real_run_answers_only_once_it_is_gone em3c-gateway.yml
+test_em3c_cli                    1  TestTheWholeJourneyThroughThePublishedCommands test_a_person_can_set_this_up_and_run_something_in_it em3c-gateway.yml
+test_em3c_cli                    1  TestTheWholeJourneyThroughThePublishedCommands test_a_run_can_be_stopped_from_another_terminal em3c-gateway.yml
+test_em3c_cli                    1  TestTheWholeJourneyThroughThePublishedCommands test_a_job_that_overruns_is_stopped_by_the_sandbox em3c-gateway.yml
+test_em3c_cli                    1  TestTheWholeJourneyThroughThePublishedCommands test_revoking_shuts_the_client_out_at_once em3c-gateway.yml
+test_em3c_cli                    1  TestTheWholeJourneyThroughThePublishedCommands test_nothing_is_left_behind_by_any_of_it em3c-gateway.yml
+test_em3c_gateway                1  TestTheVerticalFlowForReal                   test_foreign_code_runs_in_a_container_and_the_result_comes_back em3c-gateway.yml
+test_em3c_gateway                1  TestTheVerticalFlowForReal                   test_a_cancelled_run_ends_its_container_and_says_so em3c-gateway.yml
+test_em3c_gateway                1  TestTheVerticalFlowForReal                   test_a_run_that_exceeds_its_wall_clock_is_ended em3c-gateway.yml
+test_em3c_gateway                1  TestRestrictedEgressForReal                  test_only_the_allowed_host_is_reachable_and_only_through_the_proxy em3c-gateway.yml
+test_em3c_gateway                1  TestRestrictedEgressForReal                  test_nothing_of_the_restricted_run_is_left_behind em3c-gateway.yml
+test_em3c_gateway                1  TestAControlledDestinationWithNoInternet     test_the_proxy_answers_and_refuses_and_there_is_no_way_around_it em3c-gateway.yml
+test_em3c_gateway                1  TestAControlledDestinationWithNoInternet     test_nothing_of_the_controlled_run_is_left_behind em3c-gateway.yml
+
+gated tests run at head elsewhere: 14   run nowhere at head: 13

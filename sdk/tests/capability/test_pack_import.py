@@ -1039,7 +1039,7 @@ def test_import_runs_no_process_and_no_pack_code(monkeypatch):
     )
 
 
-def _run_shim(tree: Path, messages: list[dict], timeout=60) -> list[dict]:
+def _run_shim(tree: Path, messages: list[dict], timeout=60, env=None) -> list[dict]:
     lines = "\n".join(json.dumps(m) for m in messages) + "\n"
     done = subprocess.run(
         [sys.executable, str(tree / "entry.py")],
@@ -1048,12 +1048,30 @@ def _run_shim(tree: Path, messages: list[dict], timeout=60) -> list[dict]:
         text=True,
         timeout=timeout,
         cwd=str(tree),
+        env=env,
     )
     return [json.loads(x) for x in done.stdout.splitlines() if x.strip()]
 
 
+def _a_third_party_package(tmp_path: Path) -> tuple[str, dict]:
+    """A package in a ``site-packages`` directory of its own, importable by a plain interpreter.
+
+    Task #18: this used to be ``pip``, which made the test depend on pip being installed in the
+    venv that runs it -- in a venv without pip it failed on its own precondition, which says
+    nothing about the shim. A package the test makes itself is there in every environment.
+    """
+    site = tmp_path / "third-party" / "site-packages"
+    (site / "agentnode_probe_third_party").mkdir(parents=True)
+    (site / "agentnode_probe_third_party" / "__init__.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    env = dict(os.environ, PYTHONPATH=str(site))
+    return "agentnode_probe_third_party", env
+
+
 def test_shim_strips_third_party_imports_at_run_time(tmp_path):
-    """A module installed in site-packages (pip, as in the sandbox image) cannot be imported by pack code."""
+    """A module installed in site-packages (as in the sandbox image) cannot be imported by pack code."""
+    third_party, env = _a_third_party_package(tmp_path)
     tree = tmp_path / "tree"
     (tree / "probe_pkg").mkdir(parents=True)
     (tree / "probe_pkg" / "__init__.py").write_text("", encoding="utf-8")
@@ -1072,9 +1090,16 @@ def test_shim_strips_third_party_imports_at_run_time(tmp_path):
         }
     ]
     (tree / "entry.py").write_bytes(_pack_shim.render(table))
-    assert (
-        importlib.util.find_spec("pip") is not None
-    )  # present for the interpreter itself
+    # Present for the interpreter itself: without the shim the import succeeds, so a refusal below
+    # is the shim's doing and not a missing package.
+    plain = subprocess.run(
+        [sys.executable, "-c", "import " + third_party],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert plain.returncode == 0, plain.stderr
     out = _run_shim(
         tree,
         [
@@ -1082,7 +1107,7 @@ def test_shim_strips_third_party_imports_at_run_time(tmp_path):
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
-                "params": {"name": "probe", "arguments": {"name": "pip"}},
+                "params": {"name": "probe", "arguments": {"name": third_party}},
             },
             {
                 "jsonrpc": "2.0",
@@ -1091,6 +1116,7 @@ def test_shim_strips_third_party_imports_at_run_time(tmp_path):
                 "params": {"name": "probe", "arguments": {"name": "json"}},
             },
         ],
+        env=env,
     )
     assert out[0]["result"]["isError"] is True
     assert out[0]["result"]["content"][0]["text"].startswith("ModuleNotFoundError")
@@ -1485,6 +1511,11 @@ import asyncio, json, sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+# The official client's result models are camelCase in mcp 1.x (serverInfo, protocolVersion, isError)
+# and snake_case in mcp 2.x (server_info, protocol_version, is_error); pyproject allows both majors.
+def field(obj, snake, camel):
+    return getattr(obj, snake) if hasattr(obj, snake) else getattr(obj, camel)
+
 async def drive(tree):
     params = StdioServerParameters(command=sys.executable, args=[tree + "/entry.py"], cwd=tree)
     async with stdio_client(params) as (read, write):
@@ -1496,10 +1527,11 @@ async def drive(tree):
                            "year": 1843},
                 "style": "apa"})
             bad = await session.call_tool("citation_extraction", {"source": {"type": "nope"}})
-            return {"server": init.serverInfo.name, "protocol": init.protocolVersion,
+            return {"server": field(init, "server_info", "serverInfo").name,
+                    "protocol": field(init, "protocol_version", "protocolVersion"),
                     "tools": [t.name for t in tools.tools],
-                    "good": [good.isError, good.content[0].text],
-                    "bad": [bad.isError, bad.content[0].text]}
+                    "good": [field(good, "is_error", "isError"), good.content[0].text],
+                    "bad": [field(bad, "is_error", "isError"), bad.content[0].text]}
 
 print(json.dumps(asyncio.run(drive(sys.argv[1]))))
 """
@@ -1507,7 +1539,10 @@ print(json.dumps(asyncio.run(drive(sys.argv[1]))))
 
 def test_official_python_mcp_client_drives_the_generated_shim(tmp_path):
     # In its own process: importing the mcp client here would load jsonschema into the test
-    # session, which other suites (test_guard_schema) assert never happens.
+    # session, which other suites (test_guard_schema) assert never happens. What this test can
+    # promise is that IT loads neither: other tests in the same session (test_mcp_server,
+    # test_serve_stdio) import mcp in-process, so the session-wide state is not this test's to judge.
+    loaded_before = {m for m in ("mcp", "jsonschema") if m in sys.modules}
     imp = _import(STARTER / "citation-manager-pack")
     tree = tmp_path / "tree"
     tree_pack.safe_extract(imp.tar_bytes, tree)
@@ -1524,4 +1559,5 @@ def test_official_python_mcp_client_drives_the_generated_shim(tmp_path):
     assert out["good"][0] is False and "Lovelace" in out["good"][1]
     assert out["bad"][0] is True and out["bad"][1].startswith("ValueError")
     assert "Traceback" not in out["bad"][1]
-    assert "mcp" not in sys.modules and "jsonschema" not in sys.modules
+    loaded_now = {m for m in ("mcp", "jsonschema") if m in sys.modules}
+    assert loaded_now <= loaded_before, "this test loaded %s into the session" % sorted(loaded_now - loaded_before)

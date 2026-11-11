@@ -4,23 +4,23 @@ The topology is called `separate-worker-host` and it is the one the architecture
 sibling directory above this one (`deploy/`) is `single-host-development`: two accounts on one
 kernel, which is not isolation and says so. This directory is what replaces it.
 
-**Nothing here has been run across two machines.** It is written from the code, and every part of
-it that can exist on one host has been exercised there. The measurement that would make this
-directory a claim rather than a procedure — a gateway and a worker on two real kernels — has not
-happened, and no file in this repository may be read as saying it has.
+**Measured on two machines once, for an earlier build -- not for this one.** Run
+`remote-worker-cross-host-r3` passed X1-X10 on 2026-10-02 for build df821f65: a gateway and a worker
+on two freshly rebuilt real kernels, every criterion met, and an independent review that passed. The
+records are frozen outside this repository (`agentnode-Tests/a1e_review/crosshost-r3`). The current
+build has not been accepted by r4. It is not df821f65 -- among other things it carries the P13
+rollback evidence (task #28) -- and a measurement of one build is not a measurement of another, so
+for the code in this repository this directory is still a procedure and not a claim.
 
-That sentence is a ratchet, and `tests/test_the_two_roles_are_separable.py` holds it in place: the
-test requires those words verbatim and forbids three particular overclaims. It comes off when an
-independent review says the measurement holds, and not before. I rewrote it on 2026-09-30 to say
-the opposite, on the grounds that runs had happened; the test went red and was right to. The runs
-are not the measurement.
+That wording is a ratchet, and `tests/test_the_two_roles_are_separable.py` holds it in place: the
+test requires the sentence above verbatim, requires both facts (`tests/two_machine_claim.py`) and
+forbids every way of carrying r3's result over to the current build. It changes when a run after r4
+(r4 blocked on X10) passes its independent review for the build it names, and not before.
 
-**Attempts have been made and none has passed.** The procedure was run across two real hosts on
-2026-09-30, and those records live outside this repository in the review bundles. Every one ended
-in BLOCK or WARN: seven rounds of a repair arc, then an acceptance run on freshly rebuilt machines
-blocked on five of its ten criteria. Those runs found real defects and the repairs are here, which
-is worth something. They did not establish the property. Attempting a measurement is not making
-one, and a reader should not have to go looking to learn the difference.
+**What came before r3.** The procedure was run across two real hosts on 2026-09-30, and every one of
+those attempts ended in BLOCK or WARN: seven rounds of a repair arc, then an acceptance run on
+freshly rebuilt machines blocked on five of its ten criteria. Those runs found real defects and the
+repairs are here. They did not establish the property; r3 did, for its build.
 
 ## Which artefact goes where
 
@@ -74,9 +74,16 @@ happen before the worker is up. Two phases on one side, three stops on the other
 ```
 1. control plane   ./install.sh            builds everything local, then stops
 2. worker          ./install.sh   (x3)     stopping twice for the enrolment handover
-3. worker          systemctl start agentnode-worker
+3. worker          (nothing to run)        the third pass starts the worker itself
 4. control plane   ./install.sh --verify   reaches the worker, and only then starts
 ```
+
+**Step 3 is not a command, and that is deliberate.** The third pass runs the same preflight the
+unit runs before every start, and only if it passes does it enable and start the worker — then it
+waits until the worker is actually listening on its address, not merely `active`, and fails the
+install if it never does. A worker that is not serving is therefore an install that failed, never a
+step someone forgot. Do not start or restart it by hand before step 4; the control plane's
+`--verify` is what measures it.
 
 **1 — the control plane.** `AGENTNODE_DEPLOYMENT` is required; every identity is named inside a
 deployment and there is no default.
@@ -97,7 +104,8 @@ other host on the same network; that needs the worker's identity, and step 4 is 
 established. Said here rather than left to be assumed.
 
 **2 — the worker host**, three passes: it stops for the one-shot enrolment secret, then for the
-certificate, then finishes.
+certificate, and the third pass starts the worker once the preflight accepts the configuration
+(that is step 3 above).
 
 ```sh
 sudo AGENTNODE_WHEEL=$PWD/wheel/agentnode_sdk-<v>-py3-none-any.whl \

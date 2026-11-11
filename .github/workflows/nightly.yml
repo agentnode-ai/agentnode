@@ -1,0 +1,16 @@
+name: Nightly full checks
+
+# Every night, everything (task #30). The expensive full check runs here instead of on every
+# pull request; a red nightly is the signal that something on main needs attention.
+on:
+  schedule:
+    # 02:17 UTC: off the hour, when the shared runners are least busy.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    uses: ./.github/workflows/full-checks.yml

@@ -92,12 +92,46 @@ class Stopped(Exception):
 class OverTheCeiling(Exception):
     """A paired client has reached one of its limits. Carries which, and when it lifts."""
 
-    def __init__(self, which: str, message: str, lifts_at: float = 0.0) -> None:
+    def __init__(self, which: str, message: str, lifts_at: float = 0.0,
+                 what_to_do: str = "") -> None:
         super().__init__(CEILING_SAYS + " (" + which + "): " + message)
         #: Which ceiling, by name, so a client can tell one from another and from every other
         #: kind of refusal.
         self.which = which
         self.lifts_at = lifts_at
+        #: The way on, when it is not "wait for the window": a one-off allowance never clears,
+        #: so the generic advice would be wrong for it. Empty means the generic advice applies.
+        self.what_to_do = what_to_do
+
+
+# ------------------------------------------------------------------------------- one-off
+#
+# Task #12. A lifetime ceiling on the account scope: `account_lifetime_runs` runs in total, ever.
+# It is counted in the same record and the same transaction as every window ceiling, under its
+# own key, and that key is the one thing in the record that time never forgets -- so the window
+# moving on, a restart, or a later day refills nothing. Only an operator resets it, for one named
+# account (`agentnode gateway limits --account <id> --reset-lifetime`), and deleting the customer
+# deletes it.
+
+#: The counter's key in the use record. Prefixed so it can never collide with a device or an
+#: account key, and so `_forget` can tell it apart.
+LIFETIME_PREFIX = "lifetime:"
+
+#: PROVISIONAL -- a placeholder, not a decision. What `agentnode gateway limits --account <id>
+#: --trial` sets when no size is given. The real size of a trial is task #15's to decide (with the
+#: prices); until then this number stands in for it and is said to be provisional wherever it is
+#: shown. Change it there, not here by assumption.
+PROVISIONAL_TRIAL_LIFETIME_RUNS = 10
+
+#: What a customer is told when their one-off allowance is used up. ONE sentence, used by every
+#: place that turns the refusal into words, so the reason cannot differ between doors.
+ONE_OFF_WHAT_TO_DO = (
+    "This allowance was one-off and does not refill. To keep going, run your own sandbox "
+    "(`agentnode gateway`, see the self-hosted guide) or ask whoever runs this sandbox.")
+
+
+def lifetime_key(account_id: str) -> str:
+    return LIFETIME_PREFIX + str(account_id)
 
 
 @dataclass(frozen=True)
@@ -129,6 +163,10 @@ class Allowance:
     account_concurrent_runs: int = 0
     account_runs_per_window: int = 0
     account_seconds_per_window: int = 0
+    #: Task #12: how many runs this customer may start IN TOTAL, ever. Never refilled by a window
+    #: or a restart. Zero means no such ceiling, like everything here -- so nothing changes for a
+    #: gateway or an account that does not set one.
+    account_lifetime_runs: int = 0
 
     # ---------------------------------------------------------------- the machine
     #
@@ -259,6 +297,7 @@ def read_allowance(root: str | os.PathLike[str]) -> Allowance:
         account_concurrent_runs=int(body.get("account_concurrent_runs") or 0),
         account_runs_per_window=int(body.get("account_runs_per_window") or 0),
         account_seconds_per_window=int(body.get("account_seconds_per_window") or 0),
+        account_lifetime_runs=int(body.get("account_lifetime_runs") or 0),
         machine_concurrent_runs=int(body.get("machine_concurrent_runs") or 0),
         queue_depth=int(body.get("queue_depth") or 0),
         requests_per_minute=int(body.get("requests_per_minute") or 0),
@@ -273,6 +312,115 @@ def write_allowance(root: str | os.PathLike[str], allowance: Allowance) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomically(path, json.dumps(allowance.as_dict(), indent=2, sort_keys=True) + "\n")
     return path
+
+
+# ------------------------------------------------------------------------------- per account
+#
+# The account ceilings above are ONE value for every customer. An operator who wants one customer
+# -- a trial, say -- held to less than another had no way to say so. This file names, per account,
+# the account ceilings that replace the gateway-wide ones for that account only. An account it
+# does not name keeps the gateway-wide values; a gateway without the file behaves as before.
+#
+# Only the account scope can be set per account. A device ceiling is a property of a credential and
+# the machine ceiling one of the machine; neither belongs to a customer.
+
+ACCOUNT_CEILINGS_NAME = "account-ceilings.json"
+ACCOUNT_FIELDS = ("account_concurrent_runs", "account_runs_per_window",
+                  "account_seconds_per_window", "account_lifetime_runs")
+
+
+def _account_values_problem(values) -> str:
+    """Why these per-account values cannot be applied, or "" when they can."""
+    if not isinstance(values, dict):
+        return "is not an object of ceilings"
+    unknown = sorted(set(values) - set(ACCOUNT_FIELDS))
+    if unknown:
+        return "names " + ", ".join(repr(u) for u in unknown) + (
+            ", which is not a ceiling one account can carry (only " + ", ".join(ACCOUNT_FIELDS)
+            + ")")
+    for name, value in values.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return "gives %s as %r, which is not a whole number of zero or more" % (name, value)
+    return ""
+
+
+def read_account_ceilings(root: str | os.PathLike[str]) -> dict:
+    """{account_id: {field: value}}. Absent is {}; present and unreadable RAISES.
+
+    Read exactly like the allowance: a ceiling that reads as configured and is not applied is the
+    one failure an operator cannot see, so anything this build cannot apply stops the gateway
+    taking work rather than being skipped.
+    """
+    path = Path(root) / ACCOUNT_CEILINGS_NAME
+    if not path.exists():
+        return {}
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise CannotReadTheCeilings(
+            "this gateway cannot read the per-account limits in " + str(path) + " ("
+            + str(exc)[:120] + "). It will not take work until it can.") from exc
+    if not isinstance(body, dict):
+        raise CannotReadTheCeilings(
+            "the per-account limits in " + str(path) + " are not an object. It will not take "
+            "work until that is fixed.")
+    for account_id, values in body.items():
+        problem = _account_values_problem(values)
+        if problem:
+            raise CannotReadTheCeilings(
+                "the per-account limits in " + str(path) + " for " + repr(account_id) + " "
+                + problem + ". It will not take work until that is fixed.")
+    return {str(k): dict(v) for k, v in body.items()}
+
+
+def write_account_ceilings(root: str | os.PathLike[str], account_id: str,
+                           values: dict | None) -> Path:
+    """Set one account's own ceilings (replacing what it had), or remove them with None."""
+    if values is not None:
+        problem = _account_values_problem(values)
+        if problem:
+            raise ValueError("these ceilings for %r %s" % (account_id, problem))
+    path = Path(root) / ACCOUNT_CEILINGS_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _ACCOUNT_CEILINGS_WRITE:
+        body = read_account_ceilings(root)
+        if values is None:
+            body.pop(str(account_id), None)
+        else:
+            body[str(account_id)] = {k: int(v) for k, v in values.items()}
+        _atomically(path, json.dumps(body, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+_ACCOUNT_CEILINGS_WRITE = threading.Lock()
+
+
+def forget_account_ceilings(root: str | os.PathLike[str], account_id: str) -> bool:
+    """Remove exactly this account's own ceilings. True if it had any. What deleting it implies.
+
+    Task #26. Read strictly first: a damaged file RAISES (`CannotReadTheCeilings`) rather than
+    being rewritten from nothing, which would drop every OTHER customer's ceilings with it. The
+    write is atomic, so a failure leaves the file as it was, never half-written; nothing is written
+    at all when the account had no entry.
+    """
+    path = Path(root) / ACCOUNT_CEILINGS_NAME
+    with _ACCOUNT_CEILINGS_WRITE:
+        body = read_account_ceilings(root)
+        if str(account_id) not in body:
+            return False
+        del body[str(account_id)]
+        _atomically(path, json.dumps(body, indent=2, sort_keys=True) + "\n")
+    return True
+
+
+def for_account(allowance: Allowance, account_id: str, ceilings: dict) -> Allowance:
+    """The ceilings that apply to this account: the gateway-wide ones, with its own in place."""
+    own = ceilings.get(str(account_id or "")) if account_id else None
+    if not own:
+        return allowance
+    from dataclasses import replace
+
+    return replace(allowance, **{k: int(v) for k, v in own.items()})
 
 
 # ------------------------------------------------------------------------------- the stop
@@ -426,6 +574,12 @@ class Use:
     def _forget(self, body: dict, now: float) -> dict:
         kept = {}
         for client, runs in body.items():
+            if str(client).startswith(LIFETIME_PREFIX):
+                # A one-off allowance's counter is never forgotten by time (task #12): that is
+                # the whole difference between it and a window.
+                if runs:
+                    kept[str(client)] = runs
+                continue
             fresh = [r for r in runs if float(r.get("at", 0)) > now - self.window]
             if fresh:
                 kept[str(client)] = fresh
@@ -483,11 +637,22 @@ class Use:
             raise ValueError("the same counter cannot be claimed twice for one run")
         with self._lock, ProcessLock(self.path):
             body = self._forget(self._load(), at)
+
+            def already(key) -> bool:
+                # A one-off counter is never forgotten, so the same run claimed twice -- a
+                # resubmission -- would be charged twice forever. Once there, it is not again.
+                return (str(key).startswith(LIFETIME_PREFIX)
+                        and any(e.get("run_id") == str(run_id) for e in body.get(str(key), [])))
+
             for key, judge in scopes:
+                if already(key):
+                    continue
                 mine = body.get(str(key), [])
                 judge(len(mine), sum(float(e.get("seconds", 0.0)) for e in mine),
                       min((float(e.get("at", at)) for e in mine), default=at))
             for key, _judge in scopes:
+                if already(key):
+                    continue
                 body.setdefault(str(key), []).append(
                     {"run_id": str(run_id), "at": at, "seconds": 0.0})
             _atomically(self.path, json.dumps(body, sort_keys=True))

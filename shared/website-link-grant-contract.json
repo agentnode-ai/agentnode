@@ -1,0 +1,11 @@
+{
+  "about": "Contract between the website backend (backend/app/auth/gateway_link.py) and the gateway (sdk/agentnode_sdk/gateway/website_link.py): both must turn these inputs into exactly this grant. The seed is a TEST-ONLY key, published on purpose; it signs nothing real.",
+  "seed_b64url": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+  "key_id": "contract-1",
+  "gateway_id": "abababababababababababababababab",
+  "website_user": "u-0123456789abcdef0123456789abcdef",
+  "now": 2000000000,
+  "lifetime": 120,
+  "nonce": "cccccccccccccccccccccccccccccccc",
+  "grant": "eyJhdWQiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsImV4cCI6MjAwMDAwMDEyMCwiaWF0IjoyMDAwMDAwMDAwLCJpc3MiOiJhZ2VudG5vZGUtd2Vic2l0ZSIsIm5vbmNlIjoiY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2MiLCJzdWIiOiJ1LTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmIiwidiI6MX0.Y29udHJhY3QtMTqzcAxrc9wMJj2ro7CpskWE8uHhfu-UvxwtS9oD8pA6oTndHitlplKE4an1F8iNO8skt-JjY1HqE5YuAayI2C0I"
+}

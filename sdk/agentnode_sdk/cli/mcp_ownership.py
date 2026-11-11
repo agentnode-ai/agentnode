@@ -23,6 +23,8 @@ import sys
 
 import httpx
 
+from agentnode_sdk.cli.api_auth import auth_headers
+
 _REVIEW_NOTE = (
     "  Ownership can be verified, but MCP listings still remain review-gated\n"
     "  until the sandbox-smoke gate is built."
@@ -98,7 +100,7 @@ def cmd_mcp_ownership_challenge(
         resp = httpx.post(
             url,
             json={"registry": registry, "package_name": package},
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers=auth_headers(api_key),
             timeout=30,
         )
     except Exception as e:
@@ -163,7 +165,7 @@ def cmd_mcp_ownership_verify(
         resp = httpx.post(
             url,
             json={"registry": registry, "package_name": package},
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers=auth_headers(api_key),
             timeout=30,
         )
     except Exception as e:

@@ -1,0 +1,45 @@
+ssssssssss.....s........................................................ [ 15%]
+..............................sss....................................... [ 30%]
+............................s........s.................sssss............ [ 45%]
+........................................................................ [ 61%]
+...............................................................ss.ssssss [ 76%]
+....................sssssss............................................. [ 91%]
+........................................                                 [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_sandbox_e2e.py:62: set AGENTNODE_SANDBOX_E2E=1 to run real sandbox E2E (needs Docker/Podman + pinned image)
+SKIPPED [1] tests\test_sandbox_e2e.py:107: set AGENTNODE_SANDBOX_E2E=1 to run real sandbox E2E (needs Docker/Podman + pinned image)
+SKIPPED [1] tests\test_sandbox_e2e.py:148: set AGENTNODE_SANDBOX_E2E=1 to run real sandbox E2E (needs Docker/Podman + pinned image)
+SKIPPED [1] tests\test_sandbox_e2e.py:211: set AGENTNODE_SANDBOX_E2E=1 to run real sandbox E2E (needs Docker/Podman + pinned image)
+SKIPPED [1] tests\test_sandbox_e2e.py:263: set AGENTNODE_SANDBOX_E2E=1 to run real sandbox E2E (needs Docker/Podman + pinned image)
+SKIPPED [1] tests\test_sandbox_e2e.py:330: set AGENTNODE_SANDBOX_E2E=1 to run real sandbox E2E (needs Docker/Podman + pinned image)
+SKIPPED [1] tests\test_sandbox_e2e.py:420: set AGENTNODE_SANDBOX_E2E=1 to run real sandbox E2E (needs Docker/Podman + pinned image)
+SKIPPED [1] tests\test_sandbox_e2e.py:494: set AGENTNODE_SANDBOX_E2E=1 to run real sandbox E2E (needs Docker/Podman + pinned image)
+SKIPPED [1] tests\test_agent_sandbox_e2e.py:80: gated: set AGENTNODE_AGENT_SANDBOX_E2E=1 (needs a container runtime + pinned image)
+SKIPPED [1] tests\test_egress_e2e.py:64: set AGENTNODE_EGRESS_E2E=1 (needs docker/podman + pinned image) to run
+SKIPPED [1] tests\test_agent_session_container.py:122: gated: set AGENTNODE_AGENT_SANDBOX_E2E=1 (needs a container runtime + image)
+SKIPPED [1] tests\test_r1_runtime_remediation.py:404: set AGENTNODE_SANDBOX_E2E=1 (needs a container runtime) to run
+SKIPPED [1] tests\test_r1_runtime_remediation.py:419: set AGENTNODE_SANDBOX_E2E=1 (needs a container runtime) to run
+SKIPPED [1] tests\test_r1_runtime_remediation.py:506: set AGENTNODE_SANDBOX_E2E=1 (needs a container runtime) to run
+SKIPPED [1] tests\test_cancel_consistency.py:616: set AGENTNODE_SANDBOX_E2E=1 (needs a container runtime) to run
+SKIPPED [1] tests\test_em3c_cli.py:187: POSIX file modes
+SKIPPED [1] tests\test_em3c_cli.py:531: needs a container runtime
+SKIPPED [1] tests\test_em3c_cli.py:556: needs a container runtime
+SKIPPED [1] tests\test_em3c_cli.py:596: needs a container runtime
+SKIPPED [1] tests\test_em3c_cli.py:610: needs a container runtime
+SKIPPED [1] tests\test_em3c_cli.py:631: needs a container runtime
+SKIPPED [1] tests\test_em3c_gateway.py:2044: POSIX file modes
+SKIPPED [1] tests\test_em3c_gateway.py:2058: POSIX file modes
+SKIPPED [1] tests\test_em3c_gateway.py:2094: descriptor-relative work is a POSIX facility
+SKIPPED [1] tests\test_em3c_gateway.py:2116: descriptor-relative work is a POSIX facility
+SKIPPED [1] tests\test_em3c_gateway.py:2133: descriptor-relative work is a POSIX facility
+SKIPPED [1] tests\test_em3c_gateway.py:2151: descriptor-relative work is a POSIX facility
+SKIPPED [1] tests\test_em3c_gateway.py:2164: descriptor-relative work is a POSIX facility
+SKIPPED [1] tests\test_em3c_gateway.py:2182: descriptor-relative work is a POSIX facility
+SKIPPED [1] tests\test_em3c_gateway.py:2629: set AGENTNODE_SANDBOX_E2E=1 (needs a container runtime) to run
+SKIPPED [1] tests\test_em3c_gateway.py:2693: set AGENTNODE_SANDBOX_E2E=1 (needs a container runtime) to run
+SKIPPED [1] tests\test_em3c_gateway.py:2723: set AGENTNODE_SANDBOX_E2E=1 (needs a container runtime) to run
+SKIPPED [1] tests\test_em3c_gateway.py:2799: needs a container runtime and outbound network
+SKIPPED [1] tests\test_em3c_gateway.py:2826: needs a container runtime and outbound network
+SKIPPED [1] tests\test_em3c_gateway.py:2896: needs a container runtime
+SKIPPED [1] tests\test_em3c_gateway.py:2973: needs a container runtime
+436 passed, 36 skipped in 378.53s (0:06:18)

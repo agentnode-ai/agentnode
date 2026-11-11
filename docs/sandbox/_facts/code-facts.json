@@ -23,6 +23,28 @@
       "check",
       "reset"
     ],
+    "gw_sub": [
+      "init",
+      "start",
+      "challenge",
+      "stop",
+      "resume",
+      "limits",
+      "keeps",
+      "sweep",
+      "export",
+      "delete",
+      "watch",
+      "used",
+      "egress",
+      "status",
+      "doctor",
+      "pair",
+      "clients",
+      "accounts",
+      "revoke",
+      "verify"
+    ],
     "lock_sub": [
       "seal",
       "verify"
@@ -39,6 +61,19 @@
       "revoke",
       "grants",
       "ownership"
+    ],
+    "rm_sub": [
+      "connect",
+      "list",
+      "use",
+      "status",
+      "test",
+      "run",
+      "bridge",
+      "cancel",
+      "rotate",
+      "disconnect",
+      "verify"
     ],
     "sandbox_sub": [
       "pull",
@@ -76,6 +111,8 @@
       "guard",
       "lock",
       "serve",
+      "gateway",
+      "remote",
       "sandbox"
     ]
   },
@@ -212,7 +249,8 @@
     },
     "egress_live_callers": [
       "runtimes/mcp_runner.py",
-      "runtimes/python_runner.py"
+      "runtimes/python_runner.py",
+      "worker/local.py"
     ],
     "hardening_flags": [
       "--cap-drop=ALL",
@@ -274,16 +312,56 @@
     "timeout_removes_the_container": true,
     "timeout_verifies_absence": true
   },
-  "sdk_version": "0.24.0",
+  "sdk_version": "0.25.0",
   "wired_in": {
     "conformance_suite_exists": false,
-    "em3_contract_importers": [],
-    "em3_contract_module_exists": false,
+    "em3_contract_importers": [
+      "access/dispatch.py",
+      "gateway/client.py",
+      "gateway/server.py",
+      "sandbox/composition.py"
+    ],
+    "em3_contract_module_exists": true,
     "managed_backend_exists": false,
     "remote_backend_exists": false,
     "sandbox_backend_implementations": [
       "ContainerBackend",
       "NoSandboxBackend"
+    ],
+    "self_hosted_client_commands": [
+      "bridge",
+      "cancel",
+      "connect",
+      "disconnect",
+      "list",
+      "rotate",
+      "run",
+      "status",
+      "test",
+      "use",
+      "verify"
+    ],
+    "self_hosted_gateway_commands": [
+      "accounts",
+      "challenge",
+      "clients",
+      "delete",
+      "doctor",
+      "egress",
+      "export",
+      "init",
+      "keeps",
+      "limits",
+      "pair",
+      "resume",
+      "revoke",
+      "start",
+      "status",
+      "stop",
+      "sweep",
+      "used",
+      "verify",
+      "watch"
     ]
   }
 }

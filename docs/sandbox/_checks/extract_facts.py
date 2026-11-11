@@ -152,12 +152,36 @@ def _callers_of(needle: str) -> list:
         # path: counting it here would let the instrument answer the question it exists to ask.
         if rel.startswith(("tests/", "conformance/")) or rel == "sandbox/egress.py":
             continue
-        for line in py.read_text(encoding="utf-8").splitlines():
+        # Only CODE counts: strings (docstrings included) and comments are blanked first. A docstring
+        # that merely names the function is not a caller -- sandbox/egress_verify.py was counted as
+        # one for exactly that reason (task #57).
+        for line in _code_only_lines(py.read_text(encoding="utf-8")):
             s = line.strip()
-            if needle in s and not s.startswith("#") and "def " not in s:
+            if needle in s and "def " not in s:
                 hits.append(rel)
                 break
     return hits
+
+
+def _code_only_lines(text: str) -> list:
+    import io
+    import tokenize
+
+    lines = [list(line) for line in text.splitlines()]
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type in (tokenize.STRING, tokenize.COMMENT):
+                (r0, c0), (r1, c1) = tok.start, tok.end
+                for r in range(r0, r1 + 1):
+                    if r - 1 >= len(lines):
+                        break
+                    row = lines[r - 1]
+                    a = c0 if r == r0 else 0
+                    b = c1 if r == r1 else len(row)
+                    row[a:b] = " " * (b - a)
+    except (tokenize.TokenError, IndentationError):
+        pass
+    return ["".join(row) for row in lines]
 
 
 def _memory_swap_bound(cb: str) -> bool:
@@ -201,11 +225,12 @@ def what_is_wired_in() -> dict:
     contract = SDK / "sandbox" / "contract.py"
     wired["em3_contract_module_exists"] = contract.is_file()
     importers = []
-    for py in SDK.rglob("*.py"):
+    for py in sorted(SDK.rglob("*.py")):
         if py == contract:
             continue
         if re.search(r"from\s+\.?contract\s+import|sandbox\.contract", py.read_text(encoding="utf-8")):
-            importers.append(str(py.relative_to(SDK)))
+            # posix and sorted: the same facts on every platform, or the drift check cannot pass
+            importers.append(py.relative_to(SDK).as_posix())
     wired["em3_contract_importers"] = importers
     backends = []
     for py in (SDK / "sandbox").glob("*.py"):
@@ -213,6 +238,12 @@ def what_is_wired_in() -> dict:
         backends += [m for m in re.findall(r"class\s+(\w+)\(SandboxBackend\)", src)]
     wired["sandbox_backend_implementations"] = sorted(backends)
     wired["remote_backend_exists"] = any("remote" in b.lower() for b in backends)
+    # The self-hosted gateway is NOT a SandboxBackend: `agentnode run` does not send packs to it.
+    # It is its own pair of commands -- `agentnode gateway ...` on the server and
+    # `agentnode remote ...` on the client -- so its row is derived from those, read out of the CLI.
+    tree = cli_tree()
+    wired["self_hosted_gateway_commands"] = sorted(tree.get("gw_sub", []))
+    wired["self_hosted_client_commands"] = sorted(tree.get("rm_sub", []))
     wired["managed_backend_exists"] = any("managed" in b.lower() for b in backends)
     wired["conformance_suite_exists"] = (ROOT / "sdk" / "tests" / "conformance").exists()
     return wired
@@ -245,7 +276,10 @@ def main() -> int:
         "execution_paths": execution_paths(),
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(facts, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # newline="\n": write_text on Windows turns every line end into CRLF while the committed file
+    # is LF, so the drift check would fail on Windows with nothing changed in the code.
+    with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(facts, indent=2, sort_keys=True) + "\n")
     print(f"  wrote {OUT.relative_to(ROOT)}")
     if "--print" in sys.argv:
         print(json.dumps(facts, indent=2, sort_keys=True))

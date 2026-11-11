@@ -1,0 +1,222 @@
+name: Full checks
+
+# THE full check of this repository, written once (task #30, PLAN-2026-11.md section 2).
+# It is only ever CALLED: by nightly.yml on a schedule and by release.yml for a version tag.
+# A pull request does not run it -- sdk.yml and backend.yml give fast PR feedback (task #13).
+#
+# Nothing in here may be skipped by a path filter or a condition: "nightly = everything" is a
+# promise only while every part runs. sdk/tests/test_ci_full_lanes.py holds that.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      # The whole history, as in sdk.yml: one test reads the commit messages that arrived.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - run: pytest -v
+
+  adapter-langchain:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: adapter-langchain
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ../sdk -e ".[dev]"
+      - run: pytest -v
+
+  backend-lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.15.10
+      - run: ruff check app/ tests/
+      - run: ruff format --check app/ tests/
+
+  backend-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: agentnode
+          POSTGRES_PASSWORD: agentnode
+          POSTGRES_DB: agentnode_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://agentnode:agentnode@localhost:5432/agentnode_test
+      REDIS_URL: redis://localhost:6379
+      MEILISEARCH_URL: http://localhost:7700
+      MEILISEARCH_KEY: masterKey
+      S3_ENDPOINT: http://localhost:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: agentnode-artifacts
+      S3_REGION: auto
+      JWT_SECRET: test-secret-ci
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.lock
+      - run: pip install -e ".[dev]" --no-deps
+      - run: pip install pytest pytest-asyncio httpx
+      - run: pytest -v --tb=short
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  smoke:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: agentnode
+          POSTGRES_PASSWORD: agentnode
+          POSTGRES_DB: agentnode_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://agentnode:agentnode@localhost:5432/agentnode_test
+      JWT_SECRET: test-secret-ci
+      ENVIRONMENT: test
+      # scripts/smoke.py runs two pytest sessions, one per environment.
+      SMOKE_BACKEND_PYTHON: ${{ github.workspace }}/backend-venv/bin/python
+      SMOKE_SDK_PYTHON: ${{ github.workspace }}/sdk-venv/bin/python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m venv backend-venv && python -m venv sdk-venv
+      - run: backend-venv/bin/pip install -r backend/requirements.lock
+      - run: cd backend && ../backend-venv/bin/pip install -e ".[dev]" --no-deps
+      - run: backend-venv/bin/pip install pytest pytest-asyncio httpx
+      - run: cd sdk && ../sdk-venv/bin/pip install -e ".[dev]"
+      - run: python scripts/smoke.py
+
+  # The container boundary AT THE HEAD (#31, slice 3 step 1). Before this job, 13 container
+  # E2E tests ran only in sdk-lanes.yml, which checks out a frozen commit -- so at the current
+  # code they ran nowhere (docs/testing/slice3/INVENTORY.md, section 2). The runtime and the
+  # image are pinned and VERIFIED exactly as sdk-lanes and em3c-gateway do it, the three E2E
+  # flags are set, and pytest's exit code is not trusted alone: it exits 0 when a test SKIPS,
+  # and these tests skip themselves without a runtime, so the step demands all thirteen passed
+  # and fails on any skip.
+  container-present:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk
+    env:
+      DOCKER_SERVER_VERSION: "28.0.4"
+      DOCKER_APT_VERSION: "5:28.0.4-1~ubuntu.24.04~noble"
+      SANDBOX_IMAGE: "ghcr.io/agentnode-ai/sandbox@sha256:6c77561965dc9e98ed9cd0437c4de9aa9171cd3753ae9f11672450ce3125c80f"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+      - name: Select and VERIFY the pinned container runtime
+        run: |
+          set -eu
+          got="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo none)"
+          echo "runner provides docker server: ${got}; pin is ${DOCKER_SERVER_VERSION}"
+          if [ "${got}" != "${DOCKER_SERVER_VERSION}" ]; then
+            sudo install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            sudo chmod a+r /etc/apt/keyrings/docker.gpg
+            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+            sudo apt-get update
+            sudo apt-get install -y --allow-downgrades "docker-ce=${DOCKER_APT_VERSION}" "docker-ce-cli=${DOCKER_APT_VERSION}"
+            sudo systemctl start docker
+            got="$(docker version --format '{{.Server.Version}}')"
+          fi
+          test "${got}" = "${DOCKER_SERVER_VERSION}"
+          docker info --format '{{.OSType}}/{{.Architecture}}'
+      - name: Pull the pinned sandbox image by digest
+        run: docker pull "${SANDBOX_IMAGE}"
+      - run: pip install -c tests/lanes/constraints.txt -e ".[dev]"
+      - name: The thirteen container-boundary tests, for real, at the head
+        env:
+          AGENTNODE_SANDBOX_E2E: "1"
+          AGENTNODE_AGENT_SANDBOX_E2E: "1"
+          AGENTNODE_EGRESS_E2E: "1"
+        run: |
+          set -o pipefail
+          python -m pytest -p no:randomly -v -rs \
+            "tests/test_sandbox_e2e.py" \
+            "tests/test_agent_sandbox_e2e.py" \
+            "tests/test_egress_e2e.py" \
+            "tests/test_agent_session_container.py::test_container_isolation_real" \
+            "tests/test_r1_runtime_remediation.py::TestMemoryCeiling::test_real_container_cannot_exceed_the_ceiling" \
+            "tests/test_r1_runtime_remediation.py::TestMemoryCeiling::test_real_container_below_the_ceiling_still_runs" \
+            2>&1 | tee container-present.txt
+          if grep -q "SKIPPED" container-present.txt; then
+            echo "a container test skipped: this job exists so that none of them can"; exit 1
+          fi
+          grep -qE "(^|[^0-9])13 passed" container-present.txt || {
+            echo "not all thirteen passed"; exit 1; }

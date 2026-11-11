@@ -523,6 +523,7 @@ class AgentNodeClient:
                 capability_id=c["capability_id"],
                 capability_type=c["capability_type"],
                 entrypoint=c.get("entrypoint"),
+                input_schema=c.get("input_schema") if isinstance(c.get("input_schema"), dict) else None,
             )
             for c in data.get("capabilities", [])
         ]
@@ -766,11 +767,20 @@ class AgentNodeClient:
         artifact_url = meta.artifact.url if meta.artifact else None
         artifact_hash = meta.artifact.hash_sha256 if meta.artifact else None
         cap_ids = [c.capability_id for c in meta.capabilities]
-        tools = [
-            {"name": c.name, "entrypoint": c.entrypoint}
-            for c in meta.capabilities
-            if c.capability_type == "tool" and c.entrypoint
-        ]
+        if meta.runtime == "mcp":
+            # An MCP server provides its tools itself: there is no Python entrypoint, and the
+            # lockfile still has to name them (default tool, argument guard schema).
+            tools = [
+                {"name": c.name, **({"input_schema": c.input_schema} if c.input_schema else {})}
+                for c in meta.capabilities
+                if c.capability_type == "tool"
+            ]
+        else:
+            tools = [
+                {"name": c.name, "entrypoint": c.entrypoint}
+                for c in meta.capabilities
+                if c.capability_type == "tool" and c.entrypoint
+            ]
 
         mcp_command = None
         mcp_env_keys = None

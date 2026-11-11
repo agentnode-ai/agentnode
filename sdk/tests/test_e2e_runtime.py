@@ -76,9 +76,13 @@ _anthropic_token = _load_anthropic_token()
 # Markers & fixtures
 # ---------------------------------------------------------------------------
 
+# Task #17: the same rule as Anthropic below -- BOTH the key AND the optional `openai` package.
+# With the key set and the package missing, every OpenAI test used to fail at `import openai`
+# (41 failures and errors in a full run) instead of skipping.
+_openai_module = importlib.util.find_spec("openai") is not None
 requires_openai = pytest.mark.skipif(
-    not os.environ.get("OPENAI_API_KEY"),
-    reason="OPENAI_API_KEY not set",
+    not os.environ.get("OPENAI_API_KEY") or not _openai_module,
+    reason="OpenAI optional provider unavailable: needs BOTH a key (OPENAI_API_KEY) AND the 'openai' package",
 )
 # R5 Route B (EM2-AC-REMEDIATION-DECISION-0001): an optional-provider test needs BOTH a usable
 # credential AND the importable module. `anthropic` is not declared in pyproject.toml, so a machine

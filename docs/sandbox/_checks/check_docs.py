@@ -55,7 +55,9 @@ def fail(where: str, msg: str) -> None:
 
 GROUPS = {"mcp": "mcp_sub", "auth": "auth_sub", "config": "config_sub", "guard": "guard_sub",
           "lock": "lock_sub", "sandbox": "sandbox_sub", "capabilities": "cap_sub",
-          "skill": "skill_sub"}
+          "skill": "skill_sub",
+          # the self-hosted gateway's two command groups, so their subcommands are checked too
+          "gateway": "gw_sub", "remote": "rm_sub"}
 
 
 def known_commands() -> set[str]:
@@ -526,7 +528,10 @@ def selftest_claims(phrases: list) -> int:
     before = len(problems)
     with tempfile.TemporaryDirectory() as td:
         bad = Path(td) / "selftest.md"
-        bad.write_text("You can now use your own sandbox server." + chr(10)
+        # Planted claims must name something the matrix still marks planned. "Your own sandbox
+        # server" was the first one until the self-hosted gateway existed (task #20); the
+        # credential broker is still planned (`sandbox_runtime.credential_broker_exists` is false).
+        bad.write_text("You can now use the credential broker." + chr(10)
                        + "The managed service is available today." + chr(10), encoding="utf-8")
         check_claims([bad], phrases)
     caught = len(problems) - before

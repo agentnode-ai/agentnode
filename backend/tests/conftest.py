@@ -57,48 +57,86 @@ SEED_CAPABILITY_IDS = [
 ]
 
 
+#: Task #13: how often this run built the schema, and how often a test set the database up. A run
+#: builds it once (plus once after any module whose own fixture dropped it); every other test only
+#: empties the tables. tests/test_schema_once_per_run.py holds both numbers to that.
+SCHEMA_BUILDS_THIS_RUN = 0
+ENGINE_SETUPS_THIS_RUN = 0
+
+_DROP_EVERY_TABLE = (
+    "DO $$ DECLARE r RECORD; BEGIN "
+    "FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP "
+    "EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE'; "
+    "END LOOP; END $$"
+)
+_EMPTY_EVERY_TABLE = (
+    "DO $$ DECLARE t TEXT; BEGIN "
+    "SELECT string_agg(quote_ident(tablename), ', ') INTO t FROM pg_tables "
+    "WHERE schemaname = 'public'; "
+    "IF t IS NOT NULL THEN EXECUTE 'TRUNCATE TABLE ' || t || ' RESTART IDENTITY CASCADE'; END IF; "
+    "END $$"
+)
+
+
+async def _the_schema_is_all_there(conn) -> bool:
+    """Every table the models define exists, and nothing else does. Anything less -- the first
+    test of a run, or a module whose own fixture dropped the schema -- means it is built again."""
+    from sqlalchemy import text
+
+    present = set(
+        (
+            await conn.execute(
+                text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+            )
+        ).scalars()
+    )
+    return present == set(Base.metadata.tables)
+
+
+async def _build_the_schema(conn) -> None:
+    from sqlalchemy import text
+
+    # Drop all tables with CASCADE to avoid use_alter FK ordering issues
+    await conn.execute(text(_DROP_EVERY_TABLE))
+    # Enable pg_trgm extension (required for typosquatting similarity queries)
+    await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+    # Sequence is created by alembic migration 026; create_all() on a
+    # bare schema does not know about it, so create it manually here so
+    # support_tickets can be created.
+    await conn.execute(
+        text("CREATE SEQUENCE IF NOT EXISTS support_ticket_number_seq START 1")
+    )
+    await conn.run_sync(Base.metadata.create_all)
+    # Persistent local test DBs keep enum TYPES across runs (only tables
+    # are dropped above), so values added later to the models never arrive.
+    # Mirror the alembic additions here (no-op on fresh CI databases).
+    await conn.execute(text("ALTER TYPE package_type ADD VALUE IF NOT EXISTS 'skill'"))
+    await conn.execute(text("ALTER TYPE runtime_type ADD VALUE IF NOT EXISTS 'none'"))
+    await conn.execute(
+        text("ALTER TYPE install_mode ADD VALUE IF NOT EXISTS 'prompt_only'")
+    )
+
+
 @pytest_asyncio.fixture
 async def engine():
     # NullPool: open/close a connection per checkout instead of pooling. The
     # full suite plus fire-and-forget background tasks (verification, security
     # scan) could otherwise exhaust the default pool under CI's tighter limits,
     # surfacing as AsyncAdaptedQueuePool termination errors and spurious 403s.
+    from sqlalchemy import text
     from sqlalchemy.pool import NullPool
 
+    global SCHEMA_BUILDS_THIS_RUN, ENGINE_SETUPS_THIS_RUN
+    ENGINE_SETUPS_THIS_RUN += 1
     eng = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
     async with eng.begin() as conn:
-        from sqlalchemy import text
-
-        # Drop all tables with CASCADE to avoid use_alter FK ordering issues
-        await conn.execute(
-            text(
-                "DO $$ DECLARE r RECORD; BEGIN "
-                "FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP "
-                "EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE'; "
-                "END LOOP; END $$"
-            )
-        )
-        # Enable pg_trgm extension (required for typosquatting similarity queries)
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
-        # Sequence is created by alembic migration 026; create_all() on a
-        # bare schema does not know about it, so create it manually here so
-        # support_tickets can be created.
-        await conn.execute(
-            text("CREATE SEQUENCE IF NOT EXISTS support_ticket_number_seq START 1")
-        )
-        await conn.run_sync(Base.metadata.create_all)
-        # Persistent local test DBs keep enum TYPES across runs (only tables
-        # are dropped above), so values added later to the models never arrive.
-        # Mirror the alembic additions here (no-op on fresh CI databases).
-        await conn.execute(
-            text("ALTER TYPE package_type ADD VALUE IF NOT EXISTS 'skill'")
-        )
-        await conn.execute(
-            text("ALTER TYPE runtime_type ADD VALUE IF NOT EXISTS 'none'")
-        )
-        await conn.execute(
-            text("ALTER TYPE install_mode ADD VALUE IF NOT EXISTS 'prompt_only'")
-        )
+        # Task #13: build the schema once per run, not once per test. Every test still starts
+        # with empty tables (identities restarted) and the seeded taxonomy, exactly as before.
+        if await _the_schema_is_all_there(conn):
+            await conn.execute(text(_EMPTY_EVERY_TABLE))
+        else:
+            await _build_the_schema(conn)
+            SCHEMA_BUILDS_THIS_RUN += 1
         # Seed capability taxonomy for validation tests
         for cap_id, display_name, description, category in SEED_CAPABILITY_IDS:
             await conn.execute(
@@ -110,15 +148,6 @@ async def engine():
                 )
             )
     yield eng
-    async with eng.begin() as conn:
-        await conn.execute(
-            text(
-                "DO $$ DECLARE r RECORD; BEGIN "
-                "FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP "
-                "EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE'; "
-                "END LOOP; END $$"
-            )
-        )
     await eng.dispose()
 
 

@@ -30,6 +30,7 @@ WHAT_THE_LITERALS_MEAN = {
     "/v1/health": ("/v1/health",),
     "/v1/hello": ("/v1/hello",),
     "/v1/pair": ("/v1/pair",),
+    "/v1/link": ("/v1/link",),
     "/v1/session": ("/v1/session",),
     "/console/setup": ("/console/setup",),
     "/console/confirm": ("/console/confirm",),

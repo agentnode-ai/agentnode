@@ -143,7 +143,11 @@ NOBODY = Principal(token="", device_id="", client_id="")
 #: -- including the ones a model reads -- and would make them addressable at `/v1/op/`, where the
 #: dispatcher would demand the credential they exist to obtain. Keeping them out of the contract
 #: is what makes "no tool can pair itself" true by construction rather than by a filter.
-BOOTSTRAP = ("hello", "pair", "open_session")
+#:
+#: `link_website_user` (#36) is the fourth: a device holding a grant the website signed for its
+#: signed-in user. It hands out no credential -- only a joining invitation into that user's one
+#: account, which the device then redeems through `pair` like any other.
+BOOTSTRAP = ("hello", "pair", "open_session", "link_website_user")
 
 
 def before_anyone(operation: str, params: dict, *, service, via: str = "") -> dict:
@@ -272,7 +276,37 @@ def _open_session(service, params: dict) -> dict:
             "gateway": paired["gateway"], "fingerprint": paired["fingerprint"]}
 
 
-_BOOTSTRAP = {"hello": _hello, "pair": _pair, "open_session": _open_session}
+def _link_website_user(service, params: dict) -> dict:
+    """Redeem a website link grant for an invitation into that website user's one account (#36).
+
+    Every check belongs to the grant and is applied by `website_link.redeem_grant`: the signature
+    under a website key the operator trusted, issuer, audience, time window, nonce single-use and
+    the suspension of the account. This adds nothing to them and decides nothing: the account comes
+    from the gateway's own map of website users, never from the request.
+
+    What goes back is what a stranger at this door may know: a code to use once, when it stops
+    working, whether this was the user's first link, and which gateway this is. Not the account.
+    """
+    from agentnode_sdk.gateway import website_link
+
+    service.require_private_state()
+    grant = params.get("grant", "")
+    if not isinstance(grant, str) or not grant:
+        raise Refused("not_authenticated", "There is no link grant in this request.",
+                      "Start the link from the website while signed in.")
+    try:
+        link = website_link.redeem_grant(service.state, grant, joining=service.joining)
+    except website_link.LinkRefused as refused:
+        raise Refused("not_authenticated", "This link was not accepted: %s" % refused,
+                      "Start the link again from the website; a link works once and only for "
+                      "a few minutes.") from refused
+    identity = service.state.identity
+    return {"code": link.pairing_code, "expires_at": link.expires_at, "new_account": link.created,
+            "gateway": identity.as_dict(), "fingerprint": identity.fingerprint}
+
+
+_BOOTSTRAP = {"hello": _hello, "pair": _pair, "open_session": _open_session,
+              "link_website_user": _link_website_user}
 
 
 def identify(service, token: str, proof=None, via: str = "") -> Principal:
@@ -1090,7 +1124,7 @@ def _what_would_happen(service, principal, params, *, approved_by=None, will_run
     """
     from agentnode_sdk.worker import what_it_does_not_establish
 
-    allowed = service.allowance()
+    allowed = service.allowance_for(principal.account_id)
     runs, seconds = service.use.so_far(principal.client_id)
     asked_for = int(params.get("wall_clock_s") or 60)
     network = params.get("network") or "none"
@@ -1685,12 +1719,18 @@ def _usage(service, principal, params):
     the ceiling and refused anyway, with nothing in the answer to explain it. The account's
     ceilings were already published here; its use was not.
     """
-    allowed = service.allowance()
+    allowed = service.allowance_for(principal.account_id)
     runs, seconds = service.use.so_far(principal.client_id)
     account_runs, account_seconds = (
         service.use.so_far(principal.account_id) if principal.account_id else (0, 0.0))
+    # The one-off allowance (task #12): the same counter the booking writes, never forgotten.
+    from agentnode_sdk.gateway.allowance import lifetime_key
+
+    lifetime_used = (service.use.so_far(lifetime_key(principal.account_id))[0]
+                     if principal.account_id else 0)
     return {"runs": int(runs), "seconds": int(seconds),
             "account_runs": int(account_runs), "account_seconds": int(account_seconds),
+            "account_lifetime_runs_used": int(lifetime_used),
             "ceilings": allowed.as_dict(), "clears_at": None}
 
 
@@ -1974,8 +2014,11 @@ def _translate(exc: Exception) -> Refused:
     if isinstance(exc, QueueIsFull):
         return Refused("over_a_ceiling", str(exc), exc.remedy)
     if isinstance(exc, OverTheCeiling):
+        # A ceiling that carries its own way on (a one-off allowance, task #12) says that one:
+        # "wait until the window clears" is wrong advice for something that never clears.
         return Refused("over_a_ceiling", str(exc),
-                       "Wait until the window clears, or ask for a higher ceiling.")
+                       getattr(exc, "what_to_do", "")
+                       or "Wait until the window clears, or ask for a higher ceiling.")
     if isinstance(exc, ProtocolError):
         return Refused("malformed", str(exc), "Correct the request and send it again.")
     # THE GATEWAY'S OWN FAULT, named before the generic branch for the reason `name_the_refusal`

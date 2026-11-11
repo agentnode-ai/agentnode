@@ -38,7 +38,9 @@ def cmd_mcp_status(
     url = f"{api_base}/v1/mcp/submissions/{submission_id}"
 
     try:
-        resp = httpx.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=15)
+        from agentnode_sdk.cli.api_auth import auth_headers
+
+        resp = httpx.get(url, headers=auth_headers(api_key), timeout=15)
     except Exception as e:
         print(f"  Error: {e}", file=sys.stderr)
         return 1

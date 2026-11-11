@@ -386,6 +386,56 @@ def test_the_header_block_is_bounded(edge):
     assert _raw_request(edge, big) == (431, "edge_header_too_large")
 
 
+def test_a_refusal_reaches_a_client_whose_bytes_the_edge_left_unread(edge):
+    """L5: the edge stops reading an oversized header at its bound and refuses. Closing a socket with unread input
+    sends a TCP reset, which can destroy the refusal before the client reads it (seen as a ConnectionResetError in
+    test_the_header_block_is_bounded, about 1 run in 60 on Windows; behind nginx it would turn into a 502). Here the
+    client has sent well past the bound and reads only after the edge has answered, which makes that race certain:
+    the 431 must still arrive."""
+    big = _head(dict(_proof_headers(edge), Upgrade=E.UPGRADE + " " * 30000))
+    s = socket.create_connection(edge.edge.tcp_loopback, 5)
+    try:
+        s.sendall(big)
+        time.sleep(0.5)
+        s.settimeout(10)
+        data = b""
+        while not data.endswith(b"}"):
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        s.close()
+    assert data.split(b"\r\n", 1)[0].startswith(b"HTTP/1.1 431 ")
+    assert json.loads(data.split(b"\r\n\r\n", 1)[1]) == {"error": "edge_header_too_large"}
+
+
+def test_the_close_after_a_refusal_is_bounded_in_time_and_bytes():
+    """A client that neither closes nor stops sending cannot hold the edge's connection open after a refusal."""
+    for name, feed in (("silent", b""), ("flooding", b"x" * 65536)):
+        edge_side, client = socket.socketpair()
+        try:
+            stop = threading.Event()
+
+            def pump():
+                while feed and not stop.is_set():
+                    try:
+                        client.sendall(feed)
+                    except OSError:
+                        return
+            threading.Thread(target=pump, daemon=True).start()
+            closer = threading.Thread(target=RE._linger_close, args=(edge_side,),
+                                      kwargs={"seconds": 0.3, "limit": 128 * 1024}, daemon=True)
+            started = time.monotonic()
+            closer.start()
+            closer.join(5)
+            assert not closer.is_alive(), "%s client held the edge's close open" % name
+            assert time.monotonic() - started < 3, name
+            stop.set()
+        finally:
+            client.close()
+
+
 def test_a_slow_header_times_out(edge, monkeypatch):
     """L5 / CC5: the header block must arrive within the deadline."""
     edge.edge.header_seconds = 0.5

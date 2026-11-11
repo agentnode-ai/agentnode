@@ -8,7 +8,10 @@ GET mutations, this decision must be revisited.
 """
 
 import logging
+import time
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -502,3 +505,50 @@ async def update_profile_route(
         background_tasks=background_tasks,
     )
     return UpdateProfileResponse(**result)
+
+
+class GatewayLinkRequest(BaseModel):
+    gateway_id: str
+
+
+@router.post("/gateway-link", dependencies=[Depends(rate_limit(10, 60))])
+async def gateway_link_route(
+    body: GatewayLinkRequest,
+    user: User = Depends(get_current_user),
+):
+    """Task #8: a single-use, short-lived grant that hands THIS user's identity to one gateway.
+
+    The gateway checks it and answers with an invitation into this user's one account
+    (sdk/agentnode_sdk/gateway/website_link.py). Without a configured link key this answers 503
+    and signs nothing.
+    """
+    from app.auth import gateway_link
+    from app.config import settings
+
+    if not gateway_link.gateway_id_ok(body.gateway_id):
+        raise AppError(
+            "GATEWAY_LINK_BAD_GATEWAY",
+            "gateway_id must be 32 lowercase hex characters",
+            422,
+        )
+    try:
+        seed, key_id = gateway_link.configured_key(settings)
+    except gateway_link.LinkNotConfigured:
+        raise AppError(
+            "GATEWAY_LINK_NOT_CONFIGURED",
+            "This website cannot link to a gateway: no link key is configured.",
+            503,
+        )
+    now = int(time.time())
+    grant = gateway_link.issue_grant(
+        seed,
+        key_id=key_id,
+        gateway_id=body.gateway_id,
+        website_user=gateway_link.website_user_of(user.id),
+        now=now,
+    )
+    return {
+        "grant": grant,
+        "key_id": key_id,
+        "expires_at": now + gateway_link.LIFETIME_SECONDS,
+    }

@@ -60,12 +60,18 @@ def test_explicit_priority_over_sys_executable(monkeypatch):
     assert resolve_python(target) == target        # explicit wins → not the (fake) sys.executable
 
 
-def test_explicit_relative_path_bound_to_cwd(tmp_path, monkeypatch):
+def test_explicit_relative_path_bound_to_cwd(monkeypatch):
     # A relative explicit path is bound against the CWD AT CALL TIME, then lexically normalised
     # (no realpath) — it resolves to the same absolute launch path the interpreter lives at.
+    #
+    # The CWD is two levels above the interpreter, on ITS drive (task #19): the temp directory may
+    # be on another Windows drive than the interpreter, and between two drives there is no
+    # relative path at all -- `os.path.relpath` raised before resolve_python was even called.
     launch = _norm(sys.executable)
-    monkeypatch.chdir(tmp_path)
-    rel = os.path.relpath(launch, str(tmp_path))   # a genuine relative path (has a separator)
+    cwd = os.path.dirname(os.path.dirname(launch))
+    monkeypatch.chdir(cwd)
+    rel = os.path.relpath(launch, cwd)             # a genuine relative path (has a separator)
+    assert not os.path.isabs(rel) and (os.sep in rel or (os.altsep and os.altsep in rel))
     assert resolve_python(rel) == launch
 
 

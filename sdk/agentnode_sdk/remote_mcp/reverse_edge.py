@@ -45,6 +45,9 @@ EDGE_SKEW_SECONDS = 60
 EDGE_NONCE_SECONDS = 120
 EDGE_NONCE_MAX = 65536
 EDGE_MAX_PENDING = 128
+#: After a refusal: how long, and how much, the edge still reads (and drops) before it closes -- see _linger_close.
+EDGE_LINGER_SECONDS = 1.0
+EDGE_LINGER_BYTES = 64 * 1024
 MAX_CERTIFICATE_BYTES = 2048
 #: The only header names a slot request may carry (lower case). nginx adds X-Forwarded-For.
 ALLOWED_HEADERS = frozenset({"host", "connection", "upgrade", "agentnode-slot", "agentnode-slot-certificate",
@@ -119,6 +122,33 @@ def read_head(sock, *, limit: int = EDGE_HEADER_BYTES, seconds: float = EDGE_HEA
     if rest:
         raise EdgeRefusal("edge_bad_request", "a slot request carries no body")
     return head
+
+
+def _linger_close(conn, *, seconds: float = EDGE_LINGER_SECONDS, limit: int = EDGE_LINGER_BYTES,
+                  clock=time.monotonic) -> None:
+    """Close after a refusal so that the refusal ARRIVES.
+
+    A refused request is usually not read to its end (an oversized header stops at the bound). Closing a socket
+    with unread input makes TCP send a reset, and a reset can destroy the answer already sent before the client
+    reads it -- the client then sees a connection error instead of the refusal, and nginx in front a 502. So the edge
+    stops writing, reads and drops what the client still sends until it closes, bounded by `limit` bytes and
+    `seconds`, and only then closes. Nothing read here is interpreted."""
+    try:
+        conn.shutdown(socket.SHUT_WR)
+        ends = clock() + seconds
+        got = 0
+        while got < limit:
+            left = ends - clock()
+            if left <= 0:
+                break
+            conn.settimeout(left)
+            chunk = conn.recv(min(4096, limit - got))
+            if not chunk:
+                break
+            got += len(chunk)
+    except OSError:
+        pass
+    R._close(conn)
 
 
 def parse_request(head: bytes, host: str) -> dict:
@@ -258,8 +288,9 @@ class EdgeServer:
             conn.sendall(("HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n"
                           "Connection: close\r\n\r\n" % (status, REASON[status], len(body))).encode("ascii") + body)
         except OSError:
-            pass
-        R._close(conn)
+            R._close(conn)
+            return
+        _linger_close(conn)
 
     def _one(self, conn) -> None:
         try:
