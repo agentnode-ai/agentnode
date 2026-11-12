@@ -1,15 +1,17 @@
 # Changelog
 
-## Unreleased (0.25.0) — not on PyPI
+## 0.25.0 — refuse what cannot be enforced
 
-Nothing in this section is released. `agentnode_sdk.__version__` says 0.25.0, and the newest release on
-PyPI is 0.24.1. The list is still incomplete: it names the breaking changes since 0.24.1 and the work of
-draft PR #194. The full notes are written at the release.
+A pre-1.0 security release. Several things 0.24.1 did quietly -- run a pack with an open network because
+its network level was unknown, start a run on a network that could not show it had no route out, report
+a conformance boundary as passed when it could not be measured -- are now refused or reported as not
+checked. That is what makes the breaking changes below; each is listed with what to do.
 
 ### Breaking changes since 0.24.1
 
-These are already on `main`. They were measured against the published 0.24.1 wheel: the public API, the
-CLI and the behaviour tests of 0.24.1 were run against this tree.
+They were measured against the published 0.24.1 wheel: the public API, the CLI and the behaviour tests
+of 0.24.1 were run against this tree. Nothing else in the public API, the signatures, the defaults or
+the command line was removed or changed.
 
 - **Python 3.13 and newer are no longer supported.** `requires-python` is now `>=3.10,<3.13`. An
   installer on Python 3.13 or 3.14 is not offered this release and stays on 0.24.1.
@@ -29,7 +31,33 @@ CLI and the behaviour tests of 0.24.1 were run against this tree.
   instead of comparing the code with -1. An alias would import and then never match, so a timeout would
   pass for an ordinary ending. Reading `runner.TIMEOUT_RC` raises an `AttributeError` that says this.
 
-### Added in draft PR #194 (not merged)
+### Migrating from 0.24.1
+
+1. **Python.** Use Python 3.10, 3.11 or 3.12. On 3.13 or 3.14 pip does not offer 0.25.0 and keeps
+   0.24.1; pin `agentnode-sdk==0.24.1` there if you need a stable choice.
+2. **Pack network permission.** In `agentnode.yaml` it is `permissions.network.level` (with
+   `permissions.network.allowed_domains`); an installed entry carries it as `permissions.network_level`
+   and `permissions.allowed_domains`.
+   - Missing or empty means `none` (no network), as before.
+   - `full` and `limited` are refused, not translated. Write `unrestricted` if the pack really needs any
+     destination, or `restricted` with `allowed_domains`.
+   - `restricted` needs at least one domain, and each must be a real host name: no IP literal, no
+     `localhost`, no single-label name.
+   - Values are read case-insensitively; anything else is refused with the reason before anything runs.
+   - `agentnode validate` does not apply this rule yet (it only warns about broad network access): a
+     pack that validates can still be refused when it runs. Check the level by hand before publishing.
+3. **Container runtime.** A run that asks for no network now needs a runtime that reports the network
+   it created as internal. If yours does not, the run is refused with the reason; it is not started
+   with a route out.
+4. **Conformance reports.** Treat `not_checked` as its own outcome. It is neither a pass nor a fail:
+   the boundary could not be measured on that host.
+5. **Timeouts in your own code.** Replace `rc == TIMEOUT_RC` with
+   `outcome.reason == agentnode_sdk.gateway.protocol.TIMED_OUT`. The exit code of a stopped run is
+   `None`. `SUPERSEDED_TIMEOUT_RC` (-1) exists only for reading old reports.
+6. **`mcp` dependency.** The bound is now `mcp>=1.0.0,<3`, so an environment with mcp 2.x installs
+   without a conflict.
+
+### Added
 
 - **Remote MCP:** `agentnode serve` serves on mcp 1.x and 2.x (`mcp>=1.0.0,<3`), offers the pack
   tools and the platform tools, and `--packs` limits what is exposed. A tool error is a failure
@@ -44,8 +72,12 @@ CLI and the behaviour tests of 0.24.1 were run against this tree.
 - **A paired worker rollback needs the control plane's signed statement** (P13). An operator's
   assertion is no longer enough.
 - **The CLI:** a failed run says why and exits 1, and a dashboard API key is sent as `X-API-Key`.
+- **`agentnode validate` and `agentnode publish` take `--manifest <file>` and `--json`.** The manifest
+  may be `.yaml`, `.yml` or `.json` and need not be called `agentnode.yaml` (publish packs it under
+  that name). `--json` prints one JSON document on stdout. Without the new options both commands
+  behave exactly as before.
 
-### Fixed in draft PR #194 (not merged)
+### Fixed
 
 - **An edge refusal closes in order,** so its answer reaches a client whose request the edge left
   unread. Before, the connection could end in a reset.
