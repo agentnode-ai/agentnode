@@ -74,5 +74,12 @@ path = "agentnode_sdk/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["agentnode_sdk"]
 
+# The sdist takes every tracked file under sdk/ (hatchling's default), because the shipped tests read deploy/, docs/
+# and scripts/. Two tracked files are not part of the package: HANDOFF.md is an internal work note that nothing
+# references, and lifecycle-at-the-end.txt is the report tests/conftest.py writes at the end of a session, committed
+# by accident (#62, T-0288).
+[tool.hatch.build.targets.sdist]
+exclude = ["/HANDOFF.md", "/lifecycle-at-the-end.txt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
