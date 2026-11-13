@@ -176,3 +176,31 @@ def test_a_failed_publish_fails_the_step_without_outputs(tmp_path):
     rc, got, text = _run_step("publish", tmp_path, {"status": "error", "http_status": 409}, 1,
                               {"AGENTNODE_API_KEY": "k", "AGENTNODE_API_URL": "http://127.0.0.1:9"})
     assert rc != 0 and got == {} and "::error::Publish failed" in text
+
+
+# ---- how consumers reach it (Codex R-AB-0001: the documented reference did not exist) -------------------------------
+
+#: GitHub resolves `uses: OWNER/REPO/PATH@REF` to PATH/action.yml at REF. This repository is agentnode-ai/agentnode
+#: and the action lives in action/. The tag is `action-v1` (cli-v* / sdk-v* pattern; a bare `v1` would read as SDK 1.0
+#: next to the v0.x.y SDK tags). It is created only at activation (AKTIVIERUNG-99.md).
+CANONICAL_USES = "agentnode-ai/agentnode/action@action-v1"
+
+
+def test_the_example_workflow_uses_the_canonical_reference():
+    example = _load(ROOT / "action" / "example-workflow.yml")
+    uses = [s["uses"] for job in example["jobs"].values() for s in job["steps"] if "uses" in s]
+    ours = [u for u in uses if not u.startswith("actions/")]
+    assert ours == [CANONICAL_USES], ours
+
+
+def test_the_canonical_reference_resolves_to_this_action():
+    owner_repo_path, _sep, _ref = CANONICAL_USES.partition("@")
+    owner, repo, path = owner_repo_path.split("/", 2)
+    assert (owner, repo) == ("agentnode-ai", "agentnode")
+    assert (ROOT / path / "action.yml").resolve() == NEXT.resolve()
+
+
+def test_the_example_job_asks_for_no_more_than_reading_the_repository():
+    example = _load(ROOT / "action" / "example-workflow.yml")
+    for job in example["jobs"].values():
+        assert job.get("permissions") == {"contents": "read"}
