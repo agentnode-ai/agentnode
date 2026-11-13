@@ -19,6 +19,8 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read       # checkout only; the action needs no GitHub token
     steps:
       - uses: actions/checkout@v4
 

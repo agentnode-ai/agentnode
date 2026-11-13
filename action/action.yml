@@ -1,3 +1,9 @@
+# The AgentNode publish action (#42 option B, prepared in #60 as action.next.yml, activated in #99).
+# Contract: sdk/tests/test_github_action.py.
+#
+# Same inputs, defaults and outputs as the action it replaces, plus `directory`. Underneath: the published Python SDK at one
+# pinned version, the API key only through the environment, no workflow input expanded inside a script, and the
+# outputs read from the CLI's JSON (`--json`) instead of scraped text.
 name: "AgentNode Publish"
 description: "Validate and publish an AgentNode pack to the registry"
 branding:
@@ -9,7 +15,7 @@ inputs:
     description: "AgentNode API key (publisher token)"
     required: true
   manifest:
-    description: "Path to agentnode.yaml manifest (default: auto-detect in repo root)"
+    description: "Path to the manifest: agentnode.yaml, agentnode.yml or agentnode.json (default: auto-detect)"
     required: false
     default: ""
   api-url:
@@ -20,6 +26,10 @@ inputs:
     description: "Validate only, do not publish"
     required: false
     default: "false"
+  directory:
+    description: "Package directory (default: the manifest's directory, or the repository root)"
+    required: false
+    default: ""
 
 outputs:
   slug:
@@ -35,49 +45,63 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
       with:
-        node-version: "20"
+        python-version: "3.12"
 
-    - name: Install AgentNode CLI
+    - name: Install the AgentNode SDK
       shell: bash
-      run: npm install -g agentnode-cli
+      run: python -m pip install --disable-pip-version-check "agentnode-sdk==0.25.0"
 
     - name: Detect manifest
       id: detect
       shell: bash
+      env:
+        INPUT_MANIFEST: ${{ inputs.manifest }}
+        INPUT_DIRECTORY: ${{ inputs.directory }}
       run: |
-        MANIFEST="${{ inputs.manifest }}"
+        set -euo pipefail
+        MANIFEST="$INPUT_MANIFEST"
+        DIR="$INPUT_DIRECTORY"
         if [ -z "$MANIFEST" ]; then
-          if [ -f "agentnode.yaml" ]; then
-            MANIFEST="agentnode.yaml"
-          elif [ -f "agentnode.yml" ]; then
-            MANIFEST="agentnode.yml"
-          elif [ -f "agentnode.json" ]; then
-            MANIFEST="agentnode.json"
-          else
-            echo "::error::No agentnode.yaml found in repo root. Specify path via 'manifest' input."
+          SEARCH="${DIR:-.}"
+          for NAME in "agentnode.yaml" "agentnode.yml" "agentnode.json"; do
+            if [ -f "$SEARCH/$NAME" ]; then
+              MANIFEST="$SEARCH/$NAME"
+              break
+            fi
+          done
+          if [ -z "$MANIFEST" ]; then
+            echo "::error::No agentnode.yaml, agentnode.yml or agentnode.json found in '$SEARCH'. Specify path via 'manifest' input."
             exit 1
           fi
         fi
+        if [ -z "$DIR" ]; then
+          DIR="$(dirname "$MANIFEST")"
+        fi
         echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
-        echo "Found manifest: $MANIFEST"
+        echo "directory=$DIR" >> "$GITHUB_OUTPUT"
+        echo "Found manifest: $MANIFEST (package directory: $DIR)"
 
     - name: Validate manifest
       id: validate
       shell: bash
       env:
-        AGENTNODE_API_URL: ${{ inputs.api-url }}
-        AGENTNODE_API_KEY: ${{ inputs.api-key }}
+        MANIFEST: ${{ steps.detect.outputs.manifest }}
+        PKG_DIR: ${{ steps.detect.outputs.directory }}
       run: |
-        echo "Validating ${{ steps.detect.outputs.manifest }}..."
-        if agentnode validate "${{ steps.detect.outputs.manifest }}"; then
-          echo "status=valid" >> "$GITHUB_OUTPUT"
+        set -uo pipefail
+        echo "Validating $MANIFEST..."
+        # inside `if`: the runner starts bash with -e, and a bare failing OUT=$(...) would end the step before
+        # validation-status is written (found by the local consumer run, pv T-0237)
+        if OUT=$(agentnode validate "$PKG_DIR" --manifest "$MANIFEST" --json); then RC=0; else RC=$?; fi
+        STATUS=$(printf '%s' "$OUT" | python -c 'import json, sys; print(json.load(sys.stdin)["status"])') || STATUS=invalid
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        if [ "$RC" -eq 0 ] && [ "$STATUS" = "valid" ]; then
           echo "::notice::Manifest validation passed"
         else
-          echo "status=invalid" >> "$GITHUB_OUTPUT"
-          echo "::error::Manifest validation failed"
+          echo "::error::Manifest validation failed: $OUT"
           exit 1
         fi
 
@@ -88,18 +112,18 @@ runs:
       env:
         AGENTNODE_API_URL: ${{ inputs.api-url }}
         AGENTNODE_API_KEY: ${{ inputs.api-key }}
+        MANIFEST: ${{ steps.detect.outputs.manifest }}
+        PKG_DIR: ${{ steps.detect.outputs.directory }}
       run: |
-        echo "Publishing ${{ steps.detect.outputs.manifest }}..."
-        OUTPUT=$(agentnode publish "${{ steps.detect.outputs.manifest }}" --json 2>&1) || {
-          echo "::error::Publish failed: $OUTPUT"
+        set -uo pipefail
+        echo "Publishing $MANIFEST..."
+        if ! OUT=$(agentnode publish "$PKG_DIR" --manifest "$MANIFEST" --json --yes); then
+          echo "::error::Publish failed: $OUT"
           exit 1
-        }
-        echo "$OUTPUT"
-
-        # Extract slug and version from JSON output
-        SLUG=$(echo "$OUTPUT" | grep -o '"slug":"[^"]*"' | head -1 | cut -d'"' -f4)
-        VERSION=$(echo "$OUTPUT" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)
-
+        fi
+        echo "$OUT"
+        SLUG=$(printf '%s' "$OUT" | python -c 'import json, sys; print(json.load(sys.stdin)["slug"])')
+        VERSION=$(printf '%s' "$OUT" | python -c 'import json, sys; print(json.load(sys.stdin)["version"])')
         echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
         echo "::notice::Published $SLUG@$VERSION"
