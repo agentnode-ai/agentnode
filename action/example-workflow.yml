@@ -19,11 +19,14 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read       # checkout only; the action needs no GitHub token
     steps:
       - uses: actions/checkout@v4
 
       - name: Publish to AgentNode
-        uses: agentnode/publish@v1
+        # the action in agentnode-ai/agentnode, folder action/, at the tag action-v1 (or pin a commit SHA)
+        uses: agentnode-ai/agentnode/action@action-v1
         with:
           api-key: ${{ secrets.AGENTNODE_API_KEY }}
           dry-run: ${{ github.event.inputs.dry-run || 'false' }}
